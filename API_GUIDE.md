@@ -1,27 +1,27 @@
-# API Guide — SLM Fine-Tuning Platform
+# API Guide — แพลตฟอร์ม SLM Fine-Tuning
 
-Reference for every HTTP and WebSocket endpoint exposed by the platform.
-For setup / quickstart see [`README.md`](./README.md). For the live OpenAPI
-schema (with full request/response shapes), hit
-<http://localhost:8000/docs> after `docker compose up -d`.
+เอกสารอ้างอิงสำหรับ HTTP และ WebSocket endpoint ทุกตัวที่แพลตฟอร์มเปิดใช้งาน
+สำหรับการติดตั้ง / quickstart ดู [`README.md`](./README.md) สำหรับ OpenAPI schema
+ฉบับสด (มี request/response shape ครบ) ให้เปิด <http://localhost:8000/docs>
+หลังจากรัน `docker compose up -d`
 
 ---
 
-## Conventions
+## ข้อตกลงทั่วไป (Conventions)
 
-- **Base URL**: `http://localhost:8000` (configurable via env)
-- **Versioning**: every resource lives under `/api/v1/`
-- **Auth**: none — all endpoints are open (per project scope)
-- **Content type**: `application/json` for everything except `upload-seed`
-  (multipart) and `download` (binary stream)
-- **Async jobs** (SDG, training, export, evaluation) return **`202 Accepted`**
-  with a `job_id`; subscribe to `ws://.../ws/jobs/{job_id}` for progress
-- **IDs**: every resource id is a UUID; `job_id` is the underlying Celery
-  task id (also a UUID-shaped string)
+- **Base URL**: `http://localhost:8000` (ปรับผ่าน env ได้)
+- **Versioning**: ทุก resource อยู่ภายใต้ `/api/v1/`
+- **Auth**: ไม่มี — ทุก endpoint เปิดทั้งหมด (ตาม scope ของโปรเจกต์ PoC)
+- **Content type**: `application/json` ทุกที่ ยกเว้น `upload-seed` (multipart)
+  และ `download` (binary stream)
+- **งาน async** (SDG, training, export, evaluation) คืน **`202 Accepted`**
+  พร้อม `job_id` — subscribe ที่ `ws://.../ws/jobs/{job_id}` เพื่อรับ progress
+- **IDs**: id ของทุก resource เป็น UUID ส่วน `job_id` คือ Celery task id
+  (รูปแบบเป็น UUID เช่นกัน)
 
-### Error response shape
+### รูปแบบ error response
 
-All non-2xx responses share one body:
+response ที่ไม่ใช่ 2xx ทุกตัวใช้ body แบบเดียวกัน:
 
 ```json
 {
@@ -31,45 +31,45 @@ All non-2xx responses share one body:
 }
 ```
 
-| `code` | HTTP | When |
+| `code` | HTTP | เกิดขึ้นเมื่อ |
 |--------|------|------|
-| `validation_error` | 422 | Pydantic schema rejected the body; per-field details under `extra.errors` |
-| `not_found` | 404 | Resource id doesn't exist |
-| `conflict` | 409 | Resource exists but isn't ready (dataset still generating, model not exported, …) |
-| `bad_request` | 400 | Semantic error not catchable by the schema (mismatched task_type, `stream=true`, …) |
-| `payload_too_large` | 413 | Seed upload over 10 MiB |
-| `bad_gateway` | 502 | Ollama daemon unreachable / returned 5xx |
-| `internal_error` | 500 | Unhandled server error; `extra.correlation_id` quotes a server log line |
+| `validation_error` | 422 | Pydantic schema ปฏิเสธ body — รายละเอียดต่อ field อยู่ใน `extra.errors` |
+| `not_found` | 404 | id ของ resource ไม่มีอยู่ |
+| `conflict` | 409 | resource มีอยู่ แต่ยังไม่พร้อมใช้ (dataset กำลังสร้าง / ยังไม่ export model / ฯลฯ) |
+| `bad_request` | 400 | error เชิง semantic ที่ schema ไม่ดัก (task_type ไม่ตรง, `stream=true`, ฯลฯ) |
+| `payload_too_large` | 413 | upload seed เกิน 10 MiB |
+| `bad_gateway` | 502 | Ollama daemon ติดต่อไม่ได้ / ตอบ 5xx |
+| `internal_error` | 500 | server error ที่จัดการไม่ได้ — มี `extra.correlation_id` ไว้อ้างอิง log บนเซิร์ฟเวอร์ |
 
 ---
 
-## Lifecycle at a glance
+## ภาพรวม Lifecycle
 
 ```
 ┌─────────┐   POST /projects   ┌─────────┐
 │ create  ├───────────────────►│ project │
 └─────────┘                    └────┬────┘
                                     │
-            POST /datasets/upload-seed   (optional, for with_seed mode)
+            POST /datasets/upload-seed   (ทางเลือก สำหรับ with_seed mode)
                                     │
-            POST /datasets/generate ─┤   (SDG via OpenRouter — 202)
+            POST /datasets/generate ─┤   (SDG ผ่าน OpenRouter — 202)
                                     │
                        WS job_id ───┤───► sdg_progress* → completed
                                     │
-              POST /trainings ──────┤   (manual or HPO — 202)
+              POST /trainings ──────┤   (manual หรือ HPO — 202)
                                     │
                        WS job_id ───┤───► training_progress* | hpo_progress*
-                                    │     → completed (artifact created)
+                                    │     → completed (ได้ artifact)
                                     │
-        POST /models/{id}/export ───┤   (LoRA → GGUF + register w/ Ollama — 202)
+        POST /models/{id}/export ───┤   (LoRA → GGUF + ลงทะเบียนกับ Ollama — 202)
                                     │
-                       WS job_id ───┤───► completed (ollama_model_tag set)
+                       WS job_id ───┤───► completed (มี ollama_model_tag)
                                     │
-   POST /inference/chat/completions ┤   (forwarded to Ollama, OpenAI-compat)
+   POST /inference/chat/completions ┤   (forward ไปยัง Ollama, OpenAI-compat)
                                     │
-        POST /evaluations ──────────┤   (predict + metrics + optional LLM judge — 202)
+        POST /evaluations ──────────┤   (predict + metrics + LLM judge ทางเลือก — 202)
                                     │
-                       WS job_id ───┘───► completed (metrics_json populated)
+                       WS job_id ───┘───► completed (ได้ metrics_json)
 ```
 
 ---
@@ -78,139 +78,141 @@ All non-2xx responses share one body:
 
 ### Projects (`/api/v1/projects`)
 
-A project is the top-level grouping; it pins a `task_type` and owns datasets
-and trainings.
+Project คือกลุ่มระดับบนสุด — ผูกค่า `task_type` ไว้คงที่ และเป็นเจ้าของทั้ง
+dataset และ training ทั้งหมดในกลุ่มนั้น
 
-| Method | Path | What it does |
+| Method | Path | คำอธิบาย |
 |--------|------|--------------|
-| `POST` | `/api/v1/projects` | **Create a project.** Body: `{name, description?, task_type}`. `task_type` is one of `classification`, `tool_calling`, `qa` and is **immutable** after creation. Returns `201` with the new project. |
-| `GET` | `/api/v1/projects` | **List projects** (paginated). Query: `limit` (1–200, default 50), `offset` (default 0). |
-| `GET` | `/api/v1/projects/{id}` | **Get a project** by UUID. `404` if not found. |
-| `PATCH` | `/api/v1/projects/{id}` | **Update name and/or description.** Both fields are optional in the body; `task_type` cannot be changed (create a new project instead). |
-| `DELETE` | `/api/v1/projects/{id}` | **Delete a project.** Cascades to its datasets and trainings (FKs `ON DELETE CASCADE`). Returns `204`. |
+| `POST` | `/api/v1/projects` | **สร้าง project** Body: `{name, description?, task_type}` ค่า `task_type` เป็น `classification`, `tool_calling`, หรือ `qa` และ **เปลี่ยนไม่ได้** หลังสร้าง คืน `201` พร้อม project ใหม่ |
+| `GET` | `/api/v1/projects` | **List projects** (มี pagination) Query: `limit` (1–200, default 50), `offset` (default 0) |
+| `GET` | `/api/v1/projects/{id}` | **อ่าน project** ตาม UUID — `404` ถ้าไม่พบ |
+| `PATCH` | `/api/v1/projects/{id}` | **แก้ name หรือ description** ทั้งสอง field optional ส่วน `task_type` แก้ไม่ได้ (ต้องสร้าง project ใหม่) |
+| `DELETE` | `/api/v1/projects/{id}` | **ลบ project** — cascade ไปยัง dataset และ training ทุกตัว (FK เป็น `ON DELETE CASCADE`) คืน `204` |
 
 ### Datasets (`/api/v1/datasets`)
 
-A dataset is a JSONL row collection in MinIO. Sources:
-- `seed` — uploaded by the user
-- `sdg` — generated via OpenRouter
-- `merged` — seed + sdg (future)
+Dataset คือชุดของ row JSONL ที่เก็บใน MinIO มาจาก 3 ที่:
+- `seed` — user upload เอง
+- `sdg` — สร้างผ่าน OpenRouter
+- `merged` — seed + sdg รวมกัน (ของอนาคต)
 
-| Method | Path | What it does |
+| Method | Path | คำอธิบาย |
 |--------|------|--------------|
-| `POST` | `/api/v1/datasets/upload-seed` | **Upload seed examples** (multipart). Form fields: `project_id`, `task_type`, `file` (JSON array OR JSONL), optional `name`. Each row is validated against the task's Pydantic schema; invalid rows are reported in `invalid_rows`. Cap: 10 MiB per upload. |
-| `POST` | `/api/v1/datasets/generate` | **Run synthetic data generation** via OpenRouter. Body is a discriminated union on `sdg_mode`: `with_seed` (≥5 seed rows required) or `description_only` (per-task `classification_config` / `tool_calling_config`). Returns `202` + `{job_id, dataset_id, websocket_url}`. The dataset row is created immediately with `num_samples=0`; it fills in once the worker completes. |
-| `GET` | `/api/v1/datasets` | **List datasets**, optionally filtered by `project_id`. Paginated. |
-| `GET` | `/api/v1/datasets/{id}` | **Get dataset metadata** (no rows). `storage_uri` is `null` until generation completes. |
-| `GET` | `/api/v1/datasets/{id}/preview?limit=20` | **Preview the first N rows.** Streams JSONL line-by-line from MinIO and stops at `limit` (1–200). `409` if the dataset has no rows yet. |
-| `GET` | `/api/v1/datasets/{id}/download` | **Download the raw JSONL** as a streaming response (`application/x-ndjson`). |
-| `DELETE` | `/api/v1/datasets/{id}` | **Delete a dataset.** Best-effort MinIO object cleanup; the row is removed even if the storage delete fails. `204`. |
+| `POST` | `/api/v1/datasets/upload-seed` | **Upload seed examples** (multipart) Form: `project_id`, `task_type`, `file` (JSON array หรือ JSONL), optional `name` แต่ละ row จะถูก validate ตาม Pydantic schema ของ task ส่วน row ที่ไม่ผ่านจะรายงานใน `invalid_rows` ขนาดสูงสุด 10 MiB ต่อ upload |
+| `POST` | `/api/v1/datasets/generate` | **Generate ข้อมูลสังเคราะห์** ผ่าน OpenRouter Body เป็น discriminated union ตาม `sdg_mode`: `with_seed` (ต้องมี seed อย่างน้อย 5 row) หรือ `description_only` (ต้องมี `classification_config` / `tool_calling_config` ตาม task) คืน `202` + `{job_id, dataset_id, websocket_url}` row ของ dataset ถูกสร้างทันที โดย `num_samples=0` ก่อน แล้วค่อยอัปเดตเมื่อ worker ทำเสร็จ |
+| `GET` | `/api/v1/datasets` | **List datasets** กรองด้วย `project_id` ได้ — มี pagination |
+| `GET` | `/api/v1/datasets/{id}` | **อ่าน metadata ของ dataset** (ไม่รวม row) — `storage_uri` จะเป็น `null` จนกว่าการ generate เสร็จ |
+| `GET` | `/api/v1/datasets/{id}/preview?limit=20` | **Preview row แรกๆ ของ dataset** stream อ่านทีละบรรทัดจาก MinIO และหยุดเมื่อถึง `limit` (1–200) — `409` ถ้ายังไม่มี row |
+| `GET` | `/api/v1/datasets/{id}/download` | **ดาวน์โหลดไฟล์ JSONL ดิบ** เป็น streaming response (`application/x-ndjson`) |
+| `DELETE` | `/api/v1/datasets/{id}` | **ลบ dataset** — พยายามลบ object บน MinIO ด้วย (best-effort) แต่ row จะถูกลบแม้ลบ MinIO ไม่ผ่าน คืน `204` |
 
 ### Trainings (`/api/v1/trainings`)
 
-Each training run produces one `ModelArtifact` (LoRA adapter) on success.
+แต่ละ training run ที่สำเร็จจะได้ `ModelArtifact` (LoRA adapter) หนึ่งตัว
 
-| Method | Path | What it does |
+| Method | Path | คำอธิบาย |
 |--------|------|--------------|
-| `POST` | `/api/v1/trainings` | **Start a training job.** Discriminated on `mode`: `manual` (user supplies `manual_config` — lr, epochs, LoRA…) or `hpo` (Optuna search over `hpo_config.search_space`, then a final retrain on the best params). Returns `202`. The base model must be in `/api/v1/base-models` (ADR-002). |
-| `GET` | `/api/v1/trainings` | **List training jobs.** Filters: `project_id`, `status` (`pending`/`running`/`completed`/`failed`/`cancelled`). Paginated. |
-| `GET` | `/api/v1/trainings/{id}` | **Get a training job** with full config + status + `mlflow_run_id` once available. |
-| `DELETE` | `/api/v1/trainings/{id}` | **Cancel** a pending or running job. Revokes the Celery task (`SIGTERM`) and flips the row to `cancelled`. Idempotent on terminal-status jobs. |
-| `GET` | `/api/v1/trainings/{id}/mlflow-url` | **Resolve the MLflow run URL** for this training (deep link into the MLflow UI). Returns `null` for `mlflow_url` if the run hasn't started yet. |
+| `POST` | `/api/v1/trainings` | **เริ่ม training job** Discriminated ตาม `mode`: `manual` (user ระบุ `manual_config` — lr, epochs, LoRA…) หรือ `hpo` (Optuna ค้นหา hyperparam ใน `hpo_config.search_space` แล้ว retrain ตอนสุดท้ายด้วย best params) คืน `202` ส่วน base model ต้องอยู่ใน `/api/v1/base-models` (ADR-002) |
+| `GET` | `/api/v1/trainings` | **List training jobs** ตัวกรอง: `project_id`, `status` (`pending`/`running`/`completed`/`failed`/`cancelled`) — มี pagination |
+| `GET` | `/api/v1/trainings/{id}` | **อ่าน training job** พร้อม config เต็ม + status + `mlflow_run_id` (เมื่อพร้อม) |
+| `DELETE` | `/api/v1/trainings/{id}` | **Cancel** job ที่ยัง pending หรือ running — revoke Celery task (`SIGTERM`) แล้ว flip row เป็น `cancelled` ทำซ้ำได้ (idempotent) บน job ที่อยู่สถานะ terminal |
+| `GET` | `/api/v1/trainings/{id}/mlflow-url` | **คืน URL ของ MLflow run** สำหรับ training นี้ (deep link ไป MLflow UI) — `mlflow_url` เป็น `null` ถ้า run ยังไม่เริ่ม |
 
 ### Models (`/api/v1/models`)
 
-`models` here means **trained-model artifacts** (one per successful training).
-Their LoRA adapters and exported formats (GGUF, SafeTensors) live in MinIO.
+`models` ที่นี่หมายถึง **artifact ของโมเดลที่ train เสร็จแล้ว** (หนึ่งตัวต่อ
+training ที่สำเร็จ) ทั้ง LoRA adapter และไฟล์ที่ export (GGUF, SafeTensors)
+อยู่บน MinIO
 
-| Method | Path | What it does |
+| Method | Path | คำอธิบาย |
 |--------|------|--------------|
-| `GET` | `/api/v1/models` | **List artifacts.** Filter by `project_id` (joins through TrainingJob). Paginated. |
-| `GET` | `/api/v1/models/{id}` | **Get an artifact** with all URIs (`lora_adapter_uri`, `gguf_uri`, `safetensors_uri`, `ollama_model_tag`). |
-| `POST` | `/api/v1/models/{id}/export` | **Export to GGUF or SafeTensors.** Body: `{format: "gguf" \| "safetensors", quantization?: "q4_k_m" \| …}`. GGUF additionally registers the model with the local Ollama daemon (best-effort; missed daemon → upload still happens, `ollama_model_tag` stays `null`). Returns `202`. |
-| `GET` | `/api/v1/models/{id}/download?format=gguf` | **Stream a previously-exported file.** Only `gguf` is implemented (single blob). `safetensors` is a multi-file directory and currently returns `400` with the `s3://` URI for direct MinIO access. |
+| `GET` | `/api/v1/models` | **List artifacts** กรองด้วย `project_id` ได้ (join ผ่าน TrainingJob) — มี pagination |
+| `GET` | `/api/v1/models/{id}` | **อ่าน artifact** พร้อม URI ครบ (`lora_adapter_uri`, `gguf_uri`, `safetensors_uri`, `ollama_model_tag`) |
+| `POST` | `/api/v1/models/{id}/export` | **Export เป็น GGUF หรือ SafeTensors** Body: `{format: "gguf" \| "safetensors", quantization?: "q4_k_m" \| …}` GGUF จะลงทะเบียนกับ Ollama daemon ในเครื่องด้วย (best-effort — ถ้า daemon ติดต่อไม่ได้ การ upload ยังเกิดขึ้น แต่ `ollama_model_tag` จะเป็น `null`) คืน `202` |
+| `GET` | `/api/v1/models/{id}/download?format=gguf` | **Stream ไฟล์ที่ export ไว้แล้ว** ตอนนี้รองรับเฉพาะ `gguf` (single blob) ส่วน `safetensors` เป็น directory หลายไฟล์ จะคืน `400` พร้อม `s3://` URI ให้ไปดึงจาก MinIO ตรงๆ |
 
 ### Inference (`/api/v1/inference`) — OpenAI-compatible
 
-Thin proxy in front of the local Ollama daemon. Fields the platform actively
-needs are typed; extras are forbidden.
+เป็น proxy บางๆ หน้า Ollama daemon ในเครื่อง โดย type เฉพาะ field ที่
+แพลตฟอร์มใช้จริงๆ — field อื่นๆ ถูก forbid ไว้
 
-| Method | Path | What it does |
+| Method | Path | คำอธิบาย |
 |--------|------|--------------|
-| `POST` | `/api/v1/inference/chat/completions` | **OpenAI-compatible chat completions.** `model` accepts either a `ModelArtifact` UUID (the platform looks up `ollama_model_tag`) or a literal Ollama tag (`llama3.2:3b`). `stream: true` is rejected with `400` — the PoC doesn't proxy SSE. |
-| `POST` | `/api/v1/inference/completions` | **Legacy text completions** (same identifier rules as above). |
-| `GET` | `/api/v1/inference/models` | **List models** known to the local Ollama daemon (OpenAI shape). |
+| `POST` | `/api/v1/inference/chat/completions` | **OpenAI-compat chat completions** — `model` รับได้ทั้ง UUID ของ `ModelArtifact` (แพลตฟอร์มจะ resolve เป็น `ollama_model_tag` ให้) หรือ Ollama tag ตรงๆ (`llama3.2:3b`) `stream: true` จะถูก reject ด้วย `400` — PoC ยังไม่ proxy SSE |
+| `POST` | `/api/v1/inference/completions` | **Legacy text completions** (กฎเรื่อง identifier เหมือนข้างบน) |
+| `GET` | `/api/v1/inference/models` | **List models** ที่ Ollama daemon ในเครื่องรู้จัก (รูปแบบ OpenAI) |
 
 ### Evaluations (`/api/v1/evaluations`)
 
-Run an evaluation by submitting one model + one dataset; the worker predicts
-each row via Ollama, computes per-task metrics, and optionally asks an LLM
-judge to score qualitative outputs.
+รัน evaluation โดยส่ง model หนึ่งตัว + dataset หนึ่งตัว — worker จะ predict
+ทีละ row ผ่าน Ollama, คำนวณ metric per task แล้วถ้าเปิดใช้ LLM judge จะให้
+LLM ให้คะแนนคำตอบเชิงคุณภาพต่อด้วย
 
-| Method | Path | What it does |
+| Method | Path | คำอธิบาย |
 |--------|------|--------------|
-| `POST` | `/api/v1/evaluations` | **Start an evaluation.** Body: `{model_artifact_id, dataset_id, use_llm_judge?, judge_model?}`. The artifact must have an `ollama_model_tag` (i.e. you exported it to GGUF first). Returns `202`. |
-| `GET` | `/api/v1/evaluations/{id}` | **Get evaluation results** including `metrics_json` (per-task numbers) and `llm_judge_score` (mean across rows, when judge was on). |
-| `POST` | `/api/v1/evaluations/compare` | **Compare 2–10 evaluation runs.** Body: `{evaluation_ids: [UUID, ...]}`. Returns a pivot: `{metric_name: {evaluation_id: value \| null}, judge_scores: {evaluation_id: value \| null}}`. |
+| `POST` | `/api/v1/evaluations` | **เริ่ม evaluation** Body: `{model_artifact_id, dataset_id, use_llm_judge?, judge_model?}` artifact ต้องมี `ollama_model_tag` แล้ว (ต้อง export เป็น GGUF ก่อน) คืน `202` |
+| `GET` | `/api/v1/evaluations/{id}` | **อ่านผล evaluation** รวม `metrics_json` (ตัวเลข per task) และ `llm_judge_score` (mean ข้าม row, ถ้าเปิด judge ไว้) |
+| `POST` | `/api/v1/evaluations/compare` | **เปรียบเทียบ evaluation 2–10 runs** Body: `{evaluation_ids: [UUID, ...]}` คืน pivot: `{metric_name: {evaluation_id: value \| null}, judge_scores: {evaluation_id: value \| null}}` |
 
-#### Per-task metrics
+#### Metric ต่อ task
 
-| Task | Metrics emitted |
+| Task | Metric ที่ออก |
 |------|----------------|
 | Classification | `accuracy`, `f1_macro`, `f1_per_label` (dict), `confusion_matrix`, `out_of_set_predictions`, `n` |
-| Tool calling | `json_validity`, `name_accuracy`, `arg_accuracy` (conditional on name match), `exact_match`, `n` |
+| Tool calling | `json_validity`, `name_accuracy`, `arg_accuracy` (เงื่อนไข: เฉพาะ row ที่ name ตรง), `exact_match`, `n` |
 | QA | `exact_match`, `rouge1`, `rouge2`, `rougeL`, `bleu`, `n` |
 
-All ratios are in `[0, 1]`.
+อัตราส่วนทุกตัวอยู่ในช่วง `[0, 1]`
 
 ### Metadata (`/api/v1/tasks`, `/api/v1/base-models`)
 
-Static catalogs that power the frontend's dynamic forms — no DB or Celery.
+Catalog แบบ static — ใช้สร้าง form แบบ dynamic บน frontend ไม่ต้องผ่าน DB
+หรือ Celery
 
-| Method | Path | What it does |
+| Method | Path | คำอธิบาย |
 |--------|------|--------------|
-| `GET` | `/api/v1/tasks` | List the **3 supported task types** with their JSON Schema and a canonical example row (powers the seed-upload form). |
-| `GET` | `/api/v1/tasks/{task_type}/example` | Return the **example row** for one task type only. |
-| `GET` | `/api/v1/base-models` | List the **6 supported base models** (Llama 3.2 1B/3B, Qwen2.5 0.5B/1.5B/3B, Gemma 2 2B — all Unsloth 4-bit). Llama 3.2 3B is the default per ADR-002. |
+| `GET` | `/api/v1/tasks` | List **task type ที่รองรับทั้ง 3 แบบ** พร้อม JSON Schema ของแต่ละ task และ row ตัวอย่าง (ใช้ขับ form upload seed) |
+| `GET` | `/api/v1/tasks/{task_type}/example` | คืน **row ตัวอย่าง** ของ task เดียว |
+| `GET` | `/api/v1/base-models` | List **base model ที่รองรับทั้ง 6 ตัว** (Llama 3.2 1B/3B, Qwen2.5 0.5B/1.5B/3B, Gemma 2 2B — ทั้งหมดเป็น Unsloth 4-bit) Llama 3.2 3B เป็น default ตาม ADR-002 |
 
 ### System
 
-| Method | Path | What it does |
+| Method | Path | คำอธิบาย |
 |--------|------|--------------|
-| `GET` | `/health` | **Liveness probe.** Always `200 {"status": "ok"}` if the API process is up. Doesn't probe Postgres / Redis. |
-| `GET` | `/` | Tiny landing JSON pointing at `/docs`. |
+| `GET` | `/health` | **Liveness probe** คืน `200 {"status": "ok"}` ตลอดถ้า API process ยังอยู่ ไม่ probe Postgres / Redis |
+| `GET` | `/` | JSON เล็กๆ ชี้ไป `/docs` |
 
 ---
 
 ## WebSocket — `/ws/jobs/{job_id}`
 
-Subscribe with `job_id` from any 202-Accepted response. The server forwards
-messages from Redis channel `job:{job_id}` verbatim, so the wire schema is
-exactly `api.schemas.progress.WSMessage`.
+Subscribe ด้วย `job_id` จาก response 202 ใดๆ — server forward message จาก
+Redis channel `job:{job_id}` มาตรงๆ ดังนั้น schema ของข้อมูล wire คือ
+`api.schemas.progress.WSMessage` ทุกประการ
 
 ```
-GET /ws/jobs/c4f8…  →  WS upgrade → forwards messages until done
+GET /ws/jobs/c4f8…  →  WS upgrade → forward message จนกว่าจะจบ
 ```
 
-### Message types (the `type` field is the discriminator)
+### ประเภท message (field `type` คือ discriminator)
 
-| `type` | When emitted | Key fields |
+| `type` | ส่งเมื่อ | Field สำคัญ |
 |--------|--------------|------------|
-| `sdg_progress` | After every batch during SDG | `phase` (`generating`/`validating`/`deduplicating`/`persisting`), `samples_generated`, `samples_target`, `samples_valid`, `samples_rejected`, `duplicates_removed` |
-| `training_progress` | On every Trainer `on_log` (per-step) | `epoch`, `epochs_total`, `step`, `steps_total`, `train_loss`, `eval_loss`, `learning_rate`, `samples_per_second`, `gpu_memory_mb` |
-| `hpo_progress` | At the end of each Optuna trial | `trial_number`, `trials_total`, `current_params`, `best_value`, `best_params`, `last_trial_value`, `last_trial_pruned`, `inner_progress` (nullable nested `training_progress`) |
-| `completed` | Terminal — job succeeded | `result` (free-form per task), optional `mlflow_run_id`, `dataset_id`, `model_artifact_id` |
-| `failed` | Terminal — job raised | `error`, `error_type` |
+| `sdg_progress` | หลัง batch ทุกครั้งระหว่าง SDG | `phase` (`generating`/`validating`/`deduplicating`/`persisting`), `samples_generated`, `samples_target`, `samples_valid`, `samples_rejected`, `duplicates_removed` |
+| `training_progress` | ทุก `on_log` ของ Trainer (per-step) | `epoch`, `epochs_total`, `step`, `steps_total`, `train_loss`, `eval_loss`, `learning_rate`, `samples_per_second`, `gpu_memory_mb` |
+| `hpo_progress` | ตอนจบ Optuna trial แต่ละครั้ง | `trial_number`, `trials_total`, `current_params`, `best_value`, `best_params`, `last_trial_value`, `last_trial_pruned`, `inner_progress` (`training_progress` ซ้อนใน — nullable) |
+| `completed` | สถานะสุดท้าย — งานสำเร็จ | `result` (รูปแบบ free-form ตาม task), optional `mlflow_run_id`, `dataset_id`, `model_artifact_id` |
+| `failed` | สถานะสุดท้าย — งาน raise | `error`, `error_type` |
 
-Clients should treat `completed` / `failed` as the close signal and disconnect.
+Client ควรถือ `completed` / `failed` เป็นสัญญาณปิดและ disconnect
 
-> **No replay on reconnect.** If a client misses messages, refresh state by
-> hitting the read endpoint (`GET /datasets/{id}` etc.); only messages
-> published *after* connect are forwarded.
+> **ไม่มี replay ตอน reconnect** ถ้า client พลาด message ให้ refresh state
+> ผ่าน read endpoint (`GET /datasets/{id}` ฯลฯ) message เฉพาะที่ publish
+> *หลังจาก* connect เท่านั้นที่จะถูก forward
 
 ---
 
-## Common flows
+## Flow ตัวอย่าง
 
 ### A — Classification (description-only SDG, manual training)
 
@@ -218,13 +220,13 @@ Clients should treat `completed` / `failed` as the close signal and disconnect.
 1. POST /projects                {task_type: "classification"}
 2. POST /datasets/generate       {sdg_mode: "description_only",
                                   classification_config.labels: [...] }
-   → 202 + ws://.../ws/jobs/<job_id>  → wait for completed
+   → 202 + ws://.../ws/jobs/<job_id>  → รอ completed
 3. POST /trainings               {mode: "manual", manual_config: {...}}
-   → 202 + ws://.../ws/jobs/<job_id>  → wait for completed
+   → 202 + ws://.../ws/jobs/<job_id>  → รอ completed
 4. POST /models/{id}/export      {format: "gguf"}
-   → 202 → wait for completed (ollama_model_tag now set)
+   → 202 → รอ completed (ตอนนี้ ollama_model_tag มีค่าแล้ว)
 5. POST /evaluations             {model_artifact_id, dataset_id}
-   → 202 → wait for completed → GET /evaluations/{id} → metrics_json
+   → 202 → รอ completed → GET /evaluations/{id} → metrics_json
 6. POST /inference/chat/completions  {model: <model_artifact_id>, messages: [...]}
 ```
 
@@ -232,19 +234,19 @@ Clients should treat `completed` / `failed` as the close signal and disconnect.
 
 ```
 1. POST /projects                {task_type: "qa"}
-2. POST /datasets/upload-seed    (multipart JSONL, ≥5 rows)
+2. POST /datasets/upload-seed    (multipart JSONL, ≥5 row)
 3. POST /datasets/generate       {sdg_mode: "with_seed",
-                                  seed_data: <inline> }   ← OR reuse the seed dataset directly
+                                  seed_data: <inline> }   ← หรือใช้ dataset seed ตรงๆ ได้
 4. POST /trainings               {mode: "hpo",
                                   hpo_config: {n_trials, search_space, ...}}
-   → ws emits hpo_progress per trial; completed result.best_metric_value
+   → ws ส่ง hpo_progress per trial; completed result.best_metric_value
 5. POST /models/{id}/export      {format: "gguf", quantization: "q4_k_m"}
 6. POST /evaluations             {model_artifact_id, dataset_id,
                                   use_llm_judge: true}
-   → llm_judge_score populated alongside metrics_json
+   → llm_judge_score ออกมาคู่กับ metrics_json
 ```
 
-### C — Tool calling (description-only with tools)
+### C — Tool calling (description-only พร้อม tools)
 
 ```
 1. POST /projects                {task_type: "tool_calling"}
@@ -254,17 +256,17 @@ Clients should treat `completed` / `failed` as the close signal and disconnect.
                                   ]}
 3. POST /trainings               {mode: "manual"}
 4. POST /models/{id}/export      {format: "gguf"}
-5. POST /inference/chat/completions   ← tools list is baked into the SYSTEM
-                                       prompt of the registered Ollama model
+5. POST /inference/chat/completions   ← list ของ tool ถูกฝังใน SYSTEM
+                                       prompt ของ Ollama model ที่ลงทะเบียนแล้ว
 6. POST /evaluations
-   → metrics_json includes json_validity, name_accuracy, arg_accuracy
+   → metrics_json มี json_validity, name_accuracy, arg_accuracy
 ```
 
 ---
 
 ## Pagination
 
-All list endpoints share the same envelope:
+ทุก endpoint ที่ list คืน envelope แบบเดียวกัน:
 
 ```json
 {
@@ -275,28 +277,28 @@ All list endpoints share the same envelope:
 }
 ```
 
-`limit` is capped at 200; `offset` is unbounded but stable only as long as the
-underlying ordering (creation time, descending) is stable.
+`limit` มีเพดาน 200; `offset` ไม่จำกัด แต่จะเสถียรเฉพาะตราบเท่าที่
+ลำดับการเรียง (creation time, descending) ยังเหมือนเดิม
 
 ---
 
-## Status codes — what to expect
+## Status Code — เจอเมื่อไหร่บ้าง
 
-| Operation | Happy path | Common failures |
+| Operation | Happy path | ที่พลาดบ่อย |
 |-----------|------------|-----------------|
-| Create resource | `201` | `422` (validation), `404` (parent missing) |
-| Get resource | `200` | `404` |
+| สร้าง resource | `201` | `422` (validation), `404` (parent ไม่มี) |
+| อ่าน resource | `200` | `404` |
 | List | `200` | — |
 | Update (PATCH) | `200` | `404`, `422` |
 | Delete | `204` | `404` |
-| Submit async job | `202` | `404` (parent missing), `409` (dependency not ready), `422` (validation), `502` (Ollama down — for inference) |
-| Cancel job | `202` | `404` (also returns the existing terminal status idempotently) |
-| Download | `200` (stream) | `404`, `409` (not yet exported), `400` (multi-file format) |
+| Submit งาน async | `202` | `404` (parent ไม่มี), `409` (dependency ยังไม่พร้อม), `422` (validation), `502` (Ollama ล่ม — เฉพาะ inference) |
+| Cancel งาน | `202` | `404` (และคืนสถานะ terminal เดิมแบบ idempotent) |
+| Download | `200` (stream) | `404`, `409` (ยังไม่ export), `400` (รูปแบบเป็น multi-file) |
 
 ---
 
 ## OpenAPI
 
-Live machine-readable schema: `GET /openapi.json` — give this URL to your
-frontend. Swagger UI: `/docs`. ReDoc: `/redoc`. The `openapi_tags` group
-endpoints into the same buckets used in this guide.
+Schema แบบ machine-readable: `GET /openapi.json` — ส่ง URL นี้ให้ frontend
+Swagger UI: `/docs` — ReDoc: `/redoc` — `openapi_tags` จะจัดกลุ่ม endpoint
+ตามแบบเดียวกับในเอกสารฉบับนี้
