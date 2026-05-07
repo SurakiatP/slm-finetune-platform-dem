@@ -1,0 +1,146 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slm-platform"
+version = "0.1.0"
+description = "Backend-only PoC for an Automated Small Language Model fine-tuning platform"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "SLM Platform Team" }]
+keywords = ["slm", "fine-tuning", "qlora", "unsloth", "mlflow", "openrouter"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Framework :: FastAPI",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Versions locked in docs/architecture/TECH_STACK.md (ADR-001).
+# Anything new requires an ADR.
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "sqlalchemy>=2.0.36",
+    "alembic>=1.14.0",
+    # Postgres drivers: psycopg2-binary (sync, used by alembic) +
+    # asyncpg (async, used by SQLAlchemy 2.0 async sessions).
+    "psycopg2-binary>=2.9.10",
+    "asyncpg>=0.30.0",
+    "celery>=5.4.0",
+    "redis>=5.2.0",
+    "minio>=7.2.10",
+    "python-multipart>=0.0.17",
+    "websockets>=13.1",
+    "openai>=1.58.1",
+    "mlflow>=2.19.0",
+    "optuna>=4.1.0",
+    "tenacity>=9.0.0",
+]
+
+[project.optional-dependencies]
+# GPU-only deps. Installed inside the worker container, never on the API host.
+training = [
+    "torch>=2.5.1",
+    "unsloth>=2024.12.4",
+    "transformers>=4.47.0",
+    "peft>=0.14.0",
+    "trl>=0.13.0",
+    "bitsandbytes>=0.45.0",
+    "accelerate>=1.2.0",
+    "datasets>=3.2.0",
+]
+eval = [
+    "evaluate>=0.4.3",
+    "rouge-score>=0.1.2",
+    "scikit-learn>=1.6.0",
+    "deepeval>=2.0.9",
+]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "types-requests>=2.32.0",
+]
+
+[project.urls]
+Repository = "https://example.com/slm-platform"
+Documentation = "https://example.com/slm-platform/docs"
+
+# ---- Packaging --------------------------------------------------------------
+
+[tool.setuptools.packages.find]
+include = ["api*", "workers*", "ai_engine*"]
+exclude = ["tests*", "examples*", "docs*", "docker*", "alembic*", "scripts*"]
+
+# ---- Ruff (lint + format) ---------------------------------------------------
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle / pyflakes
+    "I",             # isort
+    "UP",            # pyupgrade
+    "B",             # bugbear
+    "SIM",           # simplify
+    "RUF",           # ruff-specific
+    "ASYNC",         # async lint
+]
+ignore = [
+    "E501",  # line length handled by formatter
+    "B008",  # FastAPI uses Depends() in defaults
+]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/env.py" = ["E402"]
+"tests/**" = ["B011", "SIM117"]
+
+# ---- Pytest -----------------------------------------------------------------
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: tests that require docker-compose services",
+    "gpu: tests that require a CUDA GPU",
+]
+
+# ---- Mypy -------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+disallow_untyped_decorators = false  # FastAPI/Celery decorators are loose
+plugins = ["pydantic.mypy"]
+exclude = ["alembic/versions"]
+
+[[tool.mypy.overrides]]
+module = [
+    "unsloth.*",
+    "trl.*",
+    "peft.*",
+    "bitsandbytes.*",
+    "datasets.*",
+    "evaluate.*",
+    "rouge_score.*",
+    "deepeval.*",
+    "minio.*",
+    "celery.*",
+]
+ignore_missing_imports = true

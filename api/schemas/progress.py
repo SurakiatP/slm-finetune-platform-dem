@@ -1,0 +1,109 @@
+"""WebSocket message schemas streamed from `/ws/jobs/{job_id}`.
+
+Workers publish JSON messages to the Redis channel `job:{job_id}`. The WebSocket
+endpoint forwards them to clients verbatim, so these schemas are also the
+exact wire format.
+
+All messages share `type` (the discriminator) and `job_id`. Per-message fields
+are defined below.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Annotated, Any, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from api.schemas.enums import WSMessageType
+
+# --- Base -------------------------------------------------------------------
+
+
+class _WSMessageBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(..., description="Celery task id; matches the channel suffix.")
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="UTC time the worker emitted this message.",
+    )
+
+
+# --- Per-message-type payloads ---------------------------------------------
+
+
+class SDGProgress(_WSMessageBase):
+    type: Literal[WSMessageType.SDG_PROGRESS] = WSMessageType.SDG_PROGRESS
+    phase: Literal["generating", "validating", "deduplicating", "persisting"] = "generating"
+    samples_generated: int = Field(default=0, ge=0)
+    samples_target: int = Field(..., ge=1)
+    samples_valid: int = Field(default=0, ge=0)
+    samples_rejected: int = Field(default=0, ge=0)
+    duplicates_removed: int = Field(default=0, ge=0)
+
+
+class TrainingProgress(_WSMessageBase):
+    type: Literal[WSMessageType.TRAINING_PROGRESS] = WSMessageType.TRAINING_PROGRESS
+    epoch: float = Field(..., ge=0.0, description="Fractional epoch (e.g. 1.5).")
+    epochs_total: int = Field(..., ge=1)
+    step: int = Field(..., ge=0)
+    steps_total: int = Field(..., ge=1)
+    train_loss: float | None = None
+    eval_loss: float | None = None
+    learning_rate: float | None = None
+    samples_per_second: float | None = None
+    gpu_memory_mb: float | None = Field(default=None, ge=0.0)
+
+
+class HPOProgress(_WSMessageBase):
+    type: Literal[WSMessageType.HPO_PROGRESS] = WSMessageType.HPO_PROGRESS
+    trial_number: int = Field(..., ge=0, description="0-indexed Optuna trial number.")
+    trials_total: int = Field(..., ge=1)
+    current_params: dict[str, str | int | float | bool] | None = None
+    best_value: float | None = None
+    best_params: dict[str, str | int | float | bool] | None = None
+    last_trial_value: float | None = None
+    last_trial_pruned: bool = False
+    # Optional nested per-step training progress for the current trial.
+    inner_progress: TrainingProgress | None = None
+
+
+class JobCompleted(_WSMessageBase):
+    type: Literal[WSMessageType.COMPLETED] = WSMessageType.COMPLETED
+    # Task-shaped result payload — kept loose because SDG / training / eval differ.
+    result: dict[str, Any] = Field(default_factory=dict)
+    mlflow_run_id: str | None = None
+    dataset_id: UUID | None = None
+    model_artifact_id: UUID | None = None
+
+
+class JobFailed(_WSMessageBase):
+    type: Literal[WSMessageType.FAILED] = WSMessageType.FAILED
+    error: str = Field(..., min_length=1, description="Human-readable error message.")
+    error_type: str | None = Field(
+        default=None,
+        description="Exception class name (e.g. 'OutOfMemoryError').",
+    )
+    traceback: str | None = Field(
+        default=None,
+        description="Full traceback; emit only when LOG_LEVEL=DEBUG.",
+    )
+
+
+WSMessage = Annotated[
+    SDGProgress | TrainingProgress | HPOProgress | JobCompleted | JobFailed,
+    Field(discriminator="type"),
+]
+"""Anything published to `job:{job_id}` must validate against this union."""
+
+
+__all__ = [
+    "SDGProgress",
+    "TrainingProgress",
+    "HPOProgress",
+    "JobCompleted",
+    "JobFailed",
+    "WSMessage",
+]

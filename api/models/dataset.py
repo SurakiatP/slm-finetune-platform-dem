@@ -1,0 +1,55 @@
+"""Dataset ORM model — pointer to a row collection in MinIO."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
+
+from sqlalchemy import BigInteger, ForeignKey, Integer, String
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from api.models.base import Base, TimestampMixin, pg_enum, uuid_pk
+from api.schemas.enums import DatasetSource, TaskType
+
+if TYPE_CHECKING:
+    from api.models.evaluation_run import EvaluationRun
+    from api.models.project import Project
+    from api.models.training_job import TrainingJob
+
+
+class Dataset(Base, TimestampMixin):
+    __tablename__ = "datasets"
+
+    id: Mapped[UUID] = uuid_pk()
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    task_type: Mapped[TaskType] = mapped_column(
+        pg_enum(TaskType, "task_type"),
+        nullable=False,
+        index=True,
+    )
+    source: Mapped[DatasetSource] = mapped_column(
+        pg_enum(DatasetSource, "dataset_source"),
+        nullable=False,
+    )
+    num_samples: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    storage_uri: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
+        doc="s3://{bucket}/{key} pointing into MinIO. Null until generation completes.",
+    )
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    generation_metadata: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        doc="SDG context (teacher_model, sdg_mode, num_invalid_rows, ...) when source=sdg.",
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="datasets")
+    training_jobs: Mapped[list["TrainingJob"]] = relationship(back_populates="dataset")
+    evaluation_runs: Mapped[list["EvaluationRun"]] = relationship(back_populates="dataset")

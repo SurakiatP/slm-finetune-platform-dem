@@ -1,0 +1,243 @@
+name: slm-platform
+
+# Backend-only PoC for the Automated SLM Fine-Tuning Platform.
+# Stack locked by ADR-001. GPU is provided to `worker` and `ollama` only.
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-slm}:${POSTGRES_PASSWORD:-slm}@postgres:5432/${POSTGRES_DB:-slm}
+  ALEMBIC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-slm}:${POSTGRES_PASSWORD:-slm}@postgres:5432/${POSTGRES_DB:-slm}
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/1
+  CELERY_RESULT_BACKEND: redis://redis:6379/2
+  MLFLOW_TRACKING_URI: http://mlflow:5000
+  MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+  MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  MINIO_DATASETS_BUCKET: ${MINIO_DATASETS_BUCKET:-datasets}
+  MINIO_MODELS_BUCKET: ${MINIO_MODELS_BUCKET:-models}
+  MLFLOW_S3_BUCKET: ${MLFLOW_S3_BUCKET:-mlflow}
+  OLLAMA_BASE_URL: http://ollama:11434
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+  OPENROUTER_TEACHER_MODEL: ${OPENROUTER_TEACHER_MODEL:-anthropic/claude-3.5-sonnet}
+  DEFAULT_BASE_MODEL: ${DEFAULT_BASE_MODEL:-unsloth/Llama-3.2-3B-Instruct-bnb-4bit}
+  PYTHONUNBUFFERED: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+x-gpu-deploy: &gpu-deploy
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: 1
+          capabilities: [gpu]
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: slm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-slm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-slm}
+      POSTGRES_DB: ${POSTGRES_DB:-slm}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-slm} -d ${POSTGRES_DB:-slm}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [slm-net]
+
+  redis:
+    image: redis:7-alpine
+    container_name: slm-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [slm-net]
+
+  minio:
+    image: minio/minio:latest
+    container_name: slm-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [slm-net]
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: slm-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
+          echo "waiting for minio..." && sleep 2
+        done
+        mc mb --ignore-existing local/$$MLFLOW_S3_BUCKET
+        mc mb --ignore-existing local/$$MINIO_DATASETS_BUCKET
+        mc mb --ignore-existing local/$$MINIO_MODELS_BUCKET
+        echo "minio buckets ready"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MLFLOW_S3_BUCKET: ${MLFLOW_S3_BUCKET:-mlflow}
+      MINIO_DATASETS_BUCKET: ${MINIO_DATASETS_BUCKET:-datasets}
+      MINIO_MODELS_BUCKET: ${MINIO_MODELS_BUCKET:-models}
+    networks: [slm-net]
+
+  mlflow:
+    build:
+      context: ./docker
+      dockerfile: mlflow.Dockerfile
+    container_name: slm-mlflow
+    restart: unless-stopped
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command:
+      - mlflow
+      - server
+      - --host=0.0.0.0
+      - --port=5000
+      - --backend-store-uri=postgresql+psycopg2://${POSTGRES_USER:-slm}:${POSTGRES_PASSWORD:-slm}@postgres:5432/${POSTGRES_DB:-slm}
+      - --default-artifact-root=s3://${MLFLOW_S3_BUCKET:-mlflow}/
+      - --serve-artifacts
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [slm-net]
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    container_name: slm-api
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *app-env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./api:/app/api
+      - ./ai_engine:/app/ai_engine
+      - ./workers:/app/workers
+      - ./alembic:/app/alembic
+    command:
+      - uvicorn
+      - api.main:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --reload
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    networks: [slm-net]
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    container_name: slm-worker
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *app-env
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - ./api:/app/api
+      - ./ai_engine:/app/ai_engine
+      - ./workers:/app/workers
+      - hf-cache:/root/.cache/huggingface
+    command:
+      - celery
+      - -A
+      - workers.celery_app
+      - worker
+      - --loglevel=INFO
+      - --concurrency=1
+    deploy: *gpu-deploy
+    runtime: nvidia
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+      ollama:
+        condition: service_started
+    networks: [slm-net]
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: slm-ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    deploy: *gpu-deploy
+    runtime: nvidia
+    networks: [slm-net]
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  ollama-data:
+  hf-cache:
+
+networks:
+  slm-net:
+    driver: bridge

@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+.installed.cfg
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Project artifacts
+mlruns/
+mlartifacts/
+data/
+checkpoints/
+models/local/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+
+# Docker / runtime
+postgres-data/
+redis-data/
+minio-data/
+ollama-data/
+
+# Notebook
+.ipynb_checkpoints/
+
+# OS
+Thumbs.db
+desktop.ini
