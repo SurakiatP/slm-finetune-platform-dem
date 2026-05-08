@@ -214,8 +214,11 @@ services:
       - worker
       - --loglevel=INFO
       - --concurrency=1
+    # GPU access uses Compose's `deploy.resources.reservations.devices`
+    # (works without daemon-level nvidia runtime). The legacy
+    # `runtime: nvidia` field was removed because it errors out on hosts
+    # that don't register the runtime via /etc/docker/daemon.json.
     deploy: *gpu-deploy
-    runtime: nvidia
     depends_on:
       postgres:
         condition: service_healthy
@@ -236,7 +239,6 @@ services:
     volumes:
       - ollama-data:/root/.ollama
     deploy: *gpu-deploy
-    runtime: nvidia
     networks: [slm-net]
 
 volumes:
