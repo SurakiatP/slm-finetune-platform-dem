@@ -94,6 +94,52 @@
 | P4 | Example client scripts | ✅ | Done — `examples/python_client.py` (argparse + WS streaming) + `examples/quickstart_curl.sh` (jq-driven) |
 | P5 | README API usage examples | ✅ | Done — full curl snippets for 6-step lifecycle + Python walkthrough pointer + ErrorResponse doc |
 
+## Phase 9: Production Hardening (Session 12 discovery)
+
+> Bugs surfaced by the vast.ai full-lifecycle smoke test. Bugs #1–4 already shipped on `dev`. Bug #5 is the only remaining blocker for the §16 §6–9 chain (training → models → export → inference).
+
+| ID | Task | Status | Next Step |
+|----|------|--------|-----------|
+| B1 | `DELETE /datasets/{id}` 500→409 when refs exist | ✅ | Done — pre-check + 409 envelope; regression test in `tests/integration/test_dataset_delete.py`; verified on production deploy. Commit `c117f2a` |
+| B2 | `evaluation_strategy`→`eval_strategy` (HF Transformers ≥4.41) | ✅ | Done — single rename in `ai_engine/training/unsloth_trainer.py`. Commit `134da3f` |
+| B3 | `SFTTrainer(tokenizer=…)`→`processing_class=…` (TRL ≥0.12, hard-removed 0.16) + migrate to `SFTConfig` | ✅ | Done — `dataset_text_field` / `max_seq_length` / `packing` moved into `SFTConfig`. Commit `4fb9fe3` |
+| B4 | `SFTConfig.max_seq_length`→`max_length` (TRL ≥0.18) | ✅ | Done — single rename. Commit `1b6763b` |
+| **B5** | **Unsloth `<EOS_TOKEN>` placeholder validator failure (TRL ≥0.20 + Unsloth-patched SFT)** | **🔧** | **See plan below — needs `data_formatters` rework, not a one-line fix** |
+
+### B5 — Resume plan (for next session)
+
+**Diagnosis (already verified):**
+- `SFTTrainer.__init__()` line 662 raises `ValueError: The specified eos_token ('<EOS_TOKEN>') is not found in the vocabulary` on every train attempt, even with `eos_token=tokenizer.eos_token` passed explicitly to `SFTConfig`.
+- Root cause: `unsloth_zoo` monkey-patches `trl.SFTConfig` and `trl.SFTTrainer` after `import unsloth`. The patched classes inject `<EOS_TOKEN>` as a chat-template substitution sentinel that's *expected* to be replaced by the actual EOS via Unsloth's `get_chat_template()` flow. We bypass that flow by feeding pre-rendered text via `dataset_text_field="text"`, so the substitution never happens and the validator catches the placeholder.
+- Underlying tokenizer is fine: `tok.eos_token == '<|eot_id|>'` (verified inside the running worker container). The break is *only* in the SFT-time chat-template handshake.
+
+**Recommended fix — Option A (path matches Unsloth's intended driver pattern):**
+1. **`ai_engine/training/data_formatters.py`** — switch the per-task formatters to emit messages format instead of plain text:
+   - `format_qa(row)` → `[{"role":"user","content":row["question"]}, {"role":"assistant","content":row["answer"]}]`
+   - `format_classification(row)` → similar `(user_text, assistant_label)` two-message turn
+   - `format_tool_calling(row)` → `(user_question, assistant_tool_call_json)` two-message turn; tool_definitions still go in the system prompt or as a separate tools field
+   - Keep the dispatcher signature `get_formatter(task_type, tool_definitions=...) -> Callable[[dict], list[dict]]` (return type changes from `str` to `list[dict]`).
+2. **`ai_engine/training/unsloth_trainer.py`** — wire the chat template before SFTConfig:
+   - After `FastLanguageModel.from_pretrained()` and *before* `get_peft_model()`: call `tokenizer = get_chat_template(tokenizer, chat_template="llama-3.2")` (or `"chatml"` / `"qwen-2.5"` etc. depending on `self.base_model`).
+   - Build `Dataset.from_list([{"messages": formatter(row)} for row in rows])` (field name `messages`, not `text`).
+   - In SFTConfig drop `dataset_text_field="text"` and the explicit `eos_token=` we added in `d79da39`. With chat-templated messages, TRL+Unsloth handle the EOS substitution itself.
+   - Remove the manual `eos_token=tokenizer.eos_token` line from `d79da39` since it's no longer needed (and was a partial fix).
+3. **Base-model → chat-template mapping** — the Unsloth list of supported templates is in `unsloth.chat_templates.CHAT_TEMPLATES`. Likely picks: `"llama-3.2"` for the Llama 3.2 1B/3B, `"chatml"` for Qwen2.5, `"gemma-2"` for Gemma 2. Worth a small lookup dict keyed by base_model prefix; default to `"chatml"` if unknown.
+4. **Tests** — `test_full_flow.py::test_qa_full_flow` already gates on `INTEGRATION_HAS_GPU=1`. Once the fix lands and the smoke test trains successfully on vast.ai, that test becomes a true regression guard. No new unit-level test is meaningfully possible without a GPU.
+
+**vast.ai workflow when ready (VM is stopped, not destroyed):**
+1. Restart instance from cloud.vast.ai dashboard (instant — preserves disk + hf-cache + pulled models).
+2. SSH in, `cd /root/slm-platform && git pull origin dev`.
+3. `docker compose restart worker` (api needs no restart for trainer-only changes; worker because the deferred imports re-evaluate on fresh task).
+4. POST a manual training with the same minimal config from Session 12 (`Llama-3.2-1B-Instruct-bnb-4bit`, 1 epoch, 1 sample/batch, 5-row QA seed). Project + dataset from Session 12 already exist on the VM (preserved across stop/start).
+5. Poll `/api/v1/trainings/{id}` until terminal. Expect `completed` with `best_metric_value` set + `mlflow_run_id` populated. If it fails again, capture `error_message` + `docker compose logs worker --tail 60` and iterate.
+6. On success, continue §16 #6–9: model export (GGUF q4_k_m) → inference chat completion → optional evaluation. Each step has known shape per SWAGGER_GUIDE.md.
+
+**Non-goal — DO NOT do in B5:**
+- Don't pin Unsloth backwards. Floor pins (`trl>=0.18.2`, `transformers>=4.51.3`) make this not viable, and downgrading Unsloth itself drags `bitsandbytes` / `peft` / sm_89 support backwards too.
+- Don't bypass Unsloth's monkeypatches by reordering imports. That's a stability landmine — Unsloth's perf wins come *from* the patches.
+- Don't add backwards-compat shims that emit both `text` and `messages` fields. Either flow works; pick messages and move forward.
+
 ---
 
 ## Out of Scope (do NOT build)
