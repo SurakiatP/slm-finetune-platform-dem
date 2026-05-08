@@ -168,27 +168,17 @@ class UnslothTrainer:
             raise ValueError("eval_split must be in [0.0, 0.5)")
 
         # Deferred imports — only available in the worker container.
-        from datasets import Dataset
-        from trl import SFTConfig, SFTTrainer
+        # CRITICAL: `import unsloth` MUST run before `from trl import ...` so
+        # Unsloth's monkey-patches replace `trl.SFTConfig` / `trl.SFTTrainer`
+        # before we bind them to local names. Reverse the order and the
+        # locals point to TRL stock classes that don't know about Unsloth's
+        # `<EOS_TOKEN>` chat-template sentinel handling.
         from unsloth import FastLanguageModel
         from unsloth.chat_templates import get_chat_template
+        from datasets import Dataset
+        from trl import SFTConfig, SFTTrainer
 
         os.makedirs(self.output_dir, exist_ok=True)
-
-        # ---- 1. Format rows to chat messages ----------------------------------
-        formatter = get_formatter(
-            self.task_type, tool_definitions=self.tool_definitions
-        )
-        messages = [{"messages": formatter(row)} for row in rows]
-
-        ds = Dataset.from_list(messages)
-        if eval_split > 0.0 and len(ds) >= 4:
-            split = ds.train_test_split(
-                test_size=eval_split, seed=self.config.seed, shuffle=True
-            )
-            train_ds, eval_ds = split["train"], split["test"]
-        else:
-            train_ds, eval_ds = ds, None
 
         # ---- 2. Load 4-bit base model + tokenizer (ADR-002) -------------------
         log.info(
@@ -218,6 +208,31 @@ class UnslothTrainer:
         eos_token = _resolve_eos_token(tokenizer, self.base_model)
         log.info("resolved eos_token: %s", eos_token)
 
+        # ---- 1b. Render messages → plain text via the chat template -----------
+        # Pre-rendering bypasses Unsloth's `formatting_func` requirement on
+        # `messages` datasets and lets us feed a plain `text` field that all
+        # SFTConfig versions (stock TRL + Unsloth-patched) handle uniformly.
+        formatter = get_formatter(
+            self.task_type, tool_definitions=self.tool_definitions
+        )
+        texts: list[dict[str, str]] = [
+            {
+                "text": tokenizer.apply_chat_template(
+                    formatter(row), tokenize=False, add_generation_prompt=False
+                )
+            }
+            for row in rows
+        ]
+
+        ds = Dataset.from_list(texts)
+        if eval_split > 0.0 and len(ds) >= 4:
+            split = ds.train_test_split(
+                test_size=eval_split, seed=self.config.seed, shuffle=True
+            )
+            train_ds, eval_ds = split["train"], split["test"]
+        else:
+            train_ds, eval_ds = ds, None
+
         # ---- 3. Attach LoRA adapters ------------------------------------------
         lora: LoRAConfig = self.config.lora
         model = FastLanguageModel.get_peft_model(
@@ -235,9 +250,7 @@ class UnslothTrainer:
 
         # ---- 4. SFTConfig ------------------------------------------------------
         # SFTConfig (TRL >=0.13) extends TrainingArguments and absorbs the
-        # SFT-specific knobs (`max_length`, `packing`). With chat-templated
-        # `messages` rows, TRL handles tokenisation and EOS substitution — no
-        # `dataset_text_field` or explicit `eos_token=` is needed.
+        # SFT-specific knobs (`max_length`, `packing`, `dataset_text_field`).
         sft_config = SFTConfig(
             output_dir=self.output_dir,
             per_device_train_batch_size=self.config.per_device_train_batch_size,
@@ -256,6 +269,7 @@ class UnslothTrainer:
             fp16=not _supports_bf16(),
             report_to=[],                        # MLflow is wired via callback, not HF integration.
             disable_tqdm=True,                   # Progress streams via callback.
+            dataset_text_field="text",
             max_length=self.config.max_seq_length,
             packing=False,
             eos_token=eos_token,
