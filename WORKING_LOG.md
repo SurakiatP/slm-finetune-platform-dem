@@ -6,6 +6,57 @@
 
 ---
 
+## Session 10 — vast.ai Linux VM Deployment Attempt (2026-05-08)
+
+**Who:** Claude (Opus 4.7) + parks (developer)
+**Status:** Partial — environment validated, deploy aborted on slow Docker Hub pull; runbook + memory updated for next attempt
+
+**Why & What:**
+- Goal: deploy the full stack (incl. `worker` + `ollama`) on a vast.ai GPU instance so we can actually fine-tune. Laptop GPU (GTX 1050 Ti, sm_61) cannot run Unsloth/QLoRA, so this is the first remote-deploy attempt.
+- Initial misstep: rented a regular vast.ai **Docker instance** (RTX 3060), then discovered via `ssh` probe that `docker: command not found` and `/var/run/docker.sock` is missing — vast.ai's Docker instances *are* containers, so they cannot host nested Docker. Confirmed via [docs](https://docs.vast.ai/instances/launch-modes): "you cannot run docker in vast.ai instances because they are docker containers themselves." Switched to the **`Ubuntu 22.04 VM`** template — a real KVM VM that supports nested Docker.
+- Second VM (RTX **5070 Ti** / 16 GB / driver 580.95.05 — vast.ai gave us a Blackwell GPU instead of Ampere; better VRAM, but worker.Dockerfile's PyTorch 2.5.1 + CUDA 12.1 will fall back to PTX JIT until we bump the base image). Probed the environment:
+  - ✅ Real VM (no `/.dockerenv`, full `cap_sys_admin`, systemd 249).
+  - ✅ Docker 28.1.1 + Compose v2.35.1 pre-installed.
+  - ⚠️ NVIDIA Container Toolkit **half-configured** — `/etc/docker/daemon.json` points to `nvidia-container-runtime` but the binary isn't installed. `--gpus all` and `--runtime=nvidia` both error with "executable file not found" / "could not select device driver."
+  - ⚠️ `unattended-upgrades` on fresh boot holds the dpkg lock, blocking `apt install`. **`systemctl stop` does NOT kill the in-flight Python process** — only the unit. Required `systemctl mask unattended-upgrades` + `kill -9 $(pgrep -f unattended-upgr)` to free the lock.
+  - Once both fixes were in, `apt install nvidia-container-toolkit` + `nvidia-ctk runtime configure --runtime=docker` + `systemctl restart docker` made `docker run --gpus all` work cleanly. Verified with `nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi` → showed `RTX 5070 Ti, 16303 MiB`.
+- Cloned the repo, switched to `dev`, copied `.env.example` → `.env` (user filled in `OPENROUTER_API_KEY`), kicked off `docker compose build` via a `nohup` deploy script writing to `/tmp/deploy.log`.
+- **Build aborted at 41 min** — pytorch base image (`pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime`, 3.1 GB) was downloading at ~340 KB/s from Docker Hub on this host. Even with one resumed-stall recovery, the projected total deploy time was 2.5+ hours just to finish the worker image. User decided to destroy + re-rent on a faster host. The build was killed but the VM was kept running per user instruction (they handle destroy via web console).
+- Parallel work during the slow build: researched vast.ai's marketplace filter columns and confirmed `Inet Down` (not `DLP`/`DLPerf`) is the correct knob. `DLP` = GPU compute score; `Inet Down` = actual download bandwidth. Cheap-but-slow hosts ≪ slightly-pricier-but-fast hosts when builds are network-bound — the wasted compute hours dwarf any `$/hr` saving.
+
+**Test Summary:**
+- **Pre-deploy probes** — all read-only SSH checks passed:
+  - Identity: Ubuntu 22.04.5 LTS, kernel 6.8, hostname `ubuntu` (not a container ID).
+  - Resources: 24 GB RAM, 118 GB free disk, RTX 5070 Ti / 16 GB.
+  - Capabilities: `cap_sys_admin` + 30+ others — full systemd VM.
+  - Docker daemon: nvidia runtime registered (but binary missing — fixed in §6).
+- **NVIDIA toolkit install** — `docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi` → `RTX 5070 Ti, 16303 MiB` ✅ (after the mask + kill -9 + apt install sequence).
+- **Stack boot/healthcheck** — never reached. Build aborted before `docker compose up -d`.
+- **API endpoints / migrations / ollama / unit tests / integration tests** — none executed; deploy didn't get there.
+
+**Decisions Made:**
+- **Pre-empt slow builds, don't wait through them.** At < 500 KB/s on the pytorch base layer, the worker image alone takes 2+ hours and the math never works out — better to destroy and re-rent in 5 min than wait 2 hours for sunk-cost reasons. Codified as a top-level §3 in the new runbook ("if `Inet Down` is < 500 Mbps, abort").
+- **Runbook lives at `docs/runbooks/vast-ai-deployment.md`**, not in `docs/architecture/` or scattered across ADRs. New runbooks go under `docs/runbooks/` so future ones (server-side fine-tune, MLflow restore, etc.) have an obvious home.
+- **Memory updated, not duplicated.** `~/.claude/projects/.../memory/vast_ai_deployment.md` was rewritten to point at the runbook for procedural detail, and to surface only the cross-session lessons (Inet Down filter, two install gotchas, SSH-during-build instability). Memory should change *recommendations*, not duplicate steps.
+- **Did NOT bump `worker.Dockerfile` to PyTorch 2.6 / CUDA 12.8 yet** even though the VM has a Blackwell GPU. PTX JIT will work for first runs and we can validate the deploy path before committing to a base-image change. If the worker container exits on `import unsloth` due to sm_120 issues, the runbook §13 has the fallback recipe.
+
+**Files Touched:**
+- `docs/runbooks/vast-ai-deployment.md` — **new**, full deployment recipe (~340 lines).
+- `WORKING_LOG.md` — this entry.
+- `~/.claude/projects/.../memory/vast_ai_deployment.md` — rewritten with the 4 lessons learned.
+- `~/.claude/projects/.../memory/MEMORY.md` — index hook updated.
+
+**Next Action:**
+1. **User destroys the slow VM** via [cloud.vast.ai/instances/](https://cloud.vast.ai/instances/) → trash icon. Billing stops at destroy.
+2. **Pick a new host** with `Inet Down ≥ 500 Mbps` (ideally ≥ 1000) on `RTX 3060` / `3090` / `4090`. Sort the marketplace by `Inet Down` descending, filter the GPU you want, ignore `DLPerf` for selection.
+3. (Optional) `docker login` after SSH-in to lift Docker Hub's anon-IP rate limit.
+4. Run the §15 quick-paste cheat sheet in the runbook. ETA on a fast host: ~30 min from `git clone` to all-tests-green.
+5. After successful deploy: open `http://localhost:8000/docs` in browser (works via `-L 8000:localhost:8000` SSH tunnel) and exercise the API endpoints via Swagger.
+
+**Blockers:** None procedurally — runbook is complete. The retry just needs a faster host and a willing user.
+
+---
+
 ## Session 9 — Local Infra Validation (Step A) (2026-05-08)
 
 **Who:** Claude (Opus 4.7) + parks (developer)
