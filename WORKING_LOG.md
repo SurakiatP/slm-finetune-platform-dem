@@ -6,6 +6,82 @@
 
 ---
 
+## Session 9 — Local Infra Validation (Step A) (2026-05-08)
+
+**Who:** Claude (Opus 4.7) + parks (developer)
+**Status:** Finished — all 5 infra services healthy, 8/8 endpoints green, 3 latent bugs found & fixed
+
+**Why & What:**
+- First-time `docker compose up -d postgres redis minio minio-init mlflow api` on developer's local box (Windows 11 + Docker Desktop + WSL2 Ubuntu, Intel i5-8300H / 16 GB / GTX 1050 Ti 4 GB). Goal: confirm the no-GPU half of the stack boots cleanly so non-training development can happen on the laptop and only fine-tuning is shipped to the remote 3060 box.
+- After boot, all five services reached `healthy` (postgres, redis, minio, mlflow, api), but the smoke-test of every GET endpoint surfaced **three latent bugs** that had never run end-to-end before:
+
+  - **B1 — `api_cors_origins` parse failure** (`api/core/config.py:26`):
+    - API container crashed on startup with `pydantic_settings.exceptions.SettingsError` → `JSONDecodeError: Expecting value`.
+    - Root cause: pydantic-settings v2 (we ship 2.14) attempts `json.loads()` on **any** `list[X]`-typed env value **before** field validators run. The CSV value from `.env.example` (`http://localhost:3000,http://localhost:5173`) is not valid JSON, and the existing `field_validator(mode="before")` was never reached.
+    - Fix: `api_cors_origins: Annotated[list[str], NoDecode] = Field(...)` + `from pydantic_settings import NoDecode`. `NoDecode` disables the JSON pre-pass so the existing CSV-splitting validator runs.
+
+  - **B2 — MLflow shares the application database** (`docker-compose.yml:133`, `docker/postgres-init.sql` (new)):
+    - All four CRUD list endpoints (`/projects`, `/datasets`, `/trainings`, `/models`) returned 500 with `relation "model_artifacts" does not exist`. App alembic had clearly never run, but the `slm` DB already had 19 tables (`experiments`, `runs`, `metrics`, ...) and `alembic_version=0584bdc529eb` — none of which match the app schema.
+    - Root cause: MLflow's `--backend-store-uri` pointed at `postgres:5432/${POSTGRES_DB}` = the same `slm` database as the app. MLflow auto-runs its own alembic on first startup, which races to populate `alembic_version` first; the app's alembic would then refuse to apply migrations on an unknown revision.
+    - Fix:
+      1. New `docker/postgres-init.sql` creates a separate `mlflow` database on first volume init, mounted into postgres at `/docker-entrypoint-initdb.d/`.
+      2. Compose `mlflow` service `--backend-store-uri` switched to `postgres:5432/${MLFLOW_DB:-mlflow}`.
+      3. For the running cluster (init script doesn't re-run on existing volumes): manually `CREATE DATABASE mlflow`, then `DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ...` on the polluted `slm` DB to clear it.
+
+  - **B3 — `alembic.ini` not present in the api container** (`docker/api.Dockerfile:23`, `docker-compose.yml`):
+    - `docker compose exec api alembic upgrade head` → `FAILED: No 'script_location' key found in configuration`. The container had `/app/alembic/` (migrations dir) but not `/app/alembic.ini` (config).
+    - Root cause: `api.Dockerfile` copies `alembic/` directory but not `alembic.ini`; compose mounts also didn't include the file.
+    - Fix: `COPY alembic.ini ./alembic.ini` in `api.Dockerfile` (forward-compat for non-compose runs) **and** `./alembic.ini:/app/alembic.ini:ro` bind mount in compose (avoids a rebuild for the running stack).
+
+- After all three fixes + `alembic upgrade head` (revision `0001_initial`), the `slm` DB now has the expected 6 application tables (`projects`, `datasets`, `training_jobs`, `model_artifacts`, `evaluation_runs`, `alembic_version`). The `mlflow` DB has its own 19 MLflow tables — clean separation.
+- Added `./tests:/app/tests:ro` mount to the api service so unit tests can be executed inside the container without rebuilding the image. (Long-term, devs run pytest from the host with `[dev]` extras; this mount is for ad-hoc verification.)
+- Wrote `tests/unit/test_config.py` (5 tests) as a regression guard for B1: default fallback, single-CSV, multi-CSV, whitespace stripping, and explicit-list-kwarg paths. All pass.
+
+**Test Summary:**
+- **Endpoint smoke (8/8 GET, 1 POST→GET cycle, all green)**:
+  | Endpoint | Status | Notes |
+  |----------|--------|-------|
+  | `GET /health` | 200 `{"status":"ok"}` | |
+  | `GET /api/v1/tasks` | 200 | metadata, no DB |
+  | `GET /api/v1/base-models` | 200 | metadata, no DB |
+  | `GET /api/v1/projects` | 200 `{items:[],total:0,...}` | empty paged list |
+  | `GET /api/v1/datasets` | 200 | empty paged list |
+  | `GET /api/v1/trainings` | 200 | empty paged list |
+  | `GET /api/v1/models` | 200 | empty paged list |
+  | `GET /api/v1/no-such-route` | 404 `{detail:"Not Found",code:"not_found",extra:null}` | global handler shape preserved |
+  | `POST /api/v1/projects {name:"smoke-test",task_type:"qa"}` | 201 + UUID | CRUD path live |
+  | `GET /api/v1/projects` (after POST) | 200 `total:1` | round-trip confirmed |
+
+- **Service health** (`docker compose ps`): postgres, redis, minio, mlflow all `(healthy)`; api `running` (no healthcheck wired in compose; `/health` returns 200).
+- **Regression tests**: `pytest tests/unit/test_config.py -v` → 5/5 passed in 0.52s, on Python 3.11.15 inside the api container.
+- **DB schema**: `slm` DB shows app's 6 tables; `mlflow` DB shows MLflow's 19 tables. No overlap.
+
+**Decisions Made:**
+- **MLflow runs on its own database, not a schema.** Schema isolation in the same DB still leaves a single `alembic_version` table contended between two alembic instances; only a separate database fully decouples MLflow's migration history from the app's. The cost is a one-line postgres init script — cheap.
+- **`MLFLOW_DB` env var with default `mlflow`**, not hardcoded. Keeps the docker-compose pattern consistent with `${POSTGRES_DB:-slm}` and lets ops override (e.g., `mlflow_prod`, `mlflow_staging`) without editing compose.
+- **`alembic.ini` is duplicated between Dockerfile COPY and compose bind mount**, intentionally. The COPY makes the image self-contained for `docker run` outside compose; the bind mount avoids a rebuild during dev when only `alembic.ini` changes. Same dual-track applied to `alembic/` already.
+- **`NoDecode` over a custom `EnvSettingsSource`**. The custom source is the more powerful pattern (would let us override JSON parsing for *all* fields), but it's overkill for one CSV field. `Annotated[..., NoDecode]` is a 12-character change with the same effect and stays in the type signature where future readers will see it.
+- **Did NOT bake pytest / dev extras into the api image.** API runtime images stay minimal; tests are run on the host (recommended) or via `pip install pytest pytest-asyncio` inside a temp `docker exec` (what we did to verify in this session). If we end up wanting CI to run unit tests against the same image, a separate `api-dev.Dockerfile` is the right move — recorded as a follow-up, not done here.
+- **Did NOT wipe Docker volumes** to clean the polluted `slm` DB. `DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ...` is reversible and surgical — losing only the data we want to lose. `docker compose down -v` would have also wiped redis (empty) and minio buckets (recreatable), but it's a heavier hammer and easy to misuse on a non-fresh system.
+
+**Files Touched:**
+- `api/core/config.py` — `Annotated[list[str], NoDecode]` + import.
+- `docker-compose.yml` — postgres init mount, mlflow URI to `mlflow` DB, api `alembic.ini` + `tests` mounts.
+- `docker/api.Dockerfile` — `COPY alembic.ini ./alembic.ini`.
+- `docker/postgres-init.sql` — **new**, single `CREATE DATABASE mlflow;`.
+- `tests/unit/test_config.py` — **new**, 5 regression tests.
+- `.env` — created from `.env.example` (gitignored, no secrets set).
+
+**Next Action:**
+1. Update `CLAUDE.md` to reflect actual local hardware (GTX 1050 Ti 4 GB, not RTX 3060 12 GB) — laptop stays the *dev* target, server with 3060 is the *training* target. The "≤3B in QLoRA 4-bit" constraint stays accurate for the server but cannot be smoke-tested locally.
+2. Consider a `docker compose --profile dev up` profile that mounts tests + installs dev extras, vs the current "manual `pip install` after up" pattern. Out of scope for this session.
+3. Step B (GPU runtime probe with `docker run --rm --gpus all nvidia/cuda:... nvidia-smi`) — confirm Docker Desktop sees the 1050 Ti before attempting `worker`/`ollama` services. The 1050 Ti is sm_61 and *won't* run bitsandbytes 4-bit in any case, but the runtime path itself can still be validated before sending a job to the 3060.
+4. Set `OPENROUTER_API_KEY` in `.env` before any SDG call (Phase 4 surface) — currently empty.
+
+**Blockers:** None for non-GPU work. GPU-dependent tests/training stay blocked by the 1050 Ti's compute capability and 4 GB VRAM until the 3060 box is online.
+
+---
+
 ## Session 8 — Phase 8: Polish (2026-05-08)
 
 **Who:** Claude (Opus 4.7) + parks (developer)

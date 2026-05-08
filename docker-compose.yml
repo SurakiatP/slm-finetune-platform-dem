@@ -47,6 +47,9 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # Runs only on first init (empty volume). Creates the separate
+      # `mlflow` database referenced by the mlflow service below.
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-slm} -d ${POSTGRES_DB:-slm}"]
       interval: 5s
@@ -130,7 +133,10 @@ services:
       - server
       - --host=0.0.0.0
       - --port=5000
-      - --backend-store-uri=postgresql+psycopg2://${POSTGRES_USER:-slm}:${POSTGRES_PASSWORD:-slm}@postgres:5432/${POSTGRES_DB:-slm}
+      # MLflow MUST have its own database. Sharing `${POSTGRES_DB}` with the
+      # app makes MLflow's auto-run alembic clobber the app's `alembic_version`
+      # row, blocking application migrations.
+      - --backend-store-uri=postgresql+psycopg2://${POSTGRES_USER:-slm}:${POSTGRES_PASSWORD:-slm}@postgres:5432/${MLFLOW_DB:-mlflow}
       - --default-artifact-root=s3://${MLFLOW_S3_BUCKET:-mlflow}/
       - --serve-artifacts
     ports:
@@ -167,6 +173,8 @@ services:
       - ./ai_engine:/app/ai_engine
       - ./workers:/app/workers
       - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini:ro
+      - ./tests:/app/tests:ro
     command:
       - uvicorn
       - api.main:app

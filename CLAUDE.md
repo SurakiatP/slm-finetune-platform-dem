@@ -8,8 +8,17 @@
 ## Project Mission
 
 Backend-only PoC for an **Automated Small Language Model (SLM) Fine-Tuning Platform**.
-Runs on **localhost with RTX 3060 12GB**. Generates synthetic data via OpenRouter,
-fine-tunes models ≤3B with Unsloth+QLoRA, tracks with MLflow, serves via Ollama.
+
+**Two-machine workflow** (split by GPU need):
+- **Dev laptop** — Acer Nitro / i5-8300H / 16 GB / GTX 1050 Ti 4 GB (sm_61).
+  Runs all infra (postgres, redis, minio, mlflow, api) + non-GPU code: schemas,
+  CRUD, SDG client, validators, tests. **Cannot** run Unsloth/QLoRA locally —
+  sm_61 is below bitsandbytes' 4-bit threshold and 4 GB VRAM is too small anyway.
+- **Training server** — RTX 3060 12 GB. Runs `worker` + `ollama` for actual
+  fine-tuning, evaluation, and serving. Same compose file, full stack up.
+
+Generates synthetic data via OpenRouter, fine-tunes models ≤3B with Unsloth+QLoRA,
+tracks with MLflow, serves via Ollama.
 
 The frontend is built by a teammate — we expose **OpenAPI contracts only**.
 

@@ -7,9 +7,10 @@ Use `get_settings()` (cached) — never re-instantiate `Settings` ad hoc.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import AnyUrl, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -23,9 +24,10 @@ class Settings(BaseSettings):
     # ---- App ---------------------------------------------------------------
     log_level: str = Field(default="INFO")
     api_port: int = Field(default=8000, ge=1, le=65535)
-    api_cors_origins: list[str] = Field(
+    # NoDecode disables pydantic-settings' default JSON decoding so the
+    # field_validator below can handle plain comma-separated env values.
+    api_cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000", "http://localhost:5173"],
-        description="Comma-separated origins; pydantic-settings parses CSV strings into list.",
     )
 
     @field_validator("api_cors_origins", mode="before")
