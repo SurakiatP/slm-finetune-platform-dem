@@ -6,6 +6,60 @@
 
 ---
 
+## Session 11 — vast.ai Deploy SUCCEEDED + Swagger Test Guide (2026-05-08)
+
+**Who:** Claude (Opus 4.7) + parks (developer)
+**Status:** Finished — full stack deployed in 9 min 13 sec on a new 4060 Ti host; runbook validated end-to-end; Swagger test guide shipped
+
+**Why & What:**
+- Continuation of Session 10. After destroying the slow-network 5070 Ti host, parks rented a new vast.ai Linux VM with explicit attention to the `Inet Down` filter — picked a Taiwan host with `Inet Down` 1016 Mbps + `Inet Up` 2050 Mbps + KINGSTON NVMe 4723 MB/s + RTX **4060 Ti / 16 GB**. Architecture is Ada Lovelace (sm_89), which **matches** our `worker.Dockerfile`'s CUDA 12.1 + PyTorch 2.5.1 base perfectly — no PTX JIT fallback like the Blackwell 5070 Ti would have triggered.
+- Re-applied the §6 NVIDIA toolkit fix from the runbook. Hit a new wrinkle: **stale dpkg lock** from the previous failed install attempt (PID 4599 was dead but the lock file `/var/lib/dpkg/lock-frontend` still showed it as held by `fuser`). Fix was `rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock` then `dpkg --configure -a` — needs to be added to the runbook's troubleshooting section.
+- Also hit GPG TTY error: `gpg --dearmor` opened `/dev/tty` for a status display, which fails under non-interactive SSH. Fix is `gpg --batch --yes --no-tty --dearmor`. Existing runbook §6 doesn't have these flags — also worth adding.
+- After cleanup, the deploy script ran clean. Timeline:
+  - `BUILD` start → `UP -d` start: **7 min 5 s** (vs 41 min and counting on the slow host)
+  - `UP -d` → `ALL HEALTHY`: 10 s
+  - `MIGRATIONS`: ~2 s
+  - `OLLAMA PULL llama3.2:3b` (≈ 2 GB): **22 s** at near-line-rate (1 Gbps theoretical = 16 s; 22 s actual is ~73% of theoretical, excellent)
+  - Unit tests: 5/5 passed in 0.14 s
+  - Smoke endpoints: `/health` = `{"status":"ok"}`, `/api/v1/projects` = empty paged list
+  - **Total: 9 min 13 s** from `git pull` to all-tests-green
+- Wrote `SWAGGER_GUIDE.md` (top-level, 16 sections, ~14 KB) for parks to drive the deployed API via Swagger. Schemas were extracted live from the running deploy's `/openapi.json` — every request body example is verified against the actual Pydantic models. Three task-type examples (qa, classification, tool_calling) are covered, plus both SDG paths (with-seed via OpenRouter, upload-seed via multipart for the no-key flow).
+
+**Test Summary:**
+- **Deploy script** (`/tmp/deploy.sh` on VM, output at `/tmp/deploy.log`):
+  - All stage markers progressed in order: `START → BUILD → UP -d → WAIT HEALTHY → ALL HEALTHY (10s) → MIGRATIONS → OLLAMA PULL → INSTALL PYTEST → UNIT TESTS → SMOKE → ALL DONE`.
+  - All 7 containers ended in `Up` state: 4 healthy (postgres, redis, minio, mlflow), 3 running (api, worker, ollama).
+- **Endpoint smoke** (live, vast.ai):
+  - `GET /health` → 200 `{"status":"ok"}`
+  - `GET /api/v1/projects` → 200 `{"items":[],"total":0,"limit":50,"offset":0}`
+  - `GET /openapi.json` → 200, **57 schemas + 25 paths** matching expected surface.
+- **Unit tests** (inside api container, host pytest install): `tests/unit/test_config.py::*` → 5/5 passed in 0.14 s.
+- **Schemas verified** before writing the Swagger guide:
+  - 25 endpoints listed by tag — matches `/openapi.json`.
+  - Response shapes for `ProjectResponse`, `DatasetResponse`, `DatasetPreviewResponse`, `SeedUploadResponse`, `SDGJobAcceptedResponse`, `TrainingResponse`, `TrainingJobAcceptedResponse`, `ModelArtifactResponse`, `ModelExportResponse`, `EvaluationResponse`, `EvaluationCompareResponse`, `MlflowUrlResponse`, `Page_*` — all extracted from live spec.
+  - Task example endpoint (`GET /api/v1/tasks/{type}/example`) returns the canonical row shape for each of qa / classification / tool_calling — verified all three.
+- **Did NOT run** integration tests (`tests/integration/test_full_flow.py`) or any SDG/training/inference flow on the deploy. parks intends to drive those manually via Swagger.
+
+**Decisions Made:**
+- **`Inet Down` is the load-bearing filter for picking vast.ai hosts**, confirmed empirically. The 5070 Ti host (~340 KB/s effective) projected a 2.5-hour build; the 4060 Ti host (1 Gbps) finished in 7 min. A factor of 20+ in build time, on the same `worker.Dockerfile`. Codified in the runbook §3.
+- **Ada-arch GPU (4060 Ti / 4090) is the cleanest match for our current `worker.Dockerfile`.** Blackwell (5070 Ti) works via PTX JIT but with a 30–60 s warmup penalty per fresh container start, and Unsloth 2024.12.4 doesn't have sm_120 native paths. For first deployments, prefer Ada or Ampere hosts unless we deliberately bump the base image to PyTorch 2.6+ / CUDA 12.8+.
+- **`SWAGGER_GUIDE.md` lives at the repo root, not under `docs/`.** It's a *user-facing* operational document (parks will open it alongside the Swagger UI), not architectural reference. Treating it like `README.md` and `API_GUIDE.md` (also at root) keeps it discoverable.
+- **Schemas in the Swagger guide are extracted from the live `/openapi.json`, not hand-written.** Hand-written examples drift the moment a Pydantic model gains a field. Anchoring on the live spec means a `git pull` followed by a fresh deploy regenerates the truth without touching the doc.
+- **Did NOT bump `worker.Dockerfile` base image yet.** parks's 4060 Ti is Ada-arch, so PyTorch 2.5.1 + CUDA 12.1 are correct. The Blackwell follow-up only matters if a future rental lands on a 5070/5080/5090 — captured as a future item, not done in this session.
+
+**Files Touched:**
+- `WORKING_LOG.md` — this entry.
+- `SWAGGER_GUIDE.md` — **new**, top-level user guide for Swagger-driven testing (16 sections).
+
+**Next Action:**
+1. **parks tests via Swagger** at `http://localhost:8000/docs` (with the SSH tunnel `-L 8000:localhost:8000`). Recommended first run: §16 Quick Smoke Test (5-min, 9-step lifecycle without OpenRouter). If green, layer SDG / LLM-judge on top.
+2. **(Optional) Fold the dpkg-lock-cleanup + gpg `--no-tty` flags into runbook §6.** They're real failure modes that bit us this session; the current runbook would steer a fresh deployer into the same wall. Open a small follow-up PR.
+3. **(Optional) Once parks finishes Swagger validation**, consider opening the `dev → main` release PR. The branch will then have: Sessions 9 (local infra fixes), 10 (vast.ai investigation + runbook), 11 (validated deploy + Swagger guide) — a coherent release surface.
+
+**Blockers:** None. The pipeline is live and exercisable; only thing left is parks driving the lifecycle via Swagger to confirm the user-experience surface.
+
+---
+
 ## Session 10 — vast.ai Linux VM Deployment Attempt (2026-05-08)
 
 **Who:** Claude (Opus 4.7) + parks (developer)
