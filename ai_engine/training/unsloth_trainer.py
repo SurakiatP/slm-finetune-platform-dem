@@ -100,8 +100,7 @@ class UnslothTrainer:
 
         # Deferred imports — only available in the worker container.
         from datasets import Dataset
-        from transformers import TrainingArguments
-        from trl import SFTTrainer
+        from trl import SFTConfig, SFTTrainer
         from unsloth import FastLanguageModel
 
         os.makedirs(self.output_dir, exist_ok=True)
@@ -149,8 +148,11 @@ class UnslothTrainer:
             loftq_config=None,
         )
 
-        # ---- 4. TrainingArguments ---------------------------------------------
-        training_args = TrainingArguments(
+        # ---- 4. SFTConfig ------------------------------------------------------
+        # SFTConfig (TRL >=0.13) extends TrainingArguments and absorbs the
+        # SFT-specific knobs (`dataset_text_field`, `max_seq_length`, `packing`)
+        # that used to live on the SFTTrainer constructor.
+        sft_config = SFTConfig(
             output_dir=self.output_dir,
             per_device_train_batch_size=self.config.per_device_train_batch_size,
             gradient_accumulation_steps=self.config.gradient_accumulation_steps,
@@ -168,18 +170,20 @@ class UnslothTrainer:
             fp16=not _supports_bf16(),
             report_to=[],                        # MLflow is wired via callback, not HF integration.
             disable_tqdm=True,                   # Progress streams via callback.
-        )
-
-        # ---- 5. SFT trainer ----------------------------------------------------
-        trainer = SFTTrainer(
-            model=model,
-            tokenizer=tokenizer,
-            args=training_args,
-            train_dataset=train_ds,
-            eval_dataset=eval_ds,
             dataset_text_field="text",
             max_seq_length=self.config.max_seq_length,
             packing=False,
+        )
+
+        # ---- 5. SFT trainer ----------------------------------------------------
+        # TRL >=0.12 renamed `tokenizer=` to `processing_class=` (hard-removed
+        # in 0.16). All SFT-specific kwargs now live on `sft_config` above.
+        trainer = SFTTrainer(
+            model=model,
+            processing_class=tokenizer,
+            args=sft_config,
+            train_dataset=train_ds,
+            eval_dataset=eval_ds,
             callbacks=list(callbacks or []),
         )
 
