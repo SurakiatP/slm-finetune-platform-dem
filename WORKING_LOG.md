@@ -6,32 +6,34 @@
 
 ---
 
-## Session 12 — Smoke-test 25 endpoints + fix `DELETE /datasets/{id}` 500→409 (2026-05-09)
+## Session 12 — End-to-end verification: 25 endpoints + 5 latent bugs surfaced (2026-05-09)
 
 **Who:** Claude (Opus 4.7) + parks (developer)
-**Status:** Finished — every documented endpoint exercised against the local stack; one real defect surfaced and fixed via TDD with a regression test
+**Status:** Mixed — DELETE 409 fix shipped + verified on production; smoke test surfaced 4 more latent bugs in the training pipeline (3 fixed, 1 deferred); training flow still blocked on Unsloth+TRL chat-template integration
 
 **Why & What:**
-- parks asked "ได้ทดสอบทุกเส้นจริงหรือยัง?" Honest answer was *no* in this session — Session 11 only smoke-tested 3 endpoints on the deploy and Session 9 only 8 GETs locally. The Swagger guide describes intended behavior but does not, by itself, prove it works. So this session was a methodical sweep of the entire HTTP surface against the local 5-service compose (postgres + redis + minio + mlflow + api; no worker/ollama on the laptop).
-- Tested all **25 documented HTTP endpoints + the WebSocket** (`/ws/jobs/{job_id}`). Coverage profile:
-  - **Sync paths** (no Celery worker needed): `/health`, all metadata, projects CRUD, dataset upload-seed/get/list/preview/download, models list/get/export-404/download-404, evaluations create-404/get-404/compare-422 — green across the board.
-  - **Async-enqueue paths** (worker absent — verified the 202+row-persisted contract, not job execution): `/datasets/generate`, `/trainings` (manual + hpo), `/trainings/{id}` cancel — all return 202 with the dataset/training row inserted and `celery_task_id` set; the job then sits pending in Redis (which is the correct behavior given no worker subscriber).
-  - **Inference paths** (no ollama): `/inference/models` + `/inference/chat/completions` + `/inference/completions` all return **502 `bad_gateway`** with a clean error envelope ("ollama unreachable: …") — exception handler is doing its job. Streaming request hits the validation 400 *before* the proxy, also correct.
-  - **WebSocket** `/ws/jobs/test-job-123`: connects + closes cleanly; no messages because no worker is publishing to Redis. Confirms the `asyncio.wait(FIRST_COMPLETED)` path closes correctly when the client disconnects.
-- **Defect found** during the sweep: `DELETE /api/v1/datasets/{id}` returned **HTTP 500** when the dataset had a `training_job` referencing it. Root cause was visible in the api logs:
-  ```
-  asyncpg.exceptions.NotNullViolationError: null value in column "dataset_id" of relation "training_jobs"
-  [SQL: UPDATE training_jobs SET dataset_id=$1::UUID, updated_at=now() WHERE training_jobs.id = $2::UUID]
-  [parameters: [(None, UUID('b9393713-...')), (None, UUID('e56bf548-...'))]]
-  ```
-  SQLAlchemy's default ORM cascade tried to nullify the FK on dependent `training_jobs` rows before issuing `DELETE FROM datasets …`, but `training_jobs.dataset_id` is `NOT NULL` with `ondelete="RESTRICT"`. The DB constraint was correct; the service was not respecting it.
-- **Fix (TDD red-green):**
-  - Wrote `tests/integration/test_dataset_delete.py` with two tests *first*: `test_delete_standalone_dataset_succeeds` (no refs → 204) and `test_delete_dataset_with_training_returns_409` (one training row → 409 with `code:"conflict"` and detail mentioning trainings/refs). Initial run: 1 passed, 1 failed (the 409 case got 500). Confirmed the test exercises the actual bug.
-  - Patched `api/services/datasets_service.py::delete_dataset` to count `TrainingJob` and `EvaluationRun` rows where `dataset_id == target` *before* `db.delete()`; if either count is non-zero, raise `HTTPException(409, "Dataset … is referenced by N training_job(s) and M evaluation_run(s); delete those first or DELETE the parent project to cascade.")`. Both `dataset_id` FKs in `training_jobs` and `evaluation_runs` are `ondelete="RESTRICT"` + `nullable=False` — the new pre-check matches the schema's intent.
-  - Re-ran: 2/2 pass. Re-ran the original curl repro: HTTP 409, `code:"conflict"`, detail `"… is referenced by 1 training_job(s) and 0 evaluation_run(s); delete those first or DELETE the parent project to cascade."` — the exception handler at `api/core/exceptions.py:92` translates 409 → `code:"conflict"` automatically.
+- parks asked "ได้ทดสอบทุกเส้นจริงหรือยัง?" Honest answer was *no* in this session — Session 11 only smoke-tested 3 endpoints on the deploy and Session 9 only 8 GETs locally. The Swagger guide describes intended behavior but does not, by itself, prove it works. So this session became a multi-stage verification: HTTP-surface sweep on the laptop, then end-to-end smoke test on the running vast.ai 4060 Ti VM — exactly the kind of full-pipeline validation Session 11 explicitly deferred.
+
+**Stage 1 — Laptop HTTP sweep + DELETE 409 fix.** Tested the full 25-endpoint surface against the local stack (postgres + redis + minio + mlflow + api; no worker/ollama because laptop GPU is sm_61). Found and shipped the `DELETE /datasets/{id}` regression with a TDD red-green cycle (commit `c117f2a`). Then pushed to dev and pulled on vast.ai — confirmed the 409 envelope fires correctly on the production deploy too. *That was the original ask, complete.*
+
+**Stage 2 — vast.ai full-lifecycle smoke (§16 of SWAGGER_GUIDE).** parks elected to take the smoke test the rest of the way: project → seed → training → export → inference. Project + dataset + DELETE-409-on-production all worked. Then training failed six times in a row, each on a different gate, exposing a cascade of library-version-drift bugs in `ai_engine/training/unsloth_trainer.py`:
+  - **Bug #2 — `evaluation_strategy` removed in HF Transformers >=4.41.** TrainingArguments rejected the kwarg outright. Renamed to `eval_strategy`. Commit `134da3f`.
+  - **Bug #3 — `SFTTrainer.__init__()` no longer accepts `tokenizer=`** in TRL >=0.12 (hard-removed by 0.16). Commit `4fb9fe3` migrated to `SFTConfig` (the TRL-native subclass of TrainingArguments) and switched `tokenizer=` → `processing_class=`, moving `dataset_text_field` / `max_seq_length` / `packing` from the SFTTrainer constructor into the SFTConfig.
+  - **Bug #4 — `SFTConfig` doesn't accept `max_seq_length` either** in TRL >=0.18. Renamed to `max_length` (introspected the SFTConfig signature inside the running container to confirm the new name). Commit `1b6763b`.
+  - **Bug #5 — `<EOS_TOKEN>` placeholder substitution failure** in TRL's vocab validator. After the SFTConfig migration unblocked the constructor, training got further but failed at `SFTTrainer.__init__()` line 662: `ValueError: The specified eos_token ('<EOS_TOKEN>') is not found in the vocabulary`. Tried `eos_token=tokenizer.eos_token` (commit `d79da39`) — didn't fix it. Investigation showed `unsloth_zoo` monkey-patches `trl.SFTConfig` and `trl.SFTTrainer` after `import unsloth`, replacing them with `UnslothSFTTrainer` / `UnslothSFTConfig` versions that inject `<EOS_TOKEN>` as a placeholder expecting a chat-template substitution we are not doing (we feed plain `dataset_text_field="text"` instead of using Unsloth's `get_chat_template()` helper). The proper fix is either (a) call `unsloth.chat_templates.get_chat_template(tokenizer, chat_template="llama-3.2")` before SFTConfig, or (b) integrate Unsloth's `train_on_responses_only` / standardize_data_formats helpers. Both are bigger than a one-line edit. **Deferred.**
+- **Library research (cuts the option space):** asked the agent to fetch Unsloth 2025.11.1's PyPI metadata. Floor pins: `trl>=0.18.2` and `transformers>=4.51.3`. Pinning back to the old versions the original code targeted (`trl<0.12`, `transformers<4.41`) is impossible without downgrading Unsloth itself, which would also force older bitsandbytes / peft / sm_89 support — a bigger blast radius than refactoring four kwargs.
+
+**Bug catalogue (this session):**
+| # | Where | Fix | Commit | Status |
+|---|-------|-----|--------|--------|
+| 1 | `delete_dataset` 500 on FK refs | pre-check + 409 | `c117f2a` | ✅ shipped + verified on prod |
+| 2 | `evaluation_strategy` removed (HF 4.41+) | rename to `eval_strategy` | `134da3f` | ✅ verified |
+| 3 | `tokenizer=` removed (TRL 0.12+) | migrate to `SFTConfig` + `processing_class=` | `4fb9fe3` | ✅ verified |
+| 4 | `max_seq_length` renamed (TRL 0.18+) | rename to `max_length` | `1b6763b` | ✅ verified |
+| 5 | Unsloth chat-template `<EOS_TOKEN>` placeholder | needs `get_chat_template()` integration | `d79da39` (partial) | ❌ deferred |
 
 **Test Summary:**
-- **HTTP endpoint sweep (25/25 + WS):**
+- **Stage 1 — HTTP endpoint sweep on laptop (25/25 + WS, 5/7 services):**
   | Group | Endpoints | Result |
   |-------|-----------|--------|
   | system + metadata | health, tasks, tasks/{type}/example (qa+cls+tools+invalid), base-models | 200×4 + 422×1 |
@@ -42,26 +44,54 @@
   | inference | models, chat, completions, streaming-rejection | 502 `bad_gateway` + 400 `bad_request` (envelope intact) |
   | evaluations | POST 404, GET 404, compare 422 | error envelope correct |
   | ws `/ws/jobs/{id}` | connect → recv timeout → close | clean close (no msg since no publisher) |
-- **Regression tests** (`pytest -m integration tests/integration/test_dataset_delete.py`): 2/2 pass in 5.56 s. Verified red→green cycle by running once before patch (1 fail) and once after (2 pass).
-- **Full suite** (`pytest tests/`): 9/10 pass. The single failure is `test_full_flow.py::test_qa_full_flow` timing out at 60 s waiting for SDG completion — laptop has no Celery worker and no `OPENROUTER_API_KEY` set, so the SDG job stays pending forever. This failure pre-existed Session 12 and is the known-limit of laptop-only integration runs.
+- **Regression test** (`pytest -m integration tests/integration/test_dataset_delete.py`): 2/2 pass in 5.56 s. Verified red→green cycle (1 fail before patch, 2 pass after).
+- **Stage 2 — vast.ai 4060 Ti production deploy (full 7-service stack, GPU available):**
+  | Step | Result |
+  |------|--------|
+  | git pull `c117f2a..d79da39` (5 commits) on `/root/slm-platform` | clean fast-forward |
+  | docker compose restart api / worker (per fix landing) | 4–9 s ready each |
+  | POST /projects + upload-seed (5 QA rows) | both 201 |
+  | **DELETE /datasets with training ref** | **HTTP 409** with detail `"… is referenced by 1 training_job(s) and 0 evaluation_run(s); delete those first or DELETE the parent project to cascade."` — fix verified on production envelope ✅ |
+  | POST /trainings (manual, 1 epoch, 1 sample/batch, Llama-3.2-1B) ×6 | 1×eval_strategy bug, 1×HF.co transient timeout, 1×SFTTrainer.tokenizer bug, 1×max_seq_length bug, 2×eos_token bug — never reached `trainer.train()` |
+  | Steps §16 #6–9 (poll-completed, models list, export, inference) | unreachable; depends on a successful train |
+- **Full local suite** (`pytest tests/`): 10/11 pass after the new test was added. Same `test_qa_full_flow` timeout as Session 11 (no Celery worker on laptop + no `OPENROUTER_API_KEY`); pre-existing.
 
 **Decisions Made:**
 - **`DELETE /datasets` is now a "RESTRICT-aware" 409, not a cascade.** The dataset is the unit of human curation; trainings/evaluations are derived artefacts. Letting `DELETE /datasets` silently delete (or worse, orphan) the trainings that referenced it would erase data the user almost certainly wants to keep. The 409 forces an explicit choice — either drop the trainings/evaluations first, or `DELETE /projects/{id}` to cascade everything (the project FK is `ondelete="CASCADE"`). The error detail names both counts so the caller can see exactly what's blocking.
 - **Pre-check in service, not catch-and-rewrite.** Two ways to surface the constraint as 409: (a) catch `IntegrityError` after the failed COMMIT and rewrite to 409, (b) count dependents before issuing DELETE. (a) is simpler but pollutes the error path with DB-vendor exception types and runs the broken UPDATE-to-NULL roundtrip first. (b) is two extra `SELECT count(*)`s but keeps the service honest about *why* it's saying no, and the message can quote the actual numbers. Went with (b).
 - **Test sits in `tests/integration/test_dataset_delete.py`, not bolted onto `test_full_flow.py`.** The full-flow test exercises SDG → train and is GPU/network-bound; the DELETE regression test is fast, self-contained, and doesn't need OpenRouter. Keeping them separate means the regression survives even if `test_full_flow` is gated behind `INTEGRATION_HAS_GPU` later.
 - **Did NOT change FK definitions in the migrations.** `ondelete="RESTRICT"` is already the right choice for `training_jobs.dataset_id` and `evaluation_runs.dataset_id` — the bug was never in the schema, only in the service skipping the check. Touching the migration would have rewritten what was already correct.
+- **Refactor over pin-back for the training kwargs.** Unsloth 2025.11.1 floor-pins `trl>=0.18.2` and `transformers>=4.51.3`. Pinning back to the TRL <0.12 / Transformers <4.41 era the original code targeted would force an Unsloth downgrade, which would also force older `bitsandbytes` / `peft` / sm_89 support — a much bigger blast radius than four mechanical kwargs. Did Option B (refactor) end-to-end for bugs #2–4.
+- **Stopped at Bug #5 instead of pushing through.** The `<EOS_TOKEN>` failure originates in `unsloth_zoo`'s monkey-patches of `trl.SFTConfig` and `trl.SFTTrainer`, not in TRL proper. The proper integration is via `unsloth.chat_templates.get_chat_template()` — which means we should be feeding *messages* to SFTTrainer, not pre-rendered text. That's a chunk of work in `data_formatters.py` plus the trainer call site, plus likely test churn. Out of scope for one session; correct call was to land the four verified fixes, document the discovery, and stop the meter on the VM rather than spelunking under time pressure.
+- **Did NOT add a unit test for the trainer kwargs.** They are validated by their library at runtime; mocking out TRL/HF to assert kwarg names would test the mock more than the integration. The right harness is a CPU-only smoke test that tries to construct `SFTConfig` and catches `TypeError` from the deferred import — but that's only meaningful in a container with the full `[training]` extras installed, i.e. the worker image. Recorded as a follow-up; not done this session.
 
 **Files Touched:**
-- `api/services/datasets_service.py` — added imports for `TrainingJob` + `EvaluationRun`; new pre-check block in `delete_dataset()`.
+- `api/services/datasets_service.py` — pre-check + 409 in `delete_dataset()`.
 - `tests/integration/test_dataset_delete.py` — **new**, 2 tests covering the standalone-OK and refs-blocked paths.
+- `ai_engine/training/unsloth_trainer.py` — `evaluation_strategy`→`eval_strategy`, migrate to `SFTConfig` + `processing_class=`, `max_seq_length`→`max_length`, explicit `eos_token=tokenizer.eos_token` (last one didn't fully fix #5 but is on the path).
 - `WORKING_LOG.md` — this entry.
 
-**Next Action:**
-1. **(Optional) Document the cascade-vs-restrict expectation in `SWAGGER_GUIDE.md` §6** so callers know `DELETE /datasets/{id}` 409s when there's a downstream training/eval. The guide currently only mentions deletion succeeds; adding one sentence about the 409 prevents the same confusion next time.
-2. **(Optional) Sweep the rest of the codebase for the same anti-pattern.** Any other service that calls `db.delete()` on an aggregate root should either count dependents (like the new code does) or rely on `ondelete=CASCADE` at the FK. Candidates worth eyeballing: `models_service.delete()` (does it exist? not sure), and any future endpoint that lets users delete a `model_artifact` while evaluations still reference it (`evaluation_runs.model_artifact_id` is `ondelete=CASCADE` already, so probably fine — but worth a 5-minute audit).
-3. **Continue Swagger validation on the deployed vast.ai stack** — the laptop sweep verified the HTTP layer + sync paths + error envelopes. The async happy-paths (real SDG, real training, real inference, real evaluation) still need the GPU host to actually exercise — that is parks's pending work from Session 11's "Next Action".
+**Commits pushed to `origin/dev`:**
+- `c117f2a` fix(datasets): DELETE returns 409 when training/eval refs exist
+- `134da3f` fix(training): rename evaluation_strategy → eval_strategy for HF >= 4.41
+- `4fb9fe3` fix(training): migrate to TRL >=0.13 SFTConfig API
+- `1b6763b` fix(training): SFTConfig max_seq_length → max_length (TRL >=0.18)
+- `d79da39` fix(training): pass tokenizer.eos_token explicitly to SFTConfig (partial — see Bug #5)
 
-**Blockers:** None. Local sweep is complete; one real bug found and shipped behind a regression test.
+**Next Action:**
+1. **Bug #5 — proper Unsloth chat-template integration.** Three options to evaluate:
+   - **(a) Use `unsloth.chat_templates.get_chat_template(tokenizer, "llama-3.2")`** before `SFTConfig`, then feed messages to SFTTrainer (need to also restructure `data_formatters.py` to emit `{"messages": [...]}` instead of `{"text": "..."}`). This is the path Unsloth's own examples take.
+   - **(b) Bypass Unsloth's SFT patches** by importing `from trl.trainer.sft_trainer import SFTTrainer as _BaseSFT` *before* `import unsloth`, or by `unsloth_zoo.trainer_utils.patch_unsloth_smart_gradient_checkpointing(False)` etc. Brittle; relies on Unsloth internals.
+   - **(c) Skip Unsloth, just use HF Transformers + bitsandbytes 4-bit + PEFT directly.** Loses Unsloth's 2x speedup but gets us back on first-party APIs. Only worth it if (a) keeps tripping.
+   Recommend (a) — that's how the rest of the Unsloth ecosystem expects to be driven.
+2. **Decide vast.ai VM fate.** As of session end the VM (4060 Ti, Taiwan host) is still up. Per session 10's runbook, $/hr keeps ticking. Two reasonable paths:
+   - **Destroy + re-rent fresh when (1) lands**, since fix #5 is multi-step and probably benefits from a clean session.
+   - **Keep running** if parks intends to come back inside an hour or two — re-using the same hf-cache volume saves the model re-download (~22 s on this fast host, but still).
+3. **(Optional) Add SWAGGER_GUIDE.md note about the 409 on DELETE /datasets.** One sentence on §6, "if a training/evaluation references the dataset, you get 409 — DELETE the parent project to cascade." Easy follow-up.
+4. **(Optional) Audit other services for the same `db.delete()` anti-pattern.** `model_service` cancel + delete paths, future `evaluation_service` delete paths. The fix template is already in `delete_dataset` — quick to copy.
+
+**Blockers:**
+- **Training pipeline is currently broken on any host with Unsloth >=2025.x + TRL >=0.20.** Bugs #2–4 are landed; #5 still blocks `trainer.train()` from being reached. Affects the whole §16 #6–9 chain (training → models export → inference → evaluation). Until #5 lands, the platform demonstrates *every* HTTP path but no actual fine-tuning round-trip.
 
 ---
 
