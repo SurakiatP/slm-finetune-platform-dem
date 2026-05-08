@@ -171,7 +171,7 @@ class UnslothTrainer:
             report_to=[],                        # MLflow is wired via callback, not HF integration.
             disable_tqdm=True,                   # Progress streams via callback.
             dataset_text_field="text",
-            max_seq_length=self.config.max_seq_length,
+            max_length=self.config.max_seq_length,
             packing=False,
         )
 
