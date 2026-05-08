@@ -6,6 +6,65 @@
 
 ---
 
+## Session 12 — Smoke-test 25 endpoints + fix `DELETE /datasets/{id}` 500→409 (2026-05-09)
+
+**Who:** Claude (Opus 4.7) + parks (developer)
+**Status:** Finished — every documented endpoint exercised against the local stack; one real defect surfaced and fixed via TDD with a regression test
+
+**Why & What:**
+- parks asked "ได้ทดสอบทุกเส้นจริงหรือยัง?" Honest answer was *no* in this session — Session 11 only smoke-tested 3 endpoints on the deploy and Session 9 only 8 GETs locally. The Swagger guide describes intended behavior but does not, by itself, prove it works. So this session was a methodical sweep of the entire HTTP surface against the local 5-service compose (postgres + redis + minio + mlflow + api; no worker/ollama on the laptop).
+- Tested all **25 documented HTTP endpoints + the WebSocket** (`/ws/jobs/{job_id}`). Coverage profile:
+  - **Sync paths** (no Celery worker needed): `/health`, all metadata, projects CRUD, dataset upload-seed/get/list/preview/download, models list/get/export-404/download-404, evaluations create-404/get-404/compare-422 — green across the board.
+  - **Async-enqueue paths** (worker absent — verified the 202+row-persisted contract, not job execution): `/datasets/generate`, `/trainings` (manual + hpo), `/trainings/{id}` cancel — all return 202 with the dataset/training row inserted and `celery_task_id` set; the job then sits pending in Redis (which is the correct behavior given no worker subscriber).
+  - **Inference paths** (no ollama): `/inference/models` + `/inference/chat/completions` + `/inference/completions` all return **502 `bad_gateway`** with a clean error envelope ("ollama unreachable: …") — exception handler is doing its job. Streaming request hits the validation 400 *before* the proxy, also correct.
+  - **WebSocket** `/ws/jobs/test-job-123`: connects + closes cleanly; no messages because no worker is publishing to Redis. Confirms the `asyncio.wait(FIRST_COMPLETED)` path closes correctly when the client disconnects.
+- **Defect found** during the sweep: `DELETE /api/v1/datasets/{id}` returned **HTTP 500** when the dataset had a `training_job` referencing it. Root cause was visible in the api logs:
+  ```
+  asyncpg.exceptions.NotNullViolationError: null value in column "dataset_id" of relation "training_jobs"
+  [SQL: UPDATE training_jobs SET dataset_id=$1::UUID, updated_at=now() WHERE training_jobs.id = $2::UUID]
+  [parameters: [(None, UUID('b9393713-...')), (None, UUID('e56bf548-...'))]]
+  ```
+  SQLAlchemy's default ORM cascade tried to nullify the FK on dependent `training_jobs` rows before issuing `DELETE FROM datasets …`, but `training_jobs.dataset_id` is `NOT NULL` with `ondelete="RESTRICT"`. The DB constraint was correct; the service was not respecting it.
+- **Fix (TDD red-green):**
+  - Wrote `tests/integration/test_dataset_delete.py` with two tests *first*: `test_delete_standalone_dataset_succeeds` (no refs → 204) and `test_delete_dataset_with_training_returns_409` (one training row → 409 with `code:"conflict"` and detail mentioning trainings/refs). Initial run: 1 passed, 1 failed (the 409 case got 500). Confirmed the test exercises the actual bug.
+  - Patched `api/services/datasets_service.py::delete_dataset` to count `TrainingJob` and `EvaluationRun` rows where `dataset_id == target` *before* `db.delete()`; if either count is non-zero, raise `HTTPException(409, "Dataset … is referenced by N training_job(s) and M evaluation_run(s); delete those first or DELETE the parent project to cascade.")`. Both `dataset_id` FKs in `training_jobs` and `evaluation_runs` are `ondelete="RESTRICT"` + `nullable=False` — the new pre-check matches the schema's intent.
+  - Re-ran: 2/2 pass. Re-ran the original curl repro: HTTP 409, `code:"conflict"`, detail `"… is referenced by 1 training_job(s) and 0 evaluation_run(s); delete those first or DELETE the parent project to cascade."` — the exception handler at `api/core/exceptions.py:92` translates 409 → `code:"conflict"` automatically.
+
+**Test Summary:**
+- **HTTP endpoint sweep (25/25 + WS):**
+  | Group | Endpoints | Result |
+  |-------|-----------|--------|
+  | system + metadata | health, tasks, tasks/{type}/example (qa+cls+tools+invalid), base-models | 200×4 + 422×1 |
+  | projects | POST/list/get/PATCH/DELETE | 201, 200×3, 204; cascade verified |
+  | datasets | upload-seed, generate, list, get, preview, download, DELETE | 201, 202, 200×4 + DELETE 204 (standalone) / **409** (with refs, after fix) |
+  | trainings | POST manual + hpo, list, get (filtered), mlflow-url (null pre-run), DELETE cancel | 202×2, 200×4, 202 |
+  | models | list, get-404, export-404, download-404 | 200, 404×3 — all with `code:"not_found"` envelope |
+  | inference | models, chat, completions, streaming-rejection | 502 `bad_gateway` + 400 `bad_request` (envelope intact) |
+  | evaluations | POST 404, GET 404, compare 422 | error envelope correct |
+  | ws `/ws/jobs/{id}` | connect → recv timeout → close | clean close (no msg since no publisher) |
+- **Regression tests** (`pytest -m integration tests/integration/test_dataset_delete.py`): 2/2 pass in 5.56 s. Verified red→green cycle by running once before patch (1 fail) and once after (2 pass).
+- **Full suite** (`pytest tests/`): 9/10 pass. The single failure is `test_full_flow.py::test_qa_full_flow` timing out at 60 s waiting for SDG completion — laptop has no Celery worker and no `OPENROUTER_API_KEY` set, so the SDG job stays pending forever. This failure pre-existed Session 12 and is the known-limit of laptop-only integration runs.
+
+**Decisions Made:**
+- **`DELETE /datasets` is now a "RESTRICT-aware" 409, not a cascade.** The dataset is the unit of human curation; trainings/evaluations are derived artefacts. Letting `DELETE /datasets` silently delete (or worse, orphan) the trainings that referenced it would erase data the user almost certainly wants to keep. The 409 forces an explicit choice — either drop the trainings/evaluations first, or `DELETE /projects/{id}` to cascade everything (the project FK is `ondelete="CASCADE"`). The error detail names both counts so the caller can see exactly what's blocking.
+- **Pre-check in service, not catch-and-rewrite.** Two ways to surface the constraint as 409: (a) catch `IntegrityError` after the failed COMMIT and rewrite to 409, (b) count dependents before issuing DELETE. (a) is simpler but pollutes the error path with DB-vendor exception types and runs the broken UPDATE-to-NULL roundtrip first. (b) is two extra `SELECT count(*)`s but keeps the service honest about *why* it's saying no, and the message can quote the actual numbers. Went with (b).
+- **Test sits in `tests/integration/test_dataset_delete.py`, not bolted onto `test_full_flow.py`.** The full-flow test exercises SDG → train and is GPU/network-bound; the DELETE regression test is fast, self-contained, and doesn't need OpenRouter. Keeping them separate means the regression survives even if `test_full_flow` is gated behind `INTEGRATION_HAS_GPU` later.
+- **Did NOT change FK definitions in the migrations.** `ondelete="RESTRICT"` is already the right choice for `training_jobs.dataset_id` and `evaluation_runs.dataset_id` — the bug was never in the schema, only in the service skipping the check. Touching the migration would have rewritten what was already correct.
+
+**Files Touched:**
+- `api/services/datasets_service.py` — added imports for `TrainingJob` + `EvaluationRun`; new pre-check block in `delete_dataset()`.
+- `tests/integration/test_dataset_delete.py` — **new**, 2 tests covering the standalone-OK and refs-blocked paths.
+- `WORKING_LOG.md` — this entry.
+
+**Next Action:**
+1. **(Optional) Document the cascade-vs-restrict expectation in `SWAGGER_GUIDE.md` §6** so callers know `DELETE /datasets/{id}` 409s when there's a downstream training/eval. The guide currently only mentions deletion succeeds; adding one sentence about the 409 prevents the same confusion next time.
+2. **(Optional) Sweep the rest of the codebase for the same anti-pattern.** Any other service that calls `db.delete()` on an aggregate root should either count dependents (like the new code does) or rely on `ondelete=CASCADE` at the FK. Candidates worth eyeballing: `models_service.delete()` (does it exist? not sure), and any future endpoint that lets users delete a `model_artifact` while evaluations still reference it (`evaluation_runs.model_artifact_id` is `ondelete=CASCADE` already, so probably fine — but worth a 5-minute audit).
+3. **Continue Swagger validation on the deployed vast.ai stack** — the laptop sweep verified the HTTP layer + sync paths + error envelopes. The async happy-paths (real SDG, real training, real inference, real evaluation) still need the GPU host to actually exercise — that is parks's pending work from Session 11's "Next Action".
+
+**Blockers:** None. Local sweep is complete; one real bug found and shipped behind a regression test.
+
+---
+
 ## Session 11 — vast.ai Deploy SUCCEEDED + Swagger Test Guide (2026-05-08)
 
 **Who:** Claude (Opus 4.7) + parks (developer)

@@ -20,7 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import get_settings
 from api.models.dataset import Dataset
+from api.models.evaluation_run import EvaluationRun
 from api.models.project import Project
+from api.models.training_job import TrainingJob
 from api.schemas.data_formats import parse_samples
 from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse
 from api.schemas.enums import DatasetSource, TaskType
@@ -169,6 +171,35 @@ async def delete_dataset(db: AsyncSession, dataset_id: UUID) -> None:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Dataset {dataset_id} not found",
         )
+
+    # Both `training_jobs.dataset_id` and `evaluation_runs.dataset_id` are
+    # NOT NULL with `ondelete=RESTRICT` — we must refuse the delete here
+    # rather than let the FK constraint surface as a 500. Caller fix is to
+    # remove the dependents (or DELETE the parent project, which cascades).
+    n_trainings = (
+        await db.execute(
+            select(func.count())
+            .select_from(TrainingJob)
+            .where(TrainingJob.dataset_id == dataset_id)
+        )
+    ).scalar_one()
+    n_evals = (
+        await db.execute(
+            select(func.count())
+            .select_from(EvaluationRun)
+            .where(EvaluationRun.dataset_id == dataset_id)
+        )
+    ).scalar_one()
+    if n_trainings or n_evals:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Dataset {dataset_id} is referenced by "
+                f"{n_trainings} training_job(s) and {n_evals} evaluation_run(s); "
+                "delete those first or DELETE the parent project to cascade."
+            ),
+        )
+
     # Best-effort: remove the MinIO object if any. We don't fail the DELETE
     # on storage errors because the row removal is what the user asked for.
     if ds.storage_uri:
