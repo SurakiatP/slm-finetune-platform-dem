@@ -202,6 +202,12 @@ services:
     environment:
       <<: *app-env
       HF_HOME: /root/.cache/huggingface
+      # bitsandbytes 0.49.x bundled with the cu130 PyTorch wheel needs
+      # libnvJitLink.so.13 from the nvidia cu13 site-packages dir, which
+      # lives outside the default loader path. Without this prefix, 4-bit
+      # dequantization fails at training time with "libnvJitLink.so.13:
+      # cannot open shared object file".
+      LD_LIBRARY_PATH: /opt/conda/lib/python3.11/site-packages/nvidia/cu13/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
     volumes:
       - ./api:/app/api
       - ./ai_engine:/app/ai_engine
