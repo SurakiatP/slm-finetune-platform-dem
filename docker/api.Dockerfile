@@ -24,6 +24,7 @@ COPY api ./api
 COPY ai_engine ./ai_engine
 COPY workers ./workers
 COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
 
 EXPOSE 8000
 
