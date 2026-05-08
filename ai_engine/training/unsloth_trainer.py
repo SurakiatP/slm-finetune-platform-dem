@@ -31,6 +31,32 @@ if TYPE_CHECKING:  # pragma: no cover — type-only imports
 log = logging.getLogger(__name__)
 
 
+# ---- Chat-template mapping --------------------------------------------------
+
+# Unsloth's `get_chat_template()` accepts a chat-template *name* (not the
+# tokenizer's raw Jinja). The mapping below resolves the supported base
+# models (see `api/routers/tasks_meta.py`) to the matching template name
+# from `unsloth.chat_templates.CHAT_TEMPLATES`.
+_CHAT_TEMPLATE_BY_PREFIX: tuple[tuple[str, str], ...] = (
+    ("unsloth/llama-3.2", "llama-3.2"),
+    ("unsloth/qwen2.5", "chatml"),
+    ("unsloth/gemma-2", "gemma-2"),
+)
+
+
+def _chat_template_for(base_model: str) -> str:
+    """Return the Unsloth chat-template name for a given base model id.
+
+    Falls back to `chatml` for unknown ids — every Unsloth-shipped 4-bit
+    instruct model has a chat template under that name as a safe default.
+    """
+    key = base_model.lower()
+    for prefix, template in _CHAT_TEMPLATE_BY_PREFIX:
+        if key.startswith(prefix):
+            return template
+    return "chatml"
+
+
 # ---- Result type -----------------------------------------------------------
 
 
@@ -102,16 +128,17 @@ class UnslothTrainer:
         from datasets import Dataset
         from trl import SFTConfig, SFTTrainer
         from unsloth import FastLanguageModel
+        from unsloth.chat_templates import get_chat_template
 
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # ---- 1. Format rows to a single 'text' field --------------------------
+        # ---- 1. Format rows to chat messages ----------------------------------
         formatter = get_formatter(
             self.task_type, tool_definitions=self.tool_definitions
         )
-        texts = [{"text": formatter(row)} for row in rows]
+        messages = [{"messages": formatter(row)} for row in rows]
 
-        ds = Dataset.from_list(texts)
+        ds = Dataset.from_list(messages)
         if eval_split > 0.0 and len(ds) >= 4:
             split = ds.train_test_split(
                 test_size=eval_split, seed=self.config.seed, shuffle=True
@@ -133,6 +160,14 @@ class UnslothTrainer:
             load_in_4bit=True,
         )
 
+        # Apply the matching chat template so the placeholder `<EOS_TOKEN>`
+        # Unsloth ships in its tokenizer config gets substituted with the
+        # real EOS for this base model. Without this, TRL >=0.20's vocab
+        # validator rejects SFTConfig.eos_token before training starts.
+        chat_template = _chat_template_for(self.base_model)
+        log.info("applying chat template: %s", chat_template)
+        tokenizer = get_chat_template(tokenizer, chat_template=chat_template)
+
         # ---- 3. Attach LoRA adapters ------------------------------------------
         lora: LoRAConfig = self.config.lora
         model = FastLanguageModel.get_peft_model(
@@ -150,8 +185,9 @@ class UnslothTrainer:
 
         # ---- 4. SFTConfig ------------------------------------------------------
         # SFTConfig (TRL >=0.13) extends TrainingArguments and absorbs the
-        # SFT-specific knobs (`dataset_text_field`, `max_seq_length`, `packing`)
-        # that used to live on the SFTTrainer constructor.
+        # SFT-specific knobs (`max_length`, `packing`). With chat-templated
+        # `messages` rows, TRL handles tokenisation and EOS substitution — no
+        # `dataset_text_field` or explicit `eos_token=` is needed.
         sft_config = SFTConfig(
             output_dir=self.output_dir,
             per_device_train_batch_size=self.config.per_device_train_batch_size,
@@ -170,14 +206,8 @@ class UnslothTrainer:
             fp16=not _supports_bf16(),
             report_to=[],                        # MLflow is wired via callback, not HF integration.
             disable_tqdm=True,                   # Progress streams via callback.
-            dataset_text_field="text",
             max_length=self.config.max_seq_length,
             packing=False,
-            # TRL >=0.20 validates SFTConfig.eos_token against the tokenizer
-            # vocab. Unsloth's FastLanguageModel ships a chat_template that
-            # uses `<EOS_TOKEN>` as a placeholder, which trips that check —
-            # pass the tokenizer's actual EOS so the validator passes.
-            eos_token=tokenizer.eos_token,
         )
 
         # ---- 5. SFT trainer ----------------------------------------------------

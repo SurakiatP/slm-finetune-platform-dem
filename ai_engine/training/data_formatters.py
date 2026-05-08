@@ -1,11 +1,14 @@
-"""Per-task row-to-text formatters.
+"""Per-task row-to-messages formatters.
 
-The fine-tuning loop turns each row of training data into a single string
-the model is trained to predict. Format choice is task-dependent:
+The fine-tuning loop turns each row of training data into a list of chat
+messages (`[{"role": ..., "content": ...}, ...]`). Unsloth's
+`get_chat_template()` then renders them to the base model's native chat
+template at SFTTrainer time, so EOS tokens etc. are picked up correctly.
 
-  • Classification → simple text/label tagging (require.md)
-  • Tool calling   → ChatML (require.md) — system prompt + user + assistant
-  • QA             → Alpaca instruction format (require.md)
+  - Classification → user: text → assistant: label
+  - QA             → user: question → assistant: answer
+  - Tool calling   → optional system prompt with tool definitions
+                     → user: question → assistant: JSON tool call
 
 These are PURE functions: no torch/HF imports, importable on any host.
 """
@@ -19,16 +22,7 @@ from typing import Any
 from api.schemas.data_formats import ToolDefinition
 from api.schemas.enums import TaskType
 
-# ---- Templates -------------------------------------------------------------
-
-CLASSIFICATION_TEMPLATE = "### Text: {text}\n### Label: {label}"
-
-ALPACA_TEMPLATE = (
-    "Below is an instruction that describes a task. Write a response that "
-    "appropriately completes the request.\n\n"
-    "### Instruction:\n{question}\n\n"
-    "### Response:\n{answer}"
-)
+# ---- System prompts (tool calling) -----------------------------------------
 
 CHATML_SYSTEM_GENERIC = (
     "You are a helpful assistant. Respond ONLY with a JSON object containing "
@@ -41,29 +35,31 @@ CHATML_SYSTEM_WITH_TOOLS = (
     "and 'parameters'.\n\nAvailable tools:\n{tools}"
 )
 
-CHATML_TEMPLATE = (
-    "<|im_start|>system\n{system}<|im_end|>\n"
-    "<|im_start|>user\n{question}<|im_end|>\n"
-    "<|im_start|>assistant\n{answer}<|im_end|>"
-)
-
 
 # ---- Formatters ------------------------------------------------------------
 
-
-def format_classification(row: dict[str, Any]) -> str:
-    return CLASSIFICATION_TEMPLATE.format(text=row["text"], label=row["label"])
+Message = dict[str, str]
 
 
-def format_qa(row: dict[str, Any]) -> str:
-    return ALPACA_TEMPLATE.format(question=row["question"], answer=row["answer"])
+def format_classification(row: dict[str, Any]) -> list[Message]:
+    return [
+        {"role": "user", "content": str(row["text"])},
+        {"role": "assistant", "content": str(row["label"])},
+    ]
+
+
+def format_qa(row: dict[str, Any]) -> list[Message]:
+    return [
+        {"role": "user", "content": str(row["question"])},
+        {"role": "assistant", "content": str(row["answer"])},
+    ]
 
 
 def format_tool_calling(
     row: dict[str, Any],
     *,
     tool_definitions: list[ToolDefinition] | None = None,
-) -> str:
+) -> list[Message]:
     if tool_definitions:
         tools_text = json.dumps(
             [t.model_dump(mode="json") for t in tool_definitions],
@@ -73,11 +69,11 @@ def format_tool_calling(
         system = CHATML_SYSTEM_WITH_TOOLS.format(tools=tools_text)
     else:
         system = CHATML_SYSTEM_GENERIC
-    return CHATML_TEMPLATE.format(
-        system=system,
-        question=row["question"],
-        answer=row["answer"],
-    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": str(row["question"])},
+        {"role": "assistant", "content": str(row["answer"])},
+    ]
 
 
 # ---- Dispatch --------------------------------------------------------------
@@ -87,25 +83,22 @@ def get_formatter(
     task_type: TaskType,
     *,
     tool_definitions: list[ToolDefinition] | None = None,
-) -> Callable[[dict[str, Any]], str]:
-    """Return `(row) -> str` for the given task type."""
+) -> Callable[[dict[str, Any]], list[Message]]:
+    """Return `(row) -> list[{role, content}]` for the given task type."""
     if task_type is TaskType.CLASSIFICATION:
         return format_classification
     if task_type is TaskType.QA:
         return format_qa
     if task_type is TaskType.TOOL_CALLING:
-        # Bind tool_definitions once.
         tools = list(tool_definitions) if tool_definitions else None
         return lambda row: format_tool_calling(row, tool_definitions=tools)
     raise ValueError(f"Unsupported task_type: {task_type}")  # pragma: no cover
 
 
 __all__ = [
-    "CLASSIFICATION_TEMPLATE",
-    "ALPACA_TEMPLATE",
     "CHATML_SYSTEM_GENERIC",
     "CHATML_SYSTEM_WITH_TOOLS",
-    "CHATML_TEMPLATE",
+    "Message",
     "format_classification",
     "format_qa",
     "format_tool_calling",
