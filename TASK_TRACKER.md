@@ -94,9 +94,9 @@
 | P4 | Example client scripts | ✅ | Done — `examples/python_client.py` (argparse + WS streaming) + `examples/quickstart_curl.sh` (jq-driven) |
 | P5 | README API usage examples | ✅ | Done — full curl snippets for 6-step lifecycle + Python walkthrough pointer + ErrorResponse doc |
 
-## Phase 9: Production Hardening (Session 12 discovery)
+## Phase 9: Production Hardening (Sessions 12–13 discoveries)
 
-> Bugs surfaced by the vast.ai full-lifecycle smoke test. Bugs #1–4 already shipped on `dev`. Bug #5 is the only remaining blocker for the §16 §6–9 chain (training → models → export → inference).
+> Bugs surfaced by the vast.ai full-lifecycle smoke test. B1–B5 are shipped + verified on `dev`. **B5 closed in Session 13** with a 4-step fix that took the QA training all the way through `completed` on the 4060 Ti VM in 49 s. **B6 + B7** are new follow-ups uncovered while attempting `§16 #6–9` (model export → inference) — the post-training chain is gated on these.
 
 | ID | Task | Status | Next Step |
 |----|------|--------|-----------|
@@ -104,41 +104,65 @@
 | B2 | `evaluation_strategy`→`eval_strategy` (HF Transformers ≥4.41) | ✅ | Done — single rename in `ai_engine/training/unsloth_trainer.py`. Commit `134da3f` |
 | B3 | `SFTTrainer(tokenizer=…)`→`processing_class=…` (TRL ≥0.12, hard-removed 0.16) + migrate to `SFTConfig` | ✅ | Done — `dataset_text_field` / `max_seq_length` / `packing` moved into `SFTConfig`. Commit `4fb9fe3` |
 | B4 | `SFTConfig.max_seq_length`→`max_length` (TRL ≥0.18) | ✅ | Done — single rename. Commit `1b6763b` |
-| **B5** | **Unsloth `<EOS_TOKEN>` placeholder validator failure (TRL ≥0.20 + Unsloth-patched SFT)** | **🔧** | **See plan below — needs `data_formatters` rework, not a one-line fix** |
+| B5 | Unsloth `<EOS_TOKEN>` placeholder validator failure (TRL ≥0.20 + Unsloth-patched SFT) | ✅ | Done — 4 commits: messages-format formatters (`9b77054`), real-EOS resolver (`3106550`), import-unsloth-first + pre-render via `apply_chat_template` (`b6927cc`), worker `LD_LIBRARY_PATH` for cu13 nvJitLink (`9ca376c`). Verified `b5-retry-2` training `completed` in 49 s on 4060 Ti, mlflow_run_id `be62ce9063…`, ModelArtifact `f2086b81…` registered with 22.99 MB LoRA on MinIO. |
+| **B6** | **GGUF export blocked by missing `llama.cpp` in worker image** | **⏳** | **See plan below — Unsloth's interactive `install_llama_cpp` hits EOFError under Celery; need to pre-install in worker.Dockerfile** |
+| **B7** | `model.export` Celery task fails silently — no error written to `ModelArtifact` row | ⏳ | One-line fix: on the `except` branch, also `UPDATE model_artifacts SET ... export_error = str(exc)` (or add a `last_export_status` column) before re-raising. Currently the only signal is `JobFailed` on Redis pub-sub, which nobody is consuming after the WebSocket closes. |
 
-### B5 — Resume plan (for next session)
+### B5 — Resolution summary (Session 13)
 
-**Diagnosis (already verified):**
-- `SFTTrainer.__init__()` line 662 raises `ValueError: The specified eos_token ('<EOS_TOKEN>') is not found in the vocabulary` on every train attempt, even with `eos_token=tokenizer.eos_token` passed explicitly to `SFTConfig`.
-- Root cause: `unsloth_zoo` monkey-patches `trl.SFTConfig` and `trl.SFTTrainer` after `import unsloth`. The patched classes inject `<EOS_TOKEN>` as a chat-template substitution sentinel that's *expected* to be replaced by the actual EOS via Unsloth's `get_chat_template()` flow. We bypass that flow by feeding pre-rendered text via `dataset_text_field="text"`, so the substitution never happens and the validator catches the placeholder.
-- Underlying tokenizer is fine: `tok.eos_token == '<|eot_id|>'` (verified inside the running worker container). The break is *only* in the SFT-time chat-template handshake.
+The original "messages-format-only" plan from Session 12 turned out to be insufficient — landing it surfaced *three* further blockers in sequence. All four landed on `dev`:
 
-**Recommended fix — Option A (path matches Unsloth's intended driver pattern):**
-1. **`ai_engine/training/data_formatters.py`** — switch the per-task formatters to emit messages format instead of plain text:
-   - `format_qa(row)` → `[{"role":"user","content":row["question"]}, {"role":"assistant","content":row["answer"]}]`
-   - `format_classification(row)` → similar `(user_text, assistant_label)` two-message turn
-   - `format_tool_calling(row)` → `(user_question, assistant_tool_call_json)` two-message turn; tool_definitions still go in the system prompt or as a separate tools field
-   - Keep the dispatcher signature `get_formatter(task_type, tool_definitions=...) -> Callable[[dict], list[dict]]` (return type changes from `str` to `list[dict]`).
-2. **`ai_engine/training/unsloth_trainer.py`** — wire the chat template before SFTConfig:
-   - After `FastLanguageModel.from_pretrained()` and *before* `get_peft_model()`: call `tokenizer = get_chat_template(tokenizer, chat_template="llama-3.2")` (or `"chatml"` / `"qwen-2.5"` etc. depending on `self.base_model`).
-   - Build `Dataset.from_list([{"messages": formatter(row)} for row in rows])` (field name `messages`, not `text`).
-   - In SFTConfig drop `dataset_text_field="text"` and the explicit `eos_token=` we added in `d79da39`. With chat-templated messages, TRL+Unsloth handle the EOS substitution itself.
-   - Remove the manual `eos_token=tokenizer.eos_token` line from `d79da39` since it's no longer needed (and was a partial fix).
-3. **Base-model → chat-template mapping** — the Unsloth list of supported templates is in `unsloth.chat_templates.CHAT_TEMPLATES`. Likely picks: `"llama-3.2"` for the Llama 3.2 1B/3B, `"chatml"` for Qwen2.5, `"gemma-2"` for Gemma 2. Worth a small lookup dict keyed by base_model prefix; default to `"chatml"` if unknown.
-4. **Tests** — `test_full_flow.py::test_qa_full_flow` already gates on `INTEGRATION_HAS_GPU=1`. Once the fix lands and the smoke test trains successfully on vast.ai, that test becomes a true regression guard. No new unit-level test is meaningfully possible without a GPU.
+1. **Messages format + chat-template wiring** (commit `9b77054`) — formatters now return `list[{role, content}]`; trainer calls `get_chat_template(tokenizer, chat_template=...)` before SFTConfig with a `_chat_template_for(base_model)` mapping (`llama-3.2` / `chatml` / `gemma-2`).
+2. **EOS resolver** (commit `3106550`) — `_resolve_eos_token()` walks `tokenizer.eos_token` → `convert_ids_to_tokens(eos_token_id)` → per-family fallback (`<|eot_id|>`/`<|im_end|>`/`<end_of_turn>`). Unsloth's 4-bit ports do leave `tokenizer.eos_token = '<|eot_id|>'`, but TRL's vocab validator was being fed the literal `'<EOS_TOKEN>'` sentinel anyway, so we now pass a known-real EOS to `SFTConfig.eos_token` explicitly.
+3. **Import order + pre-render** (commit `b6927cc`) — *the* root cause: `from trl import SFTConfig, SFTTrainer` ran *before* `from unsloth import FastLanguageModel`, so the local names bound to TRL stock classes that were never monkey-patched. Reordered imports + pre-render messages → text via `tokenizer.apply_chat_template()` and feed via `dataset_text_field="text"`, sidestepping Unsloth's `formatting_func`-required path entirely.
+4. **CUDA cu13 lib path** (commit `9ca376c`) — bitsandbytes 0.49.2 on the cu130 PyTorch wheel needs `libnvJitLink.so.13` from `/opt/conda/lib/python3.11/site-packages/nvidia/cu13/lib`, which isn't on the default loader path. Set `LD_LIBRARY_PATH` on the worker service in `docker-compose.yml`.
 
-**vast.ai workflow when ready (VM is stopped, not destroyed):**
-1. Restart instance from cloud.vast.ai dashboard (instant — preserves disk + hf-cache + pulled models).
-2. SSH in, `cd /root/slm-platform && git pull origin dev`.
-3. `docker compose restart worker` (api needs no restart for trainer-only changes; worker because the deferred imports re-evaluate on fresh task).
-4. POST a manual training with the same minimal config from Session 12 (`Llama-3.2-1B-Instruct-bnb-4bit`, 1 epoch, 1 sample/batch, 5-row QA seed). Project + dataset from Session 12 already exist on the VM (preserved across stop/start).
-5. Poll `/api/v1/trainings/{id}` until terminal. Expect `completed` with `best_metric_value` set + `mlflow_run_id` populated. If it fails again, capture `error_message` + `docker compose logs worker --tail 60` and iterate.
-6. On success, continue §16 #6–9: model export (GGUF q4_k_m) → inference chat completion → optional evaluation. Each step has known shape per SWAGGER_GUIDE.md.
+**vast.ai smoke (5 retries, 4 distinct failures, then green):**
+| Try | Failure | Fix landed |
+|-----|---------|------------|
+| 1 | HF API 500 (transient) | wait + retry |
+| 2 | `<EOS_TOKEN>` not in vocab | (was supposed to be fixed by `9b77054` but wasn't enough) |
+| 3 | `<EOS_TOKEN>` not in vocab | even after `_resolve_eos_token` the value got clobbered → diagnosed import-order bug |
+| 4 | `libnvJitLink.so.13` missing | `9ca376c` |
+| 5 | HF read timeout (10 s) | retry |
+| 6 | ✅ `completed` in 49 s | — |
 
-**Non-goal — DO NOT do in B5:**
-- Don't pin Unsloth backwards. Floor pins (`trl>=0.18.2`, `transformers>=4.51.3`) make this not viable, and downgrading Unsloth itself drags `bitsandbytes` / `peft` / sm_89 support backwards too.
-- Don't bypass Unsloth's monkeypatches by reordering imports. That's a stability landmine — Unsloth's perf wins come *from* the patches.
-- Don't add backwards-compat shims that emit both `text` and `messages` fields. Either flow works; pick messages and move forward.
+### B6 — Plan: pre-install `llama.cpp` in worker.Dockerfile
+
+**Diagnosis:**
+- `unsloth/save.py:1074` calls `unsloth_zoo.llama_cpp.check_llama_cpp(llama_cpp_folder="llama.cpp")` which expects a sibling folder containing `llama-quantize` (or `quantize`) plus a converter script.
+- When the folder is missing, Unsloth falls back to `install_llama_cpp()` → `install_package(packages, sudo, …)` which prompts via `input()` for the sudo password. Celery workers have no stdin → `EOFError: EOF when reading a line`.
+- Setting `LLAMA_CPP_PATH` env var doesn't help — the library reads the folder name from the function arg, not the environment.
+
+**Fix:**
+1. In `docker/worker.Dockerfile`, after the apt block, add:
+   ```dockerfile
+   RUN apt-get update && apt-get install -y --no-install-recommends cmake \
+       && git clone --depth 1 https://github.com/ggerganov/llama.cpp.git /app/llama.cpp \
+       && cd /app/llama.cpp \
+       && cmake -B build -DGGML_CUDA=ON -DLLAMA_CURL=OFF \
+       && cmake --build build --config Release -j --target llama-quantize \
+       && cp build/bin/llama-quantize /app/llama.cpp/ \
+       && pip install -r requirements.txt    # for the convert_hf_to_gguf.py script
+   ```
+   The convert-side dependency is `gguf` Python package — already a transitive of llama.cpp's requirements.txt. The compiled binary needs to live at `/app/llama.cpp/llama-quantize` because `check_llama_cpp("llama.cpp")` is called with cwd=`/app`.
+2. Worker image rebuild adds ~5 min on the VM. Image size grows ~400 MB (llama.cpp source + cmake build cache + the CUDA quantize binary). Acceptable.
+3. After rebuild, re-run `POST /api/v1/models/{id}/export` and verify `gguf_uri` populates plus `ollama_model_tag` registers.
+
+**Workflow when ready:**
+1. Pull on VM: `git pull origin dev`.
+2. Rebuild worker: `docker compose build worker && docker compose up -d worker` (preserves all stack state — postgres, MLflow, MinIO; only the worker image changes).
+3. Trigger export on the existing artifact `f2086b81-47a4-4638-ba0d-b2fec6e0ec40` — it already has the LoRA adapter on MinIO, no need to re-train.
+4. Verify Ollama registration: `curl http://localhost:11434/api/tags` should list `slm/f2086b81`.
+5. Smoke test inference via OpenAI-compatible router: `POST /api/v1/inference/chat/completions` with `model: f2086b81-47a4-4638-ba0d-b2fec6e0ec40` and a QA prompt.
+
+### B7 — Plan: surface model.export failures on the artifact row
+
+**Diagnosis:** Session 13 wasted ~30 min polling `gguf_uri != null` while the Celery task had crashed instantly. The crash logs `JobFailed` to Redis pub-sub, but no client is subscribed once the WebSocket closes, and the artifact row stays in its post-training state (lora_adapter_uri set, gguf_uri null, no error field). API consumers can't tell the difference between "still exporting" and "export crashed".
+
+**Fix:** add `export_error_message: str | None` to `ModelArtifact` (Alembic migration + schema update). On the `except` branch in `workers/tasks/model_export.py`, write the error into that column inside a fresh `session_scope()`, then re-raise. UI/CLI can then surface the failure on `GET /api/v1/models/{id}`.
+
+Out of scope for this fix: distinguishing "export queued" from "export running". A first cut keeps it boolean (error_message null → either queued, running, or success — caller checks gguf_uri/safetensors_uri to disambiguate).
 
 ---
 

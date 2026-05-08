@@ -6,6 +6,66 @@
 
 ---
 
+## Session 13 — B5 closed: messages format + chat templates + EOS resolver + cu13 LD path (2026-05-09)
+
+**Who:** Claude (Opus 4.7) + parks (developer)
+**Status:** ✅ B5 fully resolved. Manual training `b5-retry-2` `completed` on the 4060 Ti VM in 49 s with `mlflow_run_id=be62ce9063…`, `ModelArtifact f2086b81…` registered on MinIO with a 22.99 MB LoRA adapter. Two new Phase-9 follow-ups (B6, B7) discovered while attempting `§16 #6–9` — recorded in `TASK_TRACKER.md` and not pursued this session.
+
+**Why & What:**
+- The Session 12 resume plan claimed B5 was a "messages-format-plus-chat-template" rework. Landing exactly that (commit `9b77054`) didn't fix it — `<EOS_TOKEN>` still showed up in the validator's complaint. That kicked off a debugging chain: (1) added an EOS resolver that walks `tokenizer.eos_token` → `convert_ids_to_tokens(eos_token_id)` → per-family fallback (commit `3106550`), but the failure persisted; (2) read worker logs + greppped Unsloth's compiled cache and discovered our local `SFTConfig`/`SFTTrainer` names were bound to *TRL stock classes* because we imported `trl` before `unsloth` — Unsloth's monkey-patches happen at `import unsloth` time, after which any *fresh* `from trl import` returns the patched classes but our locals never re-bind. Fixed import order + pre-rendered messages → text via `tokenizer.apply_chat_template()` to sidestep the `formatting_func` requirement entirely (commit `b6927cc`); (3) that took us past the eos check straight into a CUDA cu13 lib path bug — `bitsandbytes` 0.49.2 on the cu130 PyTorch wheel needs `libnvJitLink.so.13` from `/opt/conda/lib/python3.11/site-packages/nvidia/cu13/lib`, which isn't on the default loader path, so 4-bit dequantization fails. Added `LD_LIBRARY_PATH` to the worker service env in `docker-compose.yml` (commit `9ca376c`). After that, training succeeded on the next attempt.
+- Once the LoRA adapter was on MinIO, attempted `§16 #6–9` — model export to GGUF — and immediately surfaced **B6**: Unsloth's `save_pretrained_gguf` falls through to `install_llama_cpp()` which calls `install_package(..., sudo, ...)` with an `input()` prompt. Celery workers have no stdin → `EOFError: EOF when reading a line`. The Celery task crashed at 19:03:35 but the polling loop (watching `gguf_uri != null`) ran for 30 minutes before I noticed. That's **B7**: model.export failures publish `JobFailed` to Redis but never write anything to the `ModelArtifact` row, so REST consumers can't distinguish "still exporting" from "crashed minutes ago". Both are now documented as Phase-9 follow-ups; user elected to stop here rather than build llama.cpp into the worker image this session.
+
+**Bug catalogue (this session):**
+| # | Where | Fix | Commit | Status |
+|---|-------|-----|--------|--------|
+| B5 step 1 | `data_formatters` flat-text → messages format | new formatters returning `list[{role, content}]` + `_chat_template_for(base_model)` mapping | `9b77054` | ✅ on its own, but not enough to unblock training |
+| B5 step 2 | TRL vocab validator rejects `'<EOS_TOKEN>'` placeholder | `_resolve_eos_token()` helper + `eos_token=` arg on SFTConfig | `3106550` | ✅ value resolves correctly, but kwarg gets ignored on TRL stock SFTConfig |
+| B5 step 3 | Local `SFTConfig`/`SFTTrainer` bound to TRL stock because trl imported before unsloth | reorder imports (unsloth first) + pre-render via `apply_chat_template` + `dataset_text_field="text"` | `b6927cc` | ✅ trainer constructs cleanly |
+| B5 step 4 | bitsandbytes can't find `libnvJitLink.so.13` (cu130 wheel layout) | prepend cu13 site-packages dir to worker `LD_LIBRARY_PATH` in docker-compose | `9ca376c` | ✅ 4-bit dequant works |
+| B6 | Worker image lacks llama.cpp; Unsloth's auto-install hits stdin EOF | (deferred) pre-install in `docker/worker.Dockerfile` | — | ⏳ Phase 9 |
+| B7 | model.export crashes don't update ModelArtifact → silent failure | (deferred) write `export_error_message` on except branch | — | ⏳ Phase 9 |
+
+**Test Summary:**
+- **Local unit tests** (`pytest -m "not integration"`): 5/5 pass after each of the four B5 commits. No regressions.
+- **vast.ai smoke (Llama-3.2-1B-Instruct, 1 epoch, batch=1, ga=1, 5-row QA seed):**
+  | Try | training_id (short) | Outcome | Time | Notes |
+  |-----|---------------------|---------|------|-------|
+  | 1 | `7839b02c` | failed | ~54 s | HF API 500 (transient — `huggingface.co/api/models/.../llama-3.2-1b...` Internal Error) |
+  | 2 | `2738fcfe` | failed | ~34 s | `<EOS_TOKEN>` not in vocab — `9b77054` alone wasn't enough |
+  | 3 | `5b263e19` | failed | ~32 s | `<EOS_TOKEN>` not in vocab — `_resolve_eos_token` returned `<\|eot_id\|>` (verified in worker logs) but TRL stock SFTConfig swallowed the kwarg → diagnosed import-order bug |
+  | 4 | `4327c77c` | failed | ~39 s | `libnvJitLink.so.13: cannot open shared object file` — bitsandbytes can't dequantize 4-bit |
+  | 5 | `e4b657f5` | failed | ~27 s | `huggingface.co` read timeout (10 s) — transient |
+  | 6 | `e3b60e25` | **completed** | **49 s** | mlflow_run_id `be62ce9063…`; ModelArtifact `f2086b81…` written; LoRA 22.99 MB on `s3://models/adapters/e3b60e25…` ✅ |
+- **§16 #6–9 (export → inference) — not validated.** Export `1cbccf2f-2fed-4ae7-a10a-573c7b2c8764` failed in 5 s with `Unsloth: GGUF conversion failed: EOF when reading a line` (B6). Export status not surfaced on artifact row (B7).
+
+**Decisions Made:**
+- **Reorder imports rather than work around the monkey-patch.** Session 12's resume plan explicitly warned "don't bypass Unsloth's monkeypatches by reordering imports — that's a stability landmine." Investigating the symptom showed the opposite is true: import order *is* the contract Unsloth requires. The `WARNING: Unsloth should be imported before transformers, peft to ensure all optimizations are applied. … Please restructure your imports with 'import unsloth' at the top of your file.` is logged on every worker startup and was the load-bearing hint we'd been ignoring. Reverse the Session 12 guidance.
+- **Pre-render via `apply_chat_template` instead of feeding `messages` to TRL.** With Unsloth-patched `SFTTrainer`, `messages` rows require a `formatting_func` callback. Pre-rendering on our side gives us a plain `text` field that works with both stock TRL and Unsloth-patched TRL — no callback needed and EOS substitution is already baked into the rendered string. The trade-off is we lose the ability to use Unsloth's `train_on_responses_only` masking, which we don't need for any of the three task types we support.
+- **`LD_LIBRARY_PATH` on the compose service rather than in the Dockerfile.** Either works, but compose env is the lower-impact fix — no image rebuild required, the change applies on next `docker compose up -d worker`. If the cu13 path ever moves between PyTorch wheel revisions, the compose change is also faster to update than re-building the worker image.
+- **Stop after B5 — don't fix B6 in the same session.** Building llama.cpp into the worker image is ~10–15 min on the VM (image rebuild) plus ~400 MB to the layer; B7 is a one-line fix but needs an Alembic migration. Both are outside the B5 scope and the session was already 6 retries deep into smoke-testing. User opted to land them as Phase-9 follow-ups in the tracker.
+- **Did NOT update `data_formatters.py` to also emit a `text` field for messages.** The pre-render now happens inline in `unsloth_trainer.py:train()` — the formatters keep their `list[Message]` return type and stay as pure transformations. Mixing concerns into the formatters would lose the no-torch invariant.
+- **Did NOT add a unit-level smoke test for the trainer kwargs.** Same reasoning as Session 12 — the kwargs are validated by TRL/Unsloth at runtime; mocking those out tests the mock more than the integration. The existing `test_full_flow.py::test_qa_full_flow` is now a proper regression guard once the GPU env is available.
+
+**Files Touched:**
+- `ai_engine/training/data_formatters.py` — flat-text templates removed; per-task formatters now return `list[Message]`.
+- `ai_engine/training/unsloth_trainer.py` — `_chat_template_for()` mapping, `_resolve_eos_token()` helper, import reorder, `tokenizer.apply_chat_template()` pre-rendering, `eos_token=` on SFTConfig.
+- `docker-compose.yml` — `LD_LIBRARY_PATH` env on the `worker` service.
+- `TASK_TRACKER.md` — B5 marked ✅ with full resolution summary; B6 + B7 added with their own resume plans.
+- `WORKING_LOG.md` — this entry.
+
+**Commits pushed to `origin/dev`:**
+- `9b77054` fix(training): migrate to messages format + Unsloth chat templates (B5)
+- `3106550` fix(training): resolve real EOS to bypass Unsloth's <EOS_TOKEN> placeholder
+- `b6927cc` fix(training): import unsloth before trl + pre-render chat-template text
+- `9ca376c` fix(worker): set LD_LIBRARY_PATH so bitsandbytes finds libnvJitLink.so.13
+
+**Next Action:**
+- Pick up **B6** — pre-install llama.cpp in `docker/worker.Dockerfile`, rebuild worker image on the VM, re-run export on the existing artifact `f2086b81…` (no need to re-train; LoRA is on MinIO). Detailed plan in `TASK_TRACKER.md` § Phase 9 B6.
+- Then **B7** in parallel — Alembic migration adds `export_error_message` to `model_artifacts`, `model_export.py` writes it on the except branch.
+- Once GGUF + Ollama registration verify, complete `§16 #6–9` chain (inference chat completion → optional evaluation) and that's the full lifecycle smoke green for the first time.
+
+---
+
 ## Session 12 — End-to-end verification: 25 endpoints + 5 latent bugs surfaced (2026-05-09)
 
 **Who:** Claude (Opus 4.7) + parks (developer)
