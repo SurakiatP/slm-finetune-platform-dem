@@ -162,7 +162,7 @@ class UnslothTrainer:
             seed=self.config.seed,
             logging_steps=1,
             save_strategy="no",                  # Worker handles persistence to MinIO.
-            evaluation_strategy="epoch" if eval_ds is not None else "no",
+            eval_strategy="epoch" if eval_ds is not None else "no",
             optim="adamw_8bit",
             bf16=_supports_bf16(),
             fp16=not _supports_bf16(),
