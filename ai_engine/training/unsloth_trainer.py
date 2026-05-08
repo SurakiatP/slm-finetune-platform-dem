@@ -173,6 +173,11 @@ class UnslothTrainer:
             dataset_text_field="text",
             max_length=self.config.max_seq_length,
             packing=False,
+            # TRL >=0.20 validates SFTConfig.eos_token against the tokenizer
+            # vocab. Unsloth's FastLanguageModel ships a chat_template that
+            # uses `<EOS_TOKEN>` as a placeholder, which trips that check —
+            # pass the tokenizer's actual EOS so the validator passes.
+            eos_token=tokenizer.eos_token,
         )
 
         # ---- 5. SFT trainer ----------------------------------------------------
