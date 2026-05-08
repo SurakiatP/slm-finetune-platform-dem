@@ -57,6 +57,49 @@ def _chat_template_for(base_model: str) -> str:
     return "chatml"
 
 
+# Real EOS strings per family — used as the last-resort fallback when the
+# tokenizer ships the literal `'<EOS_TOKEN>'` placeholder Unsloth uses as a
+# chat-template substitution sentinel. (TRL >=0.20's vocab validator on
+# SFTConfig.eos_token rejects the placeholder.)
+_EOS_BY_PREFIX: tuple[tuple[str, str], ...] = (
+    ("unsloth/llama-3.2", "<|eot_id|>"),
+    ("unsloth/qwen2.5", "<|im_end|>"),
+    ("unsloth/gemma-2", "<end_of_turn>"),
+)
+
+
+def _resolve_eos_token(tokenizer: Any, base_model: str) -> str:
+    """Return a real EOS string that exists in the tokenizer vocab.
+
+    Order of preference:
+      1. `tokenizer.eos_token` if it's not the `<EOS_TOKEN>` placeholder and
+         actually decodes to a vocab entry.
+      2. The string for `tokenizer.eos_token_id` via `convert_ids_to_tokens`.
+      3. Hard-coded per-family fallback (`<|eot_id|>` / `<|im_end|>` /
+         `<end_of_turn>`).
+    """
+    eos = getattr(tokenizer, "eos_token", None)
+    vocab = tokenizer.get_vocab() if hasattr(tokenizer, "get_vocab") else {}
+    if eos and eos != "<EOS_TOKEN>" and eos in vocab:
+        return eos
+    eos_id = getattr(tokenizer, "eos_token_id", None)
+    if eos_id is not None:
+        try:
+            token = tokenizer.convert_ids_to_tokens(int(eos_id))
+        except Exception:  # noqa: BLE001 — tolerate odd tokenizer impls
+            token = None
+        if token and token in vocab:
+            return token
+    key = base_model.lower()
+    for prefix, fallback in _EOS_BY_PREFIX:
+        if key.startswith(prefix):
+            return fallback
+    raise RuntimeError(
+        f"Cannot resolve a real EOS token for base_model={base_model!r}; "
+        f"tokenizer.eos_token={eos!r}, eos_token_id={eos_id!r}"
+    )
+
+
 # ---- Result type -----------------------------------------------------------
 
 
@@ -160,13 +203,20 @@ class UnslothTrainer:
             load_in_4bit=True,
         )
 
-        # Apply the matching chat template so the placeholder `<EOS_TOKEN>`
-        # Unsloth ships in its tokenizer config gets substituted with the
-        # real EOS for this base model. Without this, TRL >=0.20's vocab
-        # validator rejects SFTConfig.eos_token before training starts.
+        # Apply the matching chat template so `apply_chat_template()` renders
+        # rows with the right special tokens at SFTTrainer time.
         chat_template = _chat_template_for(self.base_model)
         log.info("applying chat template: %s", chat_template)
         tokenizer = get_chat_template(tokenizer, chat_template=chat_template)
+
+        # Unsloth's 4-bit ports ship `tokenizer.eos_token = '<EOS_TOKEN>'` as
+        # a chat-template substitution sentinel. `get_chat_template()` does
+        # not always replace it on the tokenizer object itself, and TRL's
+        # SFTTrainer copies that placeholder onto SFTConfig.eos_token, where
+        # the vocab validator rejects it. Resolve a real EOS string here and
+        # pass it to SFTConfig explicitly below.
+        eos_token = _resolve_eos_token(tokenizer, self.base_model)
+        log.info("resolved eos_token: %s", eos_token)
 
         # ---- 3. Attach LoRA adapters ------------------------------------------
         lora: LoRAConfig = self.config.lora
@@ -208,6 +258,7 @@ class UnslothTrainer:
             disable_tqdm=True,                   # Progress streams via callback.
             max_length=self.config.max_seq_length,
             packing=False,
+            eos_token=eos_token,
         )
 
         # ---- 5. SFT trainer ----------------------------------------------------
