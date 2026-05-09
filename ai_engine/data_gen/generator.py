@@ -354,11 +354,33 @@ class SyntheticDataGenerator:
                     failed_attempts.append(f"generator parse error: {exc}")
                     continue
                 for row in rows:
-                    # For classification we ensure label survives the model's
-                    # output — if the model emitted a different label we keep
-                    # it (validator decides), otherwise stamp ours back.
-                    if request.task_type is TaskType.CLASSIFICATION and "label" not in row:
+                    # Classification: ALWAYS stamp the requested label so quota
+                    # routing matches what we asked for. Otherwise the Generator
+                    # may emit a different label (e.g. when asked for the
+                    # sentinel "unknown" it often picks a real label), which
+                    # buckets the row under the wrong key and gets rejected by
+                    # an already-full quota — a "validate-passes-but-collect-
+                    # rejects-all" pathology that abort the whole job.
+                    if request.task_type is TaskType.CLASSIFICATION:
                         row["label"] = b["label_or_tool"]
+                    # Tool-calling sentinel: override the inner tool name to the
+                    # sentinel value for the same reason. Non-sentinel
+                    # tool-calling we trust the model since it may legitimately
+                    # pick a different (still-valid) tool from the catalog.
+                    elif (
+                        request.task_type is TaskType.TOOL_CALLING
+                        and b["is_sentinel"]
+                    ):
+                        try:
+                            import json as _json
+
+                            inner = _json.loads(row.get("answer", "{}"))
+                            inner["name"] = b["label_or_tool"]
+                            inner["parameters"] = {}
+                            row["answer"] = _json.dumps(inner, ensure_ascii=False)
+                        except (ValueError, TypeError):
+                            # Let the validator drop malformed answers.
+                            pass
                     candidates.append(row)
 
             if not candidates:
