@@ -6,6 +6,76 @@
 
 ---
 
+## Session 16 — Phase 9 Swagger Smoke + 2 quality-gate bugs caught & fixed (2026-05-09)
+
+**Who:** Claude (Opus 4.7) + parks (developer)
+**Status:** ✅ Phase 9 SDG end-to-end verified working on vast.ai. Two distinct bugs surfaced when parks ran the runbook through Swagger UI; both root-caused, fixed, and verified via Python repro at the same target sizes that triggered them. Commits on `feature/sdg-improvements`. Branch ready to PR back to `dev` after one more parks-side smoke pass via the Swagger UI.
+
+**Why & What:**
+
+- Set up vast.ai (`202.215.2.218:51030`, RTX 5000 Ada VM from Session 14) for Swagger-based manual testing of Phase 9. Hybrid topology: docker for postgres + redis + minio (no GPU runtime needed for SDG), Python 3.11 + venv on the host for uvicorn (port 8000) + celery worker (`-P solo`, prefork doesn't run cleanly on this VM's ubuntu/celery combo). Installed Python 3.11 from apt (the VM image only has 3.10), cloned `feature/sdg-improvements`, ran `pip install -e .[dev]` (datasketch + pypdf installed), appended host-localhost overrides to `.env` (kept `OPENROUTER_API_KEY` injection to parks for security), ran `alembic upgrade head` (already at `0002_export_error`), launched both processes in background with `nohup ... < /dev/null & disown`. Swagger reachable from parks's laptop via SSH `-L 8000:localhost:8000`; MinIO console via `-L 9001:localhost:9001`.
+- Created 12 seed-data fixtures (4 files per task type × canonical/mismatched × json/jsonl) and one 413 KB research-paper PDF for QA, all under `seed_data/`. Initially 8-9 rows each; expanded to 40 rows on parks's request so MinHash dedup and Judge gating have enough variety to exercise. All 12 files validated against the Pydantic canonical schemas via `parse_samples()` before commit. Mismatched-key choices: `message`/`category` for classification, `instruction`/`function_call` for tool_calling, `prompt`/`response` for QA — all three trigger Format Detection rename without overlapping with the canonical key set.
+- Wrote three task-specific runbooks under `docs/runbooks/sdg-test-{classification,tool-calling,qa}.md` with numbered Tasks (11–13 each), copy-paste-ready Swagger payloads, expected response shapes, MinIO/SQL verification commands, troubleshooting matrices, and per-task cost estimates. Updated `SWAGGER_GUIDE.md` §1 / §6 / §7 / §10 / §14 / §16 / §17 for the Phase 9 contract (seed_data → seed_dataset_id, teacher_model removed, format_detection added, PDF flow, sentinel quota, new SDGProgress phases / fields).
+
+**Bug catalogue (this session):**
+
+| # | Symptom in Swagger | Root cause | Fix | Commit |
+|---|--------------------|-----------|-----|--------|
+| 1 | `POST /datasets/generate` 202 OK, then Celery task hangs ~80s and aborts with `SDGAbortedError: 5 consecutive zero-yield loops`. httpx logs show 30+ successful 200 OKs from OpenRouter — LLM calls were happening, just not yielding rows. | **Quota routing mismatch in sentinel batches.** Generator was asked to produce sentinel rows (`label="unknown"` for classification, `name="no_tool_needed"` for tool_calling) but the LLM frequently emitted a real label/tool name instead. The rows passed schema + Judge but `_row_quota_key` bucketed them under the real label whose quota was already full → every row skipped → 0 yield → 5 consecutive zero-yield loops → abort. | In `generator.py` after `parse_generator_response()`, ALWAYS stamp `row["label"] = b["label_or_tool"]` for classification, and rewrite `row["answer"]` with `name=b["label_or_tool"]` + `parameters={}` for tool_calling sentinel batches. Quota now routes by what we asked for, not what the LLM decided to output. | `b1a9581` |
+| 2 | Same `SDGAbortedError`, but only at `target=20` and only on the sentinel batch. Loop 0 collected the real-class quotas fine; sentinel loops produced 5-10 valid rows each but `dedup` saw `in=0` (Judge rejected 100% of sentinel candidates). | **Judge rubric was sentinel-blind.** Rubric asked "does the text fit the assigned label?" — for a sentinel `unknown` row whose whole point is being off-topic, the honest answer is "no it doesn't fit any real class," which the Judge translated to fidelity ~0.1-0.2 → weighted score < 0.7 → reject. | In `prompts.py` `build_judge_prompt`: detect sentinel rows by checking `label==CLASSIFICATION_SENTINEL_LABEL` or `answer.name==TOOL_CALLING_SENTINEL_NAME`. When `is_sentinel`, swap in a sentinel-specific rubric ("score HIGH if the row is genuinely off-topic / out-of-scope"), and prepend a `[Sentinel row]` prelude warning the Judge that the mismatch IS the point. | `aa62149` |
+
+**Test Summary:**
+
+- **Bug 1 verification (Python repro, classification target=10):**
+  - Pre-fix: aborted at 9/10 (real classes filled, sentinel "unknown" needed 1 but every loop yielded 0).
+  - Post-fix: 10/10, distribution `{ปัญหาการเงิน:3, ปัญหาเทคนิค:3, คำถามทั่วไป:3, unknown:1}`. Sentinel row text was "สวัสดี" — exactly the kind of off-topic content the sentinel quota is meant to teach the classifier to refuse.
+- **Bug 1 verification (Python repro, tool_calling target=10):**
+  - Post-fix: 10/10, distribution shows 1 row with `answer.name="no_tool_needed"`, question = "Can you help me schedule a dentist appointment for next week" (off-topic — correct sentinel).
+- **Bug 2 verification (Python repro, classification target=20):**
+  - Pre-fix: validate stage gave 5-10 valid `unknown` rows per loop, but dedup got `in=0` every time → Judge rejected 100% → abort at 18/20.
+  - Post-fix: 20/20, distribution `{ปัญหาการเงิน:6, ปัญหาเทคนิค:6, คำถามทั่วไป:6, unknown:2}`. `judge_rej=5` (Judge still filters real-class rows that don't fit), `dup=0`, `api_calls=48`.
+- **QA flow (Python repro, target=8 with seed):** 8/8 collected, all on-topic about return policy, varied tones (formal / urgent / angry — diversity rules working), `judge_rej=0`, `api_calls=18`. QA has no sentinel mechanism by design (§9.2) so neither bug applied.
+- **No-OpenRouter fallback path** (parks observed): Format Detection logs `OPENROUTER_API_KEY is empty` and falls back to passthrough mode that drops rows missing required canonical keys. Confirmed in upload-seed responses with `format_detection.notes = "OPENROUTER_API_KEY not set"`.
+
+**Decisions Made:**
+
+- **`scp` directly to vast.ai instead of `git pull` for the two hot-fixes.** Faster iteration: edit local → scp single file → restart celery (~3 seconds total) vs. commit + push + ssh + pull + restart (~30 seconds). Cost: vast.ai's `git status` shows `M ai_engine/data_gen/{generator,prompts}.py` even though the running celery process is on the new code. Documented in the handoff note that parks should `git stash; git pull; git stash drop` if they want the working tree to match HEAD. Both fixes ARE pushed to GitHub on `feature/sdg-improvements` (`b1a9581`, `aa62149`).
+- **Stamp the requested label/tool, don't trust the LLM's emission.** Three other approaches were considered: (a) telling the Generator harder via prompt to emit "unknown" — fragile, depends on each LLM family; (b) skipping the quota check for sentinel batches — works but lets sentinel content sneak into real-class buckets; (c) post-hoc rebucketing based on text content — same fragility. The override is the simplest correct fix because the prompt already states the target label and we're entitled to enforce it.
+- **Sentinel-aware Judge rubric, not "skip Judge for sentinels".** Skipping Judge would let malformed/garbage sentinel rows through. The reframed rubric still quality-gates sentinels (fidelity = "is this genuinely off-topic?") so we keep the safety net while not punishing rows for the very property that makes them useful.
+- **Kept the in-memory sentinel injection (didn't move it server-side).** The user's tool catalog and label list are unchanged on input/output — the sentinel only exists during the SDG run inside `tools_by_name` / `cls_labels` working copies. Generated dataset's distribution shows the sentinel rows explicitly (`label="unknown"`), so consumers see them, but the API response shape never gains an extra "sentinel" field.
+
+**Files Touched:**
+
+- `ai_engine/data_gen/generator.py` — bug-1 fix (label stamping for classification + tool-calling sentinel)
+- `ai_engine/data_gen/prompts.py` — bug-2 fix (`_row_is_sentinel` detector, sentinel-specific rubric, `[Sentinel row]` prelude)
+- `seed_data/{classification,tool_calling,qa}/*.{json,jsonl}` — 12 fixture files at 40 rows each (canonical + mismatched per task)
+- `seed_data/qa/2503.14023v2.pdf` — research-paper PDF for QA multimodal flow
+- `docs/runbooks/sdg-test-{classification,tool-calling,qa}.md` — 3 task-specific manual test runbooks
+- `SWAGGER_GUIDE.md` — Phase 9 update (§1, §6, §7, §10, §14, §16, +§17 SDG quality-gates smoke)
+- `WORKING_LOG.md` — this entry
+
+**Commits pushed to `origin/feature/sdg-improvements` (this session):**
+
+- `fc3d93e` — test(sdg): add seed data fixtures + 3 task-specific manual test runbooks
+- `7ac77cf` — test(sdg): expand seed fixtures to 40 rows per file
+- `b1a9581` — fix(sdg): stamp requested label/tool on rows so quota routing matches request
+- `3132687` — docs(swagger): rewrite §1 / §6 / §7 / §10 / §14 / §16 for Phase 9 (this commit was actually mid-session, before the bug discoveries — keeping order chronological in git)
+- `aa62149` — fix(sdg): sentinel-aware Judge rubric so off-topic rows pass quality gate
+
+**Next Action:**
+
+→ parks runs the live Swagger-UI smoke against `feature/sdg-improvements` one more time:
+  1. Reuse the project + seed_dataset_id created earlier; no need to rebuild from scratch (the failed SDG dataset rows can be left or deleted with `DELETE /datasets/{id}`).
+  2. `POST /api/v1/datasets/generate` with `num_samples: 20` → expect 202 + dataset_id; poll `GET /datasets/{dataset_id}` until `storage_uri` is set (~2 min).
+  3. `GET /datasets/{dataset_id}/preview?limit=20` → confirm distribution: ~6 each real class + ~2 `unknown` sentinel rows whose text is off-topic.
+  4. Run the equivalent on tool_calling and QA via the runbooks.
+  5. (optional) `git pull` on vast.ai to align working tree with HEAD.
+  6. If all green → open PR `feature/sdg-improvements` → `dev` and merge.
+
+**Blockers:** None.
+
+---
+
 ## Session 15 — Phase 9 SDG Hardening end-to-end on `feature/sdg-improvements` (2026-05-09)
 
 **Who:** Claude (Opus 4.7) + parks (developer)

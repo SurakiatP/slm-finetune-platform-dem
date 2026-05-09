@@ -192,8 +192,14 @@ After B6 closed, exercising `POST /api/v1/models/{id}/export` against the new fl
 | H9.3.3 | Upload-seed accepts PDF for QA + runs Format Detection | ✅ | Commit `b0fc6e6`; PDF cleanup on delete |
 | H9.3.4 | Async SDG generator (quota + sentinel + adaptive) | ✅ | Commit `f5fe435` |
 | H9.3.5 | Worker `asyncio.run` boundary + `seed_dataset_id` validation | ✅ | Commit `0f5c834` |
-| H9.3.6 | Integration tests rewritten + examples + README | ✅ | This commit |
-| H9.3.7 | **Live Swagger smoke (parks)** | ⏳ | Run `docker compose up -d`, hit `/docs`, exercise upload-seed → generate. Then PR → `dev`. |
+| H9.3.6 | Integration tests rewritten + examples + README | ✅ | Commit `3512bda` |
+| H9.3.7 | Seed-data fixtures (12 files × 40 rows + PDF) | ✅ | Commits `fc3d93e` + `7ac77cf` |
+| H9.3.8 | 3 task-specific manual test runbooks | ✅ | Commit `fc3d93e` |
+| H9.3.9 | SWAGGER_GUIDE.md aligned with Phase 9 | ✅ | Commit `3132687` |
+| H9.3.10 | vast.ai deploy (hybrid: services Docker + host py3.11) for Swagger smoke | ✅ | Session 16 setup; uvicorn:8000 + celery `-P solo` running |
+| H9.3.11 | **Bug 1**: SDG sentinel quota routing — Generator emits real label, row bucketed wrong, every sentinel loop yields 0 → SDGAbortedError after 5 zero-yield loops | ✅ | Commit `b1a9581` — stamp `b["label_or_tool"]` on every row for classification + tool_calling sentinel batches. Verified target=10 → 10/10 with sentinel "สวัสดี". |
+| H9.3.12 | **Bug 2**: Judge rejects 100% of sentinel rows (rubric was sentinel-blind, asked "does text fit assigned label" → low fidelity for off-topic content) | ✅ | Commit `aa62149` — `_row_is_sentinel` detector + sentinel-specific rubric in `build_judge_prompt` + `[Sentinel row]` prompt prelude. Verified target=20 → 20/20 with distribution `{real:6×3, unknown:2}`. |
+| H9.3.13 | **Live Swagger smoke (parks, second pass post-fix)** | ⏳ | Reuse existing project + seed_dataset_id; submit SDG `num_samples=20`; expect 20/20 with sentinel quota visible. Then PR → `dev`. |
 
 ---
 
