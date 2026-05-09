@@ -109,17 +109,31 @@ def export_model(
             try:
                 # ---- 3. Re-load base + LoRA + 4. save GGUF/SafeTensors ------
                 # Deferred imports — torch/unsloth/transformers only here.
-                from peft import PeftModel
                 from unsloth import FastLanguageModel
 
-                log.info("export: job=%s loading base %s", job_id, base_model)
+                # Load base + adapter via Unsloth in one shot. Reading from the
+                # adapter dir lets FastLanguageModel parse adapter_config.json,
+                # download the base from base_model_name_or_path, and tag the
+                # resulting model as Unsloth-aware PeftModel — which is what
+                # save_pretrained_merged checks for. Wrapping with raw
+                # `PeftModel.from_pretrained(base, adapter_dir)` produced a
+                # plain peft wrapper that Unsloth's saver rejected with:
+                #   "Model is not a PeftModel (no Lora adapters detected).
+                #    Skipping Merge"
+                # — so the merge silently no-op'd, leaving stage/ empty and
+                # convert_to_gguf failing on missing config.json.
+                log.info(
+                    "export: job=%s loading base %s + adapter from %s",
+                    job_id,
+                    base_model,
+                    adapter_dir,
+                )
                 model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name=base_model,
+                    model_name=adapter_dir,
                     max_seq_length=2048,
                     dtype=None,
                     load_in_4bit=True,
                 )
-                model = PeftModel.from_pretrained(model, adapter_dir)
 
                 gguf_path: str | None = None
                 merged_dir: str | None = None
