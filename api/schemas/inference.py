@@ -1,8 +1,12 @@
 """OpenAI-compatible inference schemas.
 
 Trained models are served via Ollama; the API layer accepts OpenAI Chat /
-Completions / Models requests and forwards them. Only the fields the platform
-actually needs are typed — extra fields are forbidden so the contract is clear.
+Completions / Models requests and forwards them. Request schemas use
+`extra="forbid"` so caller mistakes surface immediately. Response schemas
+use `extra="ignore"` because they're pass-throughs — both Ollama and the
+upstream OpenAI spec keep adding fields (`system_fingerprint`,
+`reasoning_content`, etc.), and we'd rather drop unknown fields silently
+than 500 the moment a new one ships.
 """
 
 from __future__ import annotations
@@ -16,7 +20,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ChatMessage(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # Lenient because this is also the type of the response's
+    # choice.message — Ollama adds fields like `tool_calls` /
+    # `reasoning_content` / `refusal` over time. The request side
+    # (where we'd want strictness) gets its validation from
+    # ChatCompletionRequest's own forbid on the surrounding object.
+    model_config = ConfigDict(extra="ignore")
 
     role: Literal["system", "user", "assistant", "tool"]
     content: str
@@ -38,7 +47,7 @@ class ChatCompletionRequest(BaseModel):
 
 
 class ChatCompletionUsage(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     prompt_tokens: int
     completion_tokens: int
@@ -46,7 +55,7 @@ class ChatCompletionUsage(BaseModel):
 
 
 class ChatCompletionChoice(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     index: int
     message: ChatMessage
@@ -54,7 +63,7 @@ class ChatCompletionChoice(BaseModel):
 
 
 class ChatCompletionResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     id: str = Field(default_factory=lambda: f"chatcmpl-{uuid4().hex[:24]}")
     object: Literal["chat.completion"] = "chat.completion"
@@ -81,7 +90,7 @@ class CompletionRequest(BaseModel):
 
 
 class CompletionChoice(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     index: int
     text: str
@@ -89,7 +98,7 @@ class CompletionChoice(BaseModel):
 
 
 class CompletionResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     id: str = Field(default_factory=lambda: f"cmpl-{uuid4().hex[:24]}")
     object: Literal["text_completion"] = "text_completion"
@@ -103,7 +112,7 @@ class CompletionResponse(BaseModel):
 
 
 class ModelDescriptor(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     id: str
     object: Literal["model"] = "model"
@@ -113,7 +122,7 @@ class ModelDescriptor(BaseModel):
 
 
 class ModelDescriptorList(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     object: Literal["list"] = "list"
     data: list[ModelDescriptor]
