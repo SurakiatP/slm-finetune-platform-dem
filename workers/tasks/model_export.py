@@ -19,6 +19,7 @@ from __future__ import annotations
 import gc
 import os
 import shutil
+import subprocess
 import tempfile
 from datetime import datetime, timezone
 from typing import Any
@@ -140,14 +141,14 @@ def export_model(
 
                 if fmt is ArtifactFormat.GGUF:
                     quant = quantization or "q4_k_m"
-                    # Unsloth 2025.11+ split: save_pretrained_gguf no longer merges,
-                    # it expects merged HF files (config.json, *.safetensors) to
-                    # already exist in the target dir. Without this we hit:
-                    #   "config.json does not exist inside <dir>"
-                    # So merge ourselves first into a `stage` dir, then call gguf
-                    # which writes .gguf alongside the HF files. We then move just
-                    # the .gguf out into a clean `out_dir` for upload (avoids
-                    # bundling the 2-3 GB merged HF model into the export).
+                    # We don't use Unsloth's save_pretrained_gguf — it ships a
+                    # *patched* convert_hf_to_gguf.py that calls an old
+                    # AutoTokenizer.from_pretrained signature and dies on
+                    # transformers ≥4.51 with:
+                    #     'dict' object has no attribute 'model_type'
+                    # Instead: merge with Unsloth (works), then drive the
+                    # *original* /app/llama.cpp/convert_hf_to_gguf.py and our
+                    # statically-linked llama-quantize binary directly.
                     stage_dir = os.path.join(workdir, "stage")
                     os.makedirs(stage_dir, exist_ok=True)
                     log.info("export: job=%s merging HF model to %s", job_id, stage_dir)
@@ -156,17 +157,32 @@ def export_model(
                         tokenizer,
                         save_method="merged_16bit",
                     )
-                    log.info("export: job=%s converting to GGUF (%s)", job_id, quant)
-                    model.save_pretrained_gguf(
-                        stage_dir,
-                        tokenizer,
-                        quantization_method=quant,
-                    )
+
                     out_dir = os.path.join(workdir, "gguf")
                     os.makedirs(out_dir, exist_ok=True)
-                    src_gguf = _first_gguf(stage_dir)
-                    gguf_path = os.path.join(out_dir, os.path.basename(src_gguf))
-                    shutil.move(src_gguf, gguf_path)
+                    f16_path = os.path.join(out_dir, "model.f16.gguf")
+                    log.info("export: job=%s converting HF→GGUF (f16)", job_id)
+                    subprocess.run(
+                        [
+                            "python",
+                            "/app/llama.cpp/convert_hf_to_gguf.py",
+                            "--outfile", f16_path,
+                            "--outtype", "f16",
+                            stage_dir,
+                        ],
+                        check=True,
+                    )
+
+                    gguf_path = os.path.join(out_dir, f"model.{quant}.gguf")
+                    log.info("export: job=%s quantizing GGUF → %s", job_id, quant)
+                    subprocess.run(
+                        [
+                            "/app/llama.cpp/llama-quantize",
+                            f16_path, gguf_path, quant,
+                        ],
+                        check=True,
+                    )
+                    os.remove(f16_path)
                 elif fmt is ArtifactFormat.SAFETENSORS:
                     merged_dir = os.path.join(workdir, "merged")
                     os.makedirs(merged_dir, exist_ok=True)
