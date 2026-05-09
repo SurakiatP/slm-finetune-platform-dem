@@ -1,10 +1,162 @@
 [
-  {"instruction": "Set the oven to 200 degrees Celsius please", "function_call": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":200}}"},
-  {"instruction": "Preheat the oven to 180 degrees", "function_call": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":180}}"},
-  {"instruction": "Start a 5-minute timer for me", "function_call": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":5}}"},
-  {"instruction": "Set a 30 second timer", "function_call": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":0.5}}"},
-  {"instruction": "Turn the volume up to 70 percent", "function_call": "{\"name\":\"set_volume\",\"parameters\":{\"level\":70}}"},
-  {"instruction": "Lower the volume to 25", "function_call": "{\"name\":\"set_volume\",\"parameters\":{\"level\":25}}"},
-  {"instruction": "Play some jazz music in the living room", "function_call": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"jazz\",\"room\":\"living_room\"}}"},
-  {"instruction": "Turn on the kitchen lights", "function_call": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"kitchen\"}}"}
+  {
+    "instruction": "Set the oven to 200 degrees Celsius please",
+    "function_call": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":200}}"
+  },
+  {
+    "instruction": "Preheat the oven to 180 degrees",
+    "function_call": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":180}}"
+  },
+  {
+    "instruction": "Heat the oven up to 220",
+    "function_call": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":220}}"
+  },
+  {
+    "instruction": "Can you preheat to 175 for the cake?",
+    "function_call": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":175}}"
+  },
+  {
+    "instruction": "Crank the oven to 250 for the pizza",
+    "function_call": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":250}}"
+  },
+  {
+    "instruction": "Set oven temperature to 160 degrees",
+    "function_call": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":160}}"
+  },
+  {
+    "instruction": "Need the oven at 190 for roast chicken",
+    "function_call": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":190}}"
+  },
+  {
+    "instruction": "Bake mode at 210 please",
+    "function_call": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":210}}"
+  },
+  {
+    "instruction": "Start a 5-minute timer for me",
+    "function_call": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":5}}"
+  },
+  {
+    "instruction": "Set a 30 second timer",
+    "function_call": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":0.5}}"
+  },
+  {
+    "instruction": "Begin a 10-minute countdown",
+    "function_call": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":10}}"
+  },
+  {
+    "instruction": "Timer for 45 seconds",
+    "function_call": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":0.75}}"
+  },
+  {
+    "instruction": "Start a one-hour timer",
+    "function_call": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":60}}"
+  },
+  {
+    "instruction": "15 minutes timer please",
+    "function_call": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":15}}"
+  },
+  {
+    "instruction": "Set 2-minute timer for tea",
+    "function_call": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":2}}"
+  },
+  {
+    "instruction": "Start a 25-minute pomodoro",
+    "function_call": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":25}}"
+  },
+  {
+    "instruction": "Turn the volume up to 70 percent",
+    "function_call": "{\"name\":\"set_volume\",\"parameters\":{\"level\":70}}"
+  },
+  {
+    "instruction": "Lower the volume to 25",
+    "function_call": "{\"name\":\"set_volume\",\"parameters\":{\"level\":25}}"
+  },
+  {
+    "instruction": "Set audio level to 50",
+    "function_call": "{\"name\":\"set_volume\",\"parameters\":{\"level\":50}}"
+  },
+  {
+    "instruction": "Mute the volume to zero",
+    "function_call": "{\"name\":\"set_volume\",\"parameters\":{\"level\":0}}"
+  },
+  {
+    "instruction": "Volume at 80 please",
+    "function_call": "{\"name\":\"set_volume\",\"parameters\":{\"level\":80}}"
+  },
+  {
+    "instruction": "Crank it up to 100",
+    "function_call": "{\"name\":\"set_volume\",\"parameters\":{\"level\":100}}"
+  },
+  {
+    "instruction": "Set volume to 35",
+    "function_call": "{\"name\":\"set_volume\",\"parameters\":{\"level\":35}}"
+  },
+  {
+    "instruction": "Bring volume down to 15",
+    "function_call": "{\"name\":\"set_volume\",\"parameters\":{\"level\":15}}"
+  },
+  {
+    "instruction": "Play some jazz music in the living room",
+    "function_call": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"jazz\",\"room\":\"living_room\"}}"
+  },
+  {
+    "instruction": "Start classical music in the bedroom",
+    "function_call": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"classical\",\"room\":\"bedroom\"}}"
+  },
+  {
+    "instruction": "Play rock music",
+    "function_call": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"rock\"}}"
+  },
+  {
+    "instruction": "Put on some chillhop in the kitchen",
+    "function_call": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"chillhop\",\"room\":\"kitchen\"}}"
+  },
+  {
+    "instruction": "Play pop music in the office",
+    "function_call": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"pop\",\"room\":\"office\"}}"
+  },
+  {
+    "instruction": "Some lo-fi for studying",
+    "function_call": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"lofi\"}}"
+  },
+  {
+    "instruction": "Play country music in the dining room",
+    "function_call": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"country\",\"room\":\"dining_room\"}}"
+  },
+  {
+    "instruction": "Start ambient music in the study",
+    "function_call": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"ambient\",\"room\":\"study\"}}"
+  },
+  {
+    "instruction": "Turn on the kitchen lights",
+    "function_call": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"kitchen\"}}"
+  },
+  {
+    "instruction": "Lights on in the bedroom please",
+    "function_call": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"bedroom\"}}"
+  },
+  {
+    "instruction": "Turn on the bathroom light",
+    "function_call": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"bathroom\"}}"
+  },
+  {
+    "instruction": "Light up the living room",
+    "function_call": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"living_room\"}}"
+  },
+  {
+    "instruction": "Turn on lights in the garage",
+    "function_call": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"garage\"}}"
+  },
+  {
+    "instruction": "Switch on the porch light",
+    "function_call": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"porch\"}}"
+  },
+  {
+    "instruction": "Lights on in the office",
+    "function_call": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"office\"}}"
+  },
+  {
+    "instruction": "Turn on the hallway lights",
+    "function_call": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"hallway\"}}"
+  }
 ]
