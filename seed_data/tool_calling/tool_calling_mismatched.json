@@ -1,0 +1,10 @@
+[
+  {"instruction": "Set the oven to 200 degrees Celsius please", "function_call": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":200}}"},
+  {"instruction": "Preheat the oven to 180 degrees", "function_call": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":180}}"},
+  {"instruction": "Start a 5-minute timer for me", "function_call": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":5}}"},
+  {"instruction": "Set a 30 second timer", "function_call": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":0.5}}"},
+  {"instruction": "Turn the volume up to 70 percent", "function_call": "{\"name\":\"set_volume\",\"parameters\":{\"level\":70}}"},
+  {"instruction": "Lower the volume to 25", "function_call": "{\"name\":\"set_volume\",\"parameters\":{\"level\":25}}"},
+  {"instruction": "Play some jazz music in the living room", "function_call": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"jazz\",\"room\":\"living_room\"}}"},
+  {"instruction": "Turn on the kitchen lights", "function_call": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"kitchen\"}}"}
+]
