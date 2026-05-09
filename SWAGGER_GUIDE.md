@@ -629,9 +629,13 @@ websocat ws://localhost:8000/ws/jobs/celery-task-id-here
 }
 ```
 
-หลัง export เสร็จ:
-- `GET /api/v1/models/{model_id}` → ฟิลด์ `gguf_uri` + `ollama_model_tag` จะถูกตั้ง
-- `ollama_model_tag` คือ tag ที่ใช้ใน inference endpoint (§12)
+**Polling for completion** — `GET /api/v1/models/{model_id}` until one of:
+
+- ✅ Success: `gguf_uri = "s3://models/exports/<id>/gguf"` (≈770 MB for a 1B model at q4_k_m) + `ollama_model_tag = "slm/<id8>:latest"` + `export_error_message = null`. Typical wall time ~70-90 s for a 1B model on a 12+ GB GPU (load base + merge + convert + quantize + blob upload).
+- ❌ Failure: `export_error_message` populated with the actual error string (e.g. `"Unsloth: GGUF conversion failed: …"`). The artifact row is the canonical signal — `JobFailed` is also published to `job:{export_job_id}` on Redis pub/sub but no client subscribes after the WebSocket closes, so don't rely on the WS for failure detection.
+- ⚠️ Partial: `gguf_uri` set but `ollama_model_tag` still null = upload to MinIO succeeded but the daemon registration failed (best-effort wrapper). The GGUF is usable for any tool that reads from MinIO, but the OpenAI-compatible inference router (§12) won't be able to resolve it until you re-export.
+
+`ollama_model_tag` is the tag you pass to inference endpoints (§12). It's also accepted as the artifact UUID directly — either works.
 
 ### `GET /api/v1/models/{model_id}/download`
 
@@ -646,7 +650,7 @@ Stream binary file ของ GGUF / SafeTensors
 **Request:**
 ```json
 {
-  "model": "policy-bot-v1:latest",
+  "model": "65a05a2b-cdb0-4831-bea5-e86c093c3046",
   "messages": [
     { "role": "system", "content": "You are a helpful customer service agent." },
     { "role": "user", "content": "Can I return sale items?" }
@@ -656,7 +660,11 @@ Stream binary file ของ GGUF / SafeTensors
 }
 ```
 
-> `model` = `ollama_model_tag` จาก §11
+> `model` accepts either form:
+> - **Artifact UUID** (recommended) — `model_artifact.id` from §11. The router looks up `ollama_model_tag` for you and 409s if the model wasn't exported yet, with a `POST /api/v1/models/{id}/export with format=gguf first` hint.
+> - **Ollama tag** — `slm/<id8>:latest` or a base model the daemon already has (`llama3.2:3b`). Pass-through verbatim.
+>
+> Streaming (`"stream": true`) is intentionally rejected with 400 in this PoC — set it false.
 
 **Response 200:**
 ```json
@@ -664,7 +672,7 @@ Stream binary file ของ GGUF / SafeTensors
   "id": "chatcmpl-abc",
   "object": "chat.completion",
   "created": 1715192400,
-  "model": "policy-bot-v1:latest",
+  "model": "slm/65a05a2b",
   "choices": [
     {
       "index": 0,
@@ -679,9 +687,11 @@ Stream binary file ของ GGUF / SafeTensors
 }
 ```
 
+> Ollama may include extra fields in the response (`system_fingerprint`, future OpenAI additions). The schema accepts and drops them; you'll only see the typed fields above.
+
 ### `GET /api/v1/inference/models`
 
-List Ollama models ที่มีบนเครื่อง — รวม base models และ fine-tuned models
+List Ollama models ที่มีบนเครื่อง — รวม base models และ fine-tuned models. Each fine-tuned export shows up as `slm/<artifact_id8>:latest`.
 
 **Response 200:**
 ```json
@@ -689,7 +699,7 @@ List Ollama models ที่มีบนเครื่อง — รวม base
   "object": "list",
   "data": [
     { "id": "llama3.2:3b", "object": "model", "created": 0, "owned_by": "ollama" },
-    { "id": "policy-bot-v1:latest", "object": "model", "created": 0, "owned_by": "ollama" }
+    { "id": "slm/65a05a2b:latest", "object": "model", "created": 0, "owned_by": "ollama" }
   ]
 }
 ```
@@ -809,12 +819,12 @@ Legacy text-completion (ไม่ใช้ chat format) — มีไว้ส�
 
 ---
 
-## 16. Quick Smoke Test (5 นาที, no OpenRouter)
+## 16. Quick Smoke Test (~5 นาที on a 12+ GB GPU, no OpenRouter)
 
-ทดสอบ end-to-end เร็ว ๆ ด้วย Path A (upload seed) + manual training 1 epoch:
+ทดสอบ end-to-end เร็ว ๆ ด้วย Path A (upload seed) + manual training 1 epoch. Verified live on a fresh RTX 5000 Ada VM in Session 14 (2026-05-09): training 55 s, export 73 s, inference responded with the seed answer.
 
 ```
-1. GET  /health                                            → 200
+1. GET  /health                                            → 200 {"status":"ok"}
 2. POST /api/v1/projects                                   → save project_id
    { "name":"smoke", "task_type":"qa" }
 3. POST /api/v1/datasets/upload-seed (multipart)           → save dataset_id
@@ -822,13 +832,30 @@ Legacy text-completion (ไม่ใช้ chat format) — มีไว้ส�
 4. GET  /api/v1/datasets/{dataset_id}/preview?limit=3      → ดูว่าข้อมูลถูก
 5. POST /api/v1/trainings                                  → save training_id
    { "mode":"manual", "project_id":..., "dataset_id":...,
-     "manual_config": { "num_train_epochs":1, "per_device_train_batch_size":1 } }
-6. GET  /api/v1/trainings/{training_id}    (poll ~5 min)   → status: completed
-7. GET  /api/v1/models?training_job_id={training_id}       → save model_id
-8. POST /api/v1/models/{model_id}/export                   → export job (GGUF)
+     "base_model":"unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
+     "manual_config": { "num_train_epochs":1, "per_device_train_batch_size":1,
+                         "gradient_accumulation_steps":1 } }
+6. GET  /api/v1/trainings/{training_id}    (poll ~1 min)   → status: completed
+7. GET  /api/v1/models?training_job_id={training_id}       → save artifact_id (items[0].id)
+8. POST /api/v1/models/{artifact_id}/export                → export job (GGUF)
    { "format":"gguf", "quantization":"q4_k_m" }
-9. POST /api/v1/inference/chat/completions                 → generated answer
-   { "model":"smoke:latest", "messages":[{"role":"user","content":"What is the return window?"}] }
+   then GET /api/v1/models/{artifact_id} (poll ~1.5 min)   → gguf_uri set + ollama_model_tag set
+                                                              + export_error_message null
+9. POST /api/v1/inference/chat/completions                 → "Paris."  (or seed-derived answer)
+   { "model":"<artifact_id>",                                ← UUID works directly, no tag needed
+     "messages":[{"role":"user","content":"What is the capital of France? Answer in one word."}],
+     "max_tokens":50, "temperature":0.0 }
 ```
 
+> **seed.jsonl shape (one JSON object per line):**
+> ```json
+> {"question": "What is the capital of France?", "answer": "Paris"}
+> {"question": "What is the capital of Germany?", "answer": "Berlin"}
+> {"question": "What is the capital of Japan?", "answer": "Tokyo"}
+> {"question": "What is the capital of Italy?", "answer": "Rome"}
+> {"question": "What is the capital of Spain?", "answer": "Madrid"}
+> ```
+
 ผ่านครบ 9 ข้อ = pipeline สมบูรณ์ พร้อมใช้งานจริง 🎉
+
+**ถ้า step 8 พัง:** `GET /api/v1/models/{artifact_id}` แล้วดู `export_error_message` — ทุก error path เขียนลง field นี้ ไม่ต้องไป tail worker logs (B7).
