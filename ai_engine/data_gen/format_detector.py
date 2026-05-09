@@ -222,13 +222,17 @@ def _rename_keys(row: dict[str, Any], mapping: dict[str, str]) -> dict[str, Any]
     return out
 
 
-def _apply_no_mapping(
+def passthrough_with_required_check(
     rows: list[dict[str, Any]],
     required_keys: set[str],
     *,
     notes: str,
 ) -> FormatDetectionResult:
-    """Best-effort: pass rows through unchanged but drop any that lack required keys."""
+    """Best-effort: pass rows through unchanged but drop any that lack required keys.
+
+    Used when Format Detection is unavailable (no API key, LLM error,
+    malformed mapping) — we still want to canonicalise as much as we can.
+    """
     canonical: list[dict[str, Any]] = []
     dropped = 0
     for row in rows:
@@ -245,8 +249,13 @@ def _apply_no_mapping(
     )
 
 
+# Backwards-compatible alias for the private helper used internally above.
+_apply_no_mapping = passthrough_with_required_check
+
+
 __all__ = [
     "FormatDetectionResult",
     "already_canonical",
     "detect_and_rename",
+    "passthrough_with_required_check",
 ]
