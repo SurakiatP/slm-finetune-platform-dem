@@ -26,9 +26,14 @@ WORKDIR /app
 # base image has no nvcc.
 RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /app/llama.cpp \
     && cd /app/llama.cpp \
-    && cmake -B build -DGGML_CUDA=OFF -DLLAMA_CURL=OFF \
+    && cmake -B build -DGGML_CUDA=OFF -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF \
     && cmake --build build --config Release -j --target llama-quantize \
     && cp build/bin/llama-quantize /app/llama.cpp/llama-quantize \
+    && (ldd /app/llama.cpp/llama-quantize 2>&1 | grep -q "not found" \
+        && (echo "ERROR: llama-quantize has unresolved shared libs after static build:" \
+            && ldd /app/llama.cpp/llama-quantize \
+            && exit 1) \
+        || true) \
     && rm -rf build
 
 # Install base + training extras (unsloth, transformers, peft, trl, bitsandbytes, ...).
