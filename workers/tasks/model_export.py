@@ -235,13 +235,27 @@ def export_model(
                         gguf_uri,
                     )
 
-                    # ---- 6. Register with Ollama ----------------------------
-                    ollama_tag = f"slm/{artifact_id[:8]}"
-                    _register_with_ollama(
-                        ollama=OllamaClient(str(settings.ollama_base_url)),
-                        tag=ollama_tag,
-                        gguf_path=gguf_path,
-                    )
+                    # ---- 6. Register with Ollama (best-effort) --------------
+                    # Ollama registration is a convenience for serving via the
+                    # OpenAI-compatible router; it's not what makes B6 succeed.
+                    # The GGUF on MinIO is the primary artifact. Ollama's
+                    # /api/create has rolled through several breaking schema
+                    # changes (modelfile string → from/files), so isolating its
+                    # failure keeps gguf_uri persistable on partial success.
+                    try:
+                        candidate_tag = f"slm/{artifact_id[:8]}"
+                        _register_with_ollama(
+                            ollama=OllamaClient(str(settings.ollama_base_url)),
+                            tag=candidate_tag,
+                            gguf_path=gguf_path,
+                        )
+                        ollama_tag = candidate_tag
+                    except Exception as ollama_exc:  # noqa: BLE001
+                        log.warning(
+                            "ollama registration failed for %s (best-effort, continuing): %s",
+                            artifact_id,
+                            ollama_exc,
+                        )
 
                 if merged_dir is not None:
                     key_prefix = f"exports/{artifact_id}/safetensors"
