@@ -126,16 +126,33 @@ def export_model(
 
                 if fmt is ArtifactFormat.GGUF:
                     quant = quantization or "q4_k_m"
-                    out_dir = os.path.join(workdir, "gguf")
-                    os.makedirs(out_dir, exist_ok=True)
-                    log.info("export: job=%s saving GGUF (%s) to %s", job_id, quant, out_dir)
-                    # Unsloth's helper: writes one .gguf file into out_dir.
+                    # Unsloth 2025.11+ split: save_pretrained_gguf no longer merges,
+                    # it expects merged HF files (config.json, *.safetensors) to
+                    # already exist in the target dir. Without this we hit:
+                    #   "config.json does not exist inside <dir>"
+                    # So merge ourselves first into a `stage` dir, then call gguf
+                    # which writes .gguf alongside the HF files. We then move just
+                    # the .gguf out into a clean `out_dir` for upload (avoids
+                    # bundling the 2-3 GB merged HF model into the export).
+                    stage_dir = os.path.join(workdir, "stage")
+                    os.makedirs(stage_dir, exist_ok=True)
+                    log.info("export: job=%s merging HF model to %s", job_id, stage_dir)
+                    model.save_pretrained_merged(
+                        stage_dir,
+                        tokenizer,
+                        save_method="merged_16bit",
+                    )
+                    log.info("export: job=%s converting to GGUF (%s)", job_id, quant)
                     model.save_pretrained_gguf(
-                        out_dir,
+                        stage_dir,
                         tokenizer,
                         quantization_method=quant,
                     )
-                    gguf_path = _first_gguf(out_dir)
+                    out_dir = os.path.join(workdir, "gguf")
+                    os.makedirs(out_dir, exist_ok=True)
+                    src_gguf = _first_gguf(stage_dir)
+                    gguf_path = os.path.join(out_dir, os.path.basename(src_gguf))
+                    shutil.move(src_gguf, gguf_path)
                 elif fmt is ArtifactFormat.SAFETENSORS:
                     merged_dir = os.path.join(workdir, "merged")
                     os.makedirs(merged_dir, exist_ok=True)
