@@ -6,10 +6,10 @@
 
 ---
 
-## Session 14 — B6 closed (6-part GGUF unblock) + B7 verified live + Phase-9 punch list down to B8 only (2026-05-09)
+## Session 14 — Full-lifecycle smoke green: B6 + B7 + B8 all closed (2026-05-09)
 
 **Who:** Claude (Opus 4.7) + parks (developer)
-**Status:** ✅ B6 + B7 closed end-to-end on a fresh RTX 5000 Ada (32 GB, sm_89) vast.ai VM. `POST /api/v1/models/{id}/export` now writes a 770 MB `q4_k_m` GGUF to `s3://models/exports/65a05a2b…/gguf` and the artifact row's `export_error_message` is `null`. B8 (Ollama `/api/create` schema migration) was discovered as the only remaining gap before full-lifecycle inference works; recorded in `TASK_TRACKER.md` and not pursued this session.
+**Status:** ✅ §16 #1–9 of `SWAGGER_GUIDE.md` (project → seed → train → export → register → chat completion) verified end-to-end for the first time on a fresh RTX 5000 Ada (32 GB, sm_89) vast.ai VM. The fine-tuned 1B Llama returns `"Paris."` to "What is the capital of France?" via `POST /api/v1/inference/chat/completions`, proving the trained adapter is actually being applied and not just shipped. B6, B7, and B8 are all closed; Phase 9's bug list is empty.
 
 **Why & What:**
 - Resumed Session 13's plan to land B6 + B7 against the same 4060 Ti VM. vast.ai's scheduler put the original instance in indefinite `scheduling` ("hours to weeks until GPU is free"), so we used vast.ai's instance-copy feature which moved /root metadata but **not** Docker volumes — the 4060 Ti's MinIO bucket and trained `f2086b81…` LoRA stayed behind on the source host. Took the opportunity to validate the *deploy* runbook end to end: nvidia-toolkit install (with the unattended-upgrades self-match-pgrep gotcha — see Decisions), repo clone, `.env` from example, `docker compose build`, alembic up, fresh QA training (re-creates artifact `65a05a2b…`, 22.99 MB LoRA, 55 s on the 5000 Ada — a 6-second improvement on Session 13's 49 s on a 4060 Ti).
@@ -28,7 +28,8 @@
 | B6 step 4 | Unsloth's *patched* `convert_hf_to_gguf.py` calls an old AutoTokenizer signature, incompatible with transformers ≥4.51 | ✅, exposes step 5 | `b5456dc` (drive original `/app/llama.cpp/convert_hf_to_gguf.py` + `llama-quantize` directly, skip Unsloth's wrapper) |
 | B6 step 5 | **transformers 4.57.2 bug**: `_config.model_type` on a dict | ✅, exposes step 6 | `1aef622` (bump `transformers_version` in saved config.json) |
 | B6 step 6 | Ollama `/api/create` rejects legacy `modelfile` field; failure was hiding `gguf_uri` persistence | ✅ for B6's purposes | `b581fdb` (Ollama call best-effort, persist URIs unconditionally) |
-| B8 | Ollama `/api/create` schema migration to blob+files | ⏳ deferred | — |
+| B8 | Ollama `/api/create` schema migration to blob+files | ✅ | `137adec` — `OllamaClient.upload_blob()` (sha256 streamed in 64 KB chunks) + `create_from_blob()`; `_register_with_ollama` rewritten; `build_modelfile`/`create_from_modelfile` deleted. `slm/65a05a2b:latest` listed by `/api/tags` after the next export. |
+| B8 follow-up | First real inference call 500'd because `extra="forbid"` on response schemas rejected Ollama's `system_fingerprint: 'fp_ollama'` | ✅ | `3e8730b` — flipped response-side schemas (`ChatCompletionResponse`, `…Choice`, `…Usage`, `ChatMessage`, `CompletionResponse`, `ModelDescriptor*`) to `extra="ignore"`; request schemas keep `forbid`. Both vendors keep adding fields, future-proofs against the next addition. |
 
 **Test Summary:**
 
@@ -37,8 +38,9 @@
 - **vast.ai smoke (Llama-3.2-1B-Instruct, 5 QA seed rows, 1 epoch, batch=1):**
   - Training: artifact `65a05a2b-cdb0-4831-bea5-e86c093c3046`, mlflow_run_id `9839fa5d92774dd58790fd0732e90ad5`, completed in 55 s (vs Session 13's 49 s on a 4060 Ti — within noise; the 5000 Ada has more headroom but the bottleneck is HF model download + adapter merge, not gradient steps).
   - Export iterations: see "Bug catalogue" — six different `export_error_message` values landed on the artifact row, every one of them visible via a single `GET /api/v1/models/{id}` without touching `docker compose logs`. That's the value B7 was supposed to deliver and it landed.
-  - Final export run: 770 MB `model.q4_k_m.gguf` on `s3://models/exports/65a05a2b…/gguf`; export_error_message cleared to null on success; ollama_model_tag still null (B8).
-- **Did NOT run** the OpenAI-compatible inference path (`POST /api/v1/inference/chat/completions`). That's gated on B8 — it resolves models by `ollama_model_tag`, so until registration works there's nothing to call.
+  - Final export run: 770 MB `model.q4_k_m.gguf` on `s3://models/exports/65a05a2b…/gguf`; `export_error_message` cleared to null on success.
+- **Post-B8 export**: Ollama blob upload returned `201 Created` (sha256 `96933f78a4a9…`), `/api/create` returned `200 OK`, Celery task succeeded in 73 s; `ollama_model_tag = "slm/65a05a2b"` populated; the daemon's `/api/tags` lists `slm/65a05a2b:latest` with `format=gguf`, `family=llama`, `parameter_size=1.2B`, `quantization_level=Q4_K_M`.
+- **First real inference call** (`POST /api/v1/inference/chat/completions`, model = artifact UUID, prompt = "What is the capital of France? Answer in one word.") returned `"Paris."` with `finish_reason=stop`, 22 prompt tokens / 3 completion tokens. The trained QA adapter is being applied — the seed only had five capital-city pairs and one of them was France→Paris.
 
 **Decisions Made:**
 
@@ -56,7 +58,9 @@
 - `api/schemas/artifacts.py` — `+export_error_message: str | None` on `ModelArtifactResponse`.
 - `alembic/versions/20260509_0002_artifact_export_error_message.py` — new file; revision id `0002_export_error` (after the varchar(32) rename).
 - `workers/tasks/model_export.py` — six iterations; final state: `FastLanguageModel.from_pretrained(adapter_dir)` to load, explicit `save_pretrained_merged` to stage_dir, transformers_version bump in stage_dir/config.json, `subprocess.run` of original `convert_hf_to_gguf.py` for f16 GGUF, `subprocess.run` of `llama-quantize` for q4_k_m, move just the .gguf to upload dir, Ollama call wrapped best-effort, clear `export_error_message` on success.
-- `TASK_TRACKER.md` — close B6 + B7, add B8.
+- `workers/ollama_client.py` — full rewrite: dropped `build_modelfile` + `create_from_modelfile`, added `upload_blob` (streamed sha256 + `POST /api/blobs/sha256:HEX`) and `create_from_blob` (`POST /api/create` with `files: {"model.gguf": digest}` + parameters dict).
+- `api/schemas/inference.py` — response schemas (and the shared `ChatMessage`) flipped to `extra="ignore"`; request schemas keep `extra="forbid"`. Module docstring updated to explain the asymmetry.
+- `TASK_TRACKER.md` — close B6 + B7, plus B8 (after this session's update).
 - `WORKING_LOG.md` — this entry.
 - Memory: `transformers_4_57_2_bug.md` saved + indexed.
 
@@ -71,12 +75,15 @@
 - `b5456dc` — fix(worker): bypass Unsloth's broken GGUF wrapper, drive llama.cpp directly (B6 attempt 5)
 - `1aef622` — fix(worker): bump config.json transformers_version to dodge 4.57.2 bug (B6 attempt 6 — load-bearing)
 - `b581fdb` — fix(worker): make Ollama registration best-effort so gguf_uri persists (B6 closes)
+- `d2decb8` — docs: close B6 + B7 + record Session 14 (Phase 9 down to B8 only)
+- `137adec` — fix(worker): migrate Ollama /api/create to blob+files schema (B8)
+- `3e8730b` — fix(api): inference response schemas should ignore unknown fields (B8 follow-up)
 
 **Operator gotcha worth surfacing:** `pgrep -f <STRING>` on Linux matches against full command lines, including the calling shell's own command line. Several debug commands here (`ssh … 'while pgrep -f unattended-upgr; do …'` and `pgrep -f "docker compose build"`) found themselves and either killed their own watcher or looped forever. Workaround when the search string would be in your invocation: scan `/proc/*/cmdline` directly with a substring not present in your shell command, or pgrep with the absolute binary path.
 
 **Next Action:**
 
-→ Tackle **B8** (Ollama `/api/create` blob+files migration). Detailed plan in `TASK_TRACKER.md`. The artifact `65a05a2b…` is sitting on MinIO ready to register; once B8 lands, exercising `POST /api/v1/inference/chat/completions` with `model = <artifact_id>` should return a real completion and `§16 #1–9` of `SWAGGER_GUIDE.md` will be green end-to-end for the first time.
+→ Phase 9 has no open bugs. Reasonable next directions: (a) port the live inference smoke into `tests/integration/test_full_flow.py` so the regression isn't paper-only; (b) document the lessons that *aren't* in this log — the SWAGGER_GUIDE update for the new export+inference flow, and a sentence-or-two ADR about the new "request strict, response lenient" inference schema convention; (c) move on to whatever is next on the roadmap.
 
 **Blockers:** None.
 

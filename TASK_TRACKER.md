@@ -96,7 +96,7 @@
 
 ## Phase 9: Production Hardening (Sessions 12–14 discoveries)
 
-> Bugs surfaced by the vast.ai full-lifecycle smoke test. B1–B7 shipped + verified on `dev`. **B6 + B7 closed in Session 14** with a 6-part fix on a fresh RTX 5000 Ada VM (32 GB, sm_89): GGUF export now writes a 770 MB `q4_k_m` file to MinIO and B7's `export_error_message` column surfaced every wrong turn instantly during the iteration. **B8** is the only remaining gap — Ollama's `/api/create` schema changed under us so model registration is currently best-effort and OpenAI-compatible inference is gated on fixing it.
+> Bugs surfaced by the vast.ai full-lifecycle smoke test. **All B1–B8 closed.** Session 14 finished the chain on a fresh RTX 5000 Ada VM: training (55 s) → LoRA on MinIO → 770 MB q4_k_m GGUF on MinIO → Ollama register → `POST /api/v1/inference/chat/completions` returns `"Paris."`. `§16 #1–9` of `SWAGGER_GUIDE.md` is green for the first time. Phase 9 is empty.
 
 | ID | Task | Status | Next Step |
 |----|------|--------|-----------|
@@ -107,7 +107,7 @@
 | B5 | Unsloth `<EOS_TOKEN>` placeholder validator failure (TRL ≥0.20 + Unsloth-patched SFT) | ✅ | Done — 4 commits: messages-format formatters (`9b77054`), real-EOS resolver (`3106550`), import-unsloth-first + pre-render via `apply_chat_template` (`b6927cc`), worker `LD_LIBRARY_PATH` for cu13 nvJitLink (`9ca376c`). Verified `b5-retry-2` training `completed` in 49 s on 4060 Ti, mlflow_run_id `be62ce9063…`, ModelArtifact `f2086b81…` registered with 22.99 MB LoRA on MinIO. |
 | B6 | GGUF export pipeline (LoRA → merged HF → f16 GGUF → q4_k_m) | ✅ | Done — 6 commits over Session 14, see resolution summary below. Verified on RTX 5000 Ada VM: artifact `65a05a2b…` exported 770 MB `model.q4_k_m.gguf` to `s3://models/exports/65a05a2b…/gguf` in ~90 s; `export_error_message` cleared on success. Final commit `b581fdb`. |
 | B7 | `model.export` Celery task fails silently — no error written to `ModelArtifact` row | ✅ | Done — added `export_error_message` column (migration `0002_export_error`), worker writes `(str(exc) or repr(exc))[:4000]` on except, clears on success. Commit `2e3498f` + revision-id shortening fix `61b72f2`. Functioned perfectly during B6 iteration: 6 distinct error messages surfaced instantly via `GET /api/v1/models/{id}.export_error_message`, no log diving required. |
-| **B8** | **Ollama `/api/create` schema migration (`modelfile` → `from`/`files`)** | **⏳** | **See plan below — Ollama daemon now rejects the legacy `modelfile` field with `{"error":"neither 'from' or 'files' was specified"}`. B6 part 6 (`b581fdb`) made registration best-effort so `gguf_uri` persists, but `ollama_model_tag` stays null and the OpenAI-compatible inference router can't resolve the artifact. Need to compute SHA-256 of GGUF, upload via `POST /api/blobs/sha256:HASH`, then `POST /api/create` with `{model, files: {"model.gguf": "sha256:HASH"}, parameters: {...}}`.** |
+| B8 | Ollama `/api/create` schema migration (`modelfile` → `from`/`files`) | ✅ | Done — `OllamaClient.upload_blob()` + `create_from_blob()`; `_register_with_ollama` rewritten; legacy `build_modelfile`/`create_from_modelfile` deleted. Commit `137adec`. Plus follow-up `3e8730b` to relax response-side Pydantic `extra="forbid"` so Ollama's `system_fingerprint` field doesn't 500 inference. Verified: `POST /api/v1/inference/chat/completions` returns `"Paris."` end-to-end on artifact `65a05a2b…`. |
 
 ### B5 — Resolution summary (Session 13)
 
@@ -153,21 +153,15 @@ The "pre-install llama.cpp in worker.Dockerfile" plan from Session 13 unblocked 
 | 6 | `ollama create failed: …'from' or 'files'…` | Ollama API change; made registration best-effort |
 | 7 | (success) `gguf_uri=s3://models/exports/65a05a2b…/gguf`, `ollama_model_tag=null` | B6 closed; B8 opened |
 
-### B8 — Plan: migrate Ollama `/api/create` to the blob+files schema
+### B8 — Resolution summary (Session 14, same day)
 
-**Diagnosis:** Ollama daemon (we're on the version pulled fresh in Session 14) rejects the legacy `{name, modelfile, stream}` body that `OllamaClient.create_from_modelfile` still sends. The new schema requires the GGUF to be uploaded as a content-addressable blob first, then referenced by digest in the create call. The current `_register_with_ollama` is wrapped in try/except (commit `b581fdb`) so failed registration doesn't lose the rest of the export, but `ollama_model_tag` stays null and the OpenAI-compatible inference router has nothing to point at.
+After B6 closed, exercising `POST /api/v1/models/{id}/export` against the new flow surfaced two more issues in sequence — both fixed within the same session:
 
-**Fix:**
-1. Add to `workers/ollama_client.py`:
-   - `upload_blob(file_path: str) -> str` — streams the GGUF file body into `POST /api/blobs/sha256:<HASH>`; returns `sha256:<HASH>`. Pre-compute the digest (sha256 over the file bytes) before issuing the request — Ollama uses it as both the URL path and the canonical key.
-   - `create_from_blob(*, tag: str, digest: str, parameters: dict[str, Any] | None = None, system: str | None = None, template: str | None = None) -> None` — `POST /api/create` with `{"model": tag, "files": {"model.gguf": digest}, "parameters": parameters or {}, "system": system, "template": template}`.
-2. Replace the `build_modelfile` + `create_from_modelfile` call in `_register_with_ollama` with a call sequence: `upload_blob(gguf_path)` → `create_from_blob(tag=…, digest=…, parameters={"temperature": 0.0, "num_ctx": 2048})`.
-3. Remove `build_modelfile` and `create_from_modelfile` once the new flow is verified — keeping both invites future regressions where someone copies the old path.
-4. Verify on the VM: `curl /api/v1/models/{id}` shows `ollama_model_tag = "slm/<id8>"` and `curl http://localhost:11434/api/tags` lists the tag. Then exercise `POST /api/v1/inference/chat/completions` with `model = <artifact_id>` and confirm a non-empty completion comes back.
+1. **Ollama legacy schema gone** (`137adec`) — replaced `build_modelfile` + `create_from_modelfile` with `upload_blob` (sha256 streamed in 64 KB chunks to `POST /api/blobs/sha256:<HEX>`) + `create_from_blob` (`POST /api/create` with `{model, files: {"model.gguf": digest}, parameters: {...}}`). The blob upload also frees us from needing a shared volume between worker and ollama containers — Ollama stores the blob in its own filesystem.
 
-**Workflow:** edit + push → on VM `git pull && docker compose build worker && docker compose up -d worker` → re-export the existing artifact `65a05a2b…` (LoRA + adapter on MinIO; the second `POST /export` is idempotent for our DB writes since `art.gguf_uri` just reassigns).
+2. **Inference 500 on `extra="forbid"`** (`3e8730b`) — first real `POST /api/v1/inference/chat/completions` call hit a `ValidationError: system_fingerprint Extra inputs are not permitted` because Ollama 0.5+ matches OpenAI's added `system_fingerprint: 'fp_ollama'` field, and our pass-through response schemas were strict. Flipped response-side schemas (`ChatCompletionResponse`, `…Choice`, `…Usage`, `ChatMessage`, `CompletionResponse`, `ModelDescriptor*`) to `extra="ignore"`; request schemas keep `extra="forbid"` so caller mistakes still surface.
 
-Once B8 is green the full lifecycle smoke (`§16 #1–9` of `SWAGGER_GUIDE.md`) is verified end-to-end for the first time.
+**Smoke confirmation:** `model: <UUID>`, `messages: [{role:user, content:"What is the capital of France? Answer in one word."}]` → `"Paris."` with `finish_reason=stop`, 22 / 3 / 25 tokens. The trained QA adapter is being applied — the seed had five capital-city Q/A pairs including France→Paris.
 
 ---
 
