@@ -236,19 +236,28 @@ def build_judge_prompt(
 ) -> Prompt:
     """Build one Judge prompt for a single candidate row.
 
-    Args:
-        task_type: which row shape the judge is grading.
-        task_description: same string the Generator saw, for fidelity grounding.
-        row: ONE candidate row, in canonical schema.
-        classification_labels: full closed label set (cls only).
-        tool_definitions: full tool catalog (tool_calling only).
+    Detects sentinel rows (label="unknown" for classification, answer.name=
+    "no_tool_needed" for tool_calling) and uses a sentinel-specific rubric
+    so the Judge doesn't reject them for "not fitting a real label" — the
+    whole point of a sentinel is to capture off-topic / out-of-scope content.
     """
-    rubric = _judge_rubric(task_type)
+    is_sentinel = _row_is_sentinel(task_type, row)
+    rubric = _judge_rubric(task_type, is_sentinel=is_sentinel)
     parts = [
         f"[Task description]\n{task_description.strip()}",
         f"[Row to evaluate]\n{json.dumps(row, ensure_ascii=False, indent=2)}",
         f"[Rubric]\n{rubric}",
     ]
+    if is_sentinel:
+        parts.append(
+            "[Sentinel row]\n"
+            "This row was deliberately produced for the off-topic / "
+            "out-of-scope sentinel class. Score HIGH if the row genuinely "
+            "fails to fit any real class/tool (which is what makes it useful "
+            "training data for teaching the model when to refuse). Do NOT "
+            "penalise it for not matching a real label or tool — that "
+            "mismatch IS the point."
+        )
     if task_type is TaskType.CLASSIFICATION and classification_labels is not None:
         parts.append(
             "[Closed label set]\n"
@@ -273,7 +282,27 @@ def build_judge_prompt(
     return Prompt(system=_JUDGE_SYSTEM, user="\n\n".join(parts))
 
 
-def _judge_rubric(task_type: TaskType) -> str:
+def _row_is_sentinel(task_type: TaskType, row: dict[str, Any]) -> bool:
+    """Detect whether the row was generated for the sentinel class."""
+    # Local imports — `prompts` should not eagerly depend on constants
+    # (which transitively pull MinIO etc).
+    from .constants import (
+        CLASSIFICATION_SENTINEL_LABEL,
+        TOOL_CALLING_SENTINEL_NAME,
+    )
+
+    if task_type is TaskType.CLASSIFICATION:
+        return str(row.get("label", "")).strip() == CLASSIFICATION_SENTINEL_LABEL
+    if task_type is TaskType.TOOL_CALLING:
+        try:
+            inner = json.loads(row.get("answer", "{}"))
+            return str(inner.get("name", "")).strip() == TOOL_CALLING_SENTINEL_NAME
+        except (ValueError, TypeError):
+            return False
+    return False  # QA has no sentinel
+
+
+def _judge_rubric(task_type: TaskType, *, is_sentinel: bool = False) -> str:
     if task_type is TaskType.QA:
         return (
             "fidelity     — does the answer correctly answer the question, "
@@ -284,12 +313,35 @@ def _judge_rubric(task_type: TaskType) -> str:
             "the described task?"
         )
     if task_type is TaskType.CLASSIFICATION:
+        if is_sentinel:
+            return (
+                "fidelity     — is the text genuinely off-topic / out-of-scope "
+                "for the closed real-label set, making 'unknown' the correct "
+                "catch-all assignment? Score HIGH (>=0.8) if YES.\n"
+                "naturalness  — would a real user actually send this kind of "
+                "off-topic / ambiguous message in any context?\n"
+                "utility      — is this 'unknown'-labeled row useful training "
+                "material for teaching the classifier when to refuse "
+                "classification?"
+            )
         return (
             "fidelity     — does the text actually belong to the assigned "
             "label given the task description?\n"
             "naturalness  — would a real user write text like this?\n"
             "utility      — is this row useful training material for the "
             "described classifier?"
+        )
+    # tool_calling
+    if is_sentinel:
+        return (
+            "fidelity     — is the user's question genuinely outside the "
+            "available tool catalog (off-topic, ambiguous, or for a tool "
+            "that simply does not exist in the catalog), making "
+            "'no_tool_needed' the correct refusal? Score HIGH (>=0.8) if YES.\n"
+            "naturalness  — would a real user phrase such an out-of-scope "
+            "request this way?\n"
+            "utility      — is this 'no_tool_needed' row useful training "
+            "material for teaching the model when to refuse to call any tool?"
         )
     return (
         "fidelity     — given the user's question, is the chosen tool + "
