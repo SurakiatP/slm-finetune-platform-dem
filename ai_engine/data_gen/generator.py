@@ -190,10 +190,13 @@ class SyntheticDataGenerator:
             if request.tool_calling_config is not None:
                 tool_defs = list(request.tool_calling_config.tool_definitions)
 
-        # In with_seed mode, classification labels come from the seed rows;
-        # tool definitions are not derivable from seeds (caller must provide
-        # them via description_only mode, or the SDG falls back to "no
-        # tool definition" — the Judge will catch invalid calls).
+        # In with_seed mode, the catalog comes from the seed rows. For
+        # classification we collect the unique `label` values; for
+        # tool_calling we collect the unique tool names from each row's
+        # JSON-encoded `answer` and synthesise a minimal ToolDefinition
+        # for each one (the per-tool seed rows are then used as
+        # in-context examples, so parameter schemas are conveyed via the
+        # examples themselves).
         if request.task_type is TaskType.CLASSIFICATION and cls_labels is None:
             if seed_rows:
                 cls_labels = sorted(
@@ -203,6 +206,33 @@ class SyntheticDataGenerator:
                     raise ValueError(
                         "Could not derive classification labels from seed rows"
                     )
+        if request.task_type is TaskType.TOOL_CALLING and tool_defs is None:
+            if seed_rows:
+                import json as _json
+
+                names: list[str] = []
+                seen: set[str] = set()
+                for r in seed_rows:
+                    try:
+                        inner = _json.loads(r.get("answer", "{}"))
+                        name = str(inner.get("name", "")).strip()
+                    except (ValueError, TypeError):
+                        continue
+                    if name and name not in seen:
+                        seen.add(name)
+                        names.append(name)
+                if not names:
+                    raise ValueError(
+                        "Could not derive tool names from seed rows"
+                    )
+                tool_defs = [
+                    ToolDefinition(
+                        name=n,
+                        description="Tool derived from seed dataset; parameter schema inferred from in-context examples.",
+                        parameters={},
+                    )
+                    for n in names
+                ]
 
         # Sentinel injection: append/inject before computing quota so they
         # participate in the rotation.
