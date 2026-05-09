@@ -1,8 +1,27 @@
-"""Prompt builders for synthetic data generation.
+"""Prompt builders for the Phase 9 SDG pipeline.
 
-Six combinations: 3 task types × 2 SDG modes (with_seed / description_only).
-All prompts ask the teacher to emit `{"samples": [<rows>]}` so we can rely on
-OpenRouter's `response_format={"type": "json_object"}` (top-level object required).
+Five prompt families live here:
+
+  • Generator — RTC-FO templates per task type. Each call asks for
+    `CANDIDATES_PER_GEN_CALL` candidates so we get throughput per request.
+
+  • Judge — task-aware rubric (fidelity / naturalness / utility),
+    JSON-mode output.
+
+  • Meta-prompter — diversity-rule + sentinel-rule generator. Output
+    parsed by `meta_prompter.parse_meta_response`.
+
+  • Format Detection — schema mismatch + key-rename. Lives in
+    `format_detector.py` (built inline because it needs the canonical
+    key set), so this file does not export a Format Detection builder.
+
+  • PDF → QA — multimodal Generator for the first iteration of QA + PDF.
+
+The old Phase 4 builders (`build_prompt`, `Prompt`, `JSON_OBJECT_RESPONSE_FORMAT`)
+are kept here in spirit: `Prompt` remains the dataclass, and the
+`JSON_OBJECT_RESPONSE_FORMAT` constant is re-exported. The dispatcher
+function name changes — Generator is now `build_generator_prompt` since
+the same module also builds Judge prompts.
 """
 
 from __future__ import annotations
@@ -12,179 +31,426 @@ from dataclasses import dataclass
 from typing import Any
 
 from api.schemas.data_formats import ToolDefinition
-from api.schemas.enums import SDGMode, TaskType
+from api.schemas.enums import TaskType
+
+from .constants import CANDIDATES_PER_GEN_CALL
 
 
 @dataclass(frozen=True)
 class Prompt:
+    """A single (system, user) prompt pair."""
+
     system: str
     user: str
 
-    def as_messages(self) -> list[dict[str, str]]:
-        return [
-            {"role": "system", "content": self.system},
-            {"role": "user", "content": self.user},
-        ]
+
+JSON_OBJECT_RESPONSE_FORMAT = {"type": "json_object"}
+"""OpenRouter response_format for JSON-mode."""
 
 
-_BASE_SYSTEM = (
+# ---------------------------------------------------------------------------
+# Generator system prompts
+# ---------------------------------------------------------------------------
+
+
+_GENERATOR_BASE_SYSTEM = (
     "You are a synthetic data generation assistant for fine-tuning small "
-    "language models. You produce high-quality, diverse training data in strict "
-    "JSON format. You never include explanations or markdown — only the JSON object "
-    'matching the schema {"samples": [...]}.'
+    "language models. You produce high-quality, diverse training data in "
+    "strict JSON format. You never include explanations or markdown — only "
+    "the JSON object matching the schema requested."
 )
 
-
-# ---- Per-task system blurbs (appended to _BASE_SYSTEM) --------------------
-
-_TASK_INSTRUCTIONS: dict[TaskType, str] = {
+_GENERATOR_SYSTEMS: dict[TaskType, str] = {
     TaskType.CLASSIFICATION: (
-        "You are generating CLASSIFICATION training data. Each sample is "
-        '{"text": "<input>", "label": "<one of the closed label set>"}.'
+        f"{_GENERATOR_BASE_SYSTEM}\n\n"
+        "[Role] You generate CLASSIFICATION training data. Each output row "
+        'is {"text": "<input>", "label": "<one of the closed label set>"}.'
     ),
     TaskType.TOOL_CALLING: (
-        "You are generating TOOL CALLING training data. Each sample is "
-        '{"question": "<user instruction>", "answer": "<JSON STRING containing '
-        '\\"name\\" and \\"parameters\\">"}. The `answer` field MUST be a string '
-        "(JSON-encoded), not an object."
+        f"{_GENERATOR_BASE_SYSTEM}\n\n"
+        "[Role] You generate TOOL CALLING training data. Each output row "
+        'is {"question": "<user instruction>", "answer": "<JSON STRING '
+        'containing \\"name\\" and \\"parameters\\">"}. The `answer` field '
+        "MUST be a string (JSON-encoded), not an object."
     ),
     TaskType.QA: (
-        "You are generating QUESTION-ANSWERING training data. Each sample is "
-        '{"question": "<user question>", "answer": "<free-form helpful answer>"}.'
+        f"{_GENERATOR_BASE_SYSTEM}\n\n"
+        "[Role] You generate QUESTION-ANSWERING training data. Each output "
+        'row is {"question": "<user question>", "answer": "<helpful answer>"}.'
     ),
 }
 
 
-# ---- Helpers --------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Generator user prompts (RTC-FO)
+# ---------------------------------------------------------------------------
 
 
-def _json_block(label: str, data: Any) -> str:
-    return f"{label}:\n```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```"
-
-
-def _shared_user_footer(batch_size: int) -> str:
-    return (
-        f"Generate exactly {batch_size} samples. Make them diverse — vary "
-        "topic, phrasing, length, and edge cases. Avoid duplicating any "
-        "examples shown above.\n\n"
-        f'Return ONLY this JSON object (no prose, no markdown fences):\n'
-        f'{{"samples": [<{batch_size} rows>]}}'
-    )
-
-
-# ---- Task-specific user-prompt builders -----------------------------------
-
-
-def _classification_user(
-    *,
-    task_description: str,
-    batch_size: int,
-    seed_data: list[dict[str, Any]] | None,
-    labels: list[str] | None,
-) -> str:
-    parts = [f"Task description:\n{task_description.strip()}"]
-    if labels is not None:
-        parts.append(_json_block("Allowed labels (closed set — never use any other label)", labels))
-    if seed_data:
-        parts.append(_json_block(f"Seed examples ({len(seed_data)} rows)", seed_data))
-    parts.append(_shared_user_footer(batch_size))
-    return "\n\n".join(parts)
-
-
-def _tool_calling_user(
-    *,
-    task_description: str,
-    batch_size: int,
-    seed_data: list[dict[str, Any]] | None,
-    tool_definitions: list[ToolDefinition] | None,
-) -> str:
-    parts = [f"Task description:\n{task_description.strip()}"]
-    if tool_definitions is not None:
-        tools_payload = [t.model_dump(mode="json") for t in tool_definitions]
-        parts.append(
-            _json_block(
-                "Available tools (only invoke tools from this list; "
-                "parameter names and types must match)",
-                tools_payload,
-            )
-        )
-    if seed_data:
-        parts.append(_json_block(f"Seed examples ({len(seed_data)} rows)", seed_data))
-    parts.append(
-        "Reminder: each sample's `answer` is a STRING containing JSON, "
-        'e.g. "{\\"name\\":\\"set_oven\\",\\"parameters\\":{\\"celsius\\":250}}".'
-    )
-    parts.append(_shared_user_footer(batch_size))
-    return "\n\n".join(parts)
-
-
-def _qa_user(
-    *,
-    task_description: str,
-    batch_size: int,
-    seed_data: list[dict[str, Any]] | None,
-) -> str:
-    parts = [f"Task description:\n{task_description.strip()}"]
-    if seed_data:
-        parts.append(_json_block(f"Seed examples ({len(seed_data)} rows)", seed_data))
-    parts.append(_shared_user_footer(batch_size))
-    return "\n\n".join(parts)
-
-
-# ---- Public dispatch ------------------------------------------------------
-
-
-def build_prompt(
+def build_generator_prompt(
     task_type: TaskType,
-    sdg_mode: SDGMode,
     *,
     task_description: str,
-    batch_size: int,
-    seed_data: list[dict[str, Any]] | None = None,
+    label_or_tool: str | None,
+    examples: list[dict[str, Any]] | None,
+    diversity_rule: str,
+    difficulty: str,
     classification_labels: list[str] | None = None,
     tool_definitions: list[ToolDefinition] | None = None,
+    is_sentinel: bool = False,
 ) -> Prompt:
-    """Build one (system, user) pair for a single SDG batch call.
+    """Build one Generator prompt requesting CANDIDATES_PER_GEN_CALL outputs.
 
-    Validation precondition: the caller (Pydantic at the API boundary) has
-    already enforced mode-specific required fields, so we only need light
-    consistency checks here.
+    Args:
+        task_type: which sample shape the model emits.
+        task_description: user-supplied natural-language task spec.
+        label_or_tool: target label (classification) or tool name
+            (tool_calling). None for QA.
+        examples: a few-shot pool drawn from seeds (or empty for sentinel rows).
+        diversity_rule: one rule from the rotating coverage pool.
+        difficulty: one of `DIFFICULTY_LEVELS` from the rotating pool.
+        classification_labels: full closed label set (incl. sentinel) for
+            classification — needed inside the prompt so the model can
+            confirm its picks.
+        tool_definitions: full tool catalog (incl. sentinel) for
+            tool_calling.
+        is_sentinel: True when the row is intended to land in the sentinel
+            class (`unknown` / `no_tool_needed`).
     """
-    if batch_size < 1:
-        raise ValueError("batch_size must be >= 1")
-
-    if sdg_mode is SDGMode.WITH_SEED and not seed_data:
-        raise ValueError("with_seed mode requires seed_data")
-
-    system = f"{_BASE_SYSTEM}\n\n{_TASK_INSTRUCTIONS[task_type]}"
-
-    if task_type is TaskType.CLASSIFICATION:
-        user = _classification_user(
-            task_description=task_description,
-            batch_size=batch_size,
-            seed_data=seed_data,
-            labels=classification_labels,
-        )
-    elif task_type is TaskType.TOOL_CALLING:
-        user = _tool_calling_user(
-            task_description=task_description,
-            batch_size=batch_size,
-            seed_data=seed_data,
-            tool_definitions=tool_definitions,
-        )
-    elif task_type is TaskType.QA:
-        user = _qa_user(
-            task_description=task_description,
-            batch_size=batch_size,
-            seed_data=seed_data,
-        )
-    else:  # pragma: no cover — TaskType is exhaustive
-        raise ValueError(f"Unsupported task_type: {task_type}")
-
+    system = _GENERATOR_SYSTEMS[task_type]
+    user = _build_generator_user(
+        task_type=task_type,
+        task_description=task_description,
+        label_or_tool=label_or_tool,
+        examples=examples,
+        diversity_rule=diversity_rule,
+        difficulty=difficulty,
+        classification_labels=classification_labels,
+        tool_definitions=tool_definitions,
+        is_sentinel=is_sentinel,
+    )
     return Prompt(system=system, user=user)
 
 
-JSON_OBJECT_RESPONSE_FORMAT = {"type": "json_object"}
+def _build_generator_user(
+    *,
+    task_type: TaskType,
+    task_description: str,
+    label_or_tool: str | None,
+    examples: list[dict[str, Any]] | None,
+    diversity_rule: str,
+    difficulty: str,
+    classification_labels: list[str] | None,
+    tool_definitions: list[ToolDefinition] | None,
+    is_sentinel: bool,
+) -> str:
+    parts: list[str] = []
+    parts.append(f"[Task]\n{task_description.strip()}")
+
+    if task_type is TaskType.CLASSIFICATION:
+        if classification_labels is not None:
+            parts.append(
+                "[Closed label set — never invent a new label]\n"
+                + json.dumps(classification_labels, ensure_ascii=False)
+            )
+        if is_sentinel:
+            parts.append(
+                f"[Target label]\n{label_or_tool!r} — generate inputs that "
+                "DO NOT fit any of the real labels above. Off-topic, "
+                "ambiguous, or out-of-domain prompts."
+            )
+        else:
+            parts.append(f"[Target label]\n{label_or_tool!r}")
+    elif task_type is TaskType.TOOL_CALLING:
+        if tool_definitions is not None:
+            tools_payload = [t.model_dump(mode="json") for t in tool_definitions]
+            parts.append(
+                "[Available tools — only invoke from this list; parameter "
+                "names + types must match]\n"
+                + json.dumps(tools_payload, ensure_ascii=False, indent=2)
+            )
+        if is_sentinel:
+            parts.append(
+                f"[Target tool]\n{label_or_tool!r} — generate user inputs "
+                "that do NOT match any real tool (off-topic small talk, "
+                "ambiguous queries, requests outside the catalog). The "
+                "answer should call the sentinel tool with no parameters."
+            )
+        else:
+            parts.append(f"[Target tool]\n{label_or_tool!r}")
+    # QA has no per-row label / tool — nothing to add here.
+
+    if examples:
+        parts.append(
+            f"[Few-shot examples ({len(examples)} rows)]\n"
+            + json.dumps(examples, ensure_ascii=False, indent=2)
+        )
+
+    parts.append(
+        f"[Diversity rule for this batch]\n{diversity_rule}\n\n"
+        f"[Difficulty]\n{difficulty}"
+    )
+    parts.append(_generator_output_instructions(task_type))
+    return "\n\n".join(parts)
 
 
-__all__ = ["Prompt", "build_prompt", "JSON_OBJECT_RESPONSE_FORMAT"]
+def _generator_output_instructions(task_type: TaskType) -> str:
+    if task_type is TaskType.CLASSIFICATION:
+        row_shape = '{"text": "...", "label": "..."}'
+    elif task_type is TaskType.TOOL_CALLING:
+        row_shape = (
+            '{"question": "...", "answer": "{\\"name\\":\\"...\\","'
+            '"parameters\\":{...}}"}'
+        )
+    else:
+        row_shape = '{"question": "...", "answer": "..."}'
+    return (
+        "[Output Instructions]\n"
+        f"1. Produce EXACTLY {CANDIDATES_PER_GEN_CALL} rows in the schema {row_shape}.\n"
+        "2. Apply the diversity rule and difficulty above to keep this "
+        "batch distinct from anything that came before.\n"
+        "3. Output ONLY this JSON object (no prose, no markdown fences):\n"
+        f'   {{"samples": [<{CANDIDATES_PER_GEN_CALL} rows>]}}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Judge prompts
+# ---------------------------------------------------------------------------
+
+
+_JUDGE_SYSTEM = (
+    "You are an evaluator of synthetic training data. You score one row "
+    "on three axes — fidelity, naturalness, utility — each in [0.0, 1.0]. "
+    "You output ONLY a JSON object matching the schema; no prose, no "
+    "markdown, no explanation outside the `reasoning` field."
+)
+
+
+def build_judge_prompt(
+    task_type: TaskType,
+    *,
+    task_description: str,
+    row: dict[str, Any],
+    classification_labels: list[str] | None = None,
+    tool_definitions: list[ToolDefinition] | None = None,
+) -> Prompt:
+    """Build one Judge prompt for a single candidate row.
+
+    Args:
+        task_type: which row shape the judge is grading.
+        task_description: same string the Generator saw, for fidelity grounding.
+        row: ONE candidate row, in canonical schema.
+        classification_labels: full closed label set (cls only).
+        tool_definitions: full tool catalog (tool_calling only).
+    """
+    rubric = _judge_rubric(task_type)
+    parts = [
+        f"[Task description]\n{task_description.strip()}",
+        f"[Row to evaluate]\n{json.dumps(row, ensure_ascii=False, indent=2)}",
+        f"[Rubric]\n{rubric}",
+    ]
+    if task_type is TaskType.CLASSIFICATION and classification_labels is not None:
+        parts.append(
+            "[Closed label set]\n"
+            + json.dumps(classification_labels, ensure_ascii=False)
+        )
+    if task_type is TaskType.TOOL_CALLING and tool_definitions is not None:
+        parts.append(
+            "[Tool catalog]\n"
+            + json.dumps(
+                [t.model_dump(mode="json") for t in tool_definitions],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    parts.append(
+        "[Output Instructions]\n"
+        "Output ONLY this JSON object (no markdown, no explanation outside "
+        "`reasoning`):\n"
+        '{"fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>, '
+        '"reasoning": "<one short sentence>"}'
+    )
+    return Prompt(system=_JUDGE_SYSTEM, user="\n\n".join(parts))
+
+
+def _judge_rubric(task_type: TaskType) -> str:
+    if task_type is TaskType.QA:
+        return (
+            "fidelity     — does the answer correctly answer the question, "
+            "consistent with the task description?\n"
+            "naturalness  — would a real user phrase the question this way "
+            "and find this answer helpful?\n"
+            "utility      — is this Q&A pair useful training material for "
+            "the described task?"
+        )
+    if task_type is TaskType.CLASSIFICATION:
+        return (
+            "fidelity     — does the text actually belong to the assigned "
+            "label given the task description?\n"
+            "naturalness  — would a real user write text like this?\n"
+            "utility      — is this row useful training material for the "
+            "described classifier?"
+        )
+    return (
+        "fidelity     — given the user's question, is the chosen tool + "
+        "parameter set the correct one?\n"
+        "naturalness  — would a real user phrase the request this way?\n"
+        "utility      — is this row useful training material for the "
+        "described tool-calling task?"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Meta-prompter (diversity rules)
+# ---------------------------------------------------------------------------
+
+
+_META_SYSTEM = (
+    "You design diversity rules for a synthetic data generation pipeline. "
+    "You output ONLY a JSON object matching the schema; no prose, no "
+    "markdown, no explanation."
+)
+
+
+def build_meta_prompt(
+    task_type: TaskType,
+    *,
+    task_description: str,
+    classification_labels: list[str] | None = None,
+    tool_definitions: list[ToolDefinition] | None = None,
+    include_unknown: bool = False,
+) -> Prompt:
+    """Build the one-shot meta-prompt asked at job start.
+
+    Output is parsed by `meta_prompter.parse_meta_response(include_unknown=...)`.
+    """
+    parts = [
+        f"[Task type]\n{task_type.value}",
+        f"[Task description]\n{task_description.strip()}",
+    ]
+    if task_type is TaskType.CLASSIFICATION and classification_labels is not None:
+        parts.append(
+            "[Label set]\n" + json.dumps(classification_labels, ensure_ascii=False)
+        )
+    if task_type is TaskType.TOOL_CALLING and tool_definitions is not None:
+        parts.append(
+            "[Tool catalog]\n"
+            + json.dumps(
+                [t.model_dump(mode="json") for t in tool_definitions],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+
+    schema_part: str
+    if include_unknown:
+        schema_part = (
+            '{"diversity_rules": ["...", ... (>=8)], '
+            '"unknown_diversity_rules": ["...", ... (>=5)]}'
+        )
+        unknown_clause = (
+            "Also produce >= 5 rules describing OFF-TOPIC / out-of-scope / "
+            "ambiguous user inputs that should land in the sentinel class.\n"
+        )
+    else:
+        schema_part = '{"diversity_rules": ["...", ... (>=8)]}'
+        unknown_clause = ""
+
+    parts.append(
+        "[Output Instructions]\n"
+        "Produce >= 8 stylistic diversity rules covering topic, phrasing, "
+        "register, length, and edge cases for synthetic rows in this task. "
+        "Each rule is one short sentence.\n"
+        f"{unknown_clause}"
+        f"Output ONLY this JSON object: {schema_part}"
+    )
+
+    return Prompt(system=_META_SYSTEM, user="\n\n".join(parts))
+
+
+# ---------------------------------------------------------------------------
+# PDF → QA (multimodal)
+# ---------------------------------------------------------------------------
+
+
+_PDF_QA_SYSTEM = (
+    "You extract question-answer training pairs from documents. You output "
+    "ONLY a JSON object matching the schema; no prose, no markdown."
+)
+
+
+def build_pdf_qa_messages(
+    *,
+    task_description: str,
+    num_samples: int,
+    pdf_data_url: str,
+) -> list[dict[str, Any]]:
+    """Build the multimodal messages list for one PDF → QA call.
+
+    Returns the raw OpenAI-format messages (caller passes to
+    `OpenRouterClient.chat_raw(messages=...)`).
+    """
+    text_part = (
+        f"[Task description]\n{task_description.strip()}\n\n"
+        f"[Output Instructions]\n"
+        f"1. Read the attached PDF and produce {num_samples} diverse, "
+        "factually-grounded Q&A pairs that test understanding of its content.\n"
+        "2. Each Q&A pair must be answerable from the document alone.\n"
+        "3. Vary question style: factual recall, comparison, 'why', procedural.\n"
+        "4. Answers should be concise (1–4 sentences) grounded in document text.\n"
+        '5. Output ONLY: {"samples": [{"question": "...", "answer": "..."}, ...]}'
+    )
+    return [
+        {"role": "system", "content": _PDF_QA_SYSTEM},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": text_part},
+                {
+                    "type": "file",
+                    "file": {
+                        "filename": "seed.pdf",
+                        "file_data": pdf_data_url,
+                    },
+                },
+            ],
+        },
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Generator response parsing
+# ---------------------------------------------------------------------------
+
+
+def parse_generator_response(raw: str) -> list[dict[str, Any]]:
+    """Parse `{"samples": [...]}`. Tolerates accidental markdown fences.
+
+    Raises `ValueError` if the JSON shape is wrong (caller treats this as
+    a parse failure for the loop's failure counter).
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.lstrip("`")
+        if text.lower().startswith("json"):
+            text = text[4:]
+        text = text.split("```", 1)[0].strip()
+    obj = json.loads(text)
+    if not isinstance(obj, dict) or "samples" not in obj:
+        raise ValueError("response missing 'samples' key")
+    samples = obj["samples"]
+    if not isinstance(samples, list):
+        raise ValueError("'samples' must be a JSON array")
+    # Drop non-dict elements defensively.
+    return [s for s in samples if isinstance(s, dict)]
+
+
+__all__ = [
+    "Prompt",
+    "JSON_OBJECT_RESPONSE_FORMAT",
+    "build_generator_prompt",
+    "build_judge_prompt",
+    "build_meta_prompt",
+    "build_pdf_qa_messages",
+    "parse_generator_response",
+]

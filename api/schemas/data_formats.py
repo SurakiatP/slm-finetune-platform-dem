@@ -152,6 +152,29 @@ def parse_samples(task_type: TaskType, rows: list[dict[str, Any]]) -> list[BaseM
     return adapter.validate_python(rows)
 
 
+# Required keys by task type (the rest of the canonical set is just these
+# plus any optional ones; for our 3 task types every canonical key is required).
+_REQUIRED_KEYS_BY_TASK: dict[TaskType, set[str]] = {
+    TaskType.CLASSIFICATION: {"text", "label"},
+    TaskType.TOOL_CALLING: {"question", "answer"},
+    TaskType.QA: {"question", "answer"},
+}
+
+
+def canonical_field_names(task_type: TaskType) -> set[str]:
+    """Return the FULL canonical key set for one task type.
+
+    Used by Format Detection (Phase 9) to decide whether the LLM needs to be
+    invoked at all and to validate the proposed rename mapping.
+    """
+    return set(_REQUIRED_KEYS_BY_TASK[task_type])
+
+
+def required_field_names(task_type: TaskType) -> set[str]:
+    """Return the keys a row MUST have to be considered canonicalisable."""
+    return set(_REQUIRED_KEYS_BY_TASK[task_type])
+
+
 __all__ = [
     "ClassificationSample",
     "ToolCallAnswer",
@@ -162,4 +185,6 @@ __all__ = [
     "DataSample",
     "sample_model_for",
     "parse_samples",
+    "canonical_field_names",
+    "required_field_names",
 ]
