@@ -17,6 +17,7 @@ Flow:
 from __future__ import annotations
 
 import gc
+import json
 import os
 import shutil
 import subprocess
@@ -157,6 +158,22 @@ def export_model(
                         tokenizer,
                         save_method="merged_16bit",
                     )
+
+                    # Workaround transformers 4.57.2 bug at
+                    # tokenization_utils_base.py:2419 — when the saved
+                    # config.json has transformers_version <= 4.57.2,
+                    # _from_pretrained does `_config.model_type` on a
+                    # dict (json.load returned a dict, not a
+                    # PretrainedConfig). AttributeError. The check is
+                    # gated on version, so bumping the field in the
+                    # saved config skips the buggy branch entirely.
+                    cfg_path = os.path.join(stage_dir, "config.json")
+                    with open(cfg_path, "r", encoding="utf-8") as fh:
+                        cfg = json.load(fh)
+                    if cfg.get("transformers_version", "0") <= "4.57.2":
+                        cfg["transformers_version"] = "4.58.0"
+                        with open(cfg_path, "w", encoding="utf-8") as fh:
+                            json.dump(cfg, fh, indent=2)
 
                     out_dir = os.path.join(workdir, "gguf")
                     os.makedirs(out_dir, exist_ok=True)
