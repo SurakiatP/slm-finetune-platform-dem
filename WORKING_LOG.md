@@ -6,6 +6,103 @@
 
 ---
 
+## Session 15 — Phase 9 SDG Hardening end-to-end on `feature/sdg-improvements` (2026-05-09)
+
+**Who:** Claude (Opus 4.7) + parks (developer)
+**Status:** ✅ All three sub-phases (9.1 → 9.3) landed on a feature branch and pushed; awaiting Swagger-UI smoke from parks. 14 commits, 22 files changed (10 new, 11 modified, 1 ADR), 68/68 unit tests green.
+
+**Why & What:**
+- Implemented `PHASE9_SDG_HARDENING_SPEC.md` end to end on a fresh branch `feature/sdg-improvements` cut from `dev@59c12e2`. Approved decisions for the three open points: drop `teacher_model` cleanly (breaking — no prod traffic), Format Detection runs sync wrapped in `asyncio.to_thread` (single call per upload, doesn't justify async client overhead), AsyncOpenRouterClient appended to `openrouter_client.py` (matches OpenAI SDK precedent and keeps shared retry decorator co-located).
+- **Phase 9.1 (foundations, 3 commits):** added `datasketch>=1.6.0` + `pypdf>=5.0.0` to base deps; wrote ADR-007 (async LLM batching with `asyncio.gather` + semaphore) and registered it in ADR-INDEX; created `models.py` (5 hardcoded LLM identifiers) and `constants.py` (every Phase 9 tunable in one place: max_loops, judge threshold, MinHash params, batch sizes, sentinel ratio, PDF caps, difficulty levels); added `AsyncOpenRouterClient` to `openrouter_client.py` with `chat_batch` primitive (semaphore-bounded `asyncio.gather`, per-call tenacity retry, exceptions returned in-place rather than raised) plus `chat_raw` on the sync client for multimodal calls. 5 mock-server tests pass (ordering, error isolation, retry-then-success, concurrency cap, empty-input).
+- **Phase 9.2 (quality modules, 5 commits):** six pure-domain modules ported from parks's research scripts and adapted to the new naming. `minhash_dedup.MinHashDeduplicator` (datasketch LSH at threshold 0.90, 5-char-ngram, **with the short-text guard** — texts shorter than the n-gram width are hashed whole so 10-char classification labels don't all collide); `coverage_pool.make_coverage_pool` (cycles items so every entry is hit at least floor(n/k) times then shuffles); `judge.JudgeScore` (Pydantic model with `weighted` property = 0.4·F + 0.3·N + 0.3·U) + `parse_judge_response` (returns None on any error so parse-fail and low-score get separate counters); `meta_prompter.SDGRules` + `parse_meta_response` (schema-validates the LLM output; falls back to a hardcoded generic rule set when the LLM returns garbage; pads short unknown lists from the same fallback); `format_detector.detect_and_rename` (best-effort key-rename, skips the LLM entirely when seeds are already canonical, drops rows where required keys are still missing post-rename); `pdf_loader` (page/byte probe + base64 data-URL encoder for the multimodal call). Plus `api/schemas/upload.FormatDetectionReport` (audit Pydantic model persisted on `Dataset.generation_metadata['format_detection']` and returned in the upload-seed response body) and the new `canonical_field_names`/`required_field_names` helpers in `data_formats.py`. `prompts.py` rewritten with five prompt families (RTC-FO Generator, task-aware Judge, meta-prompter, multimodal PDF→QA, plus `parse_generator_response`); 16 prompt-builder tests cover label/tool/sentinel branches, candidate-count lock-in, judge rubric per task, meta-prompt include_unknown branch, and PDF multimodal shape. **51 unit tests added in 9.2; all green.**
+- **Phase 9.3 (wire end-to-end, 6 commits):** `SDGProgress` widened (phase Literal gains `format_detection`/`meta_prompting`/`judging`/`dedup`; optional fields `current_loop`, `judge_rejected`, `judge_parse_failures`, `dedup_rejected`); `SDGRequestWithSeed.seed_data` removed and `seed_dataset_id: UUID` added; `_SDGRequestBase.teacher_model` removed (Q6.1 hardcoding); `SeedUploadResponse` extended with `format_detection: FormatDetectionReport` + `pdf_uri: str | None`. `datasets_service.upload_seed_dataset()` split into `_upload_jsonl_seed` and `_upload_pdf_seed` based on content-type / extension; the JSONL path runs Format Detection via `asyncio.to_thread(...)` so we don't block the event loop; the PDF path probes size + page count (413/400 on breach), persists raw bytes to `seed-pdfs/{dataset_id}.pdf`, sets `pdf_uri` in metadata, and persists `num_samples=0` (Q&A pairs come later from the SDG generator). `delete_dataset()` cleans up both the JSONL and the PDF best-effort. `format_detector.passthrough_with_required_check` exposed publicly so the service layer can fall back gracefully when `OPENROUTER_API_KEY` is unset (dev environments still work). `sdg_service.submit_sdg_job` gates `seed_dataset_id` (404/400/409 on each failure mode + the QA-only PDF check). `generator.py` fully rewritten into an `async def generate(...)`: meta-prompter call → quota computation → sentinel injection (cls + tool) → MinHash seeding → PDF first pass (when applicable) → main loop with Generator batch / schema validation / Judge batch / MinHash dedup / quota-respecting collection / EMA-smoothed adaptive over-gen multiplier / per-loop progress emission. Worker rewritten so the Celery task body stays sync but crosses to async via a single `asyncio.run(_run_generator(...))`; constructs both clients (async for batches, sync for the multimodal PDF call) and tears the async client down via `__aexit__`. Examples (`python_client.py` + `quickstart_curl.sh`) and README updated to the upload-seed → seed_dataset_id flow + PDF upload section. Integration test `test_qa_full_flow` rewritten to assert `format_detection` is present in the upload response and to use `seed_dataset_id` instead of inline rows; three new integration tests assert that legacy `seed_data` and `teacher_model` payloads now 422 and that nonexistent `seed_dataset_id` 404s.
+
+**Test Summary:**
+- **Unit tests (`pytest tests/unit/ -q`):** 68/68 pass in ~7.5s.
+- **API smoke (`/openapi.json`):** 25 paths, 58 schemas. `SeedUploadResponse` carries `format_detection` and `pdf_uri`; `SDGRequestWithSeed` carries `seed_dataset_id` (no `seed_data`, no `teacher_model`). Validated by direct schema check via TypeAdapter — Phase 4 payloads with `seed_data` or `teacher_model` raise `ValidationError` (mapped to 422 by FastAPI).
+- **Integration tests:** not run locally — they need the full docker-compose stack. `test_qa_full_flow` is rewritten to the new flow; new `test_legacy_seed_data_field_rejected`, `test_legacy_teacher_model_field_rejected`, `test_seed_dataset_id_required_for_with_seed`, and `test_seed_dataset_id_must_exist` cases added. parks runs these via Swagger UI on the live stack as the next step.
+- **Worker import:** `from workers.tasks.data_generation import generate_synthetic_data` succeeds; the `asyncio.run` boundary + dual-client construction don't break the Celery task module load.
+
+**Decisions Made:**
+- **`teacher_model` removed cleanly, not deprecate-warned.** Silent-ignore would have been worse than a 422 — frontends that pass `teacher_model: "claude-sonnet"` would think they got Claude when they actually got Qwen. Per Phase 9 §13, breaking is OK; the schema change ships in the same commit set as `seed_data` removal so consumers update once.
+- **Format Detection is sync + `asyncio.to_thread`, not async client.** Single LLM call per upload (~0.5–1.5s), routing it through the batch primitive is overkill. The sync `OpenRouterClient` already exists; running it in a worker thread keeps the FastAPI event loop free for other requests with one line of code. AsyncOpenRouterClient stays focused on its actual job (Generator + Judge concurrency).
+- **`AsyncOpenRouterClient` appended to `openrouter_client.py` rather than split into a new file.** Co-locates sync + async, shares `OPENROUTER_BASE_URL` / `_RETRYABLE` / the tenacity policy, matches OpenAI SDK precedent (`from openai import OpenAI, AsyncOpenAI`). At ~250 lines the file is still readable; revisit only if it grows past ~500.
+- **Sentinel injection is in-memory, not persisted.** When the SDG generator runs a tool_calling job, it appends a synthetic `no_tool_needed` ToolDefinition to the working `tools_by_name` dict so the validator accepts sentinel rows — but never writes it back to the user's tool catalog. Same for `unknown` in classification. This keeps the user's input data untouched and avoids surprising round-trips.
+- **MinHash short-text guard ported verbatim.** Below n-gram width, the whole text is hashed as one token. Without it, every short classification label collapses to the same empty-shingle signature and dedup over-reports duplicates. Caught with `test_short_text_guard_avoids_universal_collision`.
+- **Best-effort fallbacks throughout.** Format Detection LLM error → "passthrough + required-key drop." Meta-prompter LLM error → hardcoded generic rules. PDF first-pass fails → continue with text-only Generator using only the seed pool. Judge whole-batch fails → skip the gate (better to ship lower-quality rows than abort the job entirely). Each fallback logs at WARNING so they're visible without aborting.
+- **Worker pool stays prefork.** `asyncio.run` builds a fresh event loop per Celery task — fine for SDG (one loop per job). No change to `celery_app.py` needed.
+
+**Files Touched:**
+
+NEW (10):
+- `ai_engine/data_gen/models.py` — 5 hardcoded LLM identifiers
+- `ai_engine/data_gen/constants.py` — every Phase 9 tunable
+- `ai_engine/data_gen/format_detector.py` — schema mismatch + key renamer
+- `ai_engine/data_gen/judge.py` — JudgeScore + parser
+- `ai_engine/data_gen/meta_prompter.py` — diversity rules + fallback
+- `ai_engine/data_gen/minhash_dedup.py` — LSH-backed dedup with short-text guard
+- `ai_engine/data_gen/coverage_pool.py` — rotation helper
+- `ai_engine/data_gen/pdf_loader.py` — probe + base64
+- `api/schemas/upload.py` — FormatDetectionReport
+- `docs/adr/ADR-007-async-llm-batching.md` — accepted
+
+MODIFIED (11):
+- `pyproject.toml` — +datasketch, +pypdf
+- `ai_engine/data_gen/openrouter_client.py` — +AsyncOpenRouterClient + chat_raw
+- `ai_engine/data_gen/prompts.py` — full rewrite, RTC-FO + 5 prompt families
+- `ai_engine/data_gen/generator.py` — full rewrite, async, multi-stage
+- `api/schemas/sdg.py` — seed_dataset_id, drop teacher_model, extend SeedUploadResponse
+- `api/schemas/progress.py` — extend SDGProgress
+- `api/schemas/data_formats.py` — +canonical_field_names + required_field_names
+- `api/services/datasets_service.py` — upload-seed PDF + Format Detection + delete cleanup
+- `api/services/sdg_service.py` — validate seed_dataset_id (4 failure paths)
+- `workers/tasks/data_generation.py` — asyncio.run boundary, dual-client construction
+- `tests/integration/test_full_flow.py` — rewrite test_qa_full_flow, add 4 contract tests
+- `examples/python_client.py` — upload-seed → seed_dataset_id flow
+- `examples/quickstart_curl.sh` — upload-seed → seed_dataset_id flow + PDF mention
+- `README.md` — API usage section reflects Phase 9 contract
+- `docs/adr/ADR-INDEX.md` — register ADR-007
+
+NEW TESTS (8 unit modules, 68 cases total):
+- `tests/unit/test_async_openrouter_client.py` — 5 cases
+- `tests/unit/test_minhash_dedup.py` — 7 cases
+- `tests/unit/test_coverage_pool.py` — 6 cases
+- `tests/unit/test_judge.py` — 7 cases
+- `tests/unit/test_meta_prompter.py` — 7 cases
+- `tests/unit/test_format_detector.py` — 8 cases
+- `tests/unit/test_pdf_loader.py` — 7 cases
+- `tests/unit/test_prompts.py` — 16 cases
+
+**Commits pushed to `origin/feature/sdg-improvements` (this session):**
+1. `0b1fc63` — feat(deps): add datasketch + pypdf; ADR-007 async LLM batching
+2. `be355eb` — feat(data_gen): add SDG model + threshold constants modules
+3. `7b32747` — feat(data_gen): add AsyncOpenRouterClient + chat_raw for batch + multimodal
+4. `36187b6` — feat(data_gen): MinHashLSH dedup + coverage pool helpers
+5. `68ecfd7` — feat(data_gen): LLM-as-Judge + meta-prompter (diversity rules)
+6. `5b46bf8` — feat(data_gen): Format Detection + PDF loader
+7. `acfa4a3` — feat(prompts+schemas): RTC-FO templates, FormatDetectionReport, canonical helpers
+8. `8743903` — refactor(api): seed_dataset_id replaces seed_data; drop teacher_model; SDGProgress adds Phase 9 fields
+9. `b0fc6e6` — feat(api): upload-seed accepts PDF for QA + runs Format Detection
+10. `f5fe435` — refactor(data_gen): async SDG generator with quota + sentinel + adaptive
+11. `0f5c834` — refactor(worker+service): asyncio.run boundary; validate seed_dataset_id
+12. (this entry — docs + integration tests + examples)
+
+**Next Action:**
+→ parks runs the live Swagger-UI smoke against `feature/sdg-improvements`:
+  1. `docker compose up -d` on the dev laptop (no GPU needed — SDG runs API-side, the worker is the LLM client).
+  2. Set `OPENROUTER_API_KEY` in `.env` (otherwise Format Detection logs a warning and falls back to passthrough).
+  3. Hit Swagger at `http://localhost:8000/docs`:
+     - `POST /api/v1/projects` → create a QA project
+     - `POST /api/v1/datasets/upload-seed` → upload a JSONL with mismatched keys (e.g. `text1`/`answer`) and confirm `format_detection.field_mapping` shows the rename
+     - `POST /api/v1/datasets/upload-seed` → upload a small PDF for QA and confirm `pdf_uri` is set
+     - `POST /api/v1/datasets/generate` with `seed_dataset_id` → confirm WS shows the new `format_detection`/`meta_prompting`/`judging` phases
+     - Verify legacy `seed_data` body returns 422
+  4. If all green → open PR `feature/sdg-improvements` → `dev`.
+
+**Blockers:** None.
+
+---
+
 ## Session 14 — Full-lifecycle smoke green: B6 + B7 + B8 all closed (2026-05-09)
 
 **Who:** Claude (Opus 4.7) + parks (developer)

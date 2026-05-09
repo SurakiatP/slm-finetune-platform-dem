@@ -167,6 +167,53 @@ curl -X POST http://localhost:8000/api/v1/projects \
 
 #### 2. Generate a synthetic dataset
 
+> **Phase 9 contract:** with_seed mode references a previously-uploaded
+> seed dataset via `seed_dataset_id` (no inline `seed_data`). Upload the
+> seed first, then submit the SDG job. The server picks the LLM models —
+> there is no `teacher_model` override.
+
+##### 2a. Upload seed examples
+
+```bash
+# Build a tiny JSONL seed file
+cat > /tmp/seed.jsonl <<'EOF'
+{"question": "Return window?", "answer": "30 days."}
+{"question": "Need a receipt?", "answer": "Yes, please keep it."}
+{"question": "Sale items returnable?", "answer": "Sale items are final."}
+{"question": "Refund timing?", "answer": "5-7 business days."}
+{"question": "Where to ship?", "answer": "Returns Lane 123."}
+EOF
+
+curl -X POST http://localhost:8000/api/v1/datasets/upload-seed \
+  -F "project_id=<project_id>" \
+  -F "task_type=qa" \
+  -F "name=seed-v1" \
+  -F "file=@/tmp/seed.jsonl;type=application/x-ndjson"
+# → 201 Created. Body: { dataset_id, format_detection, ... }
+#   Stash dataset_id as <seed_dataset_id> for step 2b.
+```
+
+The response includes a `format_detection` audit (`ran`, `field_mapping`,
+`rows_dropped`) — when uploaded keys don't match the canonical schema
+(`text`/`label` for classification, `question`/`answer` for QA / tools)
+the server runs a key-rename pass via gemini-2.5-flash-lite before
+persisting.
+
+For QA, you can also upload a **PDF** instead of JSONL — the SDG worker
+extracts Q&A pairs from the document on its first iteration:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/datasets/upload-seed \
+  -F "project_id=<project_id>" \
+  -F "task_type=qa" \
+  -F "file=@./policy.pdf;type=application/pdf"
+# → 201 Created. Body: { dataset_id, pdf_uri, ... }
+```
+
+PDFs are capped at 25 MiB / 100 pages.
+
+##### 2b. Submit the SDG job
+
 ```bash
 curl -X POST http://localhost:8000/api/v1/datasets/generate \
   -H 'Content-Type: application/json' \
@@ -176,16 +223,15 @@ curl -X POST http://localhost:8000/api/v1/datasets/generate \
     "task_type": "qa",
     "task_description": "Answer questions about our return policy",
     "num_samples": 200,
-    "seed_data": [
-      {"question": "Return window?", "answer": "30 days."},
-      {"question": "Need a receipt?", "answer": "Yes, please keep it."},
-      {"question": "Sale items returnable?", "answer": "Sale items are final."},
-      {"question": "Refund timing?", "answer": "5-7 business days."},
-      {"question": "Where to ship?", "answer": "Returns Lane 123."}
-    ]
+    "seed_dataset_id": "<seed_dataset_id>"
   }'
 # → 202 Accepted; subscribe to ws://localhost:8000/ws/jobs/{job_id} for progress
 ```
+
+The progress stream emits `SDGProgress` messages with phase markers
+(`format_detection`, `meta_prompting`, `generating`, `judging`, `dedup`,
+`persisting`) and per-loop counters (`current_loop`, `judge_rejected`,
+`judge_parse_failures`, `dedup_rejected`).
 
 #### 3. Submit a training job
 

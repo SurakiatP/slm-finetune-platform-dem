@@ -165,6 +165,38 @@ After B6 closed, exercising `POST /api/v1/models/{id}/export` against the new fl
 
 ---
 
+## Phase 9 — SDG Hardening (Sessions 15+)
+
+> Branch: `feature/sdg-improvements` (from `dev@59c12e2`). Spec:
+> [`PHASE9_SDG_HARDENING_SPEC.md`](./PHASE9_SDG_HARDENING_SPEC.md). All
+> three sub-phases shipped as 14 commits in Session 15; awaiting live
+> Swagger-UI smoke from parks before merging back to `dev`.
+
+| ID | Task | Status | Next Step |
+|----|------|--------|-----------|
+| H9.1.1 | datasketch + pypdf added to base deps | ✅ | Commit `0b1fc63` |
+| H9.1.2 | ADR-007 (async LLM batching) accepted + indexed | ✅ | Commit `0b1fc63` |
+| H9.1.3 | `models.py` — 5 hardcoded LLM identifiers (Q6.1) | ✅ | Commit `be355eb` |
+| H9.1.4 | `constants.py` — every Phase 9 tunable | ✅ | Commit `be355eb` |
+| H9.1.5 | `AsyncOpenRouterClient` + `chat_raw` for multimodal | ✅ | Commit `7b32747`; 5 mock-server tests green |
+| H9.2.1 | MinHashLSH dedup + short-text guard | ✅ | Commit `36187b6`; 7 unit tests |
+| H9.2.2 | Coverage pool helper | ✅ | Commit `36187b6`; 6 unit tests |
+| H9.2.3 | LLM-as-Judge (weighted 0.4/0.3/0.3) | ✅ | Commit `68ecfd7`; 7 unit tests |
+| H9.2.4 | Meta-prompter + hardcoded fallback | ✅ | Commit `68ecfd7`; 7 unit tests |
+| H9.2.5 | Format Detection (schema mismatch + key renamer) | ✅ | Commit `5b46bf8`; 8 unit tests |
+| H9.2.6 | PDF loader (probe + base64) | ✅ | Commit `5b46bf8`; 7 unit tests |
+| H9.2.7 | `canonical_field_names` + `FormatDetectionReport` | ✅ | Commit `acfa4a3` |
+| H9.2.8 | Prompts rewrite — RTC-FO 5 families | ✅ | Commit `acfa4a3`; 16 unit tests |
+| H9.3.1 | `SDGProgress` widened (judge/dedup/loop fields) | ✅ | Commit `8743903` |
+| H9.3.2 | `seed_dataset_id` replaces `seed_data`; drop `teacher_model` | ✅ | Commit `8743903` (breaking) |
+| H9.3.3 | Upload-seed accepts PDF for QA + runs Format Detection | ✅ | Commit `b0fc6e6`; PDF cleanup on delete |
+| H9.3.4 | Async SDG generator (quota + sentinel + adaptive) | ✅ | Commit `f5fe435` |
+| H9.3.5 | Worker `asyncio.run` boundary + `seed_dataset_id` validation | ✅ | Commit `0f5c834` |
+| H9.3.6 | Integration tests rewritten + examples + README | ✅ | This commit |
+| H9.3.7 | **Live Swagger smoke (parks)** | ⏳ | Run `docker compose up -d`, hit `/docs`, exercise upload-seed → generate. Then PR → `dev`. |
+
+---
+
 ## Out of Scope (do NOT build)
 
 - ❌ Authentication / user management
