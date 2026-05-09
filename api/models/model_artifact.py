@@ -40,5 +40,10 @@ class ModelArtifact(Base, TimestampMixin):
     # Tag used by Ollama (`model:tag`) once the GGUF has been registered.
     ollama_model_tag: Mapped[str | None] = mapped_column(String(200), nullable=True, unique=True)
 
+    # Last export failure (B7). Cleared on successful re-export. Null = either
+    # no export attempted yet, currently running, or last attempt succeeded —
+    # callers disambiguate by checking gguf_uri / safetensors_uri.
+    export_error_message: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+
     training_job: Mapped["TrainingJob"] = relationship(back_populates="model_artifact")
     evaluation_runs: Mapped[list["EvaluationRun"]] = relationship(back_populates="model_artifact")

@@ -203,6 +203,7 @@ def export_model(
                         art.safetensors_uri = safetensors_uri
                     if ollama_tag:
                         art.ollama_model_tag = ollama_tag
+                    art.export_error_message = None  # clear stale failure on retry
 
                 # ---- 8. Publish completion -----------------------------------
                 publish(
@@ -231,6 +232,17 @@ def export_model(
 
         except Exception as exc:
             log.exception("export task failed (job=%s, artifact=%s)", job_id, artifact_id)
+            try:
+                with session_scope() as fail_session:
+                    row = fail_session.get(ModelArtifact, artifact_uuid)
+                    if row is not None:
+                        row.export_error_message = (str(exc) or repr(exc))[:4000]
+            except Exception:  # noqa: BLE001 — never mask the original failure
+                log.warning(
+                    "could not persist export_error_message for %s",
+                    artifact_id,
+                    exc_info=True,
+                )
             try:
                 publish(
                     JobFailed(

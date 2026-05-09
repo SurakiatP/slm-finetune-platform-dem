@@ -26,6 +26,7 @@ class ModelArtifactResponse(BaseModel):
     safetensors_uri: str | None
     size_mb: float | None
     ollama_model_tag: str | None
+    export_error_message: str | None
     created_at: datetime
     updated_at: datetime
 
