@@ -167,10 +167,11 @@ After B6 closed, exercising `POST /api/v1/models/{id}/export` against the new fl
 
 ## Phase 9 — SDG Hardening (Sessions 15+)
 
-> Branch: `feature/sdg-improvements` (from `dev@59c12e2`). Spec:
+> Branch: `feature/sdg-improvements` (from `dev@59c12e2`, now at `2ca40e4`). Spec:
 > [`PHASE9_SDG_HARDENING_SPEC.md`](./PHASE9_SDG_HARDENING_SPEC.md). All
-> three sub-phases shipped as 14 commits in Session 15; awaiting live
-> Swagger-UI smoke from parks before merging back to `dev`.
+> sub-phases shipped + 3 quality-gate bugs caught and fixed across
+> Sessions 15-17; both Claude-driven runbook walk and parks's manual
+> Swagger pass green. Only step left is opening the PR.
 
 | ID | Task | Status | Next Step |
 |----|------|--------|-----------|
@@ -199,7 +200,10 @@ After B6 closed, exercising `POST /api/v1/models/{id}/export` against the new fl
 | H9.3.10 | vast.ai deploy (hybrid: services Docker + host py3.11) for Swagger smoke | ✅ | Session 16 setup; uvicorn:8000 + celery `-P solo` running |
 | H9.3.11 | **Bug 1**: SDG sentinel quota routing — Generator emits real label, row bucketed wrong, every sentinel loop yields 0 → SDGAbortedError after 5 zero-yield loops | ✅ | Commit `b1a9581` — stamp `b["label_or_tool"]` on every row for classification + tool_calling sentinel batches. Verified target=10 → 10/10 with sentinel "สวัสดี". |
 | H9.3.12 | **Bug 2**: Judge rejects 100% of sentinel rows (rubric was sentinel-blind, asked "does text fit assigned label" → low fidelity for off-topic content) | ✅ | Commit `aa62149` — `_row_is_sentinel` detector + sentinel-specific rubric in `build_judge_prompt` + `[Sentinel row]` prompt prelude. Verified target=20 → 20/20 with distribution `{real:6×3, unknown:2}`. |
-| H9.3.13 | **Live Swagger smoke (parks, second pass post-fix)** | ⏳ | Reuse existing project + seed_dataset_id; submit SDG `num_samples=20`; expect 20/20 with sentinel quota visible. Then PR → `dev`. |
+| H9.3.13 | **Bug 3**: tool_calling `with_seed` returns `samples=0 calls=0` after 2.4 s — generator never derived `tool_defs` from seed rows, so quota was empty and main loop bailed at iteration 0 | ✅ | Commit `843a539` (Session 17) — mirror the cls_labels derivation: parse each seed row's JSON-encoded `answer` to collect unique tool names, synthesise minimal `ToolDefinition` per name (empty parameters; per-tool seed rows convey schema in-context). Verified target=20 → 20/20 with distribution `{play_music:2, light_on:4, set_oven:4, set_volume:4, start_timer:4, no_tool_needed:2}`. |
+| H9.3.14 | **Live runbook drive (Claude driver, Session 17)** — all 3 task-specific runbooks executed end-to-end via httpx against the live vast.ai stack | ✅ | Driver `scripts/session17_runbook_driver.py` (untracked); 50/50 sub-checks PASS once Bug 3 fixed and celery restarted. Classification 13/13, tool_calling 17/17, QA 13/13. One transient: QA T6 hung the worker for 18 min in `ep_poll` after 5 successful httpx calls (no error log) — fresh celery reran it cleanly in 48 s. Recurrence would warrant a wall-clock watchdog around `chat_batch`. |
+| H9.3.15 | **Manual Swagger pass (parks)** — same payloads through Swagger UI for content-quality eyeball | ✅ | Confirmed working. Sample reviewed: 20-row tool_calling output (`264585f0-cc59-454e-a6c1-252d76068405.jsonl`) — perfect tool-set membership, JSON-decode-clean, sentinel quota = 2, parameter types match (celsius:int, level:int, minutes:int, etc.), good phrasing diversity. |
+| H9.3.16 | Open PR `feature/sdg-improvements` → `dev` | ⏳ | All gates green (`origin/feature/sdg-improvements@2ca40e4`). Use `gh pr create` from local or GitHub web UI — vast.ai not required. |
 
 ---
 
