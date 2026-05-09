@@ -1,6 +1,6 @@
 """add model_artifacts.export_error_message (B7)
 
-Revision ID: 0002_artifact_export_error_message
+Revision ID: 0002_export_error
 Revises: 0001_initial
 Create Date: 2026-05-09
 """
@@ -12,7 +12,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0002_artifact_export_error_message"
+revision: str = "0002_export_error"
 down_revision: str | None = "0001_initial"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
