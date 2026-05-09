@@ -94,9 +94,9 @@
 | P4 | Example client scripts | ✅ | Done — `examples/python_client.py` (argparse + WS streaming) + `examples/quickstart_curl.sh` (jq-driven) |
 | P5 | README API usage examples | ✅ | Done — full curl snippets for 6-step lifecycle + Python walkthrough pointer + ErrorResponse doc |
 
-## Phase 9: Production Hardening (Sessions 12–13 discoveries)
+## Phase 9: Production Hardening (Sessions 12–14 discoveries)
 
-> Bugs surfaced by the vast.ai full-lifecycle smoke test. B1–B5 are shipped + verified on `dev`. **B5 closed in Session 13** with a 4-step fix that took the QA training all the way through `completed` on the 4060 Ti VM in 49 s. **B6 + B7** are new follow-ups uncovered while attempting `§16 #6–9` (model export → inference) — the post-training chain is gated on these.
+> Bugs surfaced by the vast.ai full-lifecycle smoke test. B1–B7 shipped + verified on `dev`. **B6 + B7 closed in Session 14** with a 6-part fix on a fresh RTX 5000 Ada VM (32 GB, sm_89): GGUF export now writes a 770 MB `q4_k_m` file to MinIO and B7's `export_error_message` column surfaced every wrong turn instantly during the iteration. **B8** is the only remaining gap — Ollama's `/api/create` schema changed under us so model registration is currently best-effort and OpenAI-compatible inference is gated on fixing it.
 
 | ID | Task | Status | Next Step |
 |----|------|--------|-----------|
@@ -105,8 +105,9 @@
 | B3 | `SFTTrainer(tokenizer=…)`→`processing_class=…` (TRL ≥0.12, hard-removed 0.16) + migrate to `SFTConfig` | ✅ | Done — `dataset_text_field` / `max_seq_length` / `packing` moved into `SFTConfig`. Commit `4fb9fe3` |
 | B4 | `SFTConfig.max_seq_length`→`max_length` (TRL ≥0.18) | ✅ | Done — single rename. Commit `1b6763b` |
 | B5 | Unsloth `<EOS_TOKEN>` placeholder validator failure (TRL ≥0.20 + Unsloth-patched SFT) | ✅ | Done — 4 commits: messages-format formatters (`9b77054`), real-EOS resolver (`3106550`), import-unsloth-first + pre-render via `apply_chat_template` (`b6927cc`), worker `LD_LIBRARY_PATH` for cu13 nvJitLink (`9ca376c`). Verified `b5-retry-2` training `completed` in 49 s on 4060 Ti, mlflow_run_id `be62ce9063…`, ModelArtifact `f2086b81…` registered with 22.99 MB LoRA on MinIO. |
-| **B6** | **GGUF export blocked by missing `llama.cpp` in worker image** | **⏳** | **See plan below — Unsloth's interactive `install_llama_cpp` hits EOFError under Celery; need to pre-install in worker.Dockerfile** |
-| **B7** | `model.export` Celery task fails silently — no error written to `ModelArtifact` row | ⏳ | One-line fix: on the `except` branch, also `UPDATE model_artifacts SET ... export_error = str(exc)` (or add a `last_export_status` column) before re-raising. Currently the only signal is `JobFailed` on Redis pub-sub, which nobody is consuming after the WebSocket closes. |
+| B6 | GGUF export pipeline (LoRA → merged HF → f16 GGUF → q4_k_m) | ✅ | Done — 6 commits over Session 14, see resolution summary below. Verified on RTX 5000 Ada VM: artifact `65a05a2b…` exported 770 MB `model.q4_k_m.gguf` to `s3://models/exports/65a05a2b…/gguf` in ~90 s; `export_error_message` cleared on success. Final commit `b581fdb`. |
+| B7 | `model.export` Celery task fails silently — no error written to `ModelArtifact` row | ✅ | Done — added `export_error_message` column (migration `0002_export_error`), worker writes `(str(exc) or repr(exc))[:4000]` on except, clears on success. Commit `2e3498f` + revision-id shortening fix `61b72f2`. Functioned perfectly during B6 iteration: 6 distinct error messages surfaced instantly via `GET /api/v1/models/{id}.export_error_message`, no log diving required. |
+| **B8** | **Ollama `/api/create` schema migration (`modelfile` → `from`/`files`)** | **⏳** | **See plan below — Ollama daemon now rejects the legacy `modelfile` field with `{"error":"neither 'from' or 'files' was specified"}`. B6 part 6 (`b581fdb`) made registration best-effort so `gguf_uri` persists, but `ollama_model_tag` stays null and the OpenAI-compatible inference router can't resolve the artifact. Need to compute SHA-256 of GGUF, upload via `POST /api/blobs/sha256:HASH`, then `POST /api/create` with `{model, files: {"model.gguf": "sha256:HASH"}, parameters: {...}}`.** |
 
 ### B5 — Resolution summary (Session 13)
 
@@ -127,42 +128,46 @@ The original "messages-format-only" plan from Session 12 turned out to be insuff
 | 5 | HF read timeout (10 s) | retry |
 | 6 | ✅ `completed` in 49 s | — |
 
-### B6 — Plan: pre-install `llama.cpp` in worker.Dockerfile
+### B6 — Resolution summary (Session 14)
 
-**Diagnosis:**
-- `unsloth/save.py:1074` calls `unsloth_zoo.llama_cpp.check_llama_cpp(llama_cpp_folder="llama.cpp")` which expects a sibling folder containing `llama-quantize` (or `quantize`) plus a converter script.
-- When the folder is missing, Unsloth falls back to `install_llama_cpp()` → `install_package(packages, sudo, …)` which prompts via `input()` for the sudo password. Celery workers have no stdin → `EOFError: EOF when reading a line`.
-- Setting `LLAMA_CPP_PATH` env var doesn't help — the library reads the folder name from the function arg, not the environment.
+The "pre-install llama.cpp in worker.Dockerfile" plan from Session 13 unblocked the *first* failure mode. Each fix surfaced a deeper one — six distinct issues over the iteration, every one of which was visible in real time via `export_error_message` (B7) without log diving. The 1B QA artifact `65a05a2b…` re-exported successfully at the end as 770 MB `model.q4_k_m.gguf` on MinIO.
+
+| Part | Symptom in `export_error_message` | Root cause | Fix | Commit |
+|------|-----------------------------------|------------|-----|--------|
+| 1 | `EOF when reading a line` | Unsloth's `install_llama_cpp` falls through to interactive `input()` because no llama.cpp installed | Pre-build `llama.cpp` in worker image with `BUILD_SHARED_LIBS=OFF` so `llama-quantize` is statically linked + add ldd self-check | `fc15096` + `e0e2808` |
+| 2 | `config.json does not exist inside .../gguf` | `save_pretrained_gguf` no longer auto-merges in Unsloth 2025.11 | Call `save_pretrained_merged` ourselves before the GGUF step | `765f2cd` |
+| 3 | (same as part 2 but on `.../stage`) | `model = PeftModel.from_pretrained(base, adapter_dir)` doesn't tag the model the way Unsloth's saver expects → "Skipping Merge" warning, merge no-ops | Load via `FastLanguageModel.from_pretrained(model_name=adapter_dir)` instead — Unsloth reads `adapter_config.json`, fetches the base, and returns a model the saver recognises | `8496ea8` |
+| 4 | `unsloth_convert_hf_to_gguf.py … exit 1` | Unsloth ships a *patched* convert script that calls an old `AutoTokenizer` signature, incompatible with transformers 4.51+ | Bypass Unsloth's GGUF wrapper. Drive the *original* `/app/llama.cpp/convert_hf_to_gguf.py` + our `llama-quantize` directly | `b5456dc` |
+| 5 | `'dict' object has no attribute 'model_type'` | **transformers 4.57.2 bug** at `tokenization_utils_base.py:2419` — `_config.model_type` accessed on a `json.load`'d dict | Bump `transformers_version` in saved `config.json` from `4.57.2` → `4.58.0` after merge so the buggy version-gated branch doesn't fire. *This was the load-bearing one — see [memory note](../../../../Users/parks/.claude/projects/C--ai-engineer-nectec2-slm-final-dem/memory/transformers_4_57_2_bug.md)* | `1aef622` |
+| 6 | `ollama create failed: {"error":"neither 'from' or 'files' was specified"}` | Ollama API breaking change; B6 main goal already met (GGUF on MinIO) | Wrap Ollama call in try/except — registration is now best-effort, `gguf_uri` persists even if Ollama rejects. Real Ollama migration tracked as B8 | `b581fdb` |
+
+**vast.ai smoke (Session 14, on a 5000 Ada VM after `vast.ai copy` discarded the original disk):**
+
+| # | `export_error_message` value | Notes |
+|---|------------------------------|-------|
+| 1 | `EOF when reading a line` | llama.cpp not in image; pre-build added |
+| 2 | `config.json does not exist inside .../gguf` | merge wasn't running; added explicit `save_pretrained_merged` |
+| 3 | `config.json does not exist inside .../stage` | merge ran but said "no LoRA detected"; switched adapter loader |
+| 4 | `unsloth_convert_hf_to_gguf.py … exit 1` | Unsloth's patched script broken; bypassed it |
+| 5 | `Failed to convert model to GGUF: 'dict' object has no attribute 'model_type'` | transformers bug; bumped version field |
+| 6 | `ollama create failed: …'from' or 'files'…` | Ollama API change; made registration best-effort |
+| 7 | (success) `gguf_uri=s3://models/exports/65a05a2b…/gguf`, `ollama_model_tag=null` | B6 closed; B8 opened |
+
+### B8 — Plan: migrate Ollama `/api/create` to the blob+files schema
+
+**Diagnosis:** Ollama daemon (we're on the version pulled fresh in Session 14) rejects the legacy `{name, modelfile, stream}` body that `OllamaClient.create_from_modelfile` still sends. The new schema requires the GGUF to be uploaded as a content-addressable blob first, then referenced by digest in the create call. The current `_register_with_ollama` is wrapped in try/except (commit `b581fdb`) so failed registration doesn't lose the rest of the export, but `ollama_model_tag` stays null and the OpenAI-compatible inference router has nothing to point at.
 
 **Fix:**
-1. In `docker/worker.Dockerfile`, after the apt block, add:
-   ```dockerfile
-   RUN apt-get update && apt-get install -y --no-install-recommends cmake \
-       && git clone --depth 1 https://github.com/ggerganov/llama.cpp.git /app/llama.cpp \
-       && cd /app/llama.cpp \
-       && cmake -B build -DGGML_CUDA=ON -DLLAMA_CURL=OFF \
-       && cmake --build build --config Release -j --target llama-quantize \
-       && cp build/bin/llama-quantize /app/llama.cpp/ \
-       && pip install -r requirements.txt    # for the convert_hf_to_gguf.py script
-   ```
-   The convert-side dependency is `gguf` Python package — already a transitive of llama.cpp's requirements.txt. The compiled binary needs to live at `/app/llama.cpp/llama-quantize` because `check_llama_cpp("llama.cpp")` is called with cwd=`/app`.
-2. Worker image rebuild adds ~5 min on the VM. Image size grows ~400 MB (llama.cpp source + cmake build cache + the CUDA quantize binary). Acceptable.
-3. After rebuild, re-run `POST /api/v1/models/{id}/export` and verify `gguf_uri` populates plus `ollama_model_tag` registers.
+1. Add to `workers/ollama_client.py`:
+   - `upload_blob(file_path: str) -> str` — streams the GGUF file body into `POST /api/blobs/sha256:<HASH>`; returns `sha256:<HASH>`. Pre-compute the digest (sha256 over the file bytes) before issuing the request — Ollama uses it as both the URL path and the canonical key.
+   - `create_from_blob(*, tag: str, digest: str, parameters: dict[str, Any] | None = None, system: str | None = None, template: str | None = None) -> None` — `POST /api/create` with `{"model": tag, "files": {"model.gguf": digest}, "parameters": parameters or {}, "system": system, "template": template}`.
+2. Replace the `build_modelfile` + `create_from_modelfile` call in `_register_with_ollama` with a call sequence: `upload_blob(gguf_path)` → `create_from_blob(tag=…, digest=…, parameters={"temperature": 0.0, "num_ctx": 2048})`.
+3. Remove `build_modelfile` and `create_from_modelfile` once the new flow is verified — keeping both invites future regressions where someone copies the old path.
+4. Verify on the VM: `curl /api/v1/models/{id}` shows `ollama_model_tag = "slm/<id8>"` and `curl http://localhost:11434/api/tags` lists the tag. Then exercise `POST /api/v1/inference/chat/completions` with `model = <artifact_id>` and confirm a non-empty completion comes back.
 
-**Workflow when ready:**
-1. Pull on VM: `git pull origin dev`.
-2. Rebuild worker: `docker compose build worker && docker compose up -d worker` (preserves all stack state — postgres, MLflow, MinIO; only the worker image changes).
-3. Trigger export on the existing artifact `f2086b81-47a4-4638-ba0d-b2fec6e0ec40` — it already has the LoRA adapter on MinIO, no need to re-train.
-4. Verify Ollama registration: `curl http://localhost:11434/api/tags` should list `slm/f2086b81`.
-5. Smoke test inference via OpenAI-compatible router: `POST /api/v1/inference/chat/completions` with `model: f2086b81-47a4-4638-ba0d-b2fec6e0ec40` and a QA prompt.
+**Workflow:** edit + push → on VM `git pull && docker compose build worker && docker compose up -d worker` → re-export the existing artifact `65a05a2b…` (LoRA + adapter on MinIO; the second `POST /export` is idempotent for our DB writes since `art.gguf_uri` just reassigns).
 
-### B7 — Plan: surface model.export failures on the artifact row
-
-**Diagnosis:** Session 13 wasted ~30 min polling `gguf_uri != null` while the Celery task had crashed instantly. The crash logs `JobFailed` to Redis pub-sub, but no client is subscribed once the WebSocket closes, and the artifact row stays in its post-training state (lora_adapter_uri set, gguf_uri null, no error field). API consumers can't tell the difference between "still exporting" and "export crashed".
-
-**Fix:** add `export_error_message: str | None` to `ModelArtifact` (Alembic migration + schema update). On the `except` branch in `workers/tasks/model_export.py`, write the error into that column inside a fresh `session_scope()`, then re-raise. UI/CLI can then surface the failure on `GET /api/v1/models/{id}`.
-
-Out of scope for this fix: distinguishing "export queued" from "export running". A first cut keeps it boolean (error_message null → either queued, running, or success — caller checks gguf_uri/safetensors_uri to disambiguate).
+Once B8 is green the full lifecycle smoke (`§16 #1–9` of `SWAGGER_GUIDE.md`) is verified end-to-end for the first time.
 
 ---
 

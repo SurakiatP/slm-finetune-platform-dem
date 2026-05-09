@@ -6,6 +6,82 @@
 
 ---
 
+## Session 14 — B6 closed (6-part GGUF unblock) + B7 verified live + Phase-9 punch list down to B8 only (2026-05-09)
+
+**Who:** Claude (Opus 4.7) + parks (developer)
+**Status:** ✅ B6 + B7 closed end-to-end on a fresh RTX 5000 Ada (32 GB, sm_89) vast.ai VM. `POST /api/v1/models/{id}/export` now writes a 770 MB `q4_k_m` GGUF to `s3://models/exports/65a05a2b…/gguf` and the artifact row's `export_error_message` is `null`. B8 (Ollama `/api/create` schema migration) was discovered as the only remaining gap before full-lifecycle inference works; recorded in `TASK_TRACKER.md` and not pursued this session.
+
+**Why & What:**
+- Resumed Session 13's plan to land B6 + B7 against the same 4060 Ti VM. vast.ai's scheduler put the original instance in indefinite `scheduling` ("hours to weeks until GPU is free"), so we used vast.ai's instance-copy feature which moved /root metadata but **not** Docker volumes — the 4060 Ti's MinIO bucket and trained `f2086b81…` LoRA stayed behind on the source host. Took the opportunity to validate the *deploy* runbook end to end: nvidia-toolkit install (with the unattended-upgrades self-match-pgrep gotcha — see Decisions), repo clone, `.env` from example, `docker compose build`, alembic up, fresh QA training (re-creates artifact `65a05a2b…`, 22.99 MB LoRA, 55 s on the 5000 Ada — a 6-second improvement on Session 13's 49 s on a 4060 Ti).
+- **B7 first** — straightforward: added `export_error_message` (varchar 4000) to `model_artifacts`, write on except branch, clear on success path. Caught one issue immediately: alembic's `version_num` column is varchar(32) and our first revision id `0002_artifact_export_error_message` (35 chars) overflowed → migration rolled back leaving the DB unmigrated. Renamed to `0002_export_error` (17 chars). After that B7 worked perfectly and was load-bearing for the entire B6 debug — every wrong turn surfaced as a one-line update on the artifact row, no log-tailing needed.
+- **B6 took six parts.** Each was the *next* obstacle revealed by the fix to the previous one. The original Session 13 plan was "pre-install llama.cpp"; that turned out to be only step 1 of 6. See `TASK_TRACKER.md` § "B6 — Resolution summary" for the full table; the load-bearing surprise was a transformers 4.57.2 bug at `tokenization_utils_base.py:2419` (`_config.model_type` on a `json.load`'d dict) that fires whenever AutoTokenizer is asked to load any locally-saved model whose `config.json` declares `transformers_version <= 4.57.2`. Workaround: bump that field to `4.58.0` between merge and convert. Saved as a project memory because it'll bite anything else that AutoTokenizer-loads an Unsloth-saved model on this stack — not just GGUF.
+- **B8 surfaced last.** Once the GGUF was actually being produced and uploaded, Ollama's `/api/create` rejected our legacy `{name, modelfile, stream}` body with `{"error":"neither 'from' or 'files' was specified"}`. Originally that error short-circuited step 7 (persist URIs) so successful uploads looked identical to total failures; wrapped the Ollama call in try/except so `gguf_uri` persists even when registration is broken. The proper migration to the blob-upload + `files` schema is recorded as B8.
+
+**Bug catalogue (this session):**
+
+| # | Where | Status | Commit / commits |
+|---|-------|--------|------------------|
+| B7 | model.export crashes don't update ModelArtifact → silent failure | ✅ | `2e3498f` (column + worker write) + `61b72f2` (revision-id length fix) |
+| B6 step 1 | Worker image lacks llama.cpp; Unsloth's auto-install hits stdin EOF | ✅ on its own, exposes step 2 | `fc15096` (pre-build) + `e0e2808` (`BUILD_SHARED_LIBS=OFF` so the binary doesn't need build/lib/*.so at runtime) |
+| B6 step 2 | `save_pretrained_gguf` no longer auto-merges in Unsloth 2025.11 | ✅, exposes step 3 | `765f2cd` (explicit `save_pretrained_merged` before the GGUF call) |
+| B6 step 3 | Loading via raw `PeftModel.from_pretrained` produces a model the Unsloth saver doesn't recognise → "Skipping Merge" | ✅, exposes step 4 | `8496ea8` (`FastLanguageModel.from_pretrained(model_name=adapter_dir)` instead) |
+| B6 step 4 | Unsloth's *patched* `convert_hf_to_gguf.py` calls an old AutoTokenizer signature, incompatible with transformers ≥4.51 | ✅, exposes step 5 | `b5456dc` (drive original `/app/llama.cpp/convert_hf_to_gguf.py` + `llama-quantize` directly, skip Unsloth's wrapper) |
+| B6 step 5 | **transformers 4.57.2 bug**: `_config.model_type` on a dict | ✅, exposes step 6 | `1aef622` (bump `transformers_version` in saved config.json) |
+| B6 step 6 | Ollama `/api/create` rejects legacy `modelfile` field; failure was hiding `gguf_uri` persistence | ✅ for B6's purposes | `b581fdb` (Ollama call best-effort, persist URIs unconditionally) |
+| B8 | Ollama `/api/create` schema migration to blob+files | ⏳ deferred | — |
+
+**Test Summary:**
+
+- **Local unit tests (`pytest -m "not integration"`)**: 5/5 pass after each B7-touching commit. Skipped the integration tests against the laptop stack — they're in the integration tier and the laptop GPU (sm_61) can't run training anyway.
+- **Alembic offline render**: `alembic upgrade head --sql` emits clean DDL — `ALTER TABLE model_artifacts ADD COLUMN export_error_message VARCHAR(4000)` after the initial schema. After the revision-id rename to `0002_export_error`, the version_num UPDATE fits in varchar(32) and no longer rolls back.
+- **vast.ai smoke (Llama-3.2-1B-Instruct, 5 QA seed rows, 1 epoch, batch=1):**
+  - Training: artifact `65a05a2b-cdb0-4831-bea5-e86c093c3046`, mlflow_run_id `9839fa5d92774dd58790fd0732e90ad5`, completed in 55 s (vs Session 13's 49 s on a 4060 Ti — within noise; the 5000 Ada has more headroom but the bottleneck is HF model download + adapter merge, not gradient steps).
+  - Export iterations: see "Bug catalogue" — six different `export_error_message` values landed on the artifact row, every one of them visible via a single `GET /api/v1/models/{id}` without touching `docker compose logs`. That's the value B7 was supposed to deliver and it landed.
+  - Final export run: 770 MB `model.q4_k_m.gguf` on `s3://models/exports/65a05a2b…/gguf`; export_error_message cleared to null on success; ollama_model_tag still null (B8).
+- **Did NOT run** the OpenAI-compatible inference path (`POST /api/v1/inference/chat/completions`). That's gated on B8 — it resolves models by `ollama_model_tag`, so until registration works there's nothing to call.
+
+**Decisions Made:**
+
+- **Treat the GGUF on MinIO as the primary B6 deliverable, not Ollama registration.** When the Ollama failure was masking `gguf_uri` persistence (because the call sat between upload and DB write), the right move was to demote registration to best-effort and keep the artifact persistable on partial success. That decoupling also drew a clean line between "B6: file is in object storage" and "B8: the inference router can serve it" — they're now independent concerns and B6 is shippable without B8.
+- **Bump `transformers_version` in the saved `config.json` rather than monkey-patch transformers itself or pin to an older version.** Pinning back is impossible (Unsloth 2025.11.x requires `transformers>=4.51.3`) and monkey-patching a library function in 200 places is fragile across worker restarts. The version bump fires only on our outputs, only between merge and convert, and self-disables once we move past 4.57.2.
+- **Use `FastLanguageModel.from_pretrained(model_name=adapter_dir)` instead of `PeftModel.from_pretrained(base, adapter_dir)`**. The latter is the *generic* PEFT API and produces an object the Unsloth saver rejects with "Model is not a PeftModel (no Lora adapters detected). Skipping Merge". The Unsloth helper reads `adapter_config.json`, downloads the right base from `base_model_name_or_path`, and tags the resulting object with everything Unsloth's saver checks for.
+- **Build llama.cpp CPU-only, not with `GGML_CUDA=ON`**. The pytorch-runtime base image has no nvcc; the runbook plan said `GGML_CUDA=ON` but the build would have failed. Quantization is CPU-bound anyway; GPU only matters for inference, which the GGUF doesn't run inside the worker.
+- **Static-link `llama-quantize`**. The first attempt copied just the binary out of `build/bin/` and `rm -rf build` — that left the binary depending on `libllama-common.so.0` etc. which were inside `build/lib/`. With `BUILD_SHARED_LIBS=OFF` the binary is self-contained and a one-line `ldd … | grep "not found"` fail-fast in the Dockerfile catches a regression at build time, not 5 minutes into a Celery export.
+- **Did NOT shell out to `docker compose exec ollama ollama create …`** as a B8 workaround. Tempting (the CLI handles the new blob upload automatically) but it tightly couples the worker to docker-compose internals and breaks the moment the stack moves to k8s or off-cluster Ollama.
+
+**Files Touched:**
+
+- `docker/worker.Dockerfile` — `+cmake` in apt, llama.cpp git clone + static cmake build + ldd self-check + `pip install gguf`. Comment block explains why CPU-only and why not `pip install -r llama.cpp/requirements.txt`.
+- `api/models/model_artifact.py` — `+export_error_message: Mapped[str | None]` (varchar 4000).
+- `api/schemas/artifacts.py` — `+export_error_message: str | None` on `ModelArtifactResponse`.
+- `alembic/versions/20260509_0002_artifact_export_error_message.py` — new file; revision id `0002_export_error` (after the varchar(32) rename).
+- `workers/tasks/model_export.py` — six iterations; final state: `FastLanguageModel.from_pretrained(adapter_dir)` to load, explicit `save_pretrained_merged` to stage_dir, transformers_version bump in stage_dir/config.json, `subprocess.run` of original `convert_hf_to_gguf.py` for f16 GGUF, `subprocess.run` of `llama-quantize` for q4_k_m, move just the .gguf to upload dir, Ollama call wrapped best-effort, clear `export_error_message` on success.
+- `TASK_TRACKER.md` — close B6 + B7, add B8.
+- `WORKING_LOG.md` — this entry.
+- Memory: `transformers_4_57_2_bug.md` saved + indexed.
+
+**Commits pushed to `origin/dev` (this session):**
+
+- `fc15096` — fix(worker): pre-build llama.cpp for GGUF export (B6 attempt 1)
+- `2e3498f` — fix(worker): surface model.export failures via export_error_message (B7)
+- `61b72f2` — fix(alembic): shorten 0002 revision id to fit VARCHAR(32)
+- `e0e2808` — fix(worker): static-link llama-quantize (B6 attempt 2)
+- `765f2cd` — fix(worker): merge HF before save_pretrained_gguf (B6 attempt 3)
+- `8496ea8` — fix(worker): load adapter via FastLanguageModel, not raw PeftModel (B6 attempt 4)
+- `b5456dc` — fix(worker): bypass Unsloth's broken GGUF wrapper, drive llama.cpp directly (B6 attempt 5)
+- `1aef622` — fix(worker): bump config.json transformers_version to dodge 4.57.2 bug (B6 attempt 6 — load-bearing)
+- `b581fdb` — fix(worker): make Ollama registration best-effort so gguf_uri persists (B6 closes)
+
+**Operator gotcha worth surfacing:** `pgrep -f <STRING>` on Linux matches against full command lines, including the calling shell's own command line. Several debug commands here (`ssh … 'while pgrep -f unattended-upgr; do …'` and `pgrep -f "docker compose build"`) found themselves and either killed their own watcher or looped forever. Workaround when the search string would be in your invocation: scan `/proc/*/cmdline` directly with a substring not present in your shell command, or pgrep with the absolute binary path.
+
+**Next Action:**
+
+→ Tackle **B8** (Ollama `/api/create` blob+files migration). Detailed plan in `TASK_TRACKER.md`. The artifact `65a05a2b…` is sitting on MinIO ready to register; once B8 lands, exercising `POST /api/v1/inference/chat/completions` with `model = <artifact_id>` should return a real completion and `§16 #1–9` of `SWAGGER_GUIDE.md` will be green end-to-end for the first time.
+
+**Blockers:** None.
+
+---
+
 ## Session 13 — B5 closed: messages format + chat templates + EOS resolver + cu13 LD path (2026-05-09)
 
 **Who:** Claude (Opus 4.7) + parks (developer)
