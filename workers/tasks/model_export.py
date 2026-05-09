@@ -34,7 +34,7 @@ from api.models.training_job import TrainingJob
 from api.schemas.enums import ArtifactFormat
 from api.schemas.progress import JobCompleted, JobFailed
 from workers.celery_app import celery_app
-from workers.ollama_client import OllamaClient, build_modelfile
+from workers.ollama_client import OllamaClient
 from workers.progress import publish_ws_message, sync_redis_scope
 from workers.storage import (
     get_minio_client,
@@ -367,22 +367,27 @@ def _first_gguf(directory: str) -> str:
 
 
 def _register_with_ollama(*, ollama: OllamaClient, tag: str, gguf_path: str) -> None:
-    """Register a GGUF with the local Ollama daemon (best-effort).
+    """Register a GGUF with the local Ollama daemon.
 
-    Requires the worker container and the ollama container to share the
-    directory holding the GGUF; in our docker-compose stack we mount
-    `./models` into both. If the daemon is unreachable we skip silently —
-    the GGUF is still in MinIO and can be loaded out-of-band.
+    Uses the blob-upload + create-with-files flow (Ollama 0.5+); the legacy
+    Modelfile-string path was removed and now answers
+    ``{"error":"neither 'from' or 'files' was specified"}`` if used. We
+    upload the GGUF body to ``/api/blobs/sha256:<HASH>`` first and then
+    reference it by digest in ``/api/create``, which means the ollama
+    container does not need a shared volume with the worker — it can read
+    its own blob store on its own filesystem.
     """
     if not ollama.health():
         log.warning("ollama daemon not reachable; skipping registration of %s", tag)
         return
-    modelfile = build_modelfile(
-        base_gguf_path=gguf_path,
-        parameter_lines=["temperature 0.0", "num_ctx 2048"],
+    log.info("ollama: uploading blob from %s", gguf_path)
+    digest = ollama.upload_blob(gguf_path)
+    log.info("ollama: registering tag=%s with %s", tag, digest[:23])
+    ollama.create_from_blob(
+        tag=tag,
+        digest=digest,
+        parameters={"temperature": 0.0, "num_ctx": 2048},
     )
-    log.info("ollama: registering tag=%s from %s", tag, gguf_path)
-    ollama.create_from_modelfile(tag=tag, modelfile=modelfile)
 
 
 def _release_gpu_memory() -> None:

@@ -1,10 +1,11 @@
 """Sync Ollama HTTP client used by worker tasks.
 
 We talk to the daemon over its native API (port 11434):
-  • `POST /api/create` — register a new model from a Modelfile + GGUF blob
-  • `POST /api/pull`    — pull a base model (used for first-run base availability)
-  • `GET  /api/tags`    — list registered models
-  • `POST /api/show`    — inspect one model
+  • `POST /api/blobs/sha256:<HASH>` — upload a GGUF body as a content-addressable blob
+  • `POST /api/create` — register a new model from a previously-uploaded blob
+  • `POST /api/pull`   — pull a base model (used for first-run base availability)
+  • `GET  /api/tags`   — list registered models
+  • `POST /api/show`   — inspect one model
   • `DELETE /api/delete` — remove a model
 
 The async equivalent for inference traffic lives in `api/services/inference_service.py`
@@ -13,6 +14,7 @@ and uses httpx.AsyncClient. We keep this one sync because Celery tasks are sync.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -75,23 +77,57 @@ class OllamaClient:
     def has_model(self, tag: str) -> bool:
         return any(m.name == tag for m in self.list_models())
 
-    def create_from_modelfile(
+    def upload_blob(self, file_path: str) -> str:
+        """Upload a file to Ollama as a content-addressable blob.
+
+        Streams the file body to ``POST /api/blobs/sha256:<HEX>``. Returns
+        the full digest string (e.g. ``sha256:abcd1234…``) suitable for use
+        as a value in the ``files`` dict on ``/api/create``. Idempotent:
+        if the daemon already has the blob it answers 200, otherwise 201;
+        both are accepted.
+        """
+        digest_hex = _file_sha256(file_path)
+        digest = f"sha256:{digest_hex}"
+        with open(file_path, "rb") as fh:
+            with httpx.Client(timeout=self._timeout) as client:
+                resp = client.post(
+                    f"{self._base}/api/blobs/{digest}",
+                    content=fh,
+                    headers={"Content-Type": "application/octet-stream"},
+                )
+        if 200 <= resp.status_code < 300:
+            return digest
+        detail = resp.text[:500] if resp.text else f"status={resp.status_code}"
+        raise OllamaError(f"ollama upload_blob failed: {detail}")
+
+    def create_from_blob(
         self,
         *,
         tag: str,
-        modelfile: str,
+        digest: str,
+        parameters: dict[str, Any] | None = None,
+        system: str | None = None,
+        template: str | None = None,
     ) -> None:
-        """Register a new model under `tag` using the given Modelfile content.
+        """Register a new model under ``tag`` from a previously-uploaded blob.
 
-        The Modelfile must reference paths the daemon can read locally (e.g.,
-        a GGUF file we've placed on a shared volume between the worker and
-        the ollama service).
+        ``digest`` must be the ``sha256:<HEX>`` string returned by
+        :meth:`upload_blob`. Replaces the legacy ``modelfile`` string flow,
+        which Ollama removed around 0.5.x.
         """
+        body: dict[str, Any] = {
+            "model": tag,
+            "files": {"model.gguf": digest},
+            "stream": False,
+        }
+        if parameters:
+            body["parameters"] = parameters
+        if system:
+            body["system"] = system
+        if template:
+            body["template"] = template
         with httpx.Client(timeout=self._timeout) as client:
-            resp = client.post(
-                f"{self._base}/api/create",
-                json={"name": tag, "modelfile": modelfile, "stream": False},
-            )
+            resp = client.post(f"{self._base}/api/create", json=body)
         _raise_if_error(resp, "create")
 
     def delete_model(self, tag: str) -> None:
@@ -116,42 +152,16 @@ def _raise_if_error(resp: httpx.Response, op: str) -> None:
     raise OllamaError(f"ollama {op} failed: {detail}")
 
 
-def build_modelfile(
-    *,
-    base_gguf_path: str,
-    template: str | None = None,
-    system: str | None = None,
-    parameter_lines: list[str] | None = None,
-) -> str:
-    """Build a Modelfile string for `POST /api/create`.
-
-    Args:
-        base_gguf_path: absolute path the daemon can read (GGUF on a shared
-            volume — keep the worker container and ollama container's volume
-            mounts aligned).
-        template: optional prompt template (e.g. ChatML for tool_calling).
-        system: optional default system prompt.
-        parameter_lines: extra `PARAMETER ...` directives (`temperature 0.0`,
-            `num_ctx 2048`, …).
-    """
-    lines: list[str] = [f'FROM "{base_gguf_path}"']
-    if template:
-        lines.append('TEMPLATE """')
-        lines.append(template)
-        lines.append('"""')
-    if system:
-        lines.append('SYSTEM """')
-        lines.append(system)
-        lines.append('"""')
-    if parameter_lines:
-        for p in parameter_lines:
-            lines.append(f"PARAMETER {p}")
-    return "\n".join(lines) + "\n"
+def _file_sha256(file_path: str) -> str:
+    h = hashlib.sha256()
+    with open(file_path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(64 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 __all__ = [
     "OllamaClient",
     "OllamaError",
     "OllamaModelInfo",
-    "build_modelfile",
 ]
