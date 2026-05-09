@@ -2,32 +2,62 @@
 
 The SDG generation endpoint lives in `sdg_service.py` (Phase 4); this module
 covers the rest of the dataset surface.
+
+Phase 9 changes:
+  • upload-seed accepts `.pdf` for QA — runs `pdf_loader.probe`, persists
+    the raw bytes to `seed-pdfs/{dataset_id}.pdf`, sets `pdf_uri` in
+    metadata.
+  • upload-seed runs Format Detection on `.json/.jsonl` whenever the
+    rows aren't already canonical. The mapping + audit report are
+    persisted in `Dataset.generation_metadata['format_detection']`.
+  • delete-dataset cleans up both the JSONL and the PDF (if any).
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import AsyncIterator
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ai_engine.data_gen import models as llm_models
+from ai_engine.data_gen.format_detector import (
+    FormatDetectionResult,
+    detect_and_rename,
+    passthrough_with_required_check,
+)
+from ai_engine.data_gen.openrouter_client import OpenRouterClient
+from ai_engine.data_gen.pdf_loader import (
+    PdfCorruptError,
+    PdfTooLargeError,
+    PdfTooManyPagesError,
+    probe as pdf_probe,
+)
+from ai_engine.data_gen.constants import MAX_SEED_PDF_BYTES
 from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
 from api.models.project import Project
 from api.models.training_job import TrainingJob
-from api.schemas.data_formats import parse_samples
+from api.schemas.data_formats import (
+    canonical_field_names,
+    parse_samples,
+    required_field_names,
+)
 from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse
 from api.schemas.enums import DatasetSource, TaskType
 from api.schemas.responses import Page
 from api.schemas.sdg import SeedUploadResponse
+from api.schemas.upload import FormatDetectionReport
 from workers.storage import (
     get_minio_client,
     parse_s3_uri,
@@ -37,8 +67,10 @@ from workers.storage import (
 
 log = logging.getLogger(__name__)
 
-# Cap on uploaded seed file size (MiB) — anything bigger almost certainly isn't seed data.
+# Cap on uploaded JSON/JSONL seed file size (MiB).
 _MAX_SEED_BYTES = 10 * 1024 * 1024
+# Cap on uploaded PDF seed file size (Phase 9, MAX_SEED_PDF_BYTES = 25 MiB).
+_MAX_SEED_PDF_BYTES = MAX_SEED_PDF_BYTES
 
 
 # ---- read endpoints -------------------------------------------------------
@@ -174,8 +206,7 @@ async def delete_dataset(db: AsyncSession, dataset_id: UUID) -> None:
 
     # Both `training_jobs.dataset_id` and `evaluation_runs.dataset_id` are
     # NOT NULL with `ondelete=RESTRICT` — we must refuse the delete here
-    # rather than let the FK constraint surface as a 500. Caller fix is to
-    # remove the dependents (or DELETE the parent project, which cascades).
+    # rather than let the FK constraint surface as a 500.
     n_trainings = (
         await db.execute(
             select(func.count())
@@ -200,14 +231,25 @@ async def delete_dataset(db: AsyncSession, dataset_id: UUID) -> None:
             ),
         )
 
-    # Best-effort: remove the MinIO object if any. We don't fail the DELETE
-    # on storage errors because the row removal is what the user asked for.
+    # Best-effort: remove MinIO objects (JSONL + PDF if any). Phase 9
+    # adds the PDF cleanup — SEED + PDF datasets have two objects.
+    minio = get_minio_client()
     if ds.storage_uri:
         try:
             bucket, key = parse_s3_uri(ds.storage_uri)
-            get_minio_client().remove_object(bucket_name=bucket, object_name=key)
+            minio.remove_object(bucket_name=bucket, object_name=key)
         except Exception:  # noqa: BLE001
             log.warning("failed to remove minio object for %s", dataset_id, exc_info=True)
+    pdf_uri = (ds.generation_metadata or {}).get("pdf_uri")
+    if pdf_uri:
+        try:
+            bucket, key = parse_s3_uri(pdf_uri)
+            minio.remove_object(bucket_name=bucket, object_name=key)
+        except Exception:  # noqa: BLE001
+            log.warning(
+                "failed to remove pdf object for %s", dataset_id, exc_info=True
+            )
+
     await db.delete(ds)
     await db.commit()
 
@@ -223,11 +265,14 @@ async def upload_seed_dataset(
     name: str | None,
     file: UploadFile,
 ) -> SeedUploadResponse:
-    """Upload + persist a JSONL/JSON seed file for a project.
+    """Upload + persist a JSONL/JSON or PDF (QA-only) seed file.
 
-    Validates each row against the task_type's Pydantic schema; rejects rows
-    that don't match (returns their indexes in `invalid_rows` so the user can
-    fix and re-upload).
+    Phase 9 flow:
+      .pdf  → QA only; probe page/byte caps; persist raw bytes;
+              set Dataset.generation_metadata['pdf_uri'].
+      else  → parse JSON or JSONL; if rows aren't canonical, run Format
+              Detection (LLM); persist canonicalised JSONL; record the
+              FormatDetectionReport in metadata.
     """
     settings = get_settings()
     project = await db.get(Project, project_id)
@@ -245,8 +290,38 @@ async def upload_seed_dataset(
             ),
         )
 
-    # Read the whole upload (capped). Multipart is buffered to disk above this
-    # call by Starlette, so memory pressure is bounded already.
+    is_pdf = _looks_like_pdf(file)
+    if is_pdf:
+        return await _upload_pdf_seed(
+            db,
+            settings=settings,
+            project=project,
+            task_type=task_type,
+            name=name,
+            file=file,
+        )
+    return await _upload_jsonl_seed(
+        db,
+        settings=settings,
+        project=project,
+        task_type=task_type,
+        name=name,
+        file=file,
+    )
+
+
+# ---- upload-seed: JSONL/JSON path -----------------------------------------
+
+
+async def _upload_jsonl_seed(
+    db: AsyncSession,
+    *,
+    settings,
+    project: Project,
+    task_type: TaskType,
+    name: str | None,
+    file: UploadFile,
+) -> SeedUploadResponse:
     raw = await file.read(_MAX_SEED_BYTES + 1)
     if len(raw) > _MAX_SEED_BYTES:
         raise HTTPException(
@@ -259,21 +334,62 @@ async def upload_seed_dataset(
             detail="seed file is empty",
         )
 
-    rows, invalid_indexes = _parse_and_validate_seed(raw, task_type)
-    if not rows:
+    candidates = _parse_seed_bytes(raw)
+    if not candidates:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"no valid rows after parsing (invalid_rows: {invalid_indexes})",
+            detail="no parseable rows in seed file",
         )
 
-    # Persist the row + push JSONL to MinIO under `seeds/{dataset_id}.jsonl`.
+    # Format Detection (LLM, sync) — runs only when rows aren't already
+    # canonical. We invoke from this async handler via asyncio.to_thread
+    # so we don't block the event loop for ~1s.
+    canonical_keys = canonical_field_names(task_type)
+    required_keys = required_field_names(task_type)
+    fd_result = await _run_format_detection(
+        rows=candidates,
+        canonical_keys=canonical_keys,
+        required_keys=required_keys,
+        task_type=task_type,
+        api_key=settings.openrouter_api_key,
+        http_referer=settings.openrouter_http_referer,
+        app_title=settings.openrouter_app_title,
+    )
+
+    # Validate canonicalised rows row-by-row against the Pydantic schema.
+    valid: list[dict] = []
+    invalid: list[int] = []
+    for idx, row in enumerate(fd_result.canonical_rows):
+        try:
+            parse_samples(task_type, [row])
+            valid.append(row)
+        except Exception:  # noqa: BLE001 — row-level rejection
+            invalid.append(idx)
+    if not valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"no valid rows after Format Detection + schema validation "
+                f"(format_detection={fd_result.notes or 'ran'}, "
+                f"invalid_indexes={invalid})"
+            ),
+        )
+
+    # Persist Dataset row + JSONL.
     dataset_name = name or f"seed-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    fd_report = _to_report(
+        fd_result,
+        rows_total=len(candidates),
+        rows_canonicalised=len(fd_result.canonical_rows),
+        model_used=llm_models.FORMAT_DETECTION if fd_result.ran else None,
+    )
     dataset = Dataset(
         project_id=project.id,
         name=dataset_name,
         task_type=task_type,
         source=DatasetSource.SEED,
-        num_samples=len(rows),
+        num_samples=len(valid),
+        generation_metadata={"format_detection": fd_report.model_dump()},
     )
     db.add(dataset)
     await db.flush()
@@ -281,7 +397,7 @@ async def upload_seed_dataset(
     minio = get_minio_client()
     key = f"seeds/{dataset.id}.jsonl"
     bucket = settings.minio_datasets_bucket
-    size_bytes = put_jsonl(minio, bucket, key, rows)
+    size_bytes = put_jsonl(minio, bucket, key, valid)
     dataset.storage_uri = s3_uri(bucket, key)
     dataset.size_bytes = size_bytes
     await db.commit()
@@ -290,17 +406,18 @@ async def upload_seed_dataset(
     return SeedUploadResponse(
         dataset_id=dataset.id,
         task_type=task_type,
-        num_samples=len(rows),
-        invalid_rows=invalid_indexes,
+        num_samples=len(valid),
+        invalid_rows=invalid,
+        format_detection=fd_report,
     )
 
 
-def _parse_and_validate_seed(
-    raw: bytes, task_type: TaskType
-) -> tuple[list[dict], list[int]]:
-    """Parse JSON or JSONL bytes; validate each row; return `(valid_rows, invalid_indexes)`.
+def _parse_seed_bytes(raw: bytes) -> list[dict]:
+    """Parse JSON-array OR JSONL bytes into a list of row dicts.
 
-    Accepts either a JSON array of objects OR a JSONL file (one object per line).
+    Tolerates blank lines and unparseable lines (the latter come back as
+    `{"_unparseable": True}` and are dropped before Format Detection — we
+    don't want to feed garbage into the LLM mapper).
     """
     text = raw.decode("utf-8", errors="replace").strip()
     candidates: list[dict] = []
@@ -328,21 +445,187 @@ def _parse_and_validate_seed(
                 if isinstance(obj, dict):
                     candidates.append(obj)
             except json.JSONDecodeError:
-                # Soft-tolerate: count as invalid row below.
-                candidates.append({"_unparseable": True})
+                # Skip unparseable lines silently — Format Detection can't
+                # do anything useful with them.
+                continue
+    return candidates
 
-    valid: list[dict] = []
-    invalid: list[int] = []
-    for idx, row in enumerate(candidates):
-        if row.get("_unparseable"):
-            invalid.append(idx)
-            continue
-        try:
-            parse_samples(task_type, [row])
-            valid.append(row)
-        except Exception:  # noqa: BLE001 — row-level rejection
-            invalid.append(idx)
-    return valid, invalid
+
+async def _run_format_detection(
+    *,
+    rows: list[dict],
+    canonical_keys: set[str],
+    required_keys: set[str],
+    task_type: TaskType,
+    api_key: str,
+    http_referer: str,
+    app_title: str,
+) -> FormatDetectionResult:
+    """Run Format Detection in a thread so we don't block the event loop.
+
+    The sync OpenRouterClient is the right choice here — Format Detection is
+    a single LLM call per upload, not a batch. asyncio.to_thread keeps the
+    FastAPI event loop free for other requests.
+    """
+
+    def _go() -> FormatDetectionResult:
+        if not api_key:
+            log.warning(
+                "OPENROUTER_API_KEY is empty — skipping Format Detection; "
+                "treating rows as raw and dropping any with missing required keys"
+            )
+            return passthrough_with_required_check(
+                rows, required_keys, notes="OPENROUTER_API_KEY not set"
+            )
+        client = OpenRouterClient(
+            api_key=api_key,
+            teacher_model=llm_models.FORMAT_DETECTION,
+            http_referer=http_referer,
+            app_title=app_title,
+        )
+        return detect_and_rename(
+            rows=rows,
+            canonical_keys=canonical_keys,
+            required_keys=required_keys,
+            task_type_label=task_type.value,
+            client=client,
+        )
+
+    return await asyncio.to_thread(_go)
+
+
+# ---- upload-seed: PDF path ------------------------------------------------
+
+
+async def _upload_pdf_seed(
+    db: AsyncSession,
+    *,
+    settings,
+    project: Project,
+    task_type: TaskType,
+    name: str | None,
+    file: UploadFile,
+) -> SeedUploadResponse:
+    if task_type != TaskType.QA:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"PDF uploads are supported only for task_type=qa "
+                f"(got {task_type.value})"
+            ),
+        )
+
+    raw = await file.read(_MAX_SEED_PDF_BYTES + 1)
+    if len(raw) > _MAX_SEED_PDF_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"PDF exceeds {_MAX_SEED_PDF_BYTES // (1024*1024)} MiB cap",
+        )
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="empty PDF upload",
+        )
+
+    try:
+        probe_result = pdf_probe(raw)
+    except PdfTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)
+        ) from exc
+    except PdfTooManyPagesError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)
+        ) from exc
+    except PdfCorruptError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    dataset_name = (
+        name
+        or f"seed-pdf-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    )
+    fd_report = FormatDetectionReport(
+        ran=False,
+        model_used=None,
+        field_mapping={},
+        rows_total=0,
+        rows_canonicalised=0,
+        rows_dropped=0,
+        notes="PDF upload — Format Detection not applicable",
+    )
+
+    bucket = settings.minio_datasets_bucket
+    dataset = Dataset(
+        project_id=project.id,
+        name=dataset_name,
+        task_type=task_type,
+        source=DatasetSource.SEED,
+        num_samples=0,
+        generation_metadata={
+            "format_detection": fd_report.model_dump(),
+            "pdf_pages": probe_result.num_pages,
+        },
+    )
+    db.add(dataset)
+    await db.flush()
+
+    pdf_key = f"seed-pdfs/{dataset.id}.pdf"
+    minio = get_minio_client()
+    minio.put_object(
+        bucket_name=bucket,
+        object_name=pdf_key,
+        data=BytesIO(raw),
+        length=len(raw),
+        content_type="application/pdf",
+    )
+    pdf_uri = s3_uri(bucket, pdf_key)
+    dataset.storage_uri = None  # No JSONL; pdf_uri is the source of truth.
+    dataset.size_bytes = len(raw)
+    meta = dict(dataset.generation_metadata or {})
+    meta["pdf_uri"] = pdf_uri
+    dataset.generation_metadata = meta
+    await db.commit()
+    await db.refresh(dataset)
+
+    return SeedUploadResponse(
+        dataset_id=dataset.id,
+        task_type=task_type,
+        num_samples=0,
+        invalid_rows=[],
+        format_detection=fd_report,
+        pdf_uri=pdf_uri,
+    )
+
+
+# ---- helpers --------------------------------------------------------------
+
+
+def _looks_like_pdf(file: UploadFile) -> bool:
+    """Heuristic content-type / extension dispatch for the upload-seed router."""
+    if file.content_type == "application/pdf":
+        return True
+    fname = (file.filename or "").lower()
+    return fname.endswith(".pdf")
+
+
+def _to_report(
+    result: FormatDetectionResult,
+    *,
+    rows_total: int,
+    rows_canonicalised: int,
+    model_used: str | None,
+) -> FormatDetectionReport:
+    return FormatDetectionReport(
+        ran=result.ran,
+        model_used=model_used if result.ran else None,
+        field_mapping=result.field_mapping,
+        rows_total=rows_total,
+        rows_canonicalised=rows_canonicalised,
+        rows_dropped=result.rows_dropped,
+        notes=result.notes,
+    )
 
 
 __all__ = [

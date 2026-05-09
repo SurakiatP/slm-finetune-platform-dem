@@ -2,7 +2,24 @@
 
 คู่มือ end-to-end สำหรับทดสอบ API 25 endpoints ผ่าน Swagger UI ที่ `/docs` — เรียงตาม **lifecycle จริง** (project → dataset → training → export → inference → eval) พร้อม request/response ตัวอย่างที่ใช้งานได้จริง
 
-> ทุก request body ที่อยู่ในเอกสารนี้ผ่านการ verify กับ OpenAPI spec ของ deploy ปัจจุบัน (vast.ai 4060 Ti host, branch `dev`) — copy-paste ลง Swagger ได้เลย
+> ทุก request body ที่อยู่ในเอกสารนี้ผ่านการ verify กับ OpenAPI spec ของ deploy ปัจจุบัน — copy-paste ลง Swagger ได้เลย
+
+---
+
+## ⚠️ Phase 9 — SDG Hardening (สิ่งที่เปลี่ยนจาก Phase 4)
+
+ถ้าเคยอ่าน guide เวอร์ชันเก่าหรือใช้ payload เก่า โปรดสังเกตการเปลี่ยนแปลงของ SDG flow:
+
+| เดิม (Phase 4) | ใหม่ (Phase 9) |
+|----------------|----------------|
+| `POST /datasets/generate` รับ `seed_data: [...]` inline | **`seed_data` ถูกตัดออก** → ส่ง `seed_dataset_id: UUID` (ของ seed ที่ upload ไว้แล้ว) |
+| `teacher_model: "..."` ใน request body override โมเดลได้ | **`teacher_model` ถูกตัดออก** — โมเดล LLM ทั้ง 5 ตัว hardcoded server-side |
+| `upload-seed` รับ `.json/.jsonl` เท่านั้น | **`.pdf` รับได้สำหรับ task=qa** (multimodal Q&A extraction รอบแรก) |
+| Response ของ upload-seed มี 4 ฟิลด์ | **เพิ่ม `format_detection` + `pdf_uri`** — audit ของ schema-mapping pass |
+| SDG loop = validate + exact dedup | **เพิ่ม Judge gate (0.4·F + 0.3·N + 0.3·U ≥ 0.7) + MinHash LSH dedup (Jaccard 0.90) + 90/10 sentinel quota + adaptive over-gen** |
+| `SDGProgress` มีแค่ 5 ตัวเลข | **เพิ่ม `current_loop`, `judge_rejected`, `judge_parse_failures`, `dedup_rejected`** + phases `format_detection` / `meta_prompting` / `judging` / `dedup` |
+
+ส่ง `seed_data` หรือ `teacher_model` แบบเดิม → **422 Unprocessable Entity** (`extra="forbid"`)
 
 ---
 
@@ -38,30 +55,42 @@ Start-Process http://localhost:8000/docs
 ## 1. Lifecycle — Endpoints เรียงตามลำดับใช้จริง
 
 ```
-                                                                   ┌─ POST /api/v1/datasets/upload-seed   (no OpenRouter)
-[Setup]                                                            │
-GET  /health                                                       ├─ POST /api/v1/datasets/generate      (needs OpenRouter)
-GET  /api/v1/tasks                          → 3 task types         │
-GET  /api/v1/tasks/{task_type}/example      → seed shape           ▼
-GET  /api/v1/base-models                    → 1B / 3B options    [Dataset]
-                                                                   │
-[Project]                                                          ├─ GET /api/v1/datasets/{id}           (poll until storage_uri set)
-POST /api/v1/projects                                              ├─ GET /api/v1/datasets/{id}/preview
-GET  /api/v1/projects                                              ▼
-GET  /api/v1/projects/{id}                                       [Training]
-                                                                   │
-                                                                   ├─ POST /api/v1/trainings              (manual or HPO)
-                                                                   ├─ GET  /api/v1/trainings/{id}         (poll until completed)
-                                                                   ├─ GET  /api/v1/trainings/{id}/mlflow-url
-                                                                   ▼
-                                                                 [Model]
-                                                                   │
-                                                                   ├─ GET  /api/v1/models?training_job_id={id}
-                                                                   ├─ POST /api/v1/models/{id}/export    → GGUF / SafeTensors
-                                                                   ▼
-                                                                 [Use]
-                                                                   ├─ POST /api/v1/inference/chat/completions
-                                                                   └─ POST /api/v1/evaluations
+[Setup]
+GET  /health
+GET  /api/v1/tasks                          → 3 task types
+GET  /api/v1/tasks/{task_type}/example      → seed shape
+GET  /api/v1/base-models                    → 1B / 3B options
+
+[Project]
+POST /api/v1/projects                       → save project_id
+GET  /api/v1/projects
+GET  /api/v1/projects/{id}
+
+[Seed]                  ← Phase 9: upload เสมอ ก่อน SDG with_seed
+POST /api/v1/datasets/upload-seed           → save seed_dataset_id
+                                              (รับ .json/.jsonl, ของ qa รับ .pdf ได้)
+                                              Response มี format_detection report
+
+[Dataset]
+POST /api/v1/datasets/generate              → save dataset_id
+                                              with_seed → ส่ง seed_dataset_id
+                                              description_only → ใส่ labels/tools
+                                              **needs OPENROUTER_API_KEY**
+GET  /api/v1/datasets/{id}                  (poll until storage_uri set)
+GET  /api/v1/datasets/{id}/preview
+
+[Training]
+POST /api/v1/trainings                      (manual or HPO)
+GET  /api/v1/trainings/{id}                 (poll until completed)
+GET  /api/v1/trainings/{id}/mlflow-url
+
+[Model]
+GET  /api/v1/models?training_job_id={id}    → save artifact_id
+POST /api/v1/models/{id}/export             → GGUF / SafeTensors
+
+[Use]
+POST /api/v1/inference/chat/completions
+POST /api/v1/evaluations
 ```
 
 ---
@@ -234,14 +263,28 @@ docker compose restart api worker
 
 ---
 
-## 6. สร้าง Dataset — เลือก 1 ใน 2 ทาง
+## 6. สร้าง Dataset — Phase 9 flow (upload-seed → generate)
 
-### Path A — Upload seed file (ไม่ต้องใช้ OpenRouter)
+> Phase 9 บังคับให้ upload seed ก่อน → จึง generate (เปลี่ยนจาก Phase 4 ที่ inline `seed_data` ได้) ดู §1 ในตารางความต่างด้านบน
 
-**`POST /api/v1/datasets/upload-seed`** — multipart form
+ขั้นตอนคือ:
+1. **§6.1 — Upload seed dataset** (JSON / JSONL / PDF) → ได้ `seed_dataset_id`
+2. **§6.2 — Submit SDG generation** ส่ง `seed_dataset_id` (with_seed) หรือ labels/tools (description_only)
 
-ก่อนกด Execute เตรียมไฟล์ `seed.jsonl` (1 row ต่อบรรทัด):
+---
 
+### 6.1 Upload seed file — `POST /api/v1/datasets/upload-seed`
+
+multipart form. รับ 3 รูปแบบ:
+
+| ไฟล์ | task_type | คำอธิบาย |
+|------|-----------|---------|
+| `.jsonl` (1 row/บรรทัด) หรือ `.json` (top-level array) | qa / classification / tool_calling | format ปกติ — ถ้า key ไม่ตรง canonical ระบบจะเรียก **Format Detection LLM** auto-rename ให้ |
+| `.pdf` | **qa เท่านั้น** | multimodal flow — เก็บ PDF ดิบไว้, รอบแรกของ SDG จะส่ง PDF เข้า Gemini multimodal สกัด Q&A pairs |
+
+#### 6.1.a — JSONL canonical (key ตรงเลย, ไม่ต้องเรียก LLM)
+
+ไฟล์ `seed.jsonl`:
 ```jsonl
 {"question": "What is the return window?", "answer": "Items can be returned within 30 days of purchase."}
 {"question": "Do I need a receipt?", "answer": "Yes, please keep your receipt for any return."}
@@ -262,17 +305,107 @@ docker compose restart api worker
   "dataset_id": "f1c0a4ba-2d12-4001-b3c0-9e3b7e1a4f12",
   "task_type": "qa",
   "num_samples": 5,
-  "invalid_rows": []
+  "invalid_rows": [],
+  "format_detection": {
+    "ran": false,
+    "model_used": null,
+    "field_mapping": {},
+    "rows_total": 5,
+    "rows_canonicalised": 5,
+    "rows_dropped": 0,
+    "notes": "already canonical — Format Detection skipped"
+  },
+  "pdf_uri": null
 }
 ```
 
-> ถ้า `invalid_rows: [3, 7]` แสดงว่าแถว index 3 กับ 7 ไม่ผ่าน schema validation — แก้ไฟล์แล้วอัปใหม่
+> 🔖 เก็บ `dataset_id` ใช้เป็น `seed_dataset_id` ใน §6.2
 
-### Path B — Generate via SDG (ต้องตั้ง OPENROUTER_API_KEY)
+#### 6.1.b — JSONL key ไม่ตรง (Format Detection ทำงาน)
 
-**`POST /api/v1/datasets/generate`** — JSON
+ไฟล์ `seed_messy.jsonl` (key เป็น `q`/`a` ไม่ตรง canonical `question`/`answer`):
+```jsonl
+{"q": "Return window?", "a": "30 days."}
+{"q": "Need receipt?", "a": "Yes."}
+{"q": "Sale items?", "a": "Final."}
+{"q": "Refund?", "a": "5-7 days."}
+{"q": "Where ship?", "a": "Returns Lane 123."}
+```
 
-#### B1. Mode `with_seed` (แนะนำ — quality สูงกว่า)
+**Response 201:**
+```json
+{
+  "dataset_id": "f1c0a4ba-...",
+  "task_type": "qa",
+  "num_samples": 5,
+  "invalid_rows": [],
+  "format_detection": {
+    "ran": true,
+    "model_used": "google/gemini-2.5-flash-lite",
+    "field_mapping": { "q": "question", "a": "answer" },
+    "rows_total": 5,
+    "rows_canonicalised": 5,
+    "rows_dropped": 0,
+    "notes": null
+  },
+  "pdf_uri": null
+}
+```
+
+> 🧪 ตรวจสอบใน MinIO Console: `datasets/seeds/{dataset_id}.jsonl` ควรเป็น canonical แล้ว (key เป็น `question`/`answer`)
+> 🔧 ถ้า `OPENROUTER_API_KEY` ว่าง — Format Detection จะ fallback "passthrough mode" + drop rows ที่ขาด required keys (notes จะบอก)
+
+#### 6.1.c — PDF (qa only)
+
+```
+project_id:  <project_id>
+task_type:   qa
+file:        policy.pdf
+```
+
+**Response 201:**
+```json
+{
+  "dataset_id": "f1c0a4ba-...",
+  "task_type": "qa",
+  "num_samples": 0,
+  "invalid_rows": [],
+  "format_detection": {
+    "ran": false,
+    "model_used": null,
+    "field_mapping": {},
+    "rows_total": 0,
+    "rows_canonicalised": 0,
+    "rows_dropped": 0,
+    "notes": "PDF upload — Format Detection not applicable"
+  },
+  "pdf_uri": "s3://datasets/seed-pdfs/f1c0a4ba-.../seed.pdf"
+}
+```
+
+**ข้อจำกัด PDF:** ≤25 MiB, ≤100 หน้า — เกินคืน 413
+
+> `num_samples: 0` ถูกแล้ว — Q&A pairs จะมาจาก SDG generator (รอบแรกใช้ multimodal LLM อ่าน PDF)
+
+#### 6.1.d — Errors ที่พบบ่อย
+
+| Status | Reason |
+|--------|--------|
+| 400 | `task_type` ใน form ≠ project's task_type |
+| 400 | upload `.pdf` แต่ task_type ≠ qa |
+| 400 | parse JSON/JSONL ไม่ผ่าน |
+| 413 | JSONL > 10 MiB หรือ PDF > 25 MiB / >100 หน้า |
+| 422 | row schema ผิด (ทุก row reject → error) |
+
+---
+
+### 6.2 Submit SDG generation — `POST /api/v1/datasets/generate`
+
+ต้องมี `OPENROUTER_API_KEY` ตั้งใน `.env` แล้วเสมอ (Generator + Judge LLM)
+
+#### 6.2.a Mode `with_seed` (แนะนำ — quality สูงกว่า)
+
+ใช้ `seed_dataset_id` จาก §6.1:
 
 ```json
 {
@@ -283,17 +416,18 @@ docker compose restart api worker
   "num_samples": 50,
   "temperature": 0.8,
   "dataset_name": "policy-sdg-v1",
-  "seed_data": [
-    { "question": "What is the return window?", "answer": "30 days." },
-    { "question": "Do I need a receipt?", "answer": "Yes, please keep it." },
-    { "question": "Sale items returnable?", "answer": "Sale items are final." },
-    { "question": "Refund timing?", "answer": "5-7 business days." },
-    { "question": "Where to ship?", "answer": "Returns Lane 123." }
-  ]
+  "seed_dataset_id": "f1c0a4ba-2d12-4001-b3c0-9e3b7e1a4f12"
 }
 ```
 
-#### B2. Mode `description_only` (ไม่มี seed, ต้องใส่ task-specific config)
+**กฎ validation ของ `seed_dataset_id`:**
+- ต้องมีอยู่ใน DB (404 ถ้าไม่มี)
+- ต้องเป็น `source = seed` (400 ถ้าผิด)
+- ต้อง `task_type` เดียวกับ request (400)
+- ต้องอยู่ใน project เดียวกัน (400)
+- ถ้าเป็น PDF seed (`pdf_uri` set) → request `task_type` ต้องเป็น qa (400)
+
+#### 6.2.b Mode `description_only` (ไม่มี seed, ต้องใส่ task-specific config)
 
 **Classification:**
 ```json
@@ -309,6 +443,8 @@ docker compose restart api worker
   }
 }
 ```
+
+> Phase 9 จะ auto-inject `"unknown"` sentinel เพิ่ม 10% ของ target — sentinel นี้ใช้สำหรับ off-topic / out-of-scope inputs ทำให้ classifier ปรับ confidence ได้ดีขึ้น
 
 **Tool calling:**
 ```json
@@ -340,6 +476,8 @@ docker compose restart api worker
 }
 ```
 
+> Phase 9 จะ auto-inject `"no_tool_needed"` sentinel tool — ใช้กรณีที่ input ไม่ตรงกับ tool ใด ๆ
+
 **Response 202 (Accepted — job runs async):**
 ```json
 {
@@ -350,8 +488,18 @@ docker compose restart api worker
 }
 ```
 
-> 🔖 เก็บ `dataset_id` (ตัวเดียวกันกับ Path A)
+> 🔖 เก็บ `dataset_id` (เป็นคนละตัวกับ `seed_dataset_id`)
 > 🔖 เก็บ `websocket_url` ถ้าจะดู progress live (ดู §10)
+
+#### 6.2.c Errors ที่พบบ่อยใน `/datasets/generate`
+
+| Status | สาเหตุ | สิ่งที่ต้องแก้ |
+|--------|--------|----------------|
+| **422** | ใส่ `seed_data: [...]` (Phase 4 contract) | ตัด `seed_data` ออก → ใช้ `seed_dataset_id` แทน (upload seed ก่อน §6.1) |
+| **422** | ใส่ `teacher_model: "..."` | ตัดทิ้ง — Phase 9 hardcode โมเดล server-side |
+| **422** | with_seed mode แต่ไม่มี `seed_dataset_id` | ใส่ field |
+| **404** | `seed_dataset_id` ไม่มีใน DB | upload seed ก่อน |
+| **400** | seed task_type / project ไม่ตรง | upload ใหม่ในโปรเจกต์ที่ถูก |
 
 ---
 
@@ -368,29 +516,55 @@ docker compose restart api worker
   "project_id": "58e2064c-...",
   "name": "policy-sdg-v1",
   "task_type": "qa",
-  "source": "synthetic",
+  "source": "sdg",
   "num_samples": 0,
   "storage_uri": null,
   "size_bytes": null,
   "generation_metadata": {
     "sdg_mode": "with_seed",
-    "teacher_model": "anthropic/claude-3.5-sonnet"
+    "task_description": "Answer questions about our return policy",
+    "temperature": 0.8,
+    "requested_samples": 50,
+    "submitted_at": "2026-05-09T13:00:00Z",
+    "seed_dataset_id": "f1c0a4ba-...",
+    "celery_task_id": "5e2bdc60-..."
   },
   "created_at": "...",
   "updated_at": "..."
 }
 ```
 
-**Response 200 (เสร็จแล้ว):**
+**Response 200 (เสร็จแล้ว — Phase 9 audit fields):**
 ```json
 {
   "id": "9b0e7c1f-...",
   "num_samples": 50,
-  "storage_uri": "s3://datasets/9b0e7c1f-.../data.jsonl",
+  "storage_uri": "s3://datasets/sdg/9b0e7c1f-....jsonl",
   "size_bytes": 12384,
-  "...": "..."
+  "generation_metadata": {
+    "sdg_mode": "with_seed",
+    "task_description": "...",
+    "temperature": 0.8,
+    "requested_samples": 50,
+    "submitted_at": "2026-05-09T13:00:00Z",
+    "seed_dataset_id": "f1c0a4ba-...",
+    "celery_task_id": "5e2bdc60-...",
+    "completed_at": "2026-05-09T13:04:32Z",
+    "rejected_count": 8,
+    "duplicate_count": 3,
+    "judge_rejected_count": 12,
+    "judge_parse_failures": 0,
+    "api_calls": 87
+  }
 }
 ```
+
+> Phase 9 audit fields:
+> - `rejected_count` — schema/validation rejects (Pydantic + business rule failures)
+> - `duplicate_count` — MinHash LSH near-duplicate rejects
+> - `judge_rejected_count` — Judge weighted score < 0.7
+> - `judge_parse_failures` — Judge response ไม่ parse เป็น JudgeScore
+> - `api_calls` — รวม Generator + Judge + (Meta-prompter / PDF / Format Detection ถ้ามี)
 
 ### `GET /api/v1/datasets/{dataset_id}/preview?limit=5`
 
@@ -570,12 +744,47 @@ ws.onmessage = (e) => console.log(JSON.parse(e.data));
 websocat ws://localhost:8000/ws/jobs/celery-task-id-here
 ```
 
-**Sample messages:**
+**Sample training messages:**
 ```json
-{ "type": "progress", "step": 10, "total_steps": 100, "loss": 1.23 }
-{ "type": "progress", "step": 50, "total_steps": 100, "loss": 0.56 }
+{ "type": "training_progress", "step": 10, "total_steps": 100, "loss": 1.23 }
+{ "type": "training_progress", "step": 50, "total_steps": 100, "loss": 0.56 }
 { "type": "completed", "metric": 0.124 }
 ```
+
+**Sample SDG messages (Phase 9 — มี phase markers + per-loop counters):**
+```json
+{ "type": "sdg_progress", "phase": "meta_prompting",
+  "samples_generated": 0, "samples_target": 50,
+  "current_loop": null }
+
+{ "type": "sdg_progress", "phase": "judging",
+  "samples_generated": 0, "samples_target": 50,
+  "samples_rejected": 5, "duplicates_removed": 0,
+  "current_loop": 0 }
+
+{ "type": "sdg_progress", "phase": "generating",
+  "samples_generated": 17, "samples_target": 50,
+  "samples_rejected": 8, "duplicates_removed": 3,
+  "current_loop": 0,
+  "judge_rejected": 4, "judge_parse_failures": 0,
+  "dedup_rejected": 3 }
+
+{ "type": "sdg_progress", "phase": "persisting",
+  "samples_generated": 50, "samples_target": 50,
+  "samples_valid": 50 }
+
+{ "type": "completed",
+  "result": { "samples_generated": 50, "judge_rejected_count": 12,
+              "duplicate_count": 3, "api_calls": 87, "storage_uri": "s3://datasets/sdg/..." } }
+```
+
+**Phase markers** (`phase` field):
+- `format_detection` — emitted ถ้าระบบเรียก Format Detection (รอบนี้ไม่ค่อยเห็น เพราะรันที่ upload-seed time)
+- `meta_prompting` — เรียก LLM ทำ diversity rules (1 ครั้ง/job, ตอน setup)
+- `generating` — Generator + Judge + dedup loop body
+- `judging` — emitted ก่อน Judge batch
+- `dedup` — emitted ก่อน MinHash filter
+- `persisting` — เขียน JSONL ขึ้น MinIO (final phase)
 
 ---
 
@@ -790,9 +999,14 @@ Legacy text-completion (ไม่ใช้ chat format) — มีไว้ส�
 | Status | `code` | สาเหตุ | Fix |
 |--------|--------|--------|-----|
 | **422** | `validation_error` | request body ผิด schema | ดู `extra.errors[]` ระบุ field ที่ผิด — แก้แล้วลองใหม่ |
-| **404** | `not_found` | ID ไม่มีใน DB / route ไม่มี | ตรวจ UUID ให้ถูก หรือเช็ค path |
+| **422** | `validation_error` | **Phase 9:** ส่ง `seed_data: [...]` ไป `/datasets/generate` | ตัดออก → upload seed (§6.1) แล้วใช้ `seed_dataset_id` |
+| **422** | `validation_error` | **Phase 9:** ส่ง `teacher_model: "..."` | ตัดทิ้ง — Phase 9 hardcode โมเดลแล้ว |
+| **400** | `bad_request` | upload PDF แต่ task_type ≠ qa | ใช้ JSONL, หรือ project ใหม่ที่ task_type=qa |
+| **400** | `bad_request` | seed_dataset_id อยู่ project อื่น / task_type ไม่ตรง | upload seed ใหม่ในโปรเจกต์ + task ที่ตรง |
+| **404** | `not_found` | ID ไม่มีใน DB / route ไม่มี / **Phase 9:** seed_dataset_id ไม่มีอยู่ | ตรวจ UUID ให้ถูก หรือ upload seed ก่อน |
 | **405** | `http_405` | HTTP method ผิด (เช่น GET endpoint ที่รับแต่ POST) | เปลี่ยน method |
-| **409** | `conflict` | resource state ขัด (เช่น train job already terminal) | refresh `GET /trainings/{id}` ดู status |
+| **409** | `conflict` | resource state ขัด (เช่น train job already terminal) / seed dataset ไม่มี JSONL หรือ PDF | refresh `GET /datasets/{id}` ดู state |
+| **413** | `payload_too_large` | JSONL > 10 MiB หรือ PDF > 25 MiB / >100 หน้า | ลดขนาด หรือใช้ chunk |
 | **500** | `internal_error` | bug — มี `correlation_id` | ส่ง `correlation_id` ให้ดูใน `docker compose logs api` |
 | **502** | `bad_gateway` | OpenRouter / Ollama down หรือ key ผิด | ตรวจ `.env`, restart api/worker |
 
@@ -819,9 +1033,9 @@ Legacy text-completion (ไม่ใช้ chat format) — มีไว้ส�
 
 ---
 
-## 16. Quick Smoke Test (~5 นาที on a 12+ GB GPU, no OpenRouter)
+## 16. Quick Smoke Test — Full Lifecycle (~5 นาที on a 12+ GB GPU, no OpenRouter)
 
-ทดสอบ end-to-end เร็ว ๆ ด้วย Path A (upload seed) + manual training 1 epoch. Verified live on a fresh RTX 5000 Ada VM in Session 14 (2026-05-09): training 55 s, export 73 s, inference responded with the seed answer.
+ทดสอบ end-to-end เร็ว ๆ ด้วย upload-seed + manual training 1 epoch. Verified live on a fresh RTX 5000 Ada VM in Session 14 (2026-05-09): training 55 s, export 73 s, inference responded with the seed answer.
 
 ```
 1. GET  /health                                            → 200 {"status":"ok"}
@@ -829,6 +1043,7 @@ Legacy text-completion (ไม่ใช้ chat format) — มีไว้ส�
    { "name":"smoke", "task_type":"qa" }
 3. POST /api/v1/datasets/upload-seed (multipart)           → save dataset_id
    project_id, task_type=qa, file=seed.jsonl (5 rows)
+   Response มี format_detection.ran=false (canonical seed)
 4. GET  /api/v1/datasets/{dataset_id}/preview?limit=3      → ดูว่าข้อมูลถูก
 5. POST /api/v1/trainings                                  → save training_id
    { "mode":"manual", "project_id":..., "dataset_id":...,
@@ -857,5 +1072,80 @@ Legacy text-completion (ไม่ใช้ chat format) — มีไว้ส�
 > ```
 
 ผ่านครบ 9 ข้อ = pipeline สมบูรณ์ พร้อมใช้งานจริง 🎉
+
+---
+
+## 17. Phase 9 SDG Smoke Test — Quality Gates Verification (no GPU needed)
+
+ทดสอบเฉพาะ SDG pipeline (ไม่ต้องเทรน) เพื่อยืนยัน Format Detection + Judge + MinHash + Sentinel quota ทำงาน ใช้ OPENROUTER_API_KEY แต่ใช้แค่ ~$0.10-0.20 ต่อ run
+
+```
+1. GET  /health                                            → 200
+
+2. POST /api/v1/projects                                   → save project_id
+   { "name":"sdg-phase9-smoke", "task_type":"qa" }
+
+3a. POST /api/v1/datasets/upload-seed (canonical)          → save seed_id_a
+    project_id, task_type=qa, file=seed.jsonl (canonical key)
+    Response: format_detection.ran=false (skip LLM cost)
+
+3b. POST /api/v1/datasets/upload-seed (mismatched keys)    → save seed_id_b
+    project_id, task_type=qa, file=seed_messy.jsonl (key=q/a)
+    Response: format_detection.ran=true,
+              field_mapping={"q":"question","a":"answer"}
+
+4. POST /api/v1/datasets/generate                          → save sdg_dataset_id
+   { "sdg_mode":"with_seed", "project_id":..., "task_type":"qa",
+     "task_description":"Answer policy questions",
+     "num_samples":15, "seed_dataset_id":"<seed_id_a>" }
+   Response: 202 + websocket_url
+
+5. (ดู progress via WS หรือ poll)
+   GET /api/v1/datasets/{sdg_dataset_id} (poll ~1-2 min)
+   → storage_uri populated
+   → generation_metadata.judge_rejected_count > 0 (Judge ทำงาน)
+   → generation_metadata.duplicate_count >= 0 (MinHash ทำงาน)
+   → generation_metadata.api_calls บอกจำนวน LLM ครั้ง
+
+6. GET /api/v1/datasets/{sdg_dataset_id}/preview?limit=5
+   → เห็น Q&A pairs ที่ Generator สร้าง
+
+7. (Negative tests — ต้อง 422)
+   POST /api/v1/datasets/generate with seed_data=[...]      → 422
+   POST /api/v1/datasets/generate with teacher_model="..."  → 422
+
+8. (Classification 90/10 sentinel quota)
+   POST /api/v1/datasets/generate
+   { "sdg_mode":"description_only", "project_id":<cls_project>,
+     "task_type":"classification", "task_description":"...",
+     "num_samples":20,
+     "classification_config":{"labels":["billing","tech","general"]} }
+   หลัง completion: GET /api/v1/datasets/{id}/preview?limit=20
+   → ควรเห็นบางแถว label="unknown" (~10% = 2 แถว)
+
+9. (Tool calling sentinel)
+   POST /api/v1/datasets/generate (description_only + tools)
+   หลัง completion: เห็นบางแถว answer มี name="no_tool_needed"
+```
+
+> **seed.jsonl (canonical):**
+> ```json
+> {"question": "Return window?", "answer": "30 days."}
+> {"question": "Need receipt?", "answer": "Yes."}
+> {"question": "Sale items?", "answer": "Final."}
+> {"question": "Refund timing?", "answer": "5-7 days."}
+> {"question": "Where to ship?", "answer": "Returns Lane 123."}
+> ```
+
+> **seed_messy.jsonl (Format Detection trigger):**
+> ```json
+> {"q": "Return window?", "a": "30 days."}
+> {"q": "Need receipt?", "a": "Yes."}
+> {"q": "Sale items?", "a": "Final."}
+> {"q": "Refund timing?", "a": "5-7 days."}
+> {"q": "Where to ship?", "a": "Returns Lane 123."}
+> ```
+
+ผ่านครบ 9 ข้อ = Phase 9 SDG quality stack ทำงานครบ 🎉
 
 **ถ้า step 8 พัง:** `GET /api/v1/models/{artifact_id}` แล้วดู `export_error_message` — ทุก error path เขียนลง field นี้ ไม่ต้องไป tail worker logs (B7).

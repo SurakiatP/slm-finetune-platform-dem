@@ -165,6 +165,48 @@ After B6 closed, exercising `POST /api/v1/models/{id}/export` against the new fl
 
 ---
 
+## Phase 9 — SDG Hardening (Sessions 15+)
+
+> Branch: `feature/sdg-improvements` (from `dev@59c12e2`, now at `2ca40e4`). Spec:
+> [`PHASE9_SDG_HARDENING_SPEC.md`](./PHASE9_SDG_HARDENING_SPEC.md). All
+> sub-phases shipped + 3 quality-gate bugs caught and fixed across
+> Sessions 15-17; both Claude-driven runbook walk and parks's manual
+> Swagger pass green. Only step left is opening the PR.
+
+| ID | Task | Status | Next Step |
+|----|------|--------|-----------|
+| H9.1.1 | datasketch + pypdf added to base deps | ✅ | Commit `0b1fc63` |
+| H9.1.2 | ADR-007 (async LLM batching) accepted + indexed | ✅ | Commit `0b1fc63` |
+| H9.1.3 | `models.py` — 5 hardcoded LLM identifiers (Q6.1) | ✅ | Commit `be355eb` |
+| H9.1.4 | `constants.py` — every Phase 9 tunable | ✅ | Commit `be355eb` |
+| H9.1.5 | `AsyncOpenRouterClient` + `chat_raw` for multimodal | ✅ | Commit `7b32747`; 5 mock-server tests green |
+| H9.2.1 | MinHashLSH dedup + short-text guard | ✅ | Commit `36187b6`; 7 unit tests |
+| H9.2.2 | Coverage pool helper | ✅ | Commit `36187b6`; 6 unit tests |
+| H9.2.3 | LLM-as-Judge (weighted 0.4/0.3/0.3) | ✅ | Commit `68ecfd7`; 7 unit tests |
+| H9.2.4 | Meta-prompter + hardcoded fallback | ✅ | Commit `68ecfd7`; 7 unit tests |
+| H9.2.5 | Format Detection (schema mismatch + key renamer) | ✅ | Commit `5b46bf8`; 8 unit tests |
+| H9.2.6 | PDF loader (probe + base64) | ✅ | Commit `5b46bf8`; 7 unit tests |
+| H9.2.7 | `canonical_field_names` + `FormatDetectionReport` | ✅ | Commit `acfa4a3` |
+| H9.2.8 | Prompts rewrite — RTC-FO 5 families | ✅ | Commit `acfa4a3`; 16 unit tests |
+| H9.3.1 | `SDGProgress` widened (judge/dedup/loop fields) | ✅ | Commit `8743903` |
+| H9.3.2 | `seed_dataset_id` replaces `seed_data`; drop `teacher_model` | ✅ | Commit `8743903` (breaking) |
+| H9.3.3 | Upload-seed accepts PDF for QA + runs Format Detection | ✅ | Commit `b0fc6e6`; PDF cleanup on delete |
+| H9.3.4 | Async SDG generator (quota + sentinel + adaptive) | ✅ | Commit `f5fe435` |
+| H9.3.5 | Worker `asyncio.run` boundary + `seed_dataset_id` validation | ✅ | Commit `0f5c834` |
+| H9.3.6 | Integration tests rewritten + examples + README | ✅ | Commit `3512bda` |
+| H9.3.7 | Seed-data fixtures (12 files × 40 rows + PDF) | ✅ | Commits `fc3d93e` + `7ac77cf` |
+| H9.3.8 | 3 task-specific manual test runbooks | ✅ | Commit `fc3d93e` |
+| H9.3.9 | SWAGGER_GUIDE.md aligned with Phase 9 | ✅ | Commit `3132687` |
+| H9.3.10 | vast.ai deploy (hybrid: services Docker + host py3.11) for Swagger smoke | ✅ | Session 16 setup; uvicorn:8000 + celery `-P solo` running |
+| H9.3.11 | **Bug 1**: SDG sentinel quota routing — Generator emits real label, row bucketed wrong, every sentinel loop yields 0 → SDGAbortedError after 5 zero-yield loops | ✅ | Commit `b1a9581` — stamp `b["label_or_tool"]` on every row for classification + tool_calling sentinel batches. Verified target=10 → 10/10 with sentinel "สวัสดี". |
+| H9.3.12 | **Bug 2**: Judge rejects 100% of sentinel rows (rubric was sentinel-blind, asked "does text fit assigned label" → low fidelity for off-topic content) | ✅ | Commit `aa62149` — `_row_is_sentinel` detector + sentinel-specific rubric in `build_judge_prompt` + `[Sentinel row]` prompt prelude. Verified target=20 → 20/20 with distribution `{real:6×3, unknown:2}`. |
+| H9.3.13 | **Bug 3**: tool_calling `with_seed` returns `samples=0 calls=0` after 2.4 s — generator never derived `tool_defs` from seed rows, so quota was empty and main loop bailed at iteration 0 | ✅ | Commit `843a539` (Session 17) — mirror the cls_labels derivation: parse each seed row's JSON-encoded `answer` to collect unique tool names, synthesise minimal `ToolDefinition` per name (empty parameters; per-tool seed rows convey schema in-context). Verified target=20 → 20/20 with distribution `{play_music:2, light_on:4, set_oven:4, set_volume:4, start_timer:4, no_tool_needed:2}`. |
+| H9.3.14 | **Live runbook drive (Claude driver, Session 17)** — all 3 task-specific runbooks executed end-to-end via httpx against the live vast.ai stack | ✅ | Driver `scripts/session17_runbook_driver.py` (untracked); 50/50 sub-checks PASS once Bug 3 fixed and celery restarted. Classification 13/13, tool_calling 17/17, QA 13/13. One transient: QA T6 hung the worker for 18 min in `ep_poll` after 5 successful httpx calls (no error log) — fresh celery reran it cleanly in 48 s. Recurrence would warrant a wall-clock watchdog around `chat_batch`. |
+| H9.3.15 | **Manual Swagger pass (parks)** — same payloads through Swagger UI for content-quality eyeball | ✅ | Confirmed working. Sample reviewed: 20-row tool_calling output (`264585f0-cc59-454e-a6c1-252d76068405.jsonl`) — perfect tool-set membership, JSON-decode-clean, sentinel quota = 2, parameter types match (celsius:int, level:int, minutes:int, etc.), good phrasing diversity. |
+| H9.3.16 | Open PR `feature/sdg-improvements` → `dev` | ⏳ | All gates green (`origin/feature/sdg-improvements@2ca40e4`). Use `gh pr create` from local or GitHub web UI — vast.ai not required. |
+
+---
+
 ## Out of Scope (do NOT build)
 
 - ❌ Authentication / user management

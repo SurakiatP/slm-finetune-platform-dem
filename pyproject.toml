@@ -42,6 +42,9 @@ dependencies = [
     "mlflow>=2.19.0",
     "optuna>=4.1.0",
     "tenacity>=9.0.0",
+    # Phase 9 SDG hardening (ADR-007).
+    "datasketch>=1.6.0",
+    "pypdf>=5.0.0",
 ]
 
 [project.optional-dependencies]

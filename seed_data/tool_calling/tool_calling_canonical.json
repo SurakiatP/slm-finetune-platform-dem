@@ -1,0 +1,162 @@
+[
+  {
+    "question": "Set the oven to 200 degrees Celsius please",
+    "answer": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":200}}"
+  },
+  {
+    "question": "Preheat the oven to 180 degrees",
+    "answer": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":180}}"
+  },
+  {
+    "question": "Heat the oven up to 220",
+    "answer": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":220}}"
+  },
+  {
+    "question": "Can you preheat to 175 for the cake?",
+    "answer": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":175}}"
+  },
+  {
+    "question": "Crank the oven to 250 for the pizza",
+    "answer": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":250}}"
+  },
+  {
+    "question": "Set oven temperature to 160 degrees",
+    "answer": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":160}}"
+  },
+  {
+    "question": "Need the oven at 190 for roast chicken",
+    "answer": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":190}}"
+  },
+  {
+    "question": "Bake mode at 210 please",
+    "answer": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":210}}"
+  },
+  {
+    "question": "Start a 5-minute timer for me",
+    "answer": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":5}}"
+  },
+  {
+    "question": "Set a 30 second timer",
+    "answer": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":0.5}}"
+  },
+  {
+    "question": "Begin a 10-minute countdown",
+    "answer": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":10}}"
+  },
+  {
+    "question": "Timer for 45 seconds",
+    "answer": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":0.75}}"
+  },
+  {
+    "question": "Start a one-hour timer",
+    "answer": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":60}}"
+  },
+  {
+    "question": "15 minutes timer please",
+    "answer": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":15}}"
+  },
+  {
+    "question": "Set 2-minute timer for tea",
+    "answer": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":2}}"
+  },
+  {
+    "question": "Start a 25-minute pomodoro",
+    "answer": "{\"name\":\"start_timer\",\"parameters\":{\"minutes\":25}}"
+  },
+  {
+    "question": "Turn the volume up to 70 percent",
+    "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":70}}"
+  },
+  {
+    "question": "Lower the volume to 25",
+    "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":25}}"
+  },
+  {
+    "question": "Set audio level to 50",
+    "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":50}}"
+  },
+  {
+    "question": "Mute the volume to zero",
+    "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":0}}"
+  },
+  {
+    "question": "Volume at 80 please",
+    "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":80}}"
+  },
+  {
+    "question": "Crank it up to 100",
+    "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":100}}"
+  },
+  {
+    "question": "Set volume to 35",
+    "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":35}}"
+  },
+  {
+    "question": "Bring volume down to 15",
+    "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":15}}"
+  },
+  {
+    "question": "Play some jazz music in the living room",
+    "answer": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"jazz\",\"room\":\"living_room\"}}"
+  },
+  {
+    "question": "Start classical music in the bedroom",
+    "answer": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"classical\",\"room\":\"bedroom\"}}"
+  },
+  {
+    "question": "Play rock music",
+    "answer": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"rock\"}}"
+  },
+  {
+    "question": "Put on some chillhop in the kitchen",
+    "answer": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"chillhop\",\"room\":\"kitchen\"}}"
+  },
+  {
+    "question": "Play pop music in the office",
+    "answer": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"pop\",\"room\":\"office\"}}"
+  },
+  {
+    "question": "Some lo-fi for studying",
+    "answer": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"lofi\"}}"
+  },
+  {
+    "question": "Play country music in the dining room",
+    "answer": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"country\",\"room\":\"dining_room\"}}"
+  },
+  {
+    "question": "Start ambient music in the study",
+    "answer": "{\"name\":\"play_music\",\"parameters\":{\"genre\":\"ambient\",\"room\":\"study\"}}"
+  },
+  {
+    "question": "Turn on the kitchen lights",
+    "answer": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"kitchen\"}}"
+  },
+  {
+    "question": "Lights on in the bedroom please",
+    "answer": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"bedroom\"}}"
+  },
+  {
+    "question": "Turn on the bathroom light",
+    "answer": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"bathroom\"}}"
+  },
+  {
+    "question": "Light up the living room",
+    "answer": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"living_room\"}}"
+  },
+  {
+    "question": "Turn on lights in the garage",
+    "answer": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"garage\"}}"
+  },
+  {
+    "question": "Switch on the porch light",
+    "answer": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"porch\"}}"
+  },
+  {
+    "question": "Lights on in the office",
+    "answer": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"office\"}}"
+  },
+  {
+    "question": "Turn on the hallway lights",
+    "answer": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"hallway\"}}"
+  }
+]

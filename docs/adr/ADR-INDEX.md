@@ -58,3 +58,4 @@ What did we decide? Be concrete.
 | [004](./ADR-004-celery-not-bgtasks.md) | Celery for Async, Not FastAPI BackgroundTasks | Accepted | High | STRICT |
 | [005](./ADR-005-three-task-types.md) | Only 3 Supported Task Types | Accepted | High | STRICT |
 | [006](./ADR-006-asyncpg-for-async-sqlalchemy.md) | asyncpg for Async SQLAlchemy Sessions | Accepted | High | STRICT |
+| [007](./ADR-007-async-llm-batching.md) | Async LLM Batching with Custom asyncio.gather | Accepted | High | STRICT |

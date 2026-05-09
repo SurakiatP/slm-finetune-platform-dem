@@ -2,25 +2,27 @@
 
 `POST /api/v1/datasets/generate` accepts an `SDGRequest` and returns an
 `SDGJobAcceptedResponse`. The actual generation runs as a Celery task and
-publishes progress to the WebSocket channel `job:{job_id}` (see schemas/progress.py).
+publishes progress to the WebSocket channel `job:{job_id}`
+(see schemas/progress.py).
 
-Validation rules (from require.md):
-  • mode=with_seed         → seed_data: 5–50 rows, each matching task_type's shape
-  • mode=description_only  → task-specific config required:
-        - classification → classification_config.labels (≥2)
-        - tool_calling   → tool_calling_config.tool_definitions (≥1)
-        - qa             → no extra config
+Phase 9 changes:
+  • `SDGRequestWithSeed.seed_data` (inline list[dict]) is replaced with
+    `seed_dataset_id: UUID` — references a previously-uploaded seed
+    dataset (POST /api/v1/datasets/upload-seed).
+  • `teacher_model` field removed — Phase 9 model strings are hardcoded
+    in `ai_engine/data_gen/models.py` (Q6.1).
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from api.schemas.data_formats import ToolDefinition, parse_samples
+from api.schemas.data_formats import ToolDefinition
 from api.schemas.enums import JobStatus, SDGMode, TaskType
+from api.schemas.upload import FormatDetectionReport
 
 # --- Per-task generation configs (description_only mode) --------------------
 
@@ -81,10 +83,6 @@ class _SDGRequestBase(BaseModel):
         le=10_000,
         description="How many synthetic rows to generate.",
     )
-    teacher_model: str | None = Field(
-        default=None,
-        description="Override OPENROUTER_TEACHER_MODEL (e.g. 'openai/gpt-4o-mini').",
-    )
     temperature: float = Field(default=0.9, ge=0.0, le=2.0)
     dataset_name: str | None = Field(
         default=None,
@@ -93,7 +91,11 @@ class _SDGRequestBase(BaseModel):
 
 
 class SDGRequestWithSeed(_SDGRequestBase):
-    """Generate by extrapolating from user-provided seed examples."""
+    """Generate by extrapolating from a previously-uploaded seed dataset.
+
+    Upload the seed first via `POST /api/v1/datasets/upload-seed`, then
+    pass the returned `dataset_id` here as `seed_dataset_id`.
+    """
 
     model_config = ConfigDict(
         extra="forbid",
@@ -106,36 +108,23 @@ class SDGRequestWithSeed(_SDGRequestBase):
                     "task_description": "Answer questions about our 30-day return policy",
                     "num_samples": 200,
                     "temperature": 0.9,
-                    "seed_data": [
-                        {"question": "What's your return window?",
-                         "answer": "Items can be returned within 30 days of purchase."},
-                        {"question": "Do I need a receipt?",
-                         "answer": "Yes — please keep your receipt for any return."},
-                        {"question": "Can I get a refund on sale items?",
-                         "answer": "Sale items are final sale and cannot be returned."},
-                        {"question": "What if my item is damaged?",
-                         "answer": "Damaged items can be returned within 60 days for a full refund."},
-                        {"question": "Where do I ship returns?",
-                         "answer": "Ship returns to our warehouse at 123 Returns Lane, Springfield."},
-                    ],
+                    "seed_dataset_id": "00000000-0000-0000-0000-000000000099",
                 }
             ]
         },
     )
 
     sdg_mode: Literal[SDGMode.WITH_SEED] = SDGMode.WITH_SEED
-    seed_data: list[dict[str, Any]] = Field(
+    seed_dataset_id: UUID = Field(
         ...,
-        min_length=5,
-        max_length=50,
-        description="Seed rows; each must conform to the task_type's data format.",
+        description=(
+            "ID of a previously-uploaded seed dataset "
+            "(POST /api/v1/datasets/upload-seed). The dataset's source must "
+            "be DatasetSource.SEED and task_type must match this request's "
+            "task_type. For QA + PDF, the dataset's metadata must contain "
+            "a `pdf_uri`."
+        ),
     )
-
-    @model_validator(mode="after")
-    def _seed_rows_match_task_type(self) -> Self:
-        # Raises ValidationError pointing at the offending row index.
-        parse_samples(self.task_type, self.seed_data)
-        return self
 
 
 class SDGRequestDescriptionOnly(_SDGRequestBase):
@@ -234,16 +223,40 @@ class SDGJobAcceptedResponse(BaseModel):
 
 
 class SeedUploadResponse(BaseModel):
-    """Response for `POST /api/v1/datasets/upload-seed` (multipart upload)."""
+    """Response for `POST /api/v1/datasets/upload-seed` (multipart upload).
+
+    Phase 9: extended with `format_detection` (the audit trail of the
+    schema-mapping pass) and `pdf_uri` (set only for QA + PDF uploads).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     dataset_id: UUID
     task_type: TaskType
-    num_samples: int
+    num_samples: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Number of canonicalised rows persisted to MinIO. 0 for PDF "
+            "uploads — Q&A pairs come from the SDG generator later."
+        ),
+    )
     invalid_rows: list[int] = Field(
         default_factory=list,
         description="Indexes of rows that failed validation (if any were tolerated).",
+    )
+    format_detection: FormatDetectionReport = Field(
+        ...,
+        description=(
+            "Audit trail of the Format Detection pass. `ran=False` when the "
+            "seed was already canonical or for PDF uploads."
+        ),
+    )
+    pdf_uri: str | None = Field(
+        default=None,
+        description=(
+            "S3 URI of the persisted PDF (only set for QA + PDF uploads)."
+        ),
     )
 
 

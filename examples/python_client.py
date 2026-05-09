@@ -102,15 +102,33 @@ def _poll_dataset_until_ready(client: httpx.Client, dataset_id: str, *, timeout:
 # ---- Per-task SDG body -----------------------------------------------------
 
 
-def _sdg_body(project_id: str, task_type: str, num_samples: int) -> dict:
+def _upload_qa_seed(client: httpx.Client, project_id: str) -> str:
+    """Upload QA_SEED via /datasets/upload-seed and return the dataset_id."""
+    body = "\n".join(json.dumps(r) for r in QA_SEED).encode("utf-8")
+    resp = client.post(
+        "/api/v1/datasets/upload-seed",
+        data={"project_id": project_id, "task_type": "qa", "name": "seed-v1"},
+        files={"file": ("seed.jsonl", body, "application/x-ndjson")},
+    )
+    assert resp.status_code == 201, f"upload-seed failed: {resp.status_code} {resp.text}"
+    payload = resp.json()
+    fd = payload.get("format_detection", {})
+    print(f"  upload-seed dataset_id={payload['dataset_id']}; "
+          f"format_detection.ran={fd.get('ran')} mapping={fd.get('field_mapping')}")
+    return payload["dataset_id"]
+
+
+def _sdg_body(client: httpx.Client, project_id: str, task_type: str, num_samples: int) -> dict:
     if task_type == "qa":
+        # Phase 9: upload seed first, then reference by id.
+        seed_dataset_id = _upload_qa_seed(client, project_id)
         return {
             "sdg_mode": "with_seed",
             "project_id": project_id,
             "task_type": "qa",
             "task_description": "Answer questions about our return policy",
             "num_samples": num_samples,
-            "seed_data": QA_SEED,
+            "seed_dataset_id": seed_dataset_id,
         }
     if task_type == "classification":
         return {
@@ -153,11 +171,11 @@ def run(*, base_url: str, task_type: str, num_samples: int, do_train: bool) -> N
         project_id = proj["id"]
         print(f"[1] created project {project_id}")
 
-        # 2. Submit SDG
+        # 2. Submit SDG (uploads seed first for QA / with_seed flow)
         sdg = _post(
             client,
             "/api/v1/datasets/generate",
-            _sdg_body(project_id, task_type, num_samples),
+            _sdg_body(client, project_id, task_type, num_samples),
             expected=202,
         )
         dataset_id = sdg["dataset_id"]

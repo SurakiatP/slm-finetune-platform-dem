@@ -1,12 +1,16 @@
-"""Celery task: generate a synthetic dataset and persist it.
+"""Celery task: generate a synthetic dataset and persist it (Phase 9 flow).
 
-Public progress is published to the Redis channel `job:{celery_task_id}` —
-the WebSocket endpoint subscribes there. The Celery `result_backend` is
-secondary (used only for terminal status from API polling, if needed).
+The Celery task body itself stays sync — Celery's prefork pool handles
+that natively. Inside the task, `asyncio.run(...)` is the boundary for
+the new `SyntheticDataGenerator.generate(...)` async loop.
+
+Public progress is published to the Redis channel `job:{celery_task_id}`.
+The WebSocket endpoint subscribes there.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -18,9 +22,13 @@ from ai_engine.data_gen.generator import (
     GenerationProgress,
     SyntheticDataGenerator,
 )
-from ai_engine.data_gen.openrouter_client import OpenRouterClient
+from ai_engine.data_gen.openrouter_client import (
+    AsyncOpenRouterClient,
+    OpenRouterClient,
+)
 from api.core.config import get_settings
 from api.models.dataset import Dataset
+from api.schemas.enums import DatasetSource
 from api.schemas.progress import JobCompleted, JobFailed, SDGProgress
 from api.schemas.sdg import (
     SDGRequest,
@@ -29,7 +37,7 @@ from api.schemas.sdg import (
 )
 from workers.celery_app import celery_app
 from workers.progress import publish_ws_message, sync_redis_scope
-from workers.storage import get_minio_client, put_jsonl, s3_uri
+from workers.storage import get_jsonl, get_minio_client, parse_s3_uri, put_jsonl, s3_uri
 from workers.sync_db import session_scope
 
 log = get_task_logger(__name__)
@@ -43,16 +51,11 @@ def generate_synthetic_data(
     request_payload: dict[str, Any],
     dataset_id: str,
 ) -> dict[str, Any]:
-    """Run one SDG job. Publishes progress to Redis, persists JSONL to MinIO,
-    and updates the `Dataset` row on completion.
+    """Run one SDG job (Phase 9). Async generator + quota + sentinel + judge.
 
     Args:
         request_payload: serialized `SDGRequest` (mode-discriminated).
         dataset_id: pre-created dataset row id (UUID string).
-
-    Returns:
-        Result dict for the Celery backend; the user-facing progress comes via
-        the WebSocket channel.
     """
     job_id: str = self.request.id
     settings = get_settings()
@@ -73,20 +76,16 @@ def generate_synthetic_data(
                     samples_valid=p.samples_valid,
                     samples_rejected=p.samples_rejected,
                     duplicates_removed=p.duplicates_removed,
+                    current_loop=p.current_loop,
+                    judge_rejected=p.judge_rejected,
+                    judge_parse_failures=p.judge_parse_failures,
+                    dedup_rejected=p.dedup_rejected,
                 ),
             )
 
         try:
-            client = OpenRouterClient(
-                api_key=settings.openrouter_api_key,
-                teacher_model=settings.openrouter_teacher_model,
-                http_referer=settings.openrouter_http_referer,
-                app_title=settings.openrouter_app_title,
-            )
-            generator = SyntheticDataGenerator(client)
-
             log.info(
-                "SDG starting: job=%s dataset=%s task=%s mode=%s target=%d",
+                "SDG starting (Phase 9): job=%s dataset=%s task=%s mode=%s target=%d",
                 job_id,
                 dataset_id,
                 request.task_type.value,
@@ -94,9 +93,21 @@ def generate_synthetic_data(
                 request.num_samples,
             )
 
-            result = generator.generate(request, progress_cb=emit_progress)
+            # ---- Resolve seed payload from MinIO ---------------------------
+            seed_rows, pdf_bytes = _load_seed_payload(request, settings)
 
-            # ---- Persist to MinIO --------------------------------------------------
+            # ---- Run async generator loop ---------------------------------
+            result = asyncio.run(
+                _run_generator(
+                    request=request,
+                    seed_rows=seed_rows,
+                    pdf_bytes=pdf_bytes,
+                    settings=settings,
+                    progress_cb=emit_progress,
+                )
+            )
+
+            # ---- Persist to MinIO ----------------------------------------
             emit_progress(
                 GenerationProgress(
                     phase="persisting",
@@ -113,7 +124,7 @@ def generate_synthetic_data(
             size_bytes = put_jsonl(minio, bucket, key, result.valid_rows)
             uri = s3_uri(bucket, key)
 
-            # ---- Update Dataset row ------------------------------------------------
+            # ---- Update Dataset row --------------------------------------
             with session_scope() as session:
                 dataset = session.get(Dataset, dataset_uuid)
                 if dataset is None:
@@ -129,12 +140,14 @@ def generate_synthetic_data(
                         "completed_at": datetime.now(timezone.utc).isoformat(),
                         "rejected_count": result.rejected_count,
                         "duplicate_count": result.duplicate_count,
+                        "judge_rejected_count": result.judge_rejected_count,
+                        "judge_parse_failures": result.judge_parse_failures,
                         "api_calls": result.api_calls,
                     }
                 )
                 dataset.generation_metadata = meta
 
-            # ---- Publish completion ------------------------------------------------
+            # ---- Publish completion --------------------------------------
             publish_ws_message(
                 redis,
                 job_id,
@@ -144,6 +157,8 @@ def generate_synthetic_data(
                         "samples_generated": len(result.valid_rows),
                         "rejected_count": result.rejected_count,
                         "duplicate_count": result.duplicate_count,
+                        "judge_rejected_count": result.judge_rejected_count,
+                        "judge_parse_failures": result.judge_parse_failures,
                         "api_calls": result.api_calls,
                         "storage_uri": uri,
                         "size_bytes": size_bytes,
@@ -153,12 +168,15 @@ def generate_synthetic_data(
             )
 
             log.info(
-                "SDG done: job=%s dataset=%s samples=%d rejected=%d dup=%d calls=%d",
+                "SDG done: job=%s dataset=%s samples=%d rejected=%d dup=%d "
+                "judge_low=%d judge_parse=%d calls=%d",
                 job_id,
                 dataset_id,
                 len(result.valid_rows),
                 result.rejected_count,
                 result.duplicate_count,
+                result.judge_rejected_count,
+                result.judge_parse_failures,
                 result.api_calls,
             )
 
@@ -168,6 +186,7 @@ def generate_synthetic_data(
                 "samples_generated": len(result.valid_rows),
                 "rejected_count": result.rejected_count,
                 "duplicate_count": result.duplicate_count,
+                "judge_rejected_count": result.judge_rejected_count,
                 "storage_uri": uri,
             }
 
@@ -186,3 +205,87 @@ def generate_synthetic_data(
             except Exception:  # noqa: BLE001 — never let publish failure mask the original
                 log.warning("failed to publish JobFailed message", exc_info=True)
             raise
+
+
+# ---- helpers --------------------------------------------------------------
+
+
+async def _run_generator(
+    *,
+    request: SDGRequestWithSeed | SDGRequestDescriptionOnly,
+    seed_rows: list[dict[str, Any]],
+    pdf_bytes: bytes | None,
+    settings,
+    progress_cb,
+):
+    """Set up async + sync clients, run the generator, tear down."""
+    sync_client = OpenRouterClient(
+        api_key=settings.openrouter_api_key,
+        # The teacher_model field is no longer used; pass a placeholder
+        # — every Phase 9 call site supplies an explicit model from
+        # ai_engine.data_gen.models.
+        teacher_model="placeholder/unused",
+        http_referer=settings.openrouter_http_referer,
+        app_title=settings.openrouter_app_title,
+    )
+    async with AsyncOpenRouterClient(
+        api_key=settings.openrouter_api_key,
+        http_referer=settings.openrouter_http_referer,
+        app_title=settings.openrouter_app_title,
+    ) as async_client:
+        gen = SyntheticDataGenerator(async_client, sync_client)
+        return await gen.generate(
+            request,
+            seed_rows=seed_rows,
+            pdf_bytes=pdf_bytes,
+            progress_cb=progress_cb,
+        )
+
+
+def _load_seed_payload(
+    request: SDGRequestWithSeed | SDGRequestDescriptionOnly,
+    settings,
+) -> tuple[list[dict[str, Any]], bytes | None]:
+    """For with_seed: fetch canonical JSONL from MinIO (and PDF bytes if any).
+
+    For description_only: returns ([], None).
+    """
+    if isinstance(request, SDGRequestDescriptionOnly):
+        return [], None
+
+    seed_dataset_id = request.seed_dataset_id
+    minio = get_minio_client()
+    seed_rows: list[dict[str, Any]] = []
+    pdf_bytes: bytes | None = None
+
+    with session_scope() as session:
+        seed_ds = session.get(Dataset, seed_dataset_id)
+        if seed_ds is None:
+            raise RuntimeError(
+                f"seed dataset {seed_dataset_id} not found in DB"
+            )
+        if seed_ds.source != DatasetSource.SEED:
+            raise RuntimeError(
+                f"seed_dataset_id {seed_dataset_id} is source={seed_ds.source.value}, "
+                f"expected seed"
+            )
+        meta = seed_ds.generation_metadata or {}
+        pdf_uri = meta.get("pdf_uri")
+        # JSONL rows (when present)
+        if seed_ds.storage_uri:
+            bucket, key = parse_s3_uri(seed_ds.storage_uri)
+            seed_rows = get_jsonl(minio, bucket, key)
+        # PDF bytes (QA + PDF only)
+        if pdf_uri:
+            bucket, key = parse_s3_uri(pdf_uri)
+            response = minio.get_object(bucket_name=bucket, object_name=key)
+            try:
+                pdf_bytes = response.read()
+            finally:
+                response.close()
+                response.release_conn()
+
+    return seed_rows, pdf_bytes
+
+
+__all__ = ["generate_synthetic_data"]

@@ -100,7 +100,13 @@ def _wait_for_status(
 
 
 def test_qa_full_flow(client: httpx.Client) -> None:
-    """QA: project → seed upload → SDG → train (smoke) → evaluation gate."""
+    """QA: project → seed upload → SDG (with_seed → seed_dataset_id) → train.
+
+    Phase 9: the SDG submission references the uploaded seed by id rather
+    than inlining the rows. Format Detection runs at upload time; the
+    response body now includes a `format_detection` audit and an optional
+    `pdf_uri` (None for JSONL uploads).
+    """
     # 1. Create project
     r = client.post(
         "/api/v1/projects",
@@ -128,7 +134,11 @@ def test_qa_full_flow(client: httpx.Client) -> None:
         files={"file": ("seed.jsonl", body, "application/x-ndjson")},
     )
     assert r.status_code == 201, r.text
-    seed_dataset_id = r.json()["dataset_id"]
+    upload_payload = r.json()
+    seed_dataset_id = upload_payload["dataset_id"]
+    # Phase 9 contract: the response body always carries a FormatDetectionReport.
+    assert "format_detection" in upload_payload
+    assert "ran" in upload_payload["format_detection"]
 
     # 3. Verify preview returns the seed rows
     r = client.get(f"/api/v1/datasets/{seed_dataset_id}/preview?limit=3")
@@ -137,7 +147,7 @@ def test_qa_full_flow(client: httpx.Client) -> None:
     assert body["task_type"] == "qa"
     assert len(body["samples"]) >= 1
 
-    # 4. Submit SDG (small batch)
+    # 4. Submit SDG (small batch) — Phase 9 references the seed by id.
     r = client.post(
         "/api/v1/datasets/generate",
         json={
@@ -146,7 +156,7 @@ def test_qa_full_flow(client: httpx.Client) -> None:
             "task_type": "qa",
             "task_description": "Answer policy questions",
             "num_samples": 10,
-            "seed_data": seed_rows,
+            "seed_dataset_id": seed_dataset_id,
         },
     )
     assert r.status_code == 202, r.text
@@ -229,3 +239,98 @@ def test_404_for_missing_project(client: httpx.Client) -> None:
     body = r.json()
     assert "detail" in body
     assert body.get("code") in {"not_found", "http_404"}
+
+
+# ---- Phase 9 contract assertions -----------------------------------------
+
+
+def test_legacy_seed_data_field_rejected(client: httpx.Client) -> None:
+    """Phase 9 dropped inline seed_data — old payloads must 422.
+
+    Frontends still on the Phase 4 contract get a clear schema error
+    instead of silent drift.
+    """
+    r = client.post(
+        "/api/v1/projects",
+        json={"name": "legacy-check", "task_type": "qa"},
+    )
+    assert r.status_code == 201, r.text
+    pid = r.json()["id"]
+    r = client.post(
+        "/api/v1/datasets/generate",
+        json={
+            "sdg_mode": "with_seed",
+            "project_id": pid,
+            "task_type": "qa",
+            "task_description": "x" * 20,
+            "num_samples": 5,
+            "seed_data": [{"question": "q", "answer": "a"}],
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_legacy_teacher_model_field_rejected(client: httpx.Client) -> None:
+    """Phase 9 dropped teacher_model override — `extra=forbid` rejects it."""
+    r = client.post(
+        "/api/v1/projects",
+        json={"name": "legacy-tm", "task_type": "classification"},
+    )
+    assert r.status_code == 201, r.text
+    pid = r.json()["id"]
+    r = client.post(
+        "/api/v1/datasets/generate",
+        json={
+            "sdg_mode": "description_only",
+            "project_id": pid,
+            "task_type": "classification",
+            "task_description": "Classify support tickets",
+            "num_samples": 5,
+            "classification_config": {"labels": ["a", "b"]},
+            "teacher_model": "openai/gpt-4o-mini",
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_seed_dataset_id_required_for_with_seed(client: httpx.Client) -> None:
+    """with_seed mode without seed_dataset_id must 422."""
+    r = client.post(
+        "/api/v1/projects",
+        json={"name": "noid-check", "task_type": "qa"},
+    )
+    assert r.status_code == 201, r.text
+    pid = r.json()["id"]
+    r = client.post(
+        "/api/v1/datasets/generate",
+        json={
+            "sdg_mode": "with_seed",
+            "project_id": pid,
+            "task_type": "qa",
+            "task_description": "Answer policy questions",
+            "num_samples": 5,
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_seed_dataset_id_must_exist(client: httpx.Client) -> None:
+    """A valid-looking-but-nonexistent seed_dataset_id surfaces as 404."""
+    r = client.post(
+        "/api/v1/projects",
+        json={"name": "missing-seed", "task_type": "qa"},
+    )
+    assert r.status_code == 201, r.text
+    pid = r.json()["id"]
+    r = client.post(
+        "/api/v1/datasets/generate",
+        json={
+            "sdg_mode": "with_seed",
+            "project_id": pid,
+            "task_type": "qa",
+            "task_description": "Answer policy questions",
+            "num_samples": 5,
+            "seed_dataset_id": "00000000-0000-0000-0000-000000000000",
+        },
+    )
+    assert r.status_code == 404, r.text

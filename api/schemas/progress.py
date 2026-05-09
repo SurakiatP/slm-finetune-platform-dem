@@ -36,12 +36,44 @@ class _WSMessageBase(BaseModel):
 
 class SDGProgress(_WSMessageBase):
     type: Literal[WSMessageType.SDG_PROGRESS] = WSMessageType.SDG_PROGRESS
-    phase: Literal["generating", "validating", "deduplicating", "persisting"] = "generating"
+    phase: Literal[
+        # Phase 4 phases (kept for back-compat with existing handlers).
+        "generating",
+        "validating",
+        "deduplicating",
+        "persisting",
+        # Phase 9 phases — published by the new orchestrator.
+        "format_detection",
+        "meta_prompting",
+        "judging",
+        "dedup",
+    ] = "generating"
     samples_generated: int = Field(default=0, ge=0)
     samples_target: int = Field(..., ge=1)
     samples_valid: int = Field(default=0, ge=0)
     samples_rejected: int = Field(default=0, ge=0)
     duplicates_removed: int = Field(default=0, ge=0)
+    # ---- Phase 9 additions (all optional so old emitters still validate) -
+    current_loop: int | None = Field(
+        default=None,
+        ge=0,
+        description="0-indexed SDG loop iteration; None outside the loop body.",
+    )
+    judge_rejected: int | None = Field(
+        default=None,
+        ge=0,
+        description="Rows discarded because the LLM judge scored them below threshold.",
+    )
+    judge_parse_failures: int | None = Field(
+        default=None,
+        ge=0,
+        description="Judge responses that did not parse into the JudgeScore schema.",
+    )
+    dedup_rejected: int | None = Field(
+        default=None,
+        ge=0,
+        description="Rows discarded by the MinHash LSH near-duplicate filter.",
+    )
 
 
 class TrainingProgress(_WSMessageBase):
