@@ -949,6 +949,8 @@ Subscribe เพื่อรับ live progress events ของ Celery job.
 }
 ```
 
+> 💡 **Observed live (2026-05-10):** worker ส่ง 1 training_progress ต่อ logging-step + 1 final event ที่ `train_loss/eval_loss/lr = null` ตอน end-of-epoch (เป็น marker, ไม่ใช่ data point — frontend ควร skip ถ้า train_loss=null ก่อน plot).
+
 ### 10.3 `hpo_progress` (HPO mode เท่านั้น)
 
 ```json
@@ -963,7 +965,7 @@ Subscribe เพื่อรับ live progress events ของ Celery job.
   "best_params": { "learning_rate": 0.000115, "lora_r": 8 },
   "last_trial_value": 5.03,
   "last_trial_pruned": false,
-  "inner_progress": {                   // ⭐ nested TrainingProgress ของ trial ปัจจุบัน
+  "inner_progress": {                   // optional — nested TrainingProgress ของ trial ปัจจุบัน
     "type": "training_progress",
     "epoch": 0.5,
     "step": 5,
@@ -972,6 +974,8 @@ Subscribe เพื่อรับ live progress events ของ Celery job.
   }
 }
 ```
+
+> 💡 **`inner_progress` may be `null`** — populated เฉพาะตอน worker emit per-step ภายใน trial. ใน trial ที่สั้นมาก (small dataset) อาจไม่มี inner emit เลย → `null` ตลอด. **Live observed (2026-05-10):** HPO บน 3-row dataset เห็น 2 hpo_progress events ที่ inner_progress=null ทั้งคู่.
 
 ### 10.4 `completed` (event สุดท้ายถ้าสำเร็จ)
 
@@ -1004,9 +1008,16 @@ Subscribe เพื่อรับ live progress events ของ Celery job.
   "timestamp": "...",
   "error": "CUDA out of memory ... try smaller batch size",
   "error_type": "OutOfMemoryError",      // exception class name
-  "traceback": null                       // populate เมื่อ LOG_LEVEL=DEBUG
+  "traceback": null                       // ปกติ null; populate เป็น string ตอน LOG_LEVEL=DEBUG
 }
 ```
+
+> 💡 **Live verified (2026-05-10):** Default deploy (LOG_LEVEL=INFO) → `traceback: null`. Field มีเสมอใน JSON — frontend อ่าน `error` กับ `error_type` พอ.
+>
+> **ตัวอย่าง failure types ที่เคยเจอ:**
+> - `error_type: "ValueError", error: "No trials are completed yet."` — HPO เทรนทุก trial fail (เช่น dataset เล็กเกิน eval split=0)
+> - `error_type: "OutOfMemoryError"` — GPU OOM (ลด batch_size หรือ max_seq_length)
+> - `error_type: "ModuleNotFoundError"` — worker image ขาด dep (เช่น sacrebleu) — rebuild worker
 
 ### Event sequences ที่จะเห็นในแต่ละ job
 
