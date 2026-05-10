@@ -70,33 +70,34 @@ ssh -p <vast-port> root@<vast-ip> `
 
 ### ✅ Expected response (200)
 
+> **Note:** metadata endpoints (`/tasks`, `/base-models`) return a **plain JSON list**, not the `{items, total, limit, offset}` envelope used by paginated list endpoints (`/projects`, `/datasets`, `/trainings`, etc.).
+
 ```json
-{
-  "items": [
-    {
-      "task_type": "classification",
-      "description": "...",
-      "sample_schema": { "type": "object", "properties": {...} },
-      "example": { "text": "...", "label": "..." }
-    },
-    {
-      "task_type": "tool_calling",
-      "...": "..."
-    },
-    {
-      "task_type": "qa",
-      "...": "..."
-    }
-  ],
-  "total": 3
-}
+[
+  {
+    "task_type": "classification",
+    "display_name": "Text Classification",
+    "description": "...",
+    "sample_schema": { "type": "object", "properties": {...} },
+    "example": { "text": "...", "label": "..." },
+    "sdg_modes_supported": ["with_seed", "description_only"]
+  },
+  {
+    "task_type": "tool_calling",
+    "...": "..."
+  },
+  {
+    "task_type": "qa",
+    "...": "..."
+  }
+]
 ```
 
 ### 🧪 Verification
 
 | Check | Expected |
 |-------|----------|
-| `total` | exactly 3 |
+| `len(response)` | exactly 3 |
 | Task types | `classification`, `tool_calling`, `qa` (ไม่มีอื่น) |
 | Each item has | `sample_schema` + `example` |
 
@@ -112,30 +113,34 @@ ssh -p <vast-port> root@<vast-ip> `
 
 ### ✅ Expected response (200)
 
+> **Note:** Same envelope rule as Task 2 — plain list, not `{items, total}`. Field name is `id` (not `model_id`) and `params_billions` (plural, not `parameters_billion`).
+
 ```json
-{
-  "items": [
-    {
-      "model_id": "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
-      "family": "llama-3.2",
-      "parameters_billion": 1.0,
-      "...": "..."
-    },
-    "...": "5 รายการเพิ่มเติม"
-  ],
-  "total": 6
-}
+[
+  {
+    "id": "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
+    "display_name": "Llama 3.2 1B Instruct (4-bit)",
+    "family": "llama",
+    "params_billions": 1.24,
+    "context_length": 131072,
+    "recommended_max_seq_length": 2048,
+    "quantization": "bnb-4bit",
+    "license": "llama-3.2",
+    "notes": "Fastest, lowest VRAM. Good first choice for QA and classification PoCs."
+  },
+  "... 5 more"
+]
 ```
 
 ### 🧪 Verification
 
 | Check | Expected |
 |-------|----------|
-| `total` | 6 (Llama 3.2 1B/3B, Qwen 2.5 0.5B/1.5B/3B, Gemma 2 2B) |
-| ทุก `model_id` | ขึ้นต้น `unsloth/` + ลงท้าย `-bnb-4bit` |
-| `parameters_billion` | ≤ 3.0 ทุก row (hard constraint per CLAUDE.md) |
+| `len(response)` | 6 (Llama 3.2 1B/3B, Qwen 2.5 0.5B/1.5B/3B, Gemma 2 2B) |
+| ทุก `id` | ขึ้นต้น `unsloth/` + ลงท้าย `-bnb-4bit` |
+| `params_billions` | ≤ ~3.3 (HuggingFace param count รวม embeddings — Llama-3.2 3B = 3.21B, Qwen2.5 3B = 3.09B, Gemma-2 2B = 2.61B; ทุกตัวยัง fit QLoRA 4-bit ต่ำกว่า 6GB VRAM) |
 
-🔖 **เก็บ `model_id` ตัวที่จะใช้** เช่น `unsloth/Llama-3.2-1B-Instruct-bnb-4bit` (เร็วสุด, smoke-friendly)
+🔖 **เก็บ `id` ตัวที่จะใช้** เช่น `unsloth/Llama-3.2-1B-Instruct-bnb-4bit` (เร็วสุด, smoke-friendly — params_billions=1.24)
 
 ---
 
@@ -495,6 +500,16 @@ POST /api/v1/trainings
 | Task 9 response key ไม่ใช่ `samples` | ระบบเปลี่ยน schema → ทดสอบ regression | check `api/schemas/datasets.py` ล่าสุด |
 | Task 11 DELETE 500 (Bug B1 ที่เคยเจอ) | pre-check ไม่ได้รัน → DB FK constraint โผล่ | regression — แจ้ง dev (commit `c117f2a` ควรครอบคลุม) |
 | Task 12 ลบสำเร็จไม่ใช่ 409 | guard ของ Phase 9 หาย | regression check `tests/integration/test_dataset_delete.py` |
+
+### Cross-runbook pre-flight pitfalls (ให้ดูทุก runbook)
+
+ปัญหา 3 อย่างนี้เกิดข้าม runbook — แก้ครั้งเดียวก่อนเริ่ม:
+
+| อาการ | สาเหตุ | แก้ |
+|-------|--------|-----|
+| upload `format_detection.notes: "OPENROUTER_API_KEY not set"` ทั้งที่ `.env` มี key | api container start ก่อน `.env` ถูกแก้ → env value เป็น string ว่าง | `docker compose up -d api worker` (compose detect changed env file → recreate). Verify: `docker compose exec -T api sh -c 'env \| grep OPENROUTER_API_KEY \| cut -c1-20'` |
+| eval/training fail `No module named 'sacrebleu'` (หรือ sklearn/etc.) | worker image ถูก build ก่อน commit ที่เพิ่ม dep ลง `pyproject.toml [eval]` extras | `docker compose build worker && docker compose up -d --force-recreate worker` (~3 นาที, layer ส่วนใหญ่ cached). Verify: `docker compose exec -T worker pip show sacrebleu` |
+| training fail `Unsloth cannot find any torch accelerator? You need a GPU.` | worker container start ก่อน NVIDIA Container Toolkit ready (cold-boot race) | `docker compose up -d --force-recreate worker`. Verify: `docker compose exec -T worker python -c "import torch; print(torch.cuda.is_available())"` ต้องเป็น `True` |
 
 ---
 

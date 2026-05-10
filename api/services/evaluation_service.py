@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
 from api.models.dataset import Dataset
+from api.models.project import Project
+from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
 from api.schemas.evaluations import (
     EvaluationAcceptedResponse,
@@ -56,6 +58,18 @@ async def submit_evaluation_job(
                 "Wait for SDG to complete or upload seed data first."
             ),
         )
+
+    training_job = await db.get(TrainingJob, artifact.training_job_id)
+    if training_job is not None:
+        project = await db.get(Project, training_job.project_id)
+        if project is not None and dataset.task_type != project.task_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Dataset task_type={dataset.task_type.value} does not match "
+                    f"artifact task_type={project.task_type.value}"
+                ),
+            )
 
     ev = EvaluationRun(
         model_artifact_id=artifact.id,

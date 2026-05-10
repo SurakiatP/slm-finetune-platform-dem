@@ -45,13 +45,13 @@ file:        seed_data/tool_calling/tool_calling_canonical.jsonl
 {
   "dataset_id": "...",
   "task_type": "tool_calling",
-  "num_samples": 8,
+  "num_samples": 40,
   "invalid_rows": [],
   "format_detection": {
     "ran": false,
     "field_mapping": {},
-    "rows_total": 8,
-    "rows_canonicalised": 8,
+    "rows_total": 40,
+    "rows_canonicalised": 40,
     "rows_dropped": 0,
     "notes": "already canonical — Format Detection skipped"
   },
@@ -65,7 +65,7 @@ file:        seed_data/tool_calling/tool_calling_canonical.jsonl
 
 | Check | Expected |
 |-------|---------|
-| `num_samples: 8` | ✅ ทุก row pass schema (รวม validation `answer` เป็น JSON-encoded string) |
+| `num_samples: 40` (matches `tool_calling_canonical.jsonl` actual rows; ปรับตาม source file) | ✅ ทุก row pass schema (รวม validation `answer` เป็น JSON-encoded string) |
 | MinIO file content | บรรทัดแรก: `{"question": "Set the oven to 200 degrees Celsius please", "answer": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":200}}"}` |
 | Schema validation | ✅ ทุก row's `answer` decode JSON ได้ + มี keys `name` + `parameters` |
 
@@ -75,7 +75,7 @@ file:        seed_data/tool_calling/tool_calling_canonical.jsonl
 
 ทำซ้ำ Task 1 แต่ใช้ `tool_calling_canonical.json`
 
-✅ Expected: identical (`format_detection.ran: false`, `num_samples: 8`)
+✅ Expected: identical (`format_detection.ran: false`, `num_samples: 40`)
 
 🔖 **เก็บ → `<seed_tool_canonical_json_id>`**
 
@@ -101,7 +101,7 @@ file:        seed_data/tool_calling/tool_calling_mismatched.jsonl
 {
   "dataset_id": "...",
   "task_type": "tool_calling",
-  "num_samples": 8,
+  "num_samples": 40,
   "format_detection": {
     "ran": true,
     "model_used": "google/gemini-2.5-flash-lite",
@@ -109,8 +109,8 @@ file:        seed_data/tool_calling/tool_calling_mismatched.jsonl
       "instruction": "question",
       "function_call": "answer"
     },
-    "rows_total": 8,
-    "rows_canonicalised": 8,
+    "rows_total": 40,
+    "rows_canonicalised": 40,
     "rows_dropped": 0
   }
 }
@@ -435,8 +435,8 @@ Generator generate row ที่ผิด type — validator จะ reject (ไ�
 
 ## ✅ Test Completion Checklist
 
-- [ ] Task 1 — canonical .jsonl → `ran: false`, `num_samples: 8`
-- [ ] Task 2 — canonical .json → `ran: false`, `num_samples: 8`
+- [ ] Task 1 — canonical .jsonl → `ran: false`, `num_samples: 40`
+- [ ] Task 2 — canonical .json → `ran: false`, `num_samples: 40`
 - [ ] Task 3 — mismatched .jsonl → `ran: true`, mapping `instruction→question, function_call→answer`
 - [ ] Task 4 — mismatched .json → identical
 - [ ] Task 5 — SDG with_seed → metadata มี `judge_rejected_count > 0`

@@ -365,13 +365,13 @@ POST /api/v1/evaluations
 
 ---
 
-## Task 9 — Negative: dataset task_type ไม่ match artifact → 400 หรือ 422
+## Task 9 — Negative: dataset task_type ไม่ match artifact → 400
 
-**วัตถุประสงค์:** กัน eval ที่ task_type ของ dataset ไม่ตรงกับ training task_type
+**วัตถุประสงค์:** กัน eval ที่ task_type ของ dataset ไม่ตรงกับ training task_type. Guard ถูกเพิ่มใน `api/services/evaluation_service.py` (compare `dataset.task_type` vs `artifact.training_job.project.task_type`).
 
 ### Steps
 
-1. สร้าง dataset อื่น `task_type: classification`
+1. สร้าง project + dataset อื่น `task_type: classification`
 2. POST eval ที่ใช้ artifact (task_type=qa) + dataset ที่เพิ่งสร้าง (task_type=classification)
 
 ```json
@@ -382,16 +382,23 @@ POST /api/v1/evaluations
 }
 ```
 
-### ✅ Expected (400 หรือ 422 — แล้วแต่ implementation)
+### ✅ Expected (400)
 
 ```json
 {
   "detail": "Dataset task_type=classification does not match artifact task_type=qa",
-  "code": "bad_request"
+  "code": "bad_request",
+  "extra": null
 }
 ```
 
-> 💡 ถ้าระบบไม่มี guard นี้ — eval อาจ submit สำเร็จ แต่ทำงานผิด (ดูใน worker log). ถ้า เจอ behavior แบบนั้น = follow-up bug
+### 🧪 Verification
+
+| Check | Expected |
+|-------|----------|
+| HTTP status | 400 (NOT 202!) |
+| `code` | `"bad_request"` |
+| `detail` | กล่าวถึงทั้ง `dataset task_type` + `artifact task_type` ที่ต่างกัน |
 
 ---
 
@@ -429,7 +436,7 @@ POST /api/v1/evaluations/compare
 
 ### Negative
 - [ ] Task 8 — nonexistent artifact → 404
-- [ ] Task 9 — task_type mismatch → 400/422
+- [ ] Task 9 — task_type mismatch → 400 + `code: bad_request`
 - [ ] Task 10 — compare 1 id → 422
 
 ผ่าน 10 ข้อ = Eval pipeline สมบูรณ์ ✅
@@ -440,14 +447,14 @@ POST /api/v1/evaluations/compare
 
 | อาการ | สาเหตุที่เป็นไปได้ | แก้ |
 |-------|------------------|-----|
-| Task 2 → `failed` + `error_message="No module named 'sacrebleu'"` | regression of Bug MT.B2 (sacrebleu หาย) | check `pyproject.toml` `[eval]` extras + rebuild worker image |
+| Task 2 → `failed` + `error_message="No module named 'sacrebleu'"` | worker image ถูก build ก่อน commit 8900576 (sacrebleu added to `[eval]` extras) | `cd /root/slm-platform && docker compose build worker && docker compose up -d --force-recreate worker` (~3 นาที, layer ส่วนใหญ่ cached). Verify: `docker compose exec -T worker python -c "import sacrebleu; print(sacrebleu.__version__)"` |
 | Task 2 → `failed` + Ollama error | artifact ไม่มี GGUF / Ollama ไม่รู้จัก tag | ดู `model-export-extras.md` ก่อน → export GGUF + register Ollama |
 | Task 6 → `llm_judge_score: 0.0` + `skipped_rows: 5` (regression Bug MT.B4) | judge_model retired by OpenRouter | ดู worker log มี `404 No endpoints found for ...` → ลอง model อื่น (smoke ผ่าน `python /tmp/probe_judge.py`) |
 | Task 6 → `llm_judge_score: null` แล้ว `skipped: 5` | ปกติของ Bug MT.B4 fix — บอกว่าทุก row fail | เปลี่ยน judge_model ให้ใช้งานได้ |
 | Task 6 → `error_message` มี `OPENROUTER_API_KEY is empty` | parks ลืมตั้ง key | edit `.env` + `docker compose restart api worker` |
 | Task 6 รันนาน > 1 นาที | OpenRouter ช้า / model ใหญ่ | เปลี่ยนเป็น `google/gemini-3.1-flash-lite-preview` (เร็วสุด) |
 | Task 7 `judge_scores[<eval1>]` ไม่ใช่ null | response shape เปลี่ยน → regression | check `api/schemas/evaluations.py` `EvaluationCompareResponse` |
-| Task 9 ผ่าน 202 ไม่ใช่ 400/422 | guard task_type match หาย | follow-up bug — เพิ่ม validation ใน `evaluation_service.submit_eval` |
+| Task 9 ผ่าน 202 ไม่ใช่ 400 | guard task_type match หาย (regression — guard อยู่ใน `api/services/evaluation_service.py` รอบ `dataset.task_type != project.task_type`) | check service file ว่า import `Project` + `TrainingJob` ครบ + เปรียบเทียบก่อน `db.add(ev)` |
 
 ---
 
