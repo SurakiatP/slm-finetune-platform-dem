@@ -6,6 +6,65 @@
 
 ---
 
+## Session 19 — verify 8 runbooks end-to-end + 2 metrics endpoints + A/B compare + expand catalog (2026-05-10)
+
+**Who:** Claude (Opus 4.7) + parks (developer; AFK during long build)
+**Status:** ✅ 10 commits on `feature/training-eval-smoke` (`034d869` → `01e4626`), all pushed to origin. Branch ready for PR → `dev`. Two clean vast.ai deployments verified (one destroyed mid-session, one fresh). 11 base models in catalog (was 6). 30 REST endpoints + 5 WS event types + 1 WebSocket — all FE-facing surfaces verified live.
+
+**Why & What:**
+
+- parks asked to run all 8 runbooks end-to-end on vast.ai to verify they actually work. Hit and fixed 3 regressions during the run: (1) sacrebleu missing from worker image (image built ~1h before commit `8900576` added it to `[eval]` extras → rebuild worker), (2) GPU mount stale on cold-boot (per MT.I1 → `--force-recreate worker`), (3) `OPENROUTER_API_KEY` empty in api container despite being in `.env` (api had been started before key was set → `docker compose up -d api`). Found and fixed a follow-up bug while at it: POST `/evaluations` with mismatched `dataset.task_type` vs `artifact.task_type` was accepted as 202 (no guard). Added the guard in `evaluation_service.submit_evaluation_job` — now returns 400 with `"Dataset task_type=X does not match artifact task_type=Y"`.
+- After runbooks were validated, parks asked how the FE consumes metrics. Implemented two new GET endpoints proxying MLflow so the FE doesn't have to talk to MLflow REST directly: `/api/v1/trainings/{id}/loss-history` (lightweight train+eval loss series, chart-ready) and `/api/v1/trainings/{id}/metrics` (full metric history per-key + HPO `hpo_children` summary). New `api/services/mlflow_metrics.py` houses the thin async httpx wrapper. 502 surfaced when MLflow is unreachable; per-key history failures are logged and emit `[]` rather than failing the whole response.
+- Wrote `docs/runbooks/api_docs.md` (1216 lines) — single-page FE integration guide with all endpoints, common envelope shapes, async-job pattern, the 5 WS event types with realistic JSON, per-page integration cheat sheet (Dashboard / SDG / Training Detail / Eval / Playground), and an `openapi-typescript` codegen tip. parks said this is what gets handed to the FE teammate.
+- parks then asked whether the system can serve fine-tuned + base side-by-side for A/B compare in playground. Added two patches: (1) `BaseModelInfo.ollama_tag` field plus `ModelArtifactResponse.base_ollama_tag` computed field that derives the Ollama-Hub equivalent of any artifact's training base, (2) worker auto-pulls the base into Ollama after registering the fine-tuned `slm/<id8>` tag, so the FE can serve both immediately without the user having to `ollama pull` by hand. Single source of truth lives in `api/services/base_model_catalog.py` (used by both the FE-facing schema and the worker-side pull helper).
+- Last big task: expand `SUPPORTED_BASE_MODELS` from 6 to 11 entries with sub-2B variety. Researched the landscape (BentoML 2026 SLM list, Distil Labs fine-tuning benchmark, Unsloth catalog) and added: Qwen3-0.6B, Qwen3-1.7B (newer Qwen with thinking-mode), DeepSeek-R1-Distill-Qwen-1.5B (reasoning specialist), SmolLM2-1.7B-Instruct (HuggingFace TB native, fine-tune-optimized), TinyLlama-1.1B-Chat (smallest VRAM ~600MB). Considered IBM Granite-4.0-1B and Liquid LFM2-1.2B but skipped: Granite has only BF16 instruct on Unsloth (no bnb-4bit instruct mirror — worker pipeline expects bnb-4bit input); LFM2 has no official Ollama Hub tag (community-only), so auto-pull base would fail.
+- Verified all 11 Ollama tag mappings via three layers: (a) Ollama Hub library page listings via WebFetch, (b) direct `registry.ollama.ai/v2/library/<model>/manifests/<tag>` returns HTTP 200 for each, (c) live pull of `qwen3:0.6b` succeeded in 12 seconds and showed up in both `ollama list` and `/api/v1/inference/models`.
+
+**Files touched (this session):**
+
+| Commit | Files | What |
+|--------|-------|------|
+| `e0be72d` | `api/core/config.py`, `.env.example`, `SWAGGER_GUIDE.md`, `docs/runbooks/evaluation.md` | judge model default `claude-haiku-4.5` → `google/gemini-3.1-flash-lite-preview` |
+| `bfb8ccd` | `api/services/evaluation_service.py`, 5 runbooks | task_type guard + envelope/field-name corrections + cross-runbook pre-flight pitfalls section |
+| `217a93a` | `docs/runbooks/training-hpo.md` | HPO Task 3 — REST API check primary, MLflow UI secondary, fix misleading "tree view" claim |
+| `6523209` | `api/services/mlflow_metrics.py` (new), `trainings_service.py`, `schemas/trainings.py`, `routers/trainings.py`, `SWAGGER_GUIDE.md` | `/loss-history` + `/metrics` endpoints |
+| `ab06262` | `docs/runbooks/training-manual-lifecycle.md`, `training-hpo.md` | runbook coverage of new metrics endpoints |
+| `5ef89fb` | `docs/runbooks/api_docs.md` (new, 1216 lines) | FE integration guide |
+| `f0cffa1` | `api_docs.md` | corrections from end-to-end verification (datasets/{id}/download Content-Type, eval metric keys, GGUF quantization wording) |
+| `bdcf9e2` | `api_docs.md` | WS event docs refined after live capture (5/5 types verified; training_progress null marker; inner_progress optional; failed.traceback default null) |
+| `538e5b7` | `api/services/base_model_catalog.py` (new), `schemas/tasks_meta.py`, `schemas/artifacts.py`, `routers/tasks_meta.py`, `workers/tasks/model_export.py`, `api_docs.md` | `base_ollama_tag` + auto-pull base for A/B compare |
+| `01e4626` | `api/services/base_model_catalog.py`, `routers/tasks_meta.py` | catalog 6 → 11 entries (Qwen3 ×2, DeepSeek-R1-Distill, SmolLM2, TinyLlama) |
+
+**Test Summary:**
+
+| Surface | Verified |
+|---------|----------|
+| 8 manual-test runbooks | end-to-end, all pass after fixes (sacrebleu rebuild, alembic upgrade, OPENROUTER_API_KEY refresh, force-recreate worker for GPU mount) |
+| 30 REST endpoints | 27 verified live + 3 verified spec-only (optional edge cases that runbooks marked optional) |
+| 5 WS event types | sdg_progress / training_progress / hpo_progress / completed / failed all captured live with payload inspection — `WS does NOT auto-close on completed` confirmed by 5-second silent wait after terminal event |
+| Auto-pull base flow | POST `/models/{id}/export gguf q4_k_m` → ~91s later GGUF in MinIO, `slm/e4d52ebf:latest` in Ollama, AND `llama3.2:1b` pulled (~17s after register) |
+| A/B compare playground | Same prompt to `llama3.2:1b` (base) and `slm/<id8>` (fine-tuned) returned distinct responses, both via OpenAI-compatible `/inference/chat/completions` |
+| Catalog tag mappings | 11/11 Ollama tags return HTTP 200 from `registry.ollama.ai/v2/library/.../manifests/...`; live pull of `qwen3:0.6b` succeeded in 12s |
+| Final eval checklist | 10/10 PASS on rebuilt host (rule-based + judge + compare + 4 negatives) |
+
+**Surprises worth remembering (added to memory):**
+
+- Worker image rebuild after `pyproject.toml` dep change is NOT automatic — image built before the commit-that-added-sacrebleu silently lacks it. Catch with `docker compose exec -T worker pip show sacrebleu` in pre-flight.
+- Fresh Postgres container needs `alembic upgrade head` BEFORE first API call. Not auto-run on api startup. First POST otherwise returns 500 + `relation "projects" does not exist`. Captured into `vast_ai_deployment` memory (#6).
+- Installing `nvidia-container-toolkit` on a running host triggers `nvml driver/library version mismatch` on first `--gpus all`. Fix without reboot: stop docker → rmmod nvidia stack → modprobe → start docker. Captured into memory (#5).
+- MLflow UI default = flat list (not tree) for nested HPO runs. The `mlflow.parentRunId` tag IS set correctly — MLflow REST `runs/search filter on parentRunId` returns 3 children per parent. Updated `training-hpo.md` Task 3 to use REST as primary check.
+- Pydantic discriminator priority: in SDG `with_seed`, missing `seed_dataset_id` reports first → an extra `seed_data` field on the same payload doesn't show in the error. Updated runbooks to accept either error message form for the legacy-`seed_data` negative test.
+
+**Next Action:**
+
+- Open PR `feature/training-eval-smoke` → `dev` (10 commits, 1 new module, 5 new base models, 2 new endpoints, 1 new FE handoff doc).
+- Cleanup untracked files in working tree: `PHASE9_SDG_HARDENING_SPEC.md`, `scripts/session17_*.py`, `image.png`. Decide which to commit / gitignore / delete.
+- (Optional, for later) Implement Patch 3 from the A/B compare design: `auto-export base via same llama-quantize pipeline` for ~99% scientific A/B fairness (current Patch 1+2 is ~70% — Ollama Hub q4_K_M vs our BNB→f16→q4_k_m chain).
+- (Optional, for later) Test classification + tool_calling eval metrics live (schema verified from `ai_engine/evaluation/metrics_*.py` but never run end-to-end on those task types).
+- (Optional, for later) Revisit IBM Granite + Liquid LFM2 when ecosystem catches up (Granite needs bnb-4bit instruct mirror; LFM2 needs official Ollama Hub publish).
+
+---
+
 ## Session 18 (cont.) — 5 manual-test runbooks authored to mirror smoke drivers (2026-05-10)
 
 **Who:** Claude (Opus 4.7) + parks (developer, gave the prompt then went AFK)
