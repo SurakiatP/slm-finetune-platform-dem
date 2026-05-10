@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     # ---- LLM Judge ---------------------------------------------------------
     # OpenRouter model id. Confirmed available 2026-05-10. The earlier default
     # `anthropic/claude-3.5-sonnet` was retired by OpenRouter and 404s.
-    llm_judge_model: str = "anthropic/claude-haiku-4.5"
+    llm_judge_model: str = "google/gemini-3.1-flash-lite-preview"
 
 
 @lru_cache(maxsize=1)

@@ -266,7 +266,7 @@ if __name__ == "__main__":
     p.add_argument("--artifact-id", required=True)
     p.add_argument("--dataset-id", required=True)
     p.add_argument("--with-llm-judge", action="store_true")
-    p.add_argument("--judge-model", default="anthropic/claude-haiku-4.5")
+    p.add_argument("--judge-model", default="google/gemini-3.1-flash-lite-preview")
     args = p.parse_args()
 
     os.makedirs("/tmp/logs", exist_ok=True)

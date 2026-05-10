@@ -2,7 +2,7 @@
 
 > **Goal:** ทดสอบ Swagger §13 ครบ — rule-based metrics (BLEU/ROUGE/EM), LLM-as-judge (1-5 rubric → 0-1 normalized), N-way compare endpoint, negative cases
 > **Estimated time:** 5-10 นาที (eval เร็ว ~5s/run; LLM judge เพิ่ม ~10-20s)
-> **Cost:** $0 rule-based; ~$0.05-0.10 LLM judge (`anthropic/claude-haiku-4.5`)
+> **Cost:** $0 rule-based; ~$0.05-0.10 LLM judge (`google/gemini-3.1-flash-lite-preview`)
 > **Prerequisites:** Stack รันอยู่ + มี trained artifact (จาก `training-manual-lifecycle.md` หรือ `training-hpo.md`) + `OPENROUTER_API_KEY` ตั้งใน `.env` (สำหรับ Task 5+)
 
 ---
@@ -230,7 +230,7 @@ POST /api/v1/evaluations
   "model_artifact_id": "<artifact_id>",
   "dataset_id": "<dataset_id>",
   "use_llm_judge": true,
-  "judge_model": "anthropic/claude-haiku-4.5"
+  "judge_model": "google/gemini-3.1-flash-lite-preview"
 }
 ```
 
@@ -284,7 +284,7 @@ GET /api/v1/evaluations/<eval_judge_id>
     "llm_judge_skipped_rows": 0
   },
   "llm_judge_score": <float 1.0-5.0>,
-  "llm_judge_model": "anthropic/claude-haiku-4.5",
+  "llm_judge_model": "google/gemini-3.1-flash-lite-preview",
   "error_message": null
 }
 ```
@@ -294,7 +294,7 @@ GET /api/v1/evaluations/<eval_judge_id>
 | Check | Expected |
 |-------|----------|
 | `llm_judge_score` | float **1.0-5.0** (NOT `0.0`!) — สำหรับ "What is the capital of X?" + ตอบถูก ปกติได้ 4-5 |
-| `llm_judge_model` | `"anthropic/claude-haiku-4.5"` (matches request) |
+| `llm_judge_model` | `"google/gemini-3.1-flash-lite-preview"` (matches request) |
 | `metrics_json.llm_judge_skipped_rows` | `0` (ทุก row judge สำเร็จ) |
 | ใน worker log | เห็น 5 × `POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"` |
 
@@ -423,7 +423,7 @@ POST /api/v1/evaluations/compare
 - [ ] Task 4 — compare 2 evals → metrics shape ถูก, judge_scores ทั้งคู่ null
 
 ### LLM judge path (ต้องตั้ง OPENROUTER_API_KEY ก่อน)
-- [ ] Task 5 — POST eval `use_llm_judge=true` + `claude-haiku-4.5` → 202
+- [ ] Task 5 — POST eval `use_llm_judge=true` + `gemini-3.1-flash-lite-preview` → 202
 - [ ] Task 6 — poll → completed, **`llm_judge_score` ระหว่าง 1.0-5.0 (NOT 0.0)** + `skipped_rows: 0`
 - [ ] Task 7 — compare มี judge_score ของ eval ที่ใช้ judge
 
@@ -445,7 +445,7 @@ POST /api/v1/evaluations/compare
 | Task 6 → `llm_judge_score: 0.0` + `skipped_rows: 5` (regression Bug MT.B4) | judge_model retired by OpenRouter | ดู worker log มี `404 No endpoints found for ...` → ลอง model อื่น (smoke ผ่าน `python /tmp/probe_judge.py`) |
 | Task 6 → `llm_judge_score: null` แล้ว `skipped: 5` | ปกติของ Bug MT.B4 fix — บอกว่าทุก row fail | เปลี่ยน judge_model ให้ใช้งานได้ |
 | Task 6 → `error_message` มี `OPENROUTER_API_KEY is empty` | parks ลืมตั้ง key | edit `.env` + `docker compose restart api worker` |
-| Task 6 รันนาน > 1 นาที | OpenRouter ช้า / model ใหญ่ | เปลี่ยนเป็น `claude-haiku-4.5` (เร็วสุด) |
+| Task 6 รันนาน > 1 นาที | OpenRouter ช้า / model ใหญ่ | เปลี่ยนเป็น `google/gemini-3.1-flash-lite-preview` (เร็วสุด) |
 | Task 7 `judge_scores[<eval1>]` ไม่ใช่ null | response shape เปลี่ยน → regression | check `api/schemas/evaluations.py` `EvaluationCompareResponse` |
 | Task 9 ผ่าน 202 ไม่ใช่ 400/422 | guard task_type match หาย | follow-up bug — เพิ่ม validation ใน `evaluation_service.submit_eval` |
 
@@ -456,7 +456,7 @@ POST /api/v1/evaluations/compare
 | Task | LLM ที่ใช้ | API calls (n=5 dataset) | ค่าประมาณ |
 |------|-----------|-----------|----------|
 | Task 1-4 (rule-based) | (Ollama in-cluster) | 0 OpenRouter | $0 |
-| Task 5-6 (judge claude-haiku-4.5) | `anthropic/claude-haiku-4.5` | 5 calls | ~$0.005 - $0.01 |
+| Task 5-6 (judge gemini-3.1-flash-lite-preview) | `google/gemini-3.1-flash-lite-preview` | 5 calls | ~$0.005 - $0.01 |
 | Task 7 (compare, no LLM) | (none) | 0 | $0 |
 | Task 8-10 (negative) | (early reject) | 0 | $0 |
 
