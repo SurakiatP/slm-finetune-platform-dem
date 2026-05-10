@@ -928,7 +928,7 @@ Legacy text-completion (ไม่ใช้ chat format) — มีไว้ส�
   "model_artifact_id": "model-uuid",
   "dataset_id": "9b0e7c1f-...",
   "use_llm_judge": true,
-  "judge_model": "anthropic/claude-3.5-sonnet"
+  "judge_model": "anthropic/claude-haiku-4.5"
 }
 ```
 
@@ -958,7 +958,7 @@ Legacy text-completion (ไม่ใช้ chat format) — มีไว้ส�
     "exact_match": 0.18
   },
   "llm_judge_score": 4.2,
-  "llm_judge_model": "anthropic/claude-3.5-sonnet",
+  "llm_judge_model": "anthropic/claude-haiku-4.5",
   "started_at": "...",
   "ended_at": "..."
 }

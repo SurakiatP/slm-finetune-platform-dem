@@ -76,7 +76,9 @@ class Settings(BaseSettings):
     ollama_base_url: AnyUrl = Field(default=AnyUrl("http://ollama:11434"))
 
     # ---- LLM Judge ---------------------------------------------------------
-    llm_judge_model: str = "anthropic/claude-3.5-sonnet"
+    # OpenRouter model id. Confirmed available 2026-05-10. The earlier default
+    # `anthropic/claude-3.5-sonnet` was retired by OpenRouter and 404s.
+    llm_judge_model: str = "anthropic/claude-haiku-4.5"
 
 
 @lru_cache(maxsize=1)

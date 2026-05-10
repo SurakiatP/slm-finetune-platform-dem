@@ -45,7 +45,7 @@ class JudgeRowResult:
 @dataclass(frozen=True)
 class JudgeBatchResult:
     rows: list[JudgeRowResult]
-    mean_score: float
+    mean_score: float | None  # None when every row was skipped (no signal vs. score=0)
     judge_model: str
     skipped: int  # rows where the judge response failed to parse
 
@@ -98,10 +98,10 @@ def judge_rows(
             skipped += 1
 
     successful = [r.score for r in rows]
-    mean = (sum(successful) / len(successful)) if successful else 0.0
+    mean: float | None = (sum(successful) / len(successful)) if successful else None
     return JudgeBatchResult(
         rows=rows,
-        mean_score=float(mean),
+        mean_score=mean,
         judge_model=judge_model,
         skipped=skipped,
     )

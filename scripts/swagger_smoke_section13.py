@@ -232,12 +232,19 @@ def run(
             body = poll_eval(base_url, state["eval3_id"], timeout_s=300)
             score = body.get("llm_judge_score")
             judge_used = body.get("llm_judge_model")
-            assert score is not None, f"llm_judge_score is None: {body}"
+            metrics = body.get("metrics_json") or {}
+            n = metrics.get("n", 0)
+            skipped = metrics.get("llm_judge_skipped_rows", 0)
+            assert score is not None, (
+                f"llm_judge_score is None — likely judge model failed for all {n} rows "
+                f"(skipped={skipped}). Pick a model from `python /tmp/probe_judge.py`."
+            )
             assert isinstance(score, (int, float)), f"score not numeric: {score}"
+            assert skipped < n, f"all {n} rows skipped — judge unusable"
             rec.record(
                 "T8 LLM judge score",
                 "PASS",
-                f"score={score:.3f} model={judge_used}",
+                f"score={score:.3f} model={judge_used} skipped={skipped}/{n}",
             )
 
         safe(rec, "T8 LLM judge score", t8)
@@ -259,7 +266,7 @@ if __name__ == "__main__":
     p.add_argument("--artifact-id", required=True)
     p.add_argument("--dataset-id", required=True)
     p.add_argument("--with-llm-judge", action="store_true")
-    p.add_argument("--judge-model", default="anthropic/claude-3.5-sonnet")
+    p.add_argument("--judge-model", default="anthropic/claude-haiku-4.5")
     args = p.parse_args()
 
     os.makedirs("/tmp/logs", exist_ok=True)
