@@ -275,6 +275,81 @@ GET /api/v1/trainings/<training_id>
 
 ---
 
+## Task 5b — Get metric series via API (FE chart endpoints)
+
+**วัตถุประสงค์:** verify 2 endpoints ที่ frontend ใช้ render chart โดยไม่ต้องเรียก MLflow REST ตรงๆ
+
+### Step A — `GET /trainings/{id}/loss-history` (lightweight, chart-ready)
+
+```
+GET /api/v1/trainings/<training_id>/loss-history
+```
+
+#### ✅ Expected response (200)
+
+```json
+{
+  "training_id": "<training_id>",
+  "mlflow_run_id": "<run_id>",
+  "train_loss": [
+    { "step": 0, "value": 4.78, "timestamp_ms": 1778398570184 },
+    { "step": 4, "value": 1.05, "timestamp_ms": 1778398570500 }
+  ],
+  "eval_loss": [
+    { "step": 0, "value": 3.96, "timestamp_ms": 1778398570198 },
+    { "step": 4, "value": 1.42, "timestamp_ms": 1778398570600 }
+  ]
+}
+```
+
+#### 🧪 Verification
+
+| Check | Expected |
+|-------|----------|
+| HTTP status | 200 |
+| `train_loss` | array — sorted by `step` ascending; ทุก point มี `step`, `value`, `timestamp_ms` |
+| `eval_loss` | array — point จำนวน ≤ train_loss (eval log ทุก eval_steps) |
+| `mlflow_run_id` | ตรงกับ Task 4 |
+| Empty data case (training fail ก่อน MLflow init) | `train_loss=[]`, `eval_loss=[]`, `mlflow_run_id=null` — 200 ปกติ ไม่ 404 |
+
+### Step B — `GET /trainings/{id}/metrics` (full series + HPO summary)
+
+```
+GET /api/v1/trainings/<training_id>/metrics
+```
+
+#### ✅ Expected response (200) — manual mode
+
+```json
+{
+  "training_id": "<training_id>",
+  "mlflow_run_id": "<run_id>",
+  "metrics": {
+    "train_loss":    [ { "step": 0, "value": 4.78, "timestamp_ms": ... }, ... ],
+    "eval_loss":     [ { "step": 0, "value": 3.96, "timestamp_ms": ... }, ... ],
+    "learning_rate": [ { "step": 1, "value": 0.0002, "timestamp_ms": ... }, ... ],
+    "epoch":         [ ... ],
+    "grad_norm":     [ ... ],
+    "loss":          [ ... ]
+  },
+  "hpo_children": null
+}
+```
+
+#### 🧪 Verification
+
+| Check | Expected |
+|-------|----------|
+| HTTP status | 200 |
+| `metrics` keys | ครอบคลุม `train_loss`, `eval_loss`, `learning_rate`, `epoch`, `grad_norm`, `loss` (และ runtime metrics ของ HuggingFace Trainer — ปกติ ~13 keys) |
+| ทุก series sorted by step | ascending |
+| `hpo_children` | **`null`** (เพราะ mode=manual) — ถ้าเป็น list = bug, manual ไม่ควรมี trial |
+| MLflow ดาวน์ | response = `502 + "MLflow tracking server not reachable"` (ไม่ใช่ 500) |
+
+> 💡 **Frontend ใช้:** เรียก `/loss-history` ตอนเปิดหน้า training detail → render chart ด้วย points ตรงๆ. เรียก `/metrics` เมื่อต้องการ deep-dive (ดู grad_norm / learning_rate schedule).
+
+---
+
 ## Task 6 — WebSocket live progress (เริ่มก่อน Task 3 ก็ได้)
 
 **วัตถุประสงค์:** ทดสอบ `/ws/jobs/{job_id}` — รับ `training_progress` events real-time
@@ -598,6 +673,7 @@ DELETE /api/v1/projects/<project_id>
 - [ ] Task 3 — POST training manual → 202 + `training_id` + `websocket_url` (relative)
 - [ ] Task 4 — poll → completed ภายใน ~90s, `error_message=null`, `mlflow_run_id` populated
 - [ ] Task 5 — mlflow-url + เปิด UI ดู metrics curve
+- [ ] Task 5b — `/loss-history` คืน train+eval loss arrays sorted; `/metrics` คืน full series + `hpo_children: null` (manual mode)
 - [ ] Task 6 — WebSocket รับ ≥ 5 `training_progress` + 1 `completed`
 - [ ] Task 7 — list trainings filter by project + status ทำงาน
 - [ ] Task 8 — `?training_job_id=` filter คืนแค่ 1 item (Bug MT.B3 regression)
@@ -607,7 +683,7 @@ DELETE /api/v1/projects/<project_id>
 - [ ] Task 12 — chat completion ตอบ "Paris."
 - [ ] Task 13 — list inference models เห็น `slm/<id8>:latest`
 
-ผ่านครบ 13 ข้อ = Manual training pipeline สมบูรณ์ ✅
+ผ่านครบ 14 ข้อ = Manual training pipeline สมบูรณ์ ✅
 
 ---
 
