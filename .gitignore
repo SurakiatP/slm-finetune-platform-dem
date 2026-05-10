@@ -63,3 +63,16 @@ ollama-data/
 # OS
 Thumbs.db
 desktop.ini
+
+# Claude Code session state
+.claude/
+
+# Session-local working files — PR draft bodies, ad-hoc smoke drivers,
+# screenshots used inside one conversation. Driver scripts that should
+# stick around live under scripts/swagger_smoke_*.py instead.
+scripts/session*_pr_body.md
+scripts/session*_retry*.py
+scripts/session*_retries.py
+scripts/session*_runbook_driver.py
+*.png
+!docs/**/*.png
