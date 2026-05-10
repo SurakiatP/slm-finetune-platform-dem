@@ -180,13 +180,16 @@ List 4-bit Unsloth models ที่ training endpoint รับ.
     "recommended_max_seq_length": 2048,
     "quantization": "bnb-4bit",
     "license": "llama-3.2",
-    "notes": "Fastest, lowest VRAM. Good first choice."
+    "notes": "Fastest, lowest VRAM. Good first choice.",
+    "ollama_tag": "llama3.2:1b"
   },
   /* ...5 more (Qwen 0.5B/1.5B/3B, Llama 3B, Gemma 2B) */
 ]
 ```
 
 > 6 models ทั้งหมด ทุกตัวเป็น `unsloth/...-bnb-4bit`. `params_billions` ≤ ~3.3 (รวม embeddings)
+>
+> **`ollama_tag`** = Ollama-Hub equivalent ของ instruct weights ตัวเดียวกัน. ใช้เปรียบเทียบ fine-tuned vs base ใน playground (ดู [section 11 — A/B compare flow](#หน้า-playground--ab-compare-fine-tuned-vs-base)). หลังจาก POST `/models/{id}/export` format=gguf, worker จะ `ollama pull` tag นี้อัตโนมัติ.
 
 ---
 
@@ -653,10 +656,15 @@ Artifact detail.
   "size_mb": 19.74,
   "ollama_model_tag": "slm/cdeddfd5",                            // populate หลัง GGUF export + Ollama register
   "export_error_message": null,                                  // string ถ้า export fail
+  "base_ollama_tag": "llama3.2:1b",                              // ⭐ derived field — Ollama-Hub equiv ของ base_model
   "created_at": "...",
   "updated_at": "..."
 }
 ```
+
+> **`base_ollama_tag`** = Ollama tag ของ base model ตัวเดียวกัน. หลังจาก export GGUF สำเร็จ, base ตัวนี้จะถูก `ollama pull` อัตโนมัติ (best-effort) — frontend สามารถส่ง prompt เดียวกันให้ทั้ง `ollama_model_tag` (fine-tuned) และ `base_ollama_tag` (base) เพื่อ A/B compare ใน playground.
+>
+> ถ้า `base_ollama_tag` เป็น `null` แปลว่าไม่มี Ollama-Hub mapping สำหรับ base ตัวนี้ (rare — ทุก base ใน catalog ปัจจุบันมี mapping). FE ควรซ่อน A/B compare button ในกรณีนั้น.
 
 ### `GET /api/v1/models/{id}/download`
 
@@ -698,6 +706,8 @@ Trigger export. **Async** — 202.
 ```
 
 > ⚠️ **GGUF export จะ register ลง Ollama อัตโนมัติ** (best-effort) — ถ้า `ollama_model_tag` populate = พร้อม inference, ถ้า null = เฉพาะ MinIO. SafeTensors ไม่ register
+>
+> ⚠️ **GGUF export ยัง `ollama pull` base equivalent ให้อัตโนมัติด้วย** (per `base_ollama_tag`) — เพื่อให้ playground A/B compare fine-tuned vs base ได้ทันทีหลัง export เสร็จ ไม่ต้อง user `ollama pull` เอง. การ pull ทำหลัง register fine-tuned เสร็จ และเป็น best-effort (ถ้า fail ไม่กระทบ artifact state — FE ตรวจสอบความพร้อมผ่าน `/inference/models` ก็พอ).
 
 ---
 
@@ -1141,6 +1151,35 @@ DELETE /api/v1/trainings/{id}                            → cancel button (ถ�
 GET  /api/v1/inference/models                                → model dropdown
 POST /api/v1/inference/chat/completions {model, messages}    → submit
 ```
+
+### หน้า Playground — A/B compare fine-tuned vs base
+
+ระบบ auto-pull base equivalent (`llama3.2:1b`, `qwen2.5:1.5b`, ฯลฯ) หลัง GGUF export สำเร็จ — FE สามารถสร้าง side-by-side compare UI ได้ทันทีโดยไม่ต้องให้ user ทำอะไรเพิ่ม.
+
+```
+1. GET  /api/v1/models/{artifact_id}                            → ได้ base_ollama_tag + ollama_model_tag
+2. (Optional) GET /api/v1/inference/models                      → confirm ทั้ง 2 อยู่ใน list
+3. Promise.all([
+     POST /api/v1/inference/chat/completions {
+       model: <base_ollama_tag>,                                  // e.g. "llama3.2:1b"
+       messages: [{role: "user", content: prompt}]
+     },
+     POST /api/v1/inference/chat/completions {
+       model: <artifact_id หรือ ollama_model_tag>,                // e.g. "<uuid>" หรือ "slm/cdeddfd5"
+       messages: [{role: "user", content: prompt}]
+     }
+   ])                                                              → render side-by-side
+```
+
+**ตัวอย่าง response (verified live 2026-05-10):**
+- `llama3.2:1b` (base) → `"The capital of France is Paris."`
+- `slm/<id8>` (fine-tuned) → `"Paris is the capital of France."` _(หรือ `"Paris."` ถ้าฝึกจาก terse examples)_
+
+**Caveats:**
+- **Quantization scheme ต่างกันเล็กน้อย** — Ollama Hub stock = direct GGUF q4_K_M; ของเรา = BNB-4bit train → merge f16 → llama-quantize q4_k_m. ความ fair ~70% — เหมาะ **demo**, ไม่ใช่ scientific A/B benchmark
+- **Concurrency:** Ollama default = serial per model. 2 parallel requests จะรัน sequential (รวม time = A+B ไม่ใช่ max(A,B)). ถ้าอยากเร็วขึ้นต้องตั้ง `OLLAMA_NUM_PARALLEL=2` ใน `docker-compose.yml` (กิน VRAM × 2)
+- **`base_ollama_tag` = null:** ซ่อน A/B compare button ใน UI (rare — base ทุกตัวใน catalog ปัจจุบันมี mapping)
+- **First request after pull ช้า** ~3-5 วิ (Ollama load model ลง VRAM); subsequent ~0.5-2 วิ ต่อ request
 
 ### TypeScript codegen tip
 

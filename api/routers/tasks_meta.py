@@ -18,6 +18,7 @@ from api.schemas.data_formats import (
 )
 from api.schemas.enums import TaskType
 from api.schemas.tasks_meta import BaseModelInfo, TaskTypeInfo
+from api.services.base_model_catalog import get_ollama_base_tag
 
 # ---- Tasks ----------------------------------------------------------------
 
@@ -93,7 +94,9 @@ async def get_task_example(task_type: TaskType) -> dict[str, object]:
 base_models_router = APIRouter()
 
 
-SUPPORTED_BASE_MODELS: list[BaseModelInfo] = [
+# Note: `ollama_tag` is filled below from `base_model_catalog._BASE_TO_OLLAMA_TAG`
+# so the mapping has a single source of truth.
+_RAW_BASE_MODELS: list[BaseModelInfo] = [
     BaseModelInfo(
         id="unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
         display_name="Llama 3.2 1B Instruct (4-bit)",
@@ -153,6 +156,11 @@ SUPPORTED_BASE_MODELS: list[BaseModelInfo] = [
         license="gemma",
         notes="Good middle-ground in size; shorter native context window than Llama/Qwen.",
     ),
+]
+
+SUPPORTED_BASE_MODELS: list[BaseModelInfo] = [
+    bm.model_copy(update={"ollama_tag": get_ollama_base_tag(bm.id)})
+    for bm in _RAW_BASE_MODELS
 ]
 
 

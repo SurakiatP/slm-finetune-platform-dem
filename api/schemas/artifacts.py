@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 
 from api.schemas.enums import ArtifactFormat, JobStatus
 
@@ -29,6 +29,19 @@ class ModelArtifactResponse(BaseModel):
     export_error_message: str | None
     created_at: datetime
     updated_at: datetime
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def base_ollama_tag(self) -> str | None:
+        """Ollama-Hub equivalent of `base_model` for A/B compare in playground.
+
+        Lazy import keeps `api.schemas` free of `api.services` dependencies at
+        module load time (avoids circular import when artifacts.py is imported
+        early during app startup).
+        """
+        from api.services.base_model_catalog import get_ollama_base_tag
+
+        return get_ollama_base_tag(self.base_model)
 
 
 class ModelExportRequest(BaseModel):

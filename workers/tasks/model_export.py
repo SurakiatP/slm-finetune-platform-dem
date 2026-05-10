@@ -33,6 +33,10 @@ from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
 from api.schemas.enums import ArtifactFormat
 from api.schemas.progress import JobCompleted, JobFailed
+from api.services.base_model_catalog import (
+    get_ollama_base_tag,
+    pull_ollama_base_blocking,
+)
 from workers.celery_app import celery_app
 from workers.ollama_client import OllamaClient
 from workers.progress import publish_ws_message, sync_redis_scope
@@ -255,6 +259,18 @@ def export_model(
                             "ollama registration failed for %s (best-effort, continuing): %s",
                             artifact_id,
                             ollama_exc,
+                        )
+
+                    # ---- 6.5. Best-effort pull of the matching base ----------
+                    # So the playground can A/B compare fine-tuned vs base
+                    # without the user having to `ollama pull` by hand.
+                    # Failure here is silent — base presence is checked by FE
+                    # via /inference/models, and a missing base just hides the
+                    # compare affordance in the UI.
+                    if ollama_tag and get_ollama_base_tag(base_model):
+                        pull_ollama_base_blocking(
+                            base_model,
+                            ollama_base_url=str(settings.ollama_base_url),
                         )
 
                 if merged_dir is not None:
