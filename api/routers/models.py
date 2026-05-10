@@ -38,10 +38,17 @@ router = APIRouter()
 async def list_models(
     db: Annotated[AsyncSession, Depends(get_db)],
     project_id: Annotated[UUID | None, Query()] = None,
+    training_job_id: Annotated[UUID | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Page[ModelArtifactResponse]:
-    return await _list_models(db, project_id=project_id, limit=limit, offset=offset)
+    return await _list_models(
+        db,
+        project_id=project_id,
+        training_job_id=training_job_id,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get(

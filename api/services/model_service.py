@@ -37,10 +37,11 @@ async def list_models(
     db: AsyncSession,
     *,
     project_id: UUID | None,
+    training_job_id: UUID | None,
     limit: int,
     offset: int,
 ) -> Page[ModelArtifactResponse]:
-    """List artifacts, optionally filtered by the parent project."""
+    """List artifacts, optionally filtered by parent project or training job."""
     base = select(ModelArtifact).order_by(ModelArtifact.created_at.desc())
     count = select(func.count()).select_from(ModelArtifact)
     if project_id is not None:
@@ -50,6 +51,9 @@ async def list_models(
         count = count.join(TrainingJob, ModelArtifact.training_job_id == TrainingJob.id).where(
             TrainingJob.project_id == project_id
         )
+    if training_job_id is not None:
+        base = base.where(ModelArtifact.training_job_id == training_job_id)
+        count = count.where(ModelArtifact.training_job_id == training_job_id)
 
     total = (await db.execute(count)).scalar_one()
     rows = (await db.execute(base.limit(limit).offset(offset))).scalars().all()
