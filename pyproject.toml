@@ -62,6 +62,7 @@ training = [
 eval = [
     "evaluate>=0.4.3",
     "rouge-score>=0.1.2",
+    "sacrebleu>=2.4.0",
     "scikit-learn>=1.6.0",
     "deepeval>=2.0.9",
 ]
