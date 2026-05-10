@@ -149,6 +149,21 @@ Liveness probe.
 
 ดึง example payload เดี่ยวสำหรับ task ที่เลือก (ใช้สำหรับ "Insert sample" button).
 
+**Response 200:** _(returns the example object directly — ไม่มี wrapper)_
+
+```json
+// /tasks/qa/example
+{ "question": "What is the return policy?", "answer": "You can return items within 30 days of purchase." }
+
+// /tasks/classification/example
+{ "text": "I can't log into my account", "label": "technical" }
+
+// /tasks/tool_calling/example
+{ "question": "Set the oven to 250 degrees Celsius", "answer": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":250}}" }
+```
+
+**Response 422** ถ้า `task_type` ไม่ใช่หนึ่งใน 3 ตัว — `code: validation_error`, `loc: ["path", "task_type"]`.
+
 ### `GET /api/v1/base-models`
 
 List 4-bit Unsloth models ที่ training endpoint รับ.
@@ -381,7 +396,17 @@ Dataset detail. มี `generation_metadata` ถ้า `source=sdg`:
 
 ### `GET /api/v1/datasets/{id}/download`
 
-Binary stream — ดาวน์โหลด JSONL ทั้งไฟล์. `Content-Type: application/octet-stream`.
+Stream JSONL ทั้งไฟล์ — content เหมือน source file ที่ upload ไป (ไม่ rename keys ตาม Format Detection — server เก็บ canonicalised version แล้ว).
+
+**Response 200:**
+- `Content-Type: application/x-ndjson` (newline-delimited JSON, **ไม่ใช่ octet-stream**)
+- Body = JSONL bytes ตรงๆ
+- Server อาจตัด trailing newline ของบรรทัดสุดท้าย
+
+**Response 404** ถ้าไม่มี dataset:
+```json
+{ "detail": "Dataset <id> not found", "code": "not_found", "extra": null }
+```
 
 ### `DELETE /api/v1/datasets/{id}`
 
@@ -651,8 +676,10 @@ Trigger export. **Async** — 202.
 
 **Request (GGUF):**
 ```json
-{ "format": "gguf", "quantization": "q4_k_m" }   // q4_k_m | q5_k_m | q8_0 | f16
+{ "format": "gguf", "quantization": "q4_k_m" }
 ```
+
+> `quantization` เป็น free-form string ที่ส่งต่อให้ `llama-quantize`. Default = `q4_k_m`. Common values: `q4_k_m` (recommended), `q5_k_m`, `q8_0`, `f16`. Worker validate string ตอนรัน llama.cpp — string อื่นที่ llama.cpp รองรับก็ใช้ได้.
 
 **Request (SafeTensors):**
 ```json
@@ -734,10 +761,10 @@ Eval detail.
 }
 ```
 
-> 💡 **Metrics ตาม task_type:**
-> - `qa` → bleu, rouge1, rouge2, rougeL, exact_match
-> - `classification` → accuracy, f1 (per-class + macro)
-> - `tool_calling` → name_accuracy, params_match
+> 💡 **Metrics ตาม task_type** (verified จาก `ai_engine/evaluation/metrics_*.py`):
+> - `qa` → `bleu`, `rouge1`, `rouge2`, `rougeL`, `exact_match`, `n` _(verified live)_
+> - `classification` → `accuracy`, `f1_macro`, `f1_per_label` (dict), `confusion_matrix`, `n`
+> - `tool_calling` → `json_validity`, `name_accuracy`, `arg_accuracy`, `exact_match`, `n`
 
 ### `POST /api/v1/evaluations/compare`
 
