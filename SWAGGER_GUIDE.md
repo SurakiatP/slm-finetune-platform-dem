@@ -83,6 +83,8 @@ GET  /api/v1/datasets/{id}/preview
 POST /api/v1/trainings                      (manual or HPO)
 GET  /api/v1/trainings/{id}                 (poll until completed)
 GET  /api/v1/trainings/{id}/mlflow-url
+GET  /api/v1/trainings/{id}/loss-history    (chart-ready train+eval loss only)
+GET  /api/v1/trainings/{id}/metrics         (full series + HPO child summary)
 
 [Model]
 GET  /api/v1/models?training_job_id={id}    → save artifact_id
@@ -716,6 +718,84 @@ Stream ทั้งไฟล์ JSONL — จะใหญ่ ใช้เฉพ�
 ```
 
 > เปิด link ใน browser → ดู metrics curves, params, artifacts (เปิดได้บน VM ผ่าน `-L 5000:localhost:5000`)
+
+### `GET /api/v1/trainings/{training_id}/loss-history`
+
+Lightweight — **train_loss + eval_loss series** สำหรับ chart component บน frontend
+(API proxy ไป MLflow โดยตรง — frontend ไม่ต้องเรียก MLflow REST เอง)
+
+**Response 200:**
+```json
+{
+  "training_id": "tr-uuid-here",
+  "mlflow_run_id": "abc123",
+  "train_loss": [
+    { "step": 0, "value": 4.78, "timestamp_ms": 1778398570184 },
+    { "step": 4, "value": 1.05, "timestamp_ms": 1778398570500 }
+  ],
+  "eval_loss": [
+    { "step": 0, "value": 3.96, "timestamp_ms": 1778398570198 },
+    { "step": 4, "value": 1.42, "timestamp_ms": 1778398570600 }
+  ]
+}
+```
+
+หาก training ยังไม่เริ่ม / ไม่มี mlflow run → `train_loss=[]`, `eval_loss=[]`, `mlflow_run_id=null` (200 ปกติ — frontend render axis ว่างได้).
+หาก MLflow ดาวน์ → 502.
+
+### `GET /api/v1/trainings/{training_id}/metrics`
+
+Full metric series — รวมทุก key ที่ MLflow log + HPO child summary (ถ้า mode=hpo)
+
+**Response 200 (manual mode):**
+```json
+{
+  "training_id": "tr-uuid-here",
+  "mlflow_run_id": "abc123",
+  "metrics": {
+    "train_loss":    [ { "step": 0, "value": 4.78, "timestamp_ms": ... }, ... ],
+    "eval_loss":     [ { "step": 0, "value": 3.96, "timestamp_ms": ... }, ... ],
+    "learning_rate": [ { "step": 1, "value": 0.0002, "timestamp_ms": ... }, ... ],
+    "epoch":         [ ... ],
+    "grad_norm":     [ ... ],
+    "loss":          [ ... ]
+  },
+  "hpo_children": null
+}
+```
+
+**Response 200 (hpo mode):** เหมือน manual แต่ `hpo_children` populate
+```json
+{
+  "training_id": "hpo-uuid-here",
+  "mlflow_run_id": "<parent_run_id>",
+  "metrics": { /* ... metrics ของ parent run (อาจเป็น {} ถ้า parent ไม่ได้ log อะไร) ... */ },
+  "hpo_children": [
+    {
+      "run_id": "37f0c88926...",
+      "name": "trial-000",
+      "final_eval_loss": 3.87,
+      "params": { "learning_rate": "0.000115", "lora.r": "8" }
+    },
+    {
+      "run_id": "397a144fe6...",
+      "name": "trial-001",
+      "final_eval_loss": 5.03,
+      "params": { "learning_rate": "1.02e-05", "lora.r": "8" }
+    },
+    {
+      "run_id": "8a5329ed43...",
+      "name": "best",
+      "final_eval_loss": 3.87,
+      "params": { /* full config flattened */ }
+    }
+  ]
+}
+```
+
+> 💡 `params` value type = **string** เสมอ (MLflow เก็บ params เป็น string) — frontend ต้องแปลง type เองถ้าจะ plot.
+
+> ⚠️ ถ้า MLflow ดาวน์ → 502 + `"MLflow tracking server not reachable"`. หาก HPO children search fail แค่ตัวเดียว → ตัวที่เหลือยังคืน, `metrics` key ที่ history เรียกไม่ติดจะคืน `[]` ไม่ทำให้ทั้ง response fail.
 
 ### `GET /api/v1/trainings?project_id=<id>&status=running`
 

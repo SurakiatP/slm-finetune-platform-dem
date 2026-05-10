@@ -5,19 +5,29 @@ The submission side (manual + HPO) lives in `training_service.py` (Phase 5/6).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
+import httpx
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import get_settings
 from api.models.training_job import TrainingJob
-from api.schemas.enums import JobStatus
+from api.schemas.enums import JobStatus, TrainingMode
 from api.schemas.responses import Page
-from api.schemas.trainings import MlflowUrlResponse, TrainingResponse
+from api.schemas.trainings import (
+    HpoChildSummary,
+    MetricPoint,
+    MlflowUrlResponse,
+    TrainingLossHistoryResponse,
+    TrainingMetricsResponse,
+    TrainingResponse,
+)
+from api.services import mlflow_metrics
 
 log = logging.getLogger(__name__)
 
@@ -113,9 +123,143 @@ async def get_mlflow_url(db: AsyncSession, training_id: UUID) -> MlflowUrlRespon
     )
 
 
+async def _load_training_or_404(db: AsyncSession, training_id: UUID) -> TrainingJob:
+    job = await db.get(TrainingJob, training_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Training {training_id} not found",
+        )
+    return job
+
+
+def _to_points(rows: list[mlflow_metrics.MetricPointDC]) -> list[MetricPoint]:
+    """Convert raw MLflow points to API schema, sorted by step ascending.
+
+    MLflow occasionally returns points out of order when steps were logged
+    asynchronously; sort here so the frontend can plot directly.
+    """
+    return [
+        MetricPoint(step=p.step, value=p.value, timestamp_ms=p.timestamp_ms)
+        for p in sorted(rows, key=lambda r: r.step)
+    ]
+
+
+async def get_training_loss_history(
+    db: AsyncSession, training_id: UUID
+) -> TrainingLossHistoryResponse:
+    """Return only `train_loss` + `eval_loss` series — small payload for charts."""
+    job = await _load_training_or_404(db, training_id)
+    if not job.mlflow_run_id:
+        return TrainingLossHistoryResponse(
+            training_id=job.id,
+            mlflow_run_id=None,
+            train_loss=[],
+            eval_loss=[],
+        )
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            train_rows, eval_rows = await asyncio.gather(
+                mlflow_metrics.get_metric_history(job.mlflow_run_id, "train_loss", client=client),
+                mlflow_metrics.get_metric_history(job.mlflow_run_id, "eval_loss", client=client),
+            )
+        except httpx.HTTPError as exc:
+            log.warning("loss-history MLflow call failed for training=%s: %s", training_id, exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="MLflow tracking server not reachable",
+            ) from exc
+
+    return TrainingLossHistoryResponse(
+        training_id=job.id,
+        mlflow_run_id=job.mlflow_run_id,
+        train_loss=_to_points(train_rows),
+        eval_loss=_to_points(eval_rows),
+    )
+
+
+async def get_training_metrics(
+    db: AsyncSession, training_id: UUID
+) -> TrainingMetricsResponse:
+    """Return all logged metric series for the run + HPO child summary if HPO mode.
+
+    Internally: `runs/get` once → metric key list → fan-out `metrics/get-history`
+    in parallel. For HPO trainings, also `runs/search` for nested children and
+    summarise them (final eval_loss + params, not full series — keeps payload
+    bounded when n_trials is large).
+    """
+    job = await _load_training_or_404(db, training_id)
+    if not job.mlflow_run_id:
+        return TrainingMetricsResponse(
+            training_id=job.id,
+            mlflow_run_id=None,
+            metrics={},
+            hpo_children=None,
+        )
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            run = await mlflow_metrics.get_run(job.mlflow_run_id, client=client)
+        except httpx.HTTPError as exc:
+            log.warning("runs/get failed for training=%s: %s", training_id, exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="MLflow tracking server not reachable",
+            ) from exc
+
+        metric_keys = mlflow_metrics.extract_metric_keys(run)
+        history_results = await asyncio.gather(
+            *(
+                mlflow_metrics.get_metric_history(job.mlflow_run_id, key, client=client)
+                for key in metric_keys
+            ),
+            return_exceptions=True,
+        )
+
+        metrics: dict[str, list[MetricPoint]] = {}
+        for key, result in zip(metric_keys, history_results):
+            if isinstance(result, BaseException):
+                log.warning("get-history failed key=%s: %s", key, result)
+                metrics[key] = []
+            else:
+                metrics[key] = _to_points(result)
+
+        hpo_children: list[HpoChildSummary] | None = None
+        if job.mode is TrainingMode.HPO and job.mlflow_experiment_id:
+            try:
+                child_runs = await mlflow_metrics.search_child_runs(
+                    job.mlflow_run_id, job.mlflow_experiment_id, client=client
+                )
+            except httpx.HTTPError as exc:
+                log.warning("hpo children search failed for training=%s: %s", training_id, exc)
+                child_runs = []
+
+            hpo_children = []
+            for cr in child_runs:
+                name = mlflow_metrics.extract_tag(cr, "mlflow.runName") or ""
+                hpo_children.append(
+                    HpoChildSummary(
+                        run_id=cr.get("info", {}).get("run_id", ""),
+                        name=name,
+                        final_eval_loss=mlflow_metrics.extract_metric_last_value(cr, "eval_loss"),
+                        params=mlflow_metrics.extract_params(cr),
+                    )
+                )
+
+    return TrainingMetricsResponse(
+        training_id=job.id,
+        mlflow_run_id=job.mlflow_run_id,
+        metrics=metrics,
+        hpo_children=hpo_children,
+    )
+
+
 __all__ = [
     "list_trainings",
     "get_training",
     "cancel_training",
     "get_mlflow_url",
+    "get_training_loss_history",
+    "get_training_metrics",
 ]
