@@ -6,6 +6,62 @@
 
 ---
 
+## Session 18 (cont.) — 5 manual-test runbooks authored to mirror smoke drivers (2026-05-10)
+
+**Who:** Claude (Opus 4.7) + parks (developer, gave the prompt then went AFK)
+**Status:** ✅ Five new runbooks committed under `docs/runbooks/`, mirroring the format of the existing Phase 9 SDG runbooks (Goal/Time/Cost/Prereqs header → §0 pre-flight → numbered Tasks with วัตถุประสงค์/Steps/Expected/Verification/capture-variable → completion checklist → troubleshooting → cost estimate). Cross-references all Session 18 fixes (MT.B1-B4 + MT.I1) so each runbook doubles as a regression check. Branch `feature/training-eval-smoke` now at `c8c1772` (10 commits ahead of `dev`).
+
+**Why & What:**
+
+- parks asked for the Swagger surface to be split into manageable runbook files, pointed at `docs/runbooks/sdg-test-classification.md` as the gold-standard format. Brainstormed 5-section split (vs. 3-broader or 8-granular) — picked 5 because each file lands ~10-14 Tasks (matches SDG runbook size), aligns 1:1 with Session 18's smoke drivers (`scripts/swagger_smoke_section*.py`), and stays under 600 lines per file. Confirmed direction with single AskUserQuestion (parks chose "เขียนทั้ง 5 ไฟล์ตามลำดับเลย").
+- Wrote in dependency order so referenced ids cascade naturally: `platform-basics.md` (foundation, no GPU) → `training-manual-lifecycle.md` (creates the artifact other runbooks consume) → `training-hpo.md` (independent project) → `evaluation.md` (uses the manual artifact + dataset) → `model-export-extras.md` (uses the manual artifact). Each runbook's "⏭️ Next runbooks" block at the bottom tells parks which ids carry over so he doesn't have to keep his own scratch list.
+- Format choices verified against `sdg-test-classification.md`: same emoji vocabulary (🔖 for capture-variable, ✅ for expected, 🧪 for verification table, ⏭️ for cross-runbook handoff, 🚨 for must-not-regress checks), same Thai voice, same horizontal-rule separators, same Cost Estimate table at end. parks's existing runbook is 569 lines / 13 Tasks — new ones land in the same envelope (174-410 lines / 7-13 Tasks each).
+
+**Files added (this addendum):**
+
+| Runbook | Lines | Tasks | Cost | Audience |
+|---------|-------|-------|------|----------|
+| `docs/runbooks/platform-basics.md` | 273 | 13 | $0 | health/metadata/CRUD smoke after every redeploy |
+| `docs/runbooks/training-manual-lifecycle.md` | 410 | 13 | $0 | full §16 happy path + WS + MLflow + GGUF + chat |
+| `docs/runbooks/training-hpo.md` | 280 | 7 + 1 opt | $0 | §8 mode=hpo + nested MLflow runs + best params |
+| `docs/runbooks/evaluation.md` | 310 | 10 | $0 + ~$0.01 | §13 rule + LLM judge + compare + negative |
+| `docs/runbooks/model-export-extras.md` | 286 | 9 | $0 | SafeTensors + /download + legacy /completions + §9 cancel |
+
+Combined with the 3 existing SDG runbooks, the 8 runbooks now cover the full Swagger surface area parks needs to manually walk before promoting `feature/training-eval-smoke` → `dev`.
+
+**Decisions Made:**
+
+- **5 runbooks (1:1 with smoke drivers)**, not 3 (too broad — each file would exceed 800 lines) or 8 (too granular — most files would be 3-5 tasks and feel like ceremony). 5 keeps each runbook within ~300-400 lines and ~10 tasks, comfortable for a 15-minute manual walk-through.
+- **Cross-reference Session 18 bug numbers in every Troubleshooting table.** A fresh redeploy can reuse these runbooks as regression checks: "Task 7 → 500" with a Troubleshooting entry that points at MT.B1 means parks immediately knows the canonical fix instead of debugging from scratch.
+- **`platform-basics.md` first in execution order**, not alphabetical or by importance. Other runbooks assume health + project create works; pulling those into a foundation runbook means each downstream runbook can have a tight §0 (just stack-up + port-forwards + project-setup) without re-explaining the basics.
+- **Each runbook ends with `⏭️ Next runbooks` cross-reference block.** Parks does not need to remember which `<artifact_id>` from runbook 2 gets reused in runbook 4 — the runbook tells him.
+- **Used `<vast-port>` and `<vast-ip>` as placeholders** in the SSH lines, not the current `51812` / `202.215.2.218`. The current SDG runbooks hard-coded `51030` from a prior deploy, which is now wrong. Placeholders are future-proof; parks fills them once per deploy.
+- **Did NOT write a runbooks README/index.** The 8 files are self-discoverable in the `docs/runbooks/` directory; ordering hints live inside each runbook's prereqs section. Adding a README would be one more file to keep in sync.
+
+**Files Touched:**
+
+- `docs/runbooks/platform-basics.md` (new, 273 lines)
+- `docs/runbooks/training-manual-lifecycle.md` (new, 410 lines)
+- `docs/runbooks/training-hpo.md` (new, 280 lines)
+- `docs/runbooks/evaluation.md` (new, 310 lines)
+- `docs/runbooks/model-export-extras.md` (new, 286 lines)
+- `WORKING_LOG.md` — this addendum entry
+- `TASK_TRACKER.md` — added MT.6a row (runbooks authored), updated MT.6 to point at new runbooks
+
+**Commits pushed (this addendum):**
+
+- `c8c1772` — docs(runbooks): add 5 manual-test runbooks covering Swagger surface beyond Phase 9 SDG
+
+**Next Action:**
+
+→ parks reads `docs/runbooks/training-manual-lifecycle.md` first (it's the most representative — same flow as §16 smoke he already trusts) and runs through it via Swagger UI on the live vast.ai stack to verify the format suits him. Adjustments (more verbose / less verbose / different emoji / different table shape) get applied to all 5 in one batch.
+→ Once format is signed off: parks walks all 5 runbooks for content correctness (each ~15 min, total ~75 min). Any drift between runbook and reality = MT.B5 / MT.F? in TASK_TRACKER.
+→ After all 5 green via parks's hands: open PR `feature/training-eval-smoke` → `dev` (already 10 commits ahead, clean fast-forward expected).
+
+**Blockers:** None.
+
+---
+
 ## Session 18 — Manual-test coverage campaign on vast.ai, 4 API bugs + 1 infra issue fixed, all 6 untested swagger sections green (2026-05-10)
 
 **Who:** Claude (Opus 4.7) + parks (developer, AFK during execution)
