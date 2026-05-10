@@ -184,37 +184,86 @@ GET /api/v1/trainings/<hpo_training_id>
 
 ---
 
-## Task 3 — เปิด MLflow UI ดู nested runs
+## Task 3 — Verify nested runs ใน MLflow
 
-**วัตถุประสงค์:** ดูว่า HPO สร้าง parent + nested runs structure ใน MLflow ถูกต้อง
+**วัตถุประสงค์:** ยืนยันว่า HPO สร้าง parent + 3 nested runs (`trial-000`, `trial-001`, `best`) ที่มี `mlflow.parentRunId` tag ชี้ไปที่ parent ถูกต้อง
 
-### Steps
+### 🎯 The structural check (deterministic — ใช้ REST API)
 
-1. `GET /api/v1/trainings/<hpo_training_id>/mlflow-url` → คัดลอก URL
-2. Substitute `mlflow:5000` → `localhost:5000`
-3. เปิด browser
+Verify ผ่าน MLflow REST API ตรงๆ — เร็ว, ไม่ขึ้นกับ UI version:
 
-### ✅ Expected ใน MLflow UI
+```bash
+# ssh เข้า host ก่อน หรือผ่าน port-forward 5000
+HPO_TRID=<hpo_training_id>
+HPO_RUN=$(curl -s http://localhost:8000/api/v1/trainings/$HPO_TRID | python3 -c "import json,sys; print(json.load(sys.stdin)['mlflow_run_id'])")
+echo "parent=$HPO_RUN"
 
-ใน experiment 1 ควรเห็น run hierarchy:
+curl -s -X POST http://localhost:5000/api/2.0/mlflow/runs/search \
+  -H "Content-Type: application/json" \
+  -d "{\"experiment_ids\":[\"1\"],\"filter\":\"tags.mlflow.parentRunId = '$HPO_RUN'\",\"max_results\":10}" \
+  | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for r in d.get('runs', []):
+    tags = {t['key']: t['value'] for t in r['data'].get('tags', [])}
+    metrics = {m['key']: m['value'] for m in r['data'].get('metrics', [])}
+    print(f\"  - {tags.get('mlflow.runName','?'):12} eval_loss={metrics.get('eval_loss','-')}\")
+"
+```
+
+### ✅ Expected output
 
 ```
-hpo-capitals-smoke (parent run)         ← <hpo_run_id>
-├── trial-0                              ← n_trials=2 ⇒ 2 nested
-├── trial-1
-└── best                                 ← final retrain ใช้ best_params
+parent=21b980ebd5534bc4bd0dc38573d8a11d
+  - best         eval_loss=3.8726041316986084
+  - trial-001    eval_loss=5.029859542846680
+  - trial-000    eval_loss=3.8726041316986084
 ```
 
-### 🧪 Verification
+3 children ทุกตัวมี `mlflow.parentRunId` tag ชี้ไปที่ `<hpo_run_id>` = nested structure ถูกต้อง.
+
+> 💡 `best` run ใช้ params เดียวกับ trial ที่ eval_loss ต่ำสุด → eval_loss เท่ากัน (deterministic re-train).
+
+---
+
+### 🖥️ ดูใน MLflow UI (3 ทาง)
+
+> ⚠️ **MLflow UI default = flat list** — แสดงทุก run ใน table แบบเรียงตาม Created time (ทั้ง parent + children). **ไม่ใช่ bug** — เป็น behavior ปกติ. ดู nested view ได้ผ่าน 3 ทางนี้:
+
+#### ทาง 1 (แนะนำ): Click parent run → ดู Child Runs ใน detail page
+
+1. ใน experiment runs table หา row `hpo-capitals-smoke` แล้วคลิก
+2. หน้า run detail จะมี section/tab **"Child Runs"** — list ของ trial-000, trial-001, best
+3. คลิก child name แต่ละตัวเพื่อดู metrics + params ของ run นั้น
+
+#### ทาง 2: Filter by parent tag ใน search bar
+
+ใน search box ด้านบน runs table:
+```
+tags.`mlflow.parentRunId` = "<hpo_run_id>"
+```
+แทนที่ `<hpo_run_id>` ด้วย parent ที่ได้จาก Task 2 (`mlflow_run_id` ของ training response). ตารางจะ filter เห็นเฉพาะ 3 children.
+
+#### ทาง 3: Toggle nested view (ถ้า MLflow version รองรับ)
+
+มอง toolbar ด้านบนตาราง — บางเวอร์ชันมี:
+- Icon ฟันเฟือง / "Columns" → settings → "Show nested runs"
+- หรือ "Group by" → เลือก `mlflow.parentRunId`
+
+(MLflow 3.x ตำแหน่ง toggle เปลี่ยนตาม minor version — ถ้าหาไม่เจอใช้ทาง 1 หรือ 2)
+
+---
+
+### 🧪 Per-run verification (หลังจาก click parent → Child Runs)
 
 | Check | Where | Expected |
 |-------|-------|----------|
-| Parent run exists | experiment 1 | row `hpo-capitals-smoke` |
-| Click parent → child runs section | bottom of run page | 3 child runs (`trial-0`, `trial-1`, `best`) |
-| `trial-0` params | params tab | `learning_rate`, `lora_r` (ตามที่ Optuna sample) |
-| `trial-0` metrics | metrics tab | มี `eval_loss` (เพื่อ pruner ตัดสินใจ) |
-| `best` run | params tab | match `best_params_json` จาก Task 2 response |
-| `best` run metrics | metrics tab | มี `eval_loss` final + `train_loss` series |
+| `trial-000` + `trial-001` exist as children | parent run → Child Runs section | 2 trials |
+| `best` exists as child | parent run → Child Runs section | 1 best run |
+| `trial-000` params | child run page → Parameters tab | `learning_rate`, `lora_r` (ตาม Optuna sample) |
+| `trial-000` metrics | child run page → Metrics tab | มี `eval_loss` (พื้นฐานของ pruner) |
+| `best` run params | child run page → Parameters tab | match `best_params_json` จาก Task 2 response |
+| `best` run metrics | child run page → Metrics tab | `eval_loss` ≤ trial ที่ดีที่สุด + มี `train_loss` step series |
 
 ---
 
@@ -269,7 +318,7 @@ GET /api/v1/models?training_job_id=<hpo_training_id>
 ### Steps
 
 1. ใน MLflow UI ที่ Task 3 → experiment 1
-2. ดู `eval_loss` ของ `trial-0` กับ `trial-1`
+2. ดู `eval_loss` ของ `trial-000` กับ `trial-001`
 3. หา trial ที่ `eval_loss` ต่ำกว่า
 
 ### 🧪 Verification
@@ -384,7 +433,7 @@ POST /api/v1/trainings
 
 - [ ] Task 1 — POST HPO mode=hpo + search_space → 202
 - [ ] Task 2 — poll → completed ภายใน ~5 นาที, `best_metric_value` not null, `best_params_json` ตรง search_space schema
-- [ ] Task 3 — MLflow UI เห็น parent + 3 nested runs (`trial-0`, `trial-1`, `best`)
+- [ ] Task 3 — REST API: 3 children มี `mlflow.parentRunId` ชี้ parent (`trial-000`, `trial-001`, `best`); UI: click parent → Child Runs section
 - [ ] Task 4 — `?training_job_id=<hpo>` → exactly 1 artifact (filter ทำงาน)
 - [ ] Task 5 — `best_params` ตรง trial ที่ `eval_loss` ต่ำสุด
 - [ ] Task 6 — empty search_space → 422
@@ -402,7 +451,8 @@ POST /api/v1/trainings
 | Task 2 → `failed` + `error_message="No trials are completed yet"` | ทุก trial ตายเพราะ Unsloth ไม่เห็น GPU | per MT.I1 — `docker compose up -d --force-recreate worker` |
 | Task 2 → `failed` + `error_message` มี `<EOS_TOKEN>` หรือ chat template error | trainer regression (B5 Session 13) | check `ai_engine/training/unsloth_trainer.py` import order |
 | Task 2 รันนาน > 15 นาที | `timeout_seconds` ตั้งสูง + n_trials ใหญ่ | ลด n_trials หรือ `per_device_train_batch_size` |
-| Task 3 MLflow แค่ parent run, ไม่มี nested | nested run wiring break (regression) | ดู `workers/tasks/hpo_training.py` `mlflow.start_run(nested=True)` |
+| Task 3 — UI flat ทุก run โผล่เป็น row เดี่ยวเรียงตาม time | ✅ **ไม่ใช่ bug — MLflow UI default behavior**. ดู nested ผ่านทาง 1-3 ใน Task 3 (click parent / filter / toggle) | (no fix needed — verify ผ่าน REST API ก็พอ) |
+| Task 3 — REST API คืน `nested_count=0` (children ไม่มี `mlflow.parentRunId` tag) | nested run wiring break จริง — regression | ดู `workers/tasks/hpo_training.py` ว่ายังมี `mlflow.start_run(nested=True)` ทั้งใน trial loop และ best-retrain block |
 | Task 4 `?training_job_id=` คืน > 1 item | filter regression (Bug MT.B3 ย้อน) | check `api/services/model_service.py:50` มี `WHERE training_job_id` |
 | Task 5 best มี `eval_loss` สูงกว่า trials | Optuna direction ผิด / metric ผิด | ตรวจ `objective_metric: "eval_loss"` + `direction: "minimize"` |
 | Task 6/7 ผ่าน 200 ไม่ใช่ 422 | Pydantic validator ไม่ทำงาน | check `HPOSearchSpace._at_least_one_param` + `HPOConfig.n_trials: ge=2` |
