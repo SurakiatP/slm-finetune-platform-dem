@@ -156,6 +156,60 @@ _RAW_BASE_MODELS: list[BaseModelInfo] = [
         license="gemma",
         notes="Good middle-ground in size; shorter native context window than Llama/Qwen.",
     ),
+    # ---- Qwen3 family (newer generation — thinking-mode capable) ----------
+    BaseModelInfo(
+        id="unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
+        display_name="Qwen3 0.6B Instruct (4-bit)",
+        family="qwen",
+        params_billions=0.75,
+        context_length=32768,
+        recommended_max_seq_length=2048,
+        license="apache-2.0",
+        notes="Newer Qwen generation; thinking-mode capable. Smallest Qwen3 variant — drop-in upgrade for Qwen2.5-0.5B.",
+    ),
+    BaseModelInfo(
+        id="unsloth/Qwen3-1.7B-unsloth-bnb-4bit",
+        display_name="Qwen3 1.7B Instruct (4-bit)",
+        family="qwen",
+        params_billions=2.03,
+        context_length=32768,
+        recommended_max_seq_length=2048,
+        license="apache-2.0",
+        notes="Drop-in upgrade for Qwen2.5-1.5B. Thinking-mode capable; strong general-purpose at sub-2B size.",
+    ),
+    # ---- DeepSeek-R1 distilled (reasoning specialist) ---------------------
+    BaseModelInfo(
+        id="unsloth/DeepSeek-R1-Distill-Qwen-1.5B-unsloth-bnb-4bit",
+        display_name="DeepSeek-R1-Distill-Qwen 1.5B (4-bit)",
+        family="qwen",
+        params_billions=1.78,
+        context_length=131072,
+        recommended_max_seq_length=2048,
+        license="mit",
+        notes="Reasoning specialist — chain-of-thought built-in via R1 distillation. Best <=2B option for math/code/step-by-step tasks.",
+    ),
+    # ---- SmolLM (HuggingFace native, fine-tune-optimized) -----------------
+    BaseModelInfo(
+        id="unsloth/SmolLM2-1.7B-Instruct-bnb-4bit",
+        display_name="SmolLM2 1.7B Instruct (4-bit)",
+        family="smollm",
+        params_billions=1.71,
+        context_length=8192,
+        recommended_max_seq_length=2048,
+        license="apache-2.0",
+        notes="HuggingFace TB native; trained on 11T tokens. Optimized for fine-tuning per Distil Labs benchmark. Apache 2.0.",
+    ),
+    # ---- TinyLlama (smallest serious chat) --------------------------------
+    BaseModelInfo(
+        id="unsloth/tinyllama-chat-bnb-4bit",
+        display_name="TinyLlama 1.1B Chat (4-bit)",
+        family="llama",
+        params_billions=1.10,
+        context_length=2048,
+        recommended_max_seq_length=2048,
+        license="apache-2.0",
+        notes="Smallest VRAM footprint (~600MB 4-bit). Best for edge/IoT prototyping. Older Llama-2 architecture (2023) — capable but less polished than Llama 3.2.",
+    ),
 ]
 
 SUPPORTED_BASE_MODELS: list[BaseModelInfo] = [

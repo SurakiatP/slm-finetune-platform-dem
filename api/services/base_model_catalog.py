@@ -27,12 +27,24 @@ log = logging.getLogger(__name__)
 # in `api/routers/tasks_meta.py`. When a new base model is added there, add it
 # here as well (or set the value to `None` if Ollama-Hub doesn't carry it).
 _BASE_TO_OLLAMA_TAG: dict[str, str | None] = {
+    # Llama family
     "unsloth/Llama-3.2-1B-Instruct-bnb-4bit": "llama3.2:1b",
     "unsloth/Llama-3.2-3B-Instruct-bnb-4bit": "llama3.2:3b",
+    # Qwen2.5 family (older — kept for back-compat)
     "unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit": "qwen2.5:0.5b",
     "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit": "qwen2.5:1.5b",
     "unsloth/Qwen2.5-3B-Instruct-bnb-4bit": "qwen2.5:3b",
+    # Qwen3 family (newer — thinking-mode capable)
+    "unsloth/Qwen3-0.6B-unsloth-bnb-4bit": "qwen3:0.6b",
+    "unsloth/Qwen3-1.7B-unsloth-bnb-4bit": "qwen3:1.7b",
+    # Gemma family
     "unsloth/gemma-2-2b-it-bnb-4bit": "gemma2:2b",
+    # SmolLM family (HuggingFace TB)
+    "unsloth/SmolLM2-1.7B-Instruct-bnb-4bit": "smollm2:1.7b",
+    # TinyLlama (smallest serious chat model)
+    "unsloth/tinyllama-chat-bnb-4bit": "tinyllama:1.1b",
+    # DeepSeek-R1 distilled — reasoning specialist
+    "unsloth/DeepSeek-R1-Distill-Qwen-1.5B-unsloth-bnb-4bit": "deepseek-r1:1.5b",
 }
 
 
