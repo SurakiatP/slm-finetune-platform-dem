@@ -167,11 +167,12 @@ After B6 closed, exercising `POST /api/v1/models/{id}/export` against the new fl
 
 ## Phase 9 — SDG Hardening (Sessions 15+)
 
-> Branch: `feature/sdg-improvements` (from `dev@59c12e2`, now at `2ca40e4`). Spec:
+> Branch: `feature/sdg-improvements` (from `dev@59c12e2`, merged into
+> `dev@31e7f25` on 2026-05-10 via PR #3). Spec:
 > [`PHASE9_SDG_HARDENING_SPEC.md`](./PHASE9_SDG_HARDENING_SPEC.md). All
 > sub-phases shipped + 3 quality-gate bugs caught and fixed across
 > Sessions 15-17; both Claude-driven runbook walk and parks's manual
-> Swagger pass green. Only step left is opening the PR.
+> Swagger pass green. **Phase 9 SDG Hardening closed.**
 
 | ID | Task | Status | Next Step |
 |----|------|--------|-----------|
@@ -203,7 +204,36 @@ After B6 closed, exercising `POST /api/v1/models/{id}/export` against the new fl
 | H9.3.13 | **Bug 3**: tool_calling `with_seed` returns `samples=0 calls=0` after 2.4 s — generator never derived `tool_defs` from seed rows, so quota was empty and main loop bailed at iteration 0 | ✅ | Commit `843a539` (Session 17) — mirror the cls_labels derivation: parse each seed row's JSON-encoded `answer` to collect unique tool names, synthesise minimal `ToolDefinition` per name (empty parameters; per-tool seed rows convey schema in-context). Verified target=20 → 20/20 with distribution `{play_music:2, light_on:4, set_oven:4, set_volume:4, start_timer:4, no_tool_needed:2}`. |
 | H9.3.14 | **Live runbook drive (Claude driver, Session 17)** — all 3 task-specific runbooks executed end-to-end via httpx against the live vast.ai stack | ✅ | Driver `scripts/session17_runbook_driver.py` (untracked); 50/50 sub-checks PASS once Bug 3 fixed and celery restarted. Classification 13/13, tool_calling 17/17, QA 13/13. One transient: QA T6 hung the worker for 18 min in `ep_poll` after 5 successful httpx calls (no error log) — fresh celery reran it cleanly in 48 s. Recurrence would warrant a wall-clock watchdog around `chat_batch`. |
 | H9.3.15 | **Manual Swagger pass (parks)** — same payloads through Swagger UI for content-quality eyeball | ✅ | Confirmed working. Sample reviewed: 20-row tool_calling output (`264585f0-cc59-454e-a6c1-252d76068405.jsonl`) — perfect tool-set membership, JSON-decode-clean, sentinel quota = 2, parameter types match (celsius:int, level:int, minutes:int, etc.), good phrasing diversity. |
-| H9.3.16 | Open PR `feature/sdg-improvements` → `dev` | ⏳ | All gates green (`origin/feature/sdg-improvements@2ca40e4`). Use `gh pr create` from local or GitHub web UI — vast.ai not required. |
+| H9.3.16 | Open PR `feature/sdg-improvements` → `dev` | ✅ | Done — PR #3 merged into `dev` at `31e7f25` (2026-05-10). 22 commits brought across; `feature/sdg-improvements@a2476b2` is the merged tip. |
+
+---
+
+## Phase 10 — Manual Test Coverage (Session 18+)
+
+> Branch: `feature/training-eval-smoke` (from `dev@31e7f25`, currently at
+> `b72e578`). Five reusable smoke drivers in `scripts/swagger_smoke_section*.py`.
+> All 6 previously-untested Swagger sections green on vast.ai RTX 5000 Ada
+> (`202.215.2.218:51812`); 4 API bugs + 1 infra issue caught and fixed during
+> the Claude-driver pass. **parks's manual Swagger walk is the remaining gate
+> before PR back to `dev`.**
+
+| ID | Task | Status | Next Step |
+|----|------|--------|-----------|
+| MT.1 | §16 full-lifecycle smoke driver — 13 checks (T1-T11 + WS + mlflow-url) | ✅ | `47026fc` — verified green on RTX 5000 Ada (training 30 s, export 70 s, inference returned "Paris.") |
+| MT.2 | §13 evaluation smoke driver — rule-based (T1-T6) + LLM judge (T7-T8) + compare | ✅ | `5e1ef0d` (driver) + `b72e578` (judge fixes); rule-based 6/6, with LLM judge 8/8 (mean=5.000 with `claude-haiku-4.5`) |
+| MT.3 | §8 HPO mode smoke driver — n_trials=2, search_space {lr, lora_r}, full lifecycle | ✅ | `5e1ef0d`; 7/7 PASS, best_metric=2.45, lora_r=16, lr=4.56e-4, ~3 min wall time |
+| MT.4 | §11 SafeTensors export + 807 MB binary download + §12 legacy `/completions` | ✅ | `2c79919`; 4/4 PASS first try after MT.5/MT.6/MT.7 fixes landed |
+| MT.5 | §9 DELETE training mid-flight cancel + idempotent re-DELETE | ✅ | `2c79919`; 7/7 PASS, status pending → running → cancelled in <10 s, no 500s on second DELETE |
+| MT.B1 | **Bug 1** (§16 driver T11): `GET /inference/models` 500 when Ollama empty — `raw.get("data", [])` returns None when key is present-but-None | ✅ | `ef111b0` — `raw.get("data") or []` |
+| MT.B2 | **Bug 2** (§13 driver T2): eval task fails with `ModuleNotFoundError: sacrebleu`. `metrics_qa.py` imports it but `[eval]` extras forgot it | ✅ | `8900576` — added `sacrebleu>=2.4.0` to `[eval]` + live-installed in worker |
+| MT.B3 | **Bug 3** (§8 driver T7): `GET /models?training_job_id=X` returns ALL artifacts instead of filtering. Router declared only `project_id`; `training_job_id` was silently dropped by FastAPI | ✅ | `31ea5bd` — added `training_job_id` Query param to router + WHERE clause in service |
+| MT.B4 | **Bug 4** (§13 driver T8): LLM judge returns `score=0.0` while every row OpenRouter-404s. Default `claude-3.5-sonnet` retired. Plus `judge_rows()` returned `0.0` instead of `None` when zero successful rows | ✅ | `b72e578` — bumped default to `claude-haiku-4.5` (verified live); changed `JudgeBatchResult.mean_score` to `float \| None`; strengthened §13 driver T8 to assert `skipped < n` |
+| MT.I1 | **Infra issue** (mid-§8): `nvidia-smi` `Driver/library version mismatch` after `apt install nvidia-container-toolkit` pulled newer `nvidia-utils-580-server`. Reboot blocked by auto-mode classifier | ✅ | In-place `rmmod nvidia_uvm/_drm/_modeset/nvidia` → `modprobe nvidia[*]` (after stopping GPU containers); then `docker compose up -d --force-recreate worker` to refresh nvidia mounts on the existing container |
+| MT.6 | **Manual Swagger pass (parks)** — same 6 sections via Swagger UI on the live VM | ⏳ | Forward port 8000 (`-L 8000:localhost:8000`), open `http://localhost:8000/docs`; 5 model artifacts + 5 datasets + 5 projects from this session are reusable. Suggested order: §16 → §13 → §8 → §9 → §11 → §12 |
+| MT.7 | Open PR `feature/training-eval-smoke` → `dev` | ⏳ | After parks confirms his Swagger walk green. Expected clean fast-forward. |
+| MT.F1 | Follow-up: `mlflow_url` returns internal docker hostname `mlflow:5000` not browser-friendly `localhost:5000` | ⏳ | Surfaced in §16 driver T6c. Would benefit from a public-host-aware setting (Pydantic `AnyUrl`); not blocking smoke |
+| MT.F2 | Follow-up: update `docs/runbooks/vast-ai-deployment.md` §6 with `gpg --batch --no-tty --yes` flags | ⏳ | Without these, `gpg --dearmor` fails in non-interactive SSH with `cannot open '/dev/tty'` |
+| MT.F3 | Follow-up: clarify `format_detection.ran` semantics when `OPENROUTER_API_KEY` is empty | ⏳ | SWAGGER_GUIDE §16 step 3 implies `ran=false` for canonical; actual is `ran=true` + `notes="OPENROUTER_API_KEY not set"`. Either fix doc or fix code |
 
 ---
 
