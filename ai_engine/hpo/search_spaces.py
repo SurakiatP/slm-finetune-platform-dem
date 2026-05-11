@@ -24,6 +24,42 @@ from api.schemas.training import (
     ManualTrainingConfig,
 )
 
+
+# ---- 3060-tuned preset -----------------------------------------------------
+
+
+def default_3060_search_space() -> HPOSearchSpace:
+    """A sensible HPO search space for RTX 3060 12GB.
+
+    Tunes the 5 hyperparameters with the highest reported impact on QLoRA
+    fine-tunes (Unsloth LoRA Hyperparameters Guide; QLoRA paper; Raschka
+    LoRA insights):
+
+      • `learning_rate` — log[1e-5, 5e-4], covers 2e-4 sweet spot ± 1 order
+      • `lora_r` — categorical {8, 16, 32}; r > 32 has diminishing returns
+        once LoRA is attached to all linear layers (QLoRA paper)
+      • `lora_alpha` — categorical {16, 32, 64}; user is expected to pair
+        roughly as `alpha ≈ 2*r` but the search lets Optuna explore
+      • `num_train_epochs` — int [2, 4]; >4 typically overfits (Unsloth)
+      • `gradient_accumulation_steps` — categorical {4, 8, 16}; tunes the
+        effective batch without touching VRAM (free knob on 3060)
+
+    Hyperparameters deliberately NOT tuned here:
+      • `per_device_train_batch_size`, `max_seq_length` — VRAM-critical,
+        a wrong sample OOMs mid-trial and zombies the study. Fix in
+        `fixed_config` and override per-run.
+      • `lora_dropout`, `weight_decay`, `warmup_ratio`, `lr_scheduler_type`
+        — low ROI to tune (Raschka, Studio). Held at fixed defaults.
+      • `target_modules` — QLoRA paper concludes all-linear always wins.
+    """
+    return HPOSearchSpace(
+        learning_rate=HPOFloatRange(low=1e-5, high=5e-4, log=True),
+        lora_r=HPOCategorical(choices=[8, 16, 32]),
+        lora_alpha=HPOCategorical(choices=[16, 32, 64]),
+        num_train_epochs=HPOIntRange(low=2, high=4),
+        gradient_accumulation_steps=HPOCategorical(choices=[4, 8, 16]),
+    )
+
 if TYPE_CHECKING:  # pragma: no cover
     from optuna import Trial
 
@@ -171,6 +207,7 @@ __all__ = [
     "SampledTrial",
     "sample_config",
     "best_params_to_config",
+    "default_3060_search_space",
     # re-exported for convenience
     "HPOSearchSpace",
     "ManualTrainingConfig",
