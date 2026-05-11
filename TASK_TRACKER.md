@@ -94,6 +94,26 @@
 | P4 | Example client scripts | ✅ | Done — `examples/python_client.py` (argparse + WS streaming) + `examples/quickstart_curl.sh` (jq-driven) |
 | P5 | README API usage examples | ✅ | Done — full curl snippets for 6-step lifecycle + Python walkthrough pointer + ErrorResponse doc |
 
+## Phase 10: RTX 3060 hyperparameter calibration (Session 20)
+
+> Tighten schema bounds + add 3 optional ManualTrainingConfig fields + ship a 3060-tuned HPO preset + service guard against VRAM-unsafe HPO. Phase A done in one session; verified end-to-end on RTX 3070 8GB (below 12GB target → even more conservative test). Branch `feature/training-eval-smoke` (12 commits ahead of `dev`).
+
+| ID | Task | Status | Next Step |
+|----|------|--------|-----------|
+| C1 | Schema bounds calibrated for 3060 12GB (LoRA r ≤128, alpha ≤256, manual batch ≤16, HPO n_trials ≤20, HPO timeout default 14400) | ✅ | Done — `api/schemas/training.py`. Commit `fb564c9` |
+| C2 | 3 optional ManualTrainingConfig fields: `optim`, `packing`, `neftune_noise_alpha` | ✅ | Done — trainer reads from config instead of hard-coding. Commit `fb564c9` |
+| C3 | `LoRAConfig.target_modules` default flipped q/k/v/o → all 7 linear (QLoRA paper) | ✅ | Done — `api/schemas/training.py`. Commit `fb564c9` |
+| C4 | HPO service guard: reject search-space batch choices exceeding safe ceiling for (base_model, max_seq_length) | ✅ | Done — `_max_safe_batch_for_3060` lookup + 422 in `submit_hpo_training_job`. Commit `fb564c9` |
+| C5 | `default_3060_search_space()` factory (5 high-ROI tunables) | ✅ | Done — `ai_engine/hpo/search_spaces.py`. Commit `fb564c9` |
+| C6 | Unit tests for new bounds + preset + guard | ✅ | Done — 29 cases in `tests/unit/test_training_config.py`, 97/97 pass. Commit `fb564c9` |
+| C7 | Runbook docs (3060 sizing table + preset usage + new fields) | ✅ | Done — `training-hpo.md`, `training-manual-lifecycle.md`, `api_docs.md`. Commit `6856a4b` |
+| C8 | End-to-end smoke on real GPU | ✅ | Done — RTX 3070 8GB vast.ai VM: Test A (guard rejection 422), Test B (manual training accepts all 3 new fields), Test C (HPO preset + nested MLflow runs). See WORKING_LOG.md Session 20. |
+| C9 | (carry-over) Cleanup untracked files: PHASE9_SDG_HARDENING_SPEC.md, scripts/session17_*.py, image.png | ⏳ | Decide commit / gitignore / delete in next laptop-only session (no vast.ai cost) |
+| C10 | (carry-over) Open PR `feature/training-eval-smoke` → `dev` | ⏳ | 12 commits ready. Next step after C9 |
+| C11 | (Optional) Expose `default_3060_search_space()` via API: `GET /api/v1/hpo-presets/rtx-3060` | ⏳ | Saves the FE from hand-constructing the JSON |
+
+---
+
 ## Phase 9: Production Hardening (Sessions 12–14 discoveries)
 
 > Bugs surfaced by the vast.ai full-lifecycle smoke test. **All B1–B8 closed.** Session 14 finished the chain on a fresh RTX 5000 Ada VM: training (55 s) → LoRA on MinIO → 770 MB q4_k_m GGUF on MinIO → Ollama register → `POST /api/v1/inference/chat/completions` returns `"Paris."`. `§16 #1–9` of `SWAGGER_GUIDE.md` is green for the first time. Phase 9 is empty.
