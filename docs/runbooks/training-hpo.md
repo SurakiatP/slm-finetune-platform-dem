@@ -538,3 +538,73 @@ POST /api/v1/trainings
 
 - `evaluation.md` — ใช้ `<hpo_artifact_id>` (best-retrain) เทียบ baseline ผ่าน `/evaluations/compare`
 - `model-export-extras.md` — export `<hpo_artifact_id>` เป็น GGUF/SafeTensors เปรียบเทียบกับ manual artifact
+
+---
+
+## 🎯 RTX 3060 12GB sizing table (authoritative reference)
+
+ตารางนี้ใช้เป็น single source of truth ทั้ง FE form defaults และ HPO service guard (`api/services/training_service.py:_max_safe_batch_for_3060`). มี ~20% headroom จาก Unsloth/community benchmarks (QLoRA 4-bit, LoRA r=16, all-linear target_modules).
+
+| base_model (params) | seq=1024 | seq=2048 | seq=4096 | seq=8192 | trial time<br>(3 epochs, 200 rows) |
+|---|---|---|---|---|---|
+| ≤1B (TinyLlama, Llama-3.2-1B, Qwen3-0.6B, Qwen2.5-0.5B) | batch=16 | **batch=8** | batch=4 | batch=2 | ~15-30 min |
+| ≤1.5B (Qwen2.5-1.5B, DeepSeek-R1-1.5B) | batch=8 | **batch=4** | batch=2 | batch=1 | ~30-45 min |
+| ≤2B (SmolLM2-1.7B, Qwen3-1.7B, Gemma2-2B) | batch=4 | **batch=4** | batch=2 | batch=1 | ~45-60 min |
+| ≤3B (Llama-3.2-3B, Qwen2.5-3B) | batch=4 | **batch=2** | batch=1 | batch=1 | ~1.5-3 hr |
+
+**Bold คือค่า default ที่ FE ควร pre-fill เมื่อเลือก base model นั้น** (seq=2048 ครอบคลุม 95% ของ task)
+
+### HPO budget rule of thumb (timeout_seconds=14400 / 4 ชม.)
+
+| Model size | safe n_trials | recommended |
+|---|---|---|
+| ≤1.5B | 8-12 | **8** |
+| 2B | 4-6 | **6** |
+| 3B | 2-3 | **3** |
+
+ถ้าเลย 4 ชม. Optuna `timeout_seconds` จะตัด trial ที่กำลังรันทิ้งและคืน best-so-far.
+
+---
+
+## 🧰 Default 3060 search space (preset)
+
+มี factory function `ai_engine.hpo.search_spaces.default_3060_search_space()` คืน `HPOSearchSpace` ที่ตั้งค่า 5 fields ที่ research แล้วว่าคุ้มค่าจะ tune บน 3060:
+
+```python
+from ai_engine.hpo.search_spaces import default_3060_search_space
+
+# In an HPO request body, send the dict representation:
+search_space = default_3060_search_space().model_dump(mode="json")
+```
+
+ผลลัพธ์ JSON:
+
+```json
+{
+  "learning_rate": {"type": "float", "low": 1e-5, "high": 5e-4, "log": true},
+  "lora_r": {"type": "categorical", "choices": [8, 16, 32]},
+  "lora_alpha": {"type": "categorical", "choices": [16, 32, 64]},
+  "num_train_epochs": {"type": "int", "low": 2, "high": 4, "step": 1, "log": false},
+  "gradient_accumulation_steps": {"type": "categorical", "choices": [4, 8, 16]}
+}
+```
+
+FE สามารถ deep-link ตัวอย่างนี้เข้าฟอร์มเป็น "Recommended for RTX 3060" preset, ให้ user override ที่ละ field ได้.
+
+---
+
+## 🚨 HPO safety guard — VRAM-unsafe batch rejected at submit time
+
+ถ้าใส่ `per_device_train_batch_size` เข้า `search_space` และมีค่าที่เกิน safe ceiling สำหรับ (base_model, max_seq_length) ที่เลือก → service จะ reject ก่อน enqueue Celery ด้วย **HTTP 422**:
+
+```
+hpo_config.search_space.per_device_train_batch_size choices [8] exceed the
+safe ceiling (2) for base_model='unsloth/Llama-3.2-3B-Instruct-bnb-4bit'
+(3.21B params) at max_seq_length=2048 on RTX 3060 12GB. Lower the choices
+or shorten max_seq_length.
+```
+
+วิธีหลีกเลี่ยง:
+1. (แนะนำ) **ห้าม tune `per_device_train_batch_size` ใน HPO** — fix ใน `fixed_config` แทน, ใช้ table ด้านบน
+2. ลด `fixed_config.max_seq_length` ลง (1024 → batch ได้ใหญ่ขึ้น)
+3. เปลี่ยน base model เป็นเล็กกว่า

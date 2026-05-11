@@ -439,12 +439,23 @@ Trigger fine-tuning. **Async** — 202. Discriminated by `mode`:
   "base_model": "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
   "training_name": "qa-smoke",
   "manual_config": {
-    "num_train_epochs": 1,
-    "per_device_train_batch_size": 1,
-    "gradient_accumulation_steps": 1,
+    "num_train_epochs": 3,
+    "per_device_train_batch_size": 2,         // ≤16; 3060 ceiling depends on (model_size, seq_len)
+    "gradient_accumulation_steps": 8,         // default raised from 4 (eff batch 16)
     "learning_rate": 2e-4,
-    "max_seq_length": 512,
-    "lora": { "r": 8, "alpha": 16, "dropout": 0.05 }
+    "max_seq_length": 2048,
+    "optim": "adamw_8bit",                    // adamw_8bit | paged_adamw_8bit | adamw_torch
+    "packing": false,                         // optional, default false
+    "neftune_noise_alpha": null,              // optional, 0–15 or null (off)
+    "lora": {
+      "r": 16,                                // ≤128; default 16
+      "alpha": 32,                            // ≤256; commonly 2*r
+      "dropout": 0.05,
+      "target_modules": [
+        "q_proj","k_proj","v_proj","o_proj",
+        "gate_proj","up_proj","down_proj"
+      ]                                       // default = all 7 linear (QLoRA paper)
+    }
   }
 }
 ```
@@ -458,24 +469,30 @@ Trigger fine-tuning. **Async** — 202. Discriminated by `mode`:
   "base_model": "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
   "training_name": "hpo-search-1",
   "hpo_config": {
-    "n_trials": 5,                          // ≥ 2
+    "n_trials": 6,                            // ≥ 2, ≤ 20 (3060 calibration)
     "objective_metric": "eval_loss",
     "direction": "minimize",
-    "sampler": "tpe",                       // tpe | random
-    "pruner": "median",                     // median | none
-    "timeout_seconds": 1800,
+    "sampler": "tpe",                         // tpe | random
+    "pruner": "median",                       // median | none
+    "timeout_seconds": 14400,                 // default 4h; pass null to opt out
     "search_space": {
       "learning_rate": { "type": "float", "low": 1e-5, "high": 5e-4, "log": true },
-      "lora_r": { "type": "categorical", "choices": [8, 16, 32] }
+      "lora_r": { "type": "categorical", "choices": [8, 16, 32] },
+      "lora_alpha": { "type": "categorical", "choices": [16, 32, 64] },
+      "num_train_epochs": { "type": "int", "low": 2, "high": 4 },
+      "gradient_accumulation_steps": { "type": "categorical", "choices": [4, 8, 16] }
     },
     "fixed_config": {
-      "num_train_epochs": 2,
-      "per_device_train_batch_size": 1,
-      "max_seq_length": 512
+      "per_device_train_batch_size": 2,
+      "max_seq_length": 2048
     }
   }
 }
 ```
+
+> 💡 **Recommended HPO preset for RTX 3060**: the `search_space` above mirrors `ai_engine.hpo.search_spaces.default_3060_search_space()` — 5 hyperparameters with the highest tuning ROI on 12GB VRAM (see `training-hpo.md` § "Default 3060 search space"). FE can deep-link this as the "RTX 3060 Recommended" preset.
+>
+> 🚨 **HPO safety guard**: do NOT include `per_device_train_batch_size` in `search_space` for 3B base models — the service rejects with HTTP 422 if any choice exceeds the per-(model, seq) safe ceiling (see `training-hpo.md` § "RTX 3060 sizing table"). Tune VRAM-free knobs (`learning_rate`, `lora_r`, `gradient_accumulation_steps`) instead.
 
 **Response 202:**
 ```json

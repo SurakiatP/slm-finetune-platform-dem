@@ -687,11 +687,59 @@ DELETE /api/v1/projects/<project_id>
 
 ---
 
+## 🆕 Optional fields ที่เพิ่มเข้ามาใน Session 20
+
+`ManualTrainingConfig` รับ 3 ฟิลด์เพิ่มเติม — default ทำงานได้ปกติโดยไม่ต้องส่ง แต่ user สามารถ override ได้:
+
+| Field | Default | ตัวเลือก | เมื่อไหร่ควรใช้ |
+|---|---|---|---|
+| `optim` | `adamw_8bit` | `adamw_8bit` / `paged_adamw_8bit` / `adamw_torch` | `paged_adamw_8bit` เมื่อ VRAM ตึง (3B + seq=4096); `adamw_torch` ถ้าต้องการ reference numerics |
+| `packing` | `false` | bool | `true` ถ้า dataset rows สั้น ๆ จำนวนมาก (>5000 rows, avg <256 tokens) เพื่อลด padding waste |
+| `neftune_noise_alpha` | `null` (off) | `0–15.0` หรือ `null` | ลอง `5.0` ถ้าต้องการ AlpacaEval boost (NEFTune paper) |
+
+ตัวอย่าง request body ที่ใช้ทุก field:
+
+```json
+{
+  "mode": "manual",
+  "project_id": "<project_id>",
+  "dataset_id": "<dataset_id>",
+  "base_model": "unsloth/Llama-3.2-3B-Instruct-bnb-4bit",
+  "training_name": "qa-policy-neftune",
+  "manual_config": {
+    "learning_rate": 2e-4,
+    "num_train_epochs": 3,
+    "per_device_train_batch_size": 2,
+    "gradient_accumulation_steps": 8,
+    "max_seq_length": 2048,
+    "optim": "paged_adamw_8bit",
+    "packing": false,
+    "neftune_noise_alpha": 5.0,
+    "lora": {
+      "r": 16,
+      "alpha": 32,
+      "dropout": 0.05,
+      "target_modules": [
+        "q_proj","k_proj","v_proj","o_proj",
+        "gate_proj","up_proj","down_proj"
+      ]
+    }
+  }
+}
+```
+
+> 💡 **3060 batch ceiling**: ตาราง sizing อยู่ใน `training-hpo.md` ภายใต้หัวข้อ "RTX 3060 12GB sizing table" — ใช้ ref เดียวกันสำหรับ manual + HPO
+
+---
+
 ## Troubleshooting
 
 | อาการ | สาเหตุที่เป็นไปได้ | แก้ |
 |-------|------------------|-----|
-| Task 3 → 422 `lora.r out of range` | LoRA r > 256 | ใช้ r=8/16/32 |
+| Task 3 → 422 `lora.r out of range` | LoRA r > 128 (เดิม cap 256, ลดเป็น 128 เพื่อ 3060) | ใช้ r=8/16/32 |
+| Task 3 → 422 `per_device_train_batch_size out of range` | batch > 16 (เดิม cap 64, ลดเป็น 16) | ใช้ batch ≤8 (≤1.5B) หรือ ≤2 (3B) ตามตาราง `training-hpo.md` |
+| Task 3 → 422 `optim` unknown | ส่งค่าอื่นนอกจาก `adamw_8bit` / `paged_adamw_8bit` / `adamw_torch` | ใช้หนึ่งใน 3 ตัวนี้ |
+| Task 5 ใน MLflow Params tab ไม่เห็น `neftune_noise_alpha` | user ไม่ได้ส่ง (default = None) | ปกติ — null = ไม่เปิด NEFTune |
 | Task 4 stuck `pending` > 30s | Celery worker ไม่ได้รัน / queue เต็ม | `docker compose ps worker` + `docker compose logs worker` |
 | Task 4 → `failed` + `error_message="Unsloth cannot find any torch accelerator"` | Worker GPU mount stale (per MT.I1 Session 18) | `docker compose up -d --force-recreate worker` |
 | Task 4 → `failed` + `<EOS_TOKEN>` error | Unsloth import order / chat template (per B5 Session 13) | regression — เช็ค `ai_engine/training/unsloth_trainer.py` |
