@@ -40,7 +40,7 @@ log = logging.getLogger(__name__)
 _CHAT_TEMPLATE_BY_PREFIX: tuple[tuple[str, str], ...] = (
     ("unsloth/llama-3.2", "llama-3.2"),
     ("unsloth/qwen2.5", "chatml"),
-    ("unsloth/gemma-2", "gemma-2"),
+    ("unsloth/gemma-2", "gemma2"),
 )
 
 
