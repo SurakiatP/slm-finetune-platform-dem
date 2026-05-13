@@ -450,9 +450,9 @@ def main() -> None:
     log(f"START  task={args.task}  num={args.num}  holdout={args.holdout}")
 
     # Pre-flight: API up?
-    code, h = http("GET", "/../healthz")  # /healthz lives outside /api/v1
+    code, h = http("GET", "/../health")  # /health lives outside /api/v1
     if code != 200:
-        log("API healthz FAILED — is the stack up?", code, h)
+        log("API health FAILED — is the stack up?", code, h)
         return
 
     state = load_state()
