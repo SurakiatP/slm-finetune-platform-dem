@@ -1,0 +1,21 @@
+{
+  "sdg_mode": "description_only",
+  "project_id": "72a16799-431f-4858-9933-10b55c01f453",
+  "task_type": "tool_calling",
+  "task_description": "Translate a user's natural-language instruction into a single JSON tool call. Inputs cover everyday home/office assistant tasks: weather lookups, email composition, web search, timers, calendar events, stock prices, translation, and arithmetic. Outputs must always be valid JSON matching one of the provided tool definitions exactly.",
+  "num_samples": 100,
+  "temperature": 0.9,
+  "dataset_name": "tool-calling-test-100-holdout",
+  "tool_calling_config": {
+    "tool_definitions": [
+      {"name": "get_weather", "description": "Look up the current weather for a city.", "parameters": {"location": {"type": "string", "required": true, "description": "City and country, e.g. 'Bangkok, Thailand'"}, "units": {"type": "string", "required": false, "description": "'metric' or 'imperial' (default metric)"}}},
+      {"name": "send_email", "description": "Send an email to one recipient.", "parameters": {"to": {"type": "string", "required": true}, "subject": {"type": "string", "required": true}, "body": {"type": "string", "required": true}}},
+      {"name": "search_web", "description": "Run a web search and return top results.", "parameters": {"query": {"type": "string", "required": true}, "num_results": {"type": "integer", "required": false}}},
+      {"name": "set_timer", "description": "Set a countdown timer in seconds.", "parameters": {"duration_seconds": {"type": "integer", "required": true}, "label": {"type": "string", "required": false}}},
+      {"name": "create_calendar_event", "description": "Add an event to the calendar.", "parameters": {"title": {"type": "string", "required": true}, "start_time": {"type": "string", "required": true, "description": "ISO-8601, e.g. 2026-01-30T15:00:00Z"}, "duration_minutes": {"type": "integer", "required": true}}},
+      {"name": "get_stock_price", "description": "Look up the latest stock price.", "parameters": {"ticker": {"type": "string", "required": true, "description": "Stock symbol, e.g. 'AAPL'"}}},
+      {"name": "translate_text", "description": "Translate text into a target language.", "parameters": {"text": {"type": "string", "required": true}, "target_language": {"type": "string", "required": true, "description": "ISO-639-1, e.g. 'th', 'en', 'ja'"}}},
+      {"name": "calculate", "description": "Evaluate an arithmetic expression.", "parameters": {"expression": {"type": "string", "required": true, "description": "e.g. '(12 + 3) * 4'"}}}
+    ]
+  }
+}
