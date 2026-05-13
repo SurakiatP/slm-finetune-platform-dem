@@ -212,24 +212,28 @@ def run_task_type(task: str, num: int, holdout: int, state: dict) -> None:
 
     parent_id = entry["parent_dataset_id"]
 
-    if entry.get("sdg_status") not in ("ready", "completed"):
+    if not entry.get("parent_metadata", {}).get("completed_at"):
         def get_parent():
             c, d = http("GET", f"/datasets/{parent_id}")
             return d if c == 200 else None
 
+        # SDG done = generation_metadata.completed_at is set (storage_uri also non-null).
+        # DatasetResponse has no `status` field — completion is signalled by metadata.
+        def _is_done(d):
+            if not d:
+                return False
+            md = d.get("generation_metadata") or {}
+            return bool(md.get("completed_at"))
+
         ds = wait_until(
-            get_parent,
-            lambda d: bool(d) and d.get("status") in ("ready", "completed", "failed"),
-            f"SDG {task}",
-            timeout_s=1800,
-            interval_s=15,
+            get_parent, _is_done, f"SDG {task}", timeout_s=1800, interval_s=10
         )
-        if not ds or ds.get("status") not in ("ready", "completed"):
+        if not ds or not _is_done(ds):
             entry["sdg_final"] = ds
             log("  SDG did not complete:", ds)
             save_state(state)
             return
-        entry["sdg_status"] = ds.get("status")
+        entry["sdg_status"] = "completed"
         entry["parent_num_samples"] = ds.get("num_samples")
         entry["parent_metadata"] = ds.get("generation_metadata") or {}
         log("  SDG done — parent_num_samples =", entry["parent_num_samples"])
