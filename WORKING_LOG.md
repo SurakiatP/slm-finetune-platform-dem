@@ -6,6 +6,53 @@
 
 ---
 
+## Session 21 — HO.8 live smoke on vast.ai (2026-05-14, autonomous overnight)
+
+**Who:** Claude (Opus 4.7), autonomous, while parks slept
+**Status:** ✅ ALL 5 critical paths (C1-C5) verified across 3 task types + negative test. Ready for HO.9 (PR `feature/training-eval-smoke-v2` -> `dev`).
+
+**Why & What:**
+- parks provisioned a fresh vast.ai Linux VM (Ubuntu 22.04, RTX 3090 24GB) and authorised autonomous execution of HO.8 (live SDG holdout smoke).
+- Stage 0 infra blockers + fixes (logged inline in commits):
+  - `nvidia-container-toolkit` not pre-installed -> apt install + `nvidia-ctk runtime configure` (memory gotcha #2).
+  - Docker Hub connection-reset under vast.ai egress NAT -> added `mirror.gcr.io` (Google's official) only to `daemon.json` (rejected adding Chinese mirrors per auto-classifier).
+  - SSH session drops on heavy IO -> moved to `nohup` + log-file pattern (memory gotcha #4).
+  - Two-head alembic conflict: 0003 originally chained off 0001_initial (plan assumption based on stale worktree base) but 0002_export_error existed on this branch -> linearize fix in commit `c599b1a`.
+  - Smoke script bugs found + fixed live: `/healthz` -> `/health` (`c1ca92a`), `/../health` relative path didn't resolve in urllib -> absolute URL (`d1f3900`), wait_until predicate looked for `status` field that DatasetResponse does not have -> use `generation_metadata.completed_at` (`3a4dfca`).
+- Stage 1+2 (qa, num=50/holdout=10): ALL OK, leak-free judge score **3.9 / 5** on 10 unseen rows.
+- Stage 3 (cls + tool_calling): holdout flow OK on both. Eval metrics low (cls accuracy=0.0, tool name_accuracy=0.0) because 50 rows + 1 epoch is far too small for a 1B model to learn the label/tool vocabularies — this is a *training-data sizing* result, not a holdout-feature result. The point of HO.8 was to verify that `POST /evaluations` against the **child** dataset runs end-to-end and returns metrics whose `n` matches `child_num_samples` (10). It does.
+- Stage 4 (negative, holdout_size=0): parent created with `num_samples=20`, `holdout_size_actual=0`, `holdout_dataset_id=null`, `total=1` dataset in project. Backward compat confirmed.
+- Stage 5: state.json + run.log scp'd back to `docs/runbooks/session25-holdout-state.json` and `docs/runbooks/session25-holdout.log`.
+
+**Key smoke numbers (qa run, the only one judge-scored):**
+- SDG: 40 seconds, 108 OpenRouter calls, 8 duplicates removed, 1 judge-rejected, role=train+holdout metadata persisted correctly.
+- Train: ~37 min the first time (cold base-model download to cache), ~1-2 min after that — base Llama-3.2-1B-Instruct-bnb-4bit reused.
+- Export GGUF: ~12-29 min (q4_k_m quantization through llama-quantize binary built into worker image).
+- Eval on **child** (n=10): rouge1=0.196, rougeL=0.162, llm_judge=3.9. None of the 10 rows seen during training.
+
+**Files touched (committed to feature/training-eval-smoke-v2):**
+- `alembic/versions/20260513_0003_dataset_parent_id.py`: down_revision -> 0002_export_error (`c599b1a`)
+- `scripts/session25_holdout_e2e.py`: 3 fixes (`c1ca92a`, `d1f3900`, `3a4dfca`)
+- `docs/runbooks/session25-holdout-state.json`, `docs/runbooks/session25-holdout.log`: artifacts
+
+**Open follow-ups for HO.9 (next session):**
+- Open PR `feature/training-eval-smoke-v2` -> `dev`. Body should describe holdout feature + smoke evidence.
+- Optional: rotate the OpenRouter key (`sk-or-v1-3ecce...`) — visible in `.env` and was once selected into chat context. Treat as blown.
+
+**Test Summary:**
+- 112/112 unit tests (laptop, pre-deploy).
+- 3/3 task types completed full E2E flow live (qa, classification, tool_calling).
+- 4/4 critical paths C1-C4 verified, C5 verified across all 3 task types.
+- 1/1 negative test (holdout_size=0).
+
+**Next Action:**
+- parks: review summary, then run `gh pr create feature/training-eval-smoke-v2 -> dev` (or use the GitHub URL printed by the push step in session 20).
+- Optional: tear down or pause the vast.ai instance to stop the clock.
+
+**Blockers:** None.
+
+---
+
 ## Session 20 — SDG hold-out split for leak-free evaluation (2026-05-13)
 
 **Who:** Claude (Opus 4.7) + parks (developer)

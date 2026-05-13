@@ -1,0 +1,77 @@
+[18:26:28] START  task=qa  num=50  holdout=10
+[18:26:28] ============================================================
+[18:26:28] TASK_TYPE=qa  num=50  holdout=10
+[18:26:28] ============================================================
+[18:26:28]   project_id = 5bcfe3c3-e09d-43ac-a40c-10e9ad1ec0be
+[18:26:30]   SDG submitted parent = 72c29849-c72a-43e7-b1f3-853616995691 job = 2192f702-fea5-42be-96dd-1a33e312d126
+[18:56:32] TIMEOUT [SDG qa] after 1800s; last={'id': '72c29849-c72a-43e7-b1f3-853616995691', 'project_id': '5bcfe3c3-e09d-43ac-a40c-10e9ad1ec0be', 'parent_dataset_id': None, 'name': 'sdg-20260513-182628', 'task_type': 'qa', 'source': 'sdg', 'num_samples': 50, 'storage_uri': 's3://datasets/sdg/72c29849-c72a-43e7-b1f3-853616995691.jsonl', 'size_bytes': 14380, 'generation_metadata': {'role': 'train', 'sdg_mode': 'description_only', 'api_calls': 108, 'temperature': 0.9, 'completed_at': '2026-05-13T18:27:09.305538+00:00', 'submitted_at': '2026-05-13T18:26:28.959605+00:00', 'celery_task_id': '2192f702-fea5-42be-96dd-1a33e312d126', 'rejected_count': 0, 'duplicate_count': 8, 'task_description': 'Answer general-knowledge questions concisely (1-3 sentences). Questions cover everyday topics: geography, history, basic science, common technology.', 'requested_samples': 50, 'holdout_dataset_id': 'd30614ae-3c3c-4d66-bf27-b7c846245dec', 'holdout_size_actual': 10, 'judge_parse_failures': 0, 'judge_rejected_count': 1, 'holdout_size_requested': 10}, 'created_at': '2026-05-13T18:26:28.958396Z', 'updated_at': '2026-05-13T18:27:09.298977Z'}
+[18:56:32]   SDG did not complete: {'id': '72c29849-c72a-43e7-b1f3-853616995691', 'project_id': '5bcfe3c3-e09d-43ac-a40c-10e9ad1ec0be', 'parent_dataset_id': None, 'name': 'sdg-20260513-182628', 'task_type': 'qa', 'source': 'sdg', 'num_samples': 50, 'storage_uri': 's3://datasets/sdg/72c29849-c72a-43e7-b1f3-853616995691.jsonl', 'size_bytes': 14380, 'generation_metadata': {'role': 'train', 'sdg_mode': 'description_only', 'api_calls': 108, 'temperature': 0.9, 'completed_at': '2026-05-13T18:27:09.305538+00:00', 'submitted_at': '2026-05-13T18:26:28.959605+00:00', 'celery_task_id': '2192f702-fea5-42be-96dd-1a33e312d126', 'rejected_count': 0, 'duplicate_count': 8, 'task_description': 'Answer general-knowledge questions concisely (1-3 sentences). Questions cover everyday topics: geography, history, basic science, common technology.', 'requested_samples': 50, 'holdout_dataset_id': 'd30614ae-3c3c-4d66-bf27-b7c846245dec', 'holdout_size_actual': 10, 'judge_parse_failures': 0, 'judge_rejected_count': 1, 'holdout_size_requested': 10}, 'created_at': '2026-05-13T18:26:28.958396Z', 'updated_at': '2026-05-13T18:27:09.298977Z'}
+[18:56:32] ============================================================
+[18:56:32] SUMMARY
+[18:56:32] ============================================================
+[18:56:32]   qa              sdg=X  holdout=X(-)  train=X  export=X  eval=X  judge=-
+[18:56:32] === DONE ===
+[18:58:27] START  task=qa  num=50  holdout=10
+[18:58:27] ============================================================
+[18:58:27] TASK_TYPE=qa  num=50  holdout=10
+[18:58:27] ============================================================
+[18:58:27]   SDG done — parent_num_samples = 50
+[18:58:27]   child_dataset_id = d30614ae-3c3c-4d66-bf27-b7c846245dec
+[18:58:27]   child num_samples = 10 parent_link = 72c29849-c72a-43e7-b1f3-853616995691
+[18:58:28]   training_id = 01710537-7b0b-43bd-9e08-5afb4734925b
+[19:35:51]   TRAIN completed err= None
+[19:35:51]   artifact_id = ee0e0956-ba4a-4da7-8af0-fdf83c1bd6a3
+[19:35:51]   export_job_id = bfd99f14-c1fb-48ee-add5-0b35ae9df534
+[19:49:38]   EXPORT gguf_uri = s3://models/exports/ee0e0956-ba4a-4da7-8af0-fdf83c1bd6a3/gguf tag = slm/ee0e0956
+[19:49:38]   eval_id = 6aca6324-f59c-4c6d-ac4f-d7878a06dd36
+[19:51:38]   EVAL completed metrics = {'n': 10, 'bleu': 0.02142099669471226, 'rouge1': 0.19618558971963349, 'rouge2': 0.10182951112009384, 'rougeL': 0.16181128360610403, 'exact_match': 0.0, 'llm_judge_skipped_rows': 0} judge = 3.9
+[19:51:38] ============================================================
+[19:51:38] SUMMARY
+[19:51:38] ============================================================
+[19:51:38]   qa              sdg=OK  holdout=OK(10)  train=OK  export=OK  eval=OK  judge=3.9
+[19:51:38] === DONE ===
+[19:52:23] START  task=classification  num=50  holdout=10
+[19:52:23] ============================================================
+[19:52:23] TASK_TYPE=classification  num=50  holdout=10
+[19:52:23] ============================================================
+[19:52:23]   project_id = 4df479ef-163b-4b87-bf0e-1b86b75f1c62
+[19:52:23]   SDG submitted parent = 50b76cf6-6121-4eb3-8f82-1af66f7b470e job = 5cf534a9-e679-4aa2-b82e-04d61cf90357
+[19:52:43]   SDG done — parent_num_samples = 50
+[19:52:43]   child_dataset_id = 09323c06-0186-49fa-8ceb-452167702f08
+[19:52:43]   child num_samples = 10 parent_link = 50b76cf6-6121-4eb3-8f82-1af66f7b470e
+[19:52:43]   training_id = a2d7a54a-9a61-4dae-bea9-4f87bc9fdca4
+[19:54:23]   TRAIN completed err= None
+[19:54:23]   artifact_id = e38f9b17-85d3-4efc-b0d9-c65a3d6a5571
+[19:54:23]   export_job_id = 9828268b-bac6-40cc-8b3c-0cec08ed7ec5
+[20:06:10]   EXPORT gguf_uri = s3://models/exports/e38f9b17-85d3-4efc-b0d9-c65a3d6a5571/gguf tag = slm/e38f9b17
+[20:06:10]   eval_id = 5a111b1a-f26d-4eb5-9301-7b6fcfdb9640
+[20:06:40]   EVAL completed metrics = {'n': 10, 'labels': ['account', 'billing', 'general', 'shipping', 'technical', 'unknown'], 'accuracy': 0.0, 'f1_macro': 0.0, 'f1_per_label': {'account': 0.0, 'billing': 0.0, 'general': 0.0, 'unknown': 0.0, 'shipping': 0.0, 'technical': 0.0}, 'confusion_matrix': [[0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]], 'out_of_set_predictions': 10} judge = None
+[20:06:40] ============================================================
+[20:06:40] SUMMARY
+[20:06:40] ============================================================
+[20:06:40]   qa              sdg=OK  holdout=OK(10)  train=OK  export=OK  eval=OK  judge=3.9
+[20:06:40]   classification  sdg=OK  holdout=OK(10)  train=OK  export=OK  eval=OK  judge=None
+[20:06:40] === DONE ===
+[20:07:22] START  task=tool_calling  num=50  holdout=10
+[20:07:22] ============================================================
+[20:07:22] TASK_TYPE=tool_calling  num=50  holdout=10
+[20:07:22] ============================================================
+[20:07:22]   project_id = 465c91fd-8bfd-4cc0-ab09-b3707fc6a8c6
+[20:07:22]   SDG submitted parent = a5b919d1-e564-483a-91e7-473362828bc1 job = 8bb7973e-08d1-48a5-a6e2-241e089ad9b9
+[20:08:02]   SDG done — parent_num_samples = 50
+[20:08:02]   child_dataset_id = 1960528c-a62a-420e-a29f-9db43ded65d4
+[20:08:02]   child num_samples = 10 parent_link = a5b919d1-e564-483a-91e7-473362828bc1
+[20:08:02]   training_id = 0b1470a6-6964-4f15-98ca-b97bb4e8cedb
+[20:09:22]   TRAIN completed err= None
+[20:09:22]   artifact_id = 70956d31-89ef-4fcc-89d0-95cb2d4b87aa
+[20:09:22]   export_job_id = df6838fd-7dc2-4b80-aed6-f9221f9ff78b
+[20:38:25]   EXPORT gguf_uri = s3://models/exports/70956d31-89ef-4fcc-89d0-95cb2d4b87aa/gguf tag = slm/70956d31
+[20:38:25]   eval_id = 088478e5-75b0-406b-938a-2540b4dec78f
+[20:39:10]   EVAL completed metrics = {'n': 10, 'exact_match': 0.0, 'arg_accuracy': 0.0, 'json_validity': 0.0, 'name_accuracy': 0.0, 'llm_judge_skipped_rows': 0} judge = 1.0
+[20:39:10] ============================================================
+[20:39:10] SUMMARY
+[20:39:10] ============================================================
+[20:39:10]   qa              sdg=OK  holdout=OK(10)  train=OK  export=OK  eval=OK  judge=3.9
+[20:39:10]   classification  sdg=OK  holdout=OK(10)  train=OK  export=OK  eval=OK  judge=None
+[20:39:10]   tool_calling    sdg=OK  holdout=OK(10)  train=OK  export=OK  eval=OK  judge=1.0
+[20:39:10] === DONE ===

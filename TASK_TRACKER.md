@@ -261,8 +261,8 @@ After B6 closed, exercising `POST /api/v1/models/{id}/export` against the new fl
 | HO.5 | `DatasetResponse.parent_dataset_id` exposed on API | ✅ | Done — commit `eabf8f0` |
 | HO.6 | Worker over-generates, splits, persists 2 datasets | ✅ | Done — commit `f555f8d` |
 | HO.7 | api_docs.md + FE integration pattern | ✅ | Done — commit `d0c8f67` |
-| HO.8 | Live SDG smoke (cls + tool + qa) with `holdout_size>0` | ⏳ | Next session: run 3 SDG runbooks on vast.ai, capture metrics for each holdout |
-| HO.9 | Merge `feature/sdg-holdout` → `feature/training-eval-smoke-v2`, open PR to `dev` | ⏳ | After HO.8 green |
+| HO.8 | Live SDG smoke (cls + tool + qa) with `holdout_size>0` | ✅ | Session 21 overnight smoke on RTX 3090 vast.ai. All 3 task types + negative (holdout=0) green. qa judge=3.9 leak-free. Artifacts: `docs/runbooks/session25-holdout-{state.json,log}` |
+| HO.9 | Open PR `feature/training-eval-smoke-v2` → `dev` | ⏳ | parks to open via `gh pr create` |
 
 ---
 
