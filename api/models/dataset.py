@@ -49,7 +49,26 @@ class Dataset(Base, TimestampMixin):
         nullable=True,
         doc="SDG context (teacher_model, sdg_mode, num_invalid_rows, ...) when source=sdg.",
     )
+    parent_dataset_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("datasets.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        doc=(
+            "If set, this is a holdout child of parent_dataset_id (SDG over-"
+            "generation). `generation_metadata.role` carries 'train'|'holdout'."
+        ),
+    )
 
     project: Mapped["Project"] = relationship(back_populates="datasets")
     training_jobs: Mapped[list["TrainingJob"]] = relationship(back_populates="dataset")
     evaluation_runs: Mapped[list["EvaluationRun"]] = relationship(back_populates="dataset")
+    parent: Mapped["Dataset | None"] = relationship(
+        "Dataset",
+        remote_side="Dataset.id",
+        back_populates="holdout_children",
+    )
+    holdout_children: Mapped[list["Dataset"]] = relationship(
+        "Dataset",
+        back_populates="parent",
+        cascade="all, delete-orphan",
+    )
