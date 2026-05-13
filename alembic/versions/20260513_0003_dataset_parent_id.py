@@ -1,7 +1,7 @@
 """add datasets.parent_dataset_id for SDG holdout child datasets
 
 Revision ID: 0003_dataset_parent_id
-Revises: 0001_initial
+Revises: 0002_export_error
 Create Date: 2026-05-13
 """
 
@@ -14,7 +14,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0003_dataset_parent_id"
-down_revision: str | None = "0001_initial"
+down_revision: str | None = "0002_export_error"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
