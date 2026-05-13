@@ -83,6 +83,17 @@ class _SDGRequestBase(BaseModel):
         le=10_000,
         description="How many synthetic rows to generate.",
     )
+    holdout_size: int = Field(
+        default=100,
+        ge=0,
+        le=2_000,
+        description=(
+            "Extra rows generated beyond `num_samples`, persisted as a separate "
+            "child Dataset (linked via parent_dataset_id) for hold-out evaluation. "
+            "Set to 0 to disable. Stratified by label (classification) / tool "
+            "name (tool_calling); random for QA."
+        ),
+    )
     temperature: float = Field(default=0.9, ge=0.0, le=2.0)
     dataset_name: str | None = Field(
         default=None,
@@ -107,6 +118,7 @@ class SDGRequestWithSeed(_SDGRequestBase):
                     "task_type": "qa",
                     "task_description": "Answer questions about our 30-day return policy",
                     "num_samples": 200,
+                    "holdout_size": 50,
                     "temperature": 0.9,
                     "seed_dataset_id": "00000000-0000-0000-0000-000000000099",
                 }
@@ -140,6 +152,7 @@ class SDGRequestDescriptionOnly(_SDGRequestBase):
                     "task_type": "classification",
                     "task_description": "Classify customer support tickets",
                     "num_samples": 500,
+                    "holdout_size": 100,
                     "temperature": 0.9,
                     "classification_config": {
                         "labels": ["billing", "technical", "general"]
@@ -151,6 +164,7 @@ class SDGRequestDescriptionOnly(_SDGRequestBase):
                     "task_type": "tool_calling",
                     "task_description": "Translate kitchen instructions into JSON tool calls",
                     "num_samples": 300,
+                    "holdout_size": 100,
                     "tool_calling_config": {
                         "tool_definitions": [
                             {
