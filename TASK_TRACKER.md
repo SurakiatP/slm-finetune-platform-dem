@@ -246,6 +246,26 @@ After B6 closed, exercising `POST /api/v1/models/{id}/export` against the new fl
 
 ---
 
+## Phase 11 — SDG Hold-out for Leak-Free Evaluation (Session 20+)
+
+> Branch: `feature/sdg-holdout` (from `feature/training-eval-smoke-v2`). Adds
+> over-generation + train/holdout split so `POST /evaluations` can run against
+> rows the trained model never saw.
+
+| ID | Task | Status | Next Step |
+|----|------|--------|-----------|
+| HO.1 | `holdout_split.py` + 9 unit tests | ✅ | Done — commit `4287b8a` |
+| HO.2 | `SDGRequest.holdout_size` field + 6 unit tests | ✅ | Done — commit `f2d3c32` |
+| HO.3 | Alembic migration `0003_dataset_parent_id` | ✅ | Done — commit `44691ed`. `down_revision="0001_initial"` (not `0002_export_error` as plan assumed) |
+| HO.4 | `Dataset.parent_dataset_id` ORM + self-relationship | ✅ | Done — commit `504ead2` |
+| HO.5 | `DatasetResponse.parent_dataset_id` exposed on API | ✅ | Done — commit `eabf8f0` |
+| HO.6 | Worker over-generates, splits, persists 2 datasets | ✅ | Done — commit `f555f8d` |
+| HO.7 | api_docs.md + FE integration pattern | ✅ | Done — commit `d0c8f67` |
+| HO.8 | Live SDG smoke (cls + tool + qa) with `holdout_size>0` | ⏳ | Next session: run 3 SDG runbooks on vast.ai, capture metrics for each holdout |
+| HO.9 | Merge `feature/sdg-holdout` → `feature/training-eval-smoke-v2`, open PR to `dev` | ⏳ | After HO.8 green |
+
+---
+
 ## Out of Scope (do NOT build)
 
 - ❌ Authentication / user management

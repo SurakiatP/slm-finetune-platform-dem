@@ -6,6 +6,40 @@
 
 ---
 
+## Session 20 — SDG hold-out split for leak-free evaluation (2026-05-13)
+
+**Who:** Claude (Opus 4.7) + parks (developer)
+**Status:** ✅ Feature `feature/sdg-holdout` ready for review. 7 commits on top of `feature/training-eval-smoke-v2`. 112 unit tests passing (15 new + 97 existing, zero regressions).
+
+**Why & What:**
+- During the "how does LLM judge work?" walkthrough we noted that the default UX has users pointing `POST /evaluations` at the same dataset they trained on — guaranteed leakage since Unsloth also internally eval-splits 10% from that set, and the judge sees `expected` answers directly.
+- Designed an over-generation flow: SDG generates `num_samples + holdout_size` rows in a single run; result is split into train (saved to parent dataset) and holdout (saved as a new child Dataset with `parent_dataset_id` set). Stratified by label / tool name for cls + tool, random for QA. Dedup happens before the split (Phase 9 MinHashLSH path is untouched), so near-dup train→holdout leakage is prevented.
+- `holdout_size` is a request field defaulting to 100; `0` disables to preserve the option of single-dataset workflows.
+- Execution method: subagent-driven-development with parallel wave 1 (Tasks 1,2,3,4,5,7 dispatched simultaneously in 6 isolated git worktrees, each agent doing TDD where applicable). Wave 1 worktrees were based off the pre-feature-branch HEAD (`d680572`) which caused cherry-pick conflicts against Phase 9 hardening commits already on `feature/sdg-holdout`. Cleaned up by cherry-picking the new-file-only commits (Tasks 1, 3) and applying the modify-existing-file changes manually via Edit (Tasks 2, 4, 5). Task 7 was re-dispatched as a single agent doing 4 surgical edits on the existing 1216-line `api_docs.md`. Wave 2 (Task 6) and Wave 3 (Task 8) ran sequentially as planned.
+
+**Files touched:**
+- New: `ai_engine/data_gen/holdout_split.py`, `tests/unit/test_holdout_split.py`, `tests/unit/test_sdg_schema.py`, `alembic/versions/20260513_0003_dataset_parent_id.py`
+- Modified: `api/models/dataset.py`, `api/schemas/sdg.py`, `api/schemas/datasets.py`, `workers/tasks/data_generation.py`, `docs/runbooks/api_docs.md`
+
+**Test Summary:**
+- 9 unit tests on `split_rows` — all green (cls stratified, tool stratified, qa random, edge cases: 0, > total, empty, deterministic seed)
+- 6 unit tests on `SDGRequest.holdout_size` field — all green
+- Full `pytest tests/unit -q` — 112 passed, 0 regressions
+- `python -m py_compile workers/tasks/data_generation.py` — clean
+- ORM smoke test: `Dataset.__table__.columns` includes `parent_dataset_id`
+- Live SDG smoke not yet run (next session: run the 3 task-specific SDG runbooks against vast.ai with `holdout_size=20` to verify end-to-end)
+
+**Migration note:**
+- New migration `0003_dataset_parent_id` has `down_revision = "0001_initial"` (not `0002_export_error` as the original plan assumed — that revision does not exist in this branch). Verify before `alembic upgrade head`.
+
+**Next Action:**
+- Run live SDG smoke with `holdout_size > 0` on each task type, then verify a hold-out evaluation against the child dataset returns a sensible judge score.
+- Merge `feature/sdg-holdout` → `feature/training-eval-smoke-v2` once smoke is green; open PR to `dev` from there.
+
+**Blockers:** None.
+
+---
+
 ## Session 19 — verify 8 runbooks end-to-end + 2 metrics endpoints + A/B compare + expand catalog (2026-05-10)
 
 **Who:** Claude (Opus 4.7) + parks (developer; AFK during long build)
