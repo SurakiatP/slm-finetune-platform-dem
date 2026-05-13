@@ -334,6 +334,12 @@ Trigger Synthetic Data Generation. **Async** — return 202.
 
 **QA:** ส่งแค่ task_description + num_samples (ไม่มี config เพิ่ม).
 
+**Optional fields (ทั้ง 2 modes):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `holdout_size` | int | 100 | Extra rows to over-generate for a hold-out evaluation dataset. 0 disables. Range 0-2000. Persisted as a separate child Dataset linked via `parent_dataset_id`. Stratified by label (classification) / tool name (tool_calling); random for QA. |
+
 **Response 202:** ดู [Async pattern](#23-async-job-pattern) — `dataset_id` + `job_id` + `websocket_url`.
 
 **Common 422:**
@@ -363,6 +369,7 @@ Dataset detail. มี `generation_metadata` ถ้า `source=sdg`:
   "num_samples": 20,
   "storage_uri": "s3://datasets/sdg/<id>.jsonl",
   "size_bytes": 5367,
+  "parent_dataset_id": null,                  // UUID | null — see note below
   "generation_metadata": {                    // null เมื่อ source=seed
     "sdg_mode": "with_seed",
     "api_calls": 42,
@@ -380,6 +387,12 @@ Dataset detail. มี `generation_metadata` ถ้า `source=sdg`:
   "updated_at": "..."
 }
 ```
+
+**`DatasetResponse` — notable fields:**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `parent_dataset_id` | UUID \| null | If set, this is a holdout child. Use the parent for training and this one for `POST /evaluations` to get a leak-free score. |
 
 ### `GET /api/v1/datasets/{id}/preview?limit=&offset=`
 
@@ -1020,11 +1033,20 @@ Subscribe เพื่อรับ live progress events ของ Celery job.
 
 | Job type | `result` ที่ได้ |
 |----------|----------------|
-| **SDG** | `{samples_generated, rejected_count, duplicate_count, judge_rejected_count, judge_parse_failures, api_calls, storage_uri, size_bytes}` |
+| **SDG** | `{samples_generated, rejected_count, duplicate_count, judge_rejected_count, judge_parse_failures, api_calls, storage_uri, size_bytes}` — plus holdout fields below |
 | **Training (manual)** | `{training_id, model_artifact_id, lora_adapter_uri, final_train_loss, final_eval_loss, steps_completed, train_runtime_seconds, metrics}` |
 | **Training (HPO)** | (manual fields) + `best_metric_value`, `best_params_json` |
 | **Evaluation** | `{evaluation_id, metrics, llm_judge_score, llm_judge_model}` |
 | **Export** | `{artifact_id, format, gguf_uri, safetensors_uri, ollama_model_tag}` |
+
+**SDG `result` — holdout fields (present on every SDG completed event):**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `samples_generated` | int | Train row count saved to the parent dataset |
+| `holdout_samples` | int | Number of rows in the holdout child dataset; `0` when `holdout_size=0` |
+| `holdout_dataset_id` | UUID string \| null | `id` of the child Dataset row; `null` if `holdout_size` was 0 |
+| `holdout_storage_uri` | string \| null | `s3://...` pointer to the holdout JSONL on MinIO; `null` if no holdout |
 
 ### 10.5 `failed` (event สุดท้ายถ้าผิด)
 
@@ -1216,6 +1238,14 @@ type LossHistory = paths["/api/v1/trainings/{training_id}/loss-history"]["get"][
 ```
 
 WebSocket message types ก็ generate ได้ — Pydantic models export schema ลง OpenAPI ครบ.
+
+### Hold-out evaluation flow (no data leakage)
+
+1. `POST /datasets/generate` with `num_samples: 200, holdout_size: 100` -> returns `dataset_id=D_parent`
+2. Wait for completion. `GET /datasets?project_id=...` now shows two rows: `D_parent` (train, 200 rows) and a child with `parent_dataset_id=D_parent` (holdout, 100 rows).
+3. `POST /trainings` with `dataset_id=D_parent` -> train on the 200-row parent.
+4. `POST /models/{id}/export format=gguf` -> wait.
+5. `POST /evaluations` with `dataset_id=<holdout child id>` -> judge sees rows the model never trained on.
 
 ---
 
