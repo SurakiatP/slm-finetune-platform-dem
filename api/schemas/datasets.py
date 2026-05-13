@@ -16,6 +16,14 @@ class DatasetResponse(BaseModel):
 
     id: UUID
     project_id: UUID
+    parent_dataset_id: UUID | None = Field(
+        default=None,
+        description=(
+            "If set, this dataset is a holdout child of another dataset (created "
+            "by SDG over-generation). Use the parent for training and this one "
+            "for `POST /evaluations` to get a leak-free judge score."
+        ),
+    )
     name: str
     task_type: TaskType
     source: DatasetSource
