@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>Node 9 — Evaluation (Rule-based)</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; max-width: 920px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #2563eb; padding-bottom: 8px; }
+  h2 { color: #1e40af; margin-top: 28px; border-left: 4px solid #2563eb; padding-left: 10px; }
+  h3 { color: #374151; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.85em; font-weight: 600; margin-right: 6px; }
+  .badge-post { background: #16a34a; color: white; }
+  .badge-get { background: #2563eb; color: white; }
+  .badge-ws { background: #7c3aed; color: white; }
+  .badge-async { background: #ea580c; color: white; }
+  .path { font-family: "JetBrains Mono", Consolas, monospace; background: #f3f4f6; padding: 4px 8px; border-radius: 4px; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }
+  code { font-family: "JetBrains Mono", Consolas, monospace; }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  :not(pre) > code { background: #fef3c7; padding: 2px 6px; border-radius: 3px; font-size: 0.92em; color: #92400e; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; }
+  .nav { display: flex; justify-content: space-between; margin: 30px 0 10px; padding: 12px; background: #f9fafb; border-radius: 8px; }
+  .nav a { color: #2563eb; text-decoration: none; font-weight: 500; }
+  .nav a:hover { text-decoration: underline; }
+  .callout { background: #eff6ff; border-left: 4px solid #2563eb; padding: 10px 14px; margin: 14px 0; border-radius: 4px; }
+  .callout.warn { background: #fef3c7; border-left-color: #f59e0b; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="8_inference.html">← Node 8</a>
+  <a href="../guide101.md">Index</a>
+  <a href="10_llm-judge.html">ถัดไป: Node 10 →</a>
+</div>
+
+<h1>Node 9 — Evaluation (Rule-based)</h1>
+
+<p>
+  <span class="badge badge-post">POST</span>
+  <span class="badge badge-async">ASYNC 202</span>
+  <span class="path">/api/v1/evaluations</span>
+  <br>
+  <span class="badge badge-get">GET</span>
+  <span class="path">/api/v1/evaluations/{id}</span>
+  &nbsp; · &nbsp;
+  <span class="badge badge-post">POST</span>
+  <span class="path">/api/v1/evaluations/compare</span>
+</p>
+
+<h2>วัตถุประสงค์</h2>
+<p>วัด <strong>quantitative metrics</strong> ของ fine-tuned model บน holdout dataset (leak-free) ด้วย rule-based metrics — ไม่ใช้ LLM judge (ฟรี + เร็ว).</p>
+
+<h2>Metrics ที่ออกแยกตาม task_type</h2>
+<table>
+<tr><th>Task</th><th>Metrics</th><th>Smoke run คาดหวัง (1 epoch, ~30 train rows)</th><th>Proper run คาดหวัง (3 epochs, 200+ rows)</th></tr>
+<tr><td><code>qa</code></td><td><code>bleu</code>, <code>rouge1</code>, <code>rouge2</code>, <code>rougeL</code>, <code>exact_match</code>, <code>n</code></td><td>rouge1 ~0.15-0.30, judge ~3.0-4.0</td><td>rouge1 &gt; 0.40, judge &gt; 4.0</td></tr>
+<tr><td><code>classification</code></td><td><code>accuracy</code>, <code>f1_macro</code>, <code>f1_per_label</code> (dict), <code>confusion_matrix</code>, <code>n</code></td><td>accuracy 0.0-0.4 (model ยังไม่จำ label)</td><td>accuracy &gt; 0.85</td></tr>
+<tr><td><code>tool_calling</code></td><td><code>json_validity</code>, <code>name_accuracy</code>, <code>arg_accuracy</code>, <code>exact_match</code>, <code>n</code></td><td>json_validity 0.5-0.9, name_accuracy 0-0.4</td><td>json_validity &gt; 0.95, name_accuracy &gt; 0.85</td></tr>
+</table>
+
+<div class="callout">
+  <strong>ทำไม smoke run accuracy ต่ำ:</strong> 30 train rows + 1 epoch ไม่พอให้ model 1B จำ label vocabulary ได้ (ถูกพิสูจน์ใน Session 21 — cls accuracy=0.0, tool name_accuracy=0.0). แต่ pipeline ทำงาน. proper accuracy ต้องการ ≥200 rows + 3 epochs.
+</div>
+
+<h2>Prerequisite</h2>
+<ul>
+  <li><code>model_artifact_id</code> จาก Node 6 + ผ่าน Node 7 (มี <code>ollama_model_tag</code> populate)</li>
+  <li><code>holdout_dataset_id</code> จาก Node 4 — <strong>ห้ามใช้ parent</strong> (data leak!)</li>
+  <li>Dataset task_type ต้องตรงกับ artifact task_type</li>
+</ul>
+
+<h2>Request (rule-based)</h2>
+<pre><code>{
+  "model_artifact_id": "&lt;uuid&gt;",
+  "dataset_id": "&lt;holdout_dataset_id&gt;",
+  "use_llm_judge": false
+}</code></pre>
+
+<h2>Response 202</h2>
+<pre><code>{
+  "evaluation_id": "&lt;uuid&gt;",
+  "job_id": "&lt;celery_uuid&gt;",
+  "status": "pending",
+  "websocket_url": "/ws/jobs/&lt;celery_uuid&gt;"
+}</code></pre>
+
+<h2>WebSocket — ไม่มี per-step progress</h2>
+<p>เหมือน export — รอ <code>completed</code> หรือ <code>failed</code> เลย</p>
+
+<h2>GET result</h2>
+<pre><code>GET /api/v1/evaluations/{evaluation_id}</code></pre>
+
+<p><strong>Response — QA (Thai return policy, 10 holdout rows):</strong></p>
+<pre><code>{
+  "id": "&lt;uuid&gt;",
+  "status": "completed",
+  "metrics_json": {
+    "exact_match": 0.0,
+    "rouge1": 0.196,
+    "rouge2": 0.0,
+    "rougeL": 0.162,
+    "bleu": 0.020,
+    "n": 10
+  },
+  "llm_judge_score": null,
+  "llm_judge_model": null,
+  "error_message": null
+}</code></pre>
+
+<p><strong>Response — Classification (Thai support, 10 holdout rows, smoke run):</strong></p>
+<pre><code>{
+  "id": "&lt;uuid&gt;",
+  "status": "completed",
+  "metrics_json": {
+    "accuracy": 0.0,
+    "f1_macro": 0.0,
+    "f1_per_label": {
+      "ปัญหาการเงิน": 0.0,
+      "ปัญหาเทคนิค": 0.0,
+      "คำถามทั่วไป": 0.0
+    },
+    "confusion_matrix": {
+      "ปัญหาการเงิน":  { "ปัญหาการเงิน": 0, "ปัญหาเทคนิค": 3, "คำถามทั่วไป": 0 },
+      "ปัญหาเทคนิค":  { "ปัญหาการเงิน": 0, "ปัญหาเทคนิค": 4, "คำถามทั่วไป": 0 },
+      "คำถามทั่วไป":  { "ปัญหาการเงิน": 0, "ปัญหาเทคนิค": 3, "คำถามทั่วไป": 0 }
+    },
+    "out_of_set_count": 0,
+    "n": 10
+  }
+}</code></pre>
+
+<p><strong>Response — Tool Calling (Smart home, 10 holdout rows, smoke run):</strong></p>
+<pre><code>{
+  "id": "&lt;uuid&gt;",
+  "status": "completed",
+  "metrics_json": {
+    "json_validity": 0.8,
+    "name_accuracy": 0.2,
+    "arg_accuracy": 0.0,
+    "exact_match": 0.0,
+    "n": 10
+  }
+}</code></pre>
+
+<div class="callout warn">
+  ค่า smoke run ด้านบนใกล้เคียงจริงจาก <strong>Session 21 vast.ai smoke</strong> (Llama-3.2-1B, num_samples=50, holdout=10, 1 epoch). QA judge 3.9/5 OK, แต่ cls/tool ต้องการ training set ใหญ่กว่านี้
+</div>
+
+<h2>Error cases</h2>
+<table>
+<tr><th>Status</th><th>Detail</th></tr>
+<tr><td>404</td><td><code>Model &lt;id&gt; not found</code></td></tr>
+<tr><td>409</td><td><code>Model has not been registered with Ollama</code> — ลืม export ที่ Node 7</td></tr>
+<tr><td>409</td><td><code>Dataset has no rows persisted yet</code> — SDG ยังไม่จบหรือ fail</td></tr>
+<tr><td>400</td><td><code>Dataset task_type=classification does not match artifact task_type=qa</code></td></tr>
+</table>
+
+<div class="callout warn">
+  <strong>Leak-free rule:</strong> ใช้ <code>holdout_dataset_id</code> เท่านั้น — ไม่ใช่ parent. ถ้าใช้ parent → score จะสูงเกินจริง (model เห็น rows เหล่านี้ตอน train)
+</div>
+
+<h2>N-way compare</h2>
+<pre><code>POST /api/v1/evaluations/compare
+{
+  "evaluation_ids": ["&lt;uuid_a&gt;", "&lt;uuid_b&gt;", "&lt;uuid_c&gt;"]
+}</code></pre>
+
+<p>Response — pivot table (row = metric, column = run):</p>
+<pre><code>{
+  "evaluation_ids": ["&lt;a&gt;", "&lt;b&gt;"],
+  "metrics": {
+    "rouge1":      { "&lt;a&gt;": 0.286, "&lt;b&gt;": 0.310 },
+    "rougeL":      { "&lt;a&gt;": 0.286, "&lt;b&gt;": 0.295 },
+    "bleu":        { "&lt;a&gt;": 0.020, "&lt;b&gt;": 0.025 },
+    "exact_match": { "&lt;a&gt;": 0.0,   "&lt;b&gt;": 0.0 },
+    "n":           { "&lt;a&gt;": 5,     "&lt;b&gt;": 5 }
+  },
+  "judge_scores": {
+    "&lt;a&gt;": null,
+    "&lt;b&gt;": 4.2
+  }
+}</code></pre>
+
+<div class="nav">
+  <a href="8_inference.html">← Node 8</a>
+  <a href="../guide101.md">Index</a>
+  <a href="10_llm-judge.html">ถัดไป: Node 10 →</a>
+</div>
+
+</body>
+</html>

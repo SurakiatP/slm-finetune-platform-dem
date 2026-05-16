@@ -6,6 +6,99 @@
 
 ---
 
+## Session 22 — full guidebook-e2e autonomous test on vast.ai (2026-05-16)
+
+**Who:** Claude (Opus 4.7), autonomous, while parks AFK
+**Status:** ✅ Full E2E green for all 3 task types × 11 nodes + 23 negative/edge tests passed. 3 FINDINGS (not blockers): 1 user-error UX gap, 1 UX gap on cls+judge, 1 quality note for smoke runs. Guidebook updated mid-test.
+
+**Why & What:**
+- parks asked to test the full `docs/guidebook-e2e/` against fresh vast.ai (RTX 4090 48GB / Ubuntu 22.04). Earlier in session: fresh `git clone`, install `nvidia-container-toolkit` (memory gotcha #2 confirmed reproducible), `docker compose up -d --build`, `alembic upgrade head` (3 migrations: 0001/0002/0003), service health green.
+- Guidebook itself was also edited mid-session for accuracy:
+  - Node 4: removed `classification_config` / `tool_calling_config` from `with_seed` examples — schema has `extra="forbid"` (memory `sdg-with-seed-no-task-config`). parks hit this 422 on first POST.
+  - Nodes 1, 3a, 3b, 4, 5, 6, 8, 9, 10: added concrete examples tied to `seed_data/` files (Thai support / Thai return policy / smart home), realistic confusion matrix labels, base-model recommendations per task, smoke vs proper expected-metrics ranges.
+  - `guide101.md`: added seed_data overview table + mismatched key mapping reference.
+
+**Test ledger — full E2E × 3 task types (smoke config: 1 epoch, num_samples=100, holdout=20, base=Llama-3.2-1B-Instruct-bnb-4bit, lr=2e-4, max_seq_length=1024):**
+
+| Task | SDG | Train | Export | Inference | Eval(rule) | Eval(judge) | MLflow |
+|------|-----|-------|--------|-----------|-----------|-------------|--------|
+| cls  | ✅ 100p/20h, judge_rej=20 | ✅ 60s | ✅ slm/bc4c516a | ✅ returns 200 | acc=0.0, all preds out-of-set | (skipped — cls) | 13 keys |
+| qa   | ✅ 100p/20h, judge_rej=1  | ✅ 60s | ✅ slm/953b6b3f | ✅ returns 200 | rouge1=0.062, bleu=0.010 | score=1.4/5 | 13 keys |
+| tool | ✅ 100p/20h, judge_rej=11 | ✅ 60s | ✅ slm/648ea8a5 | ✅ returns 200 | json_validity=0, name_acc=0 | score=1.0/5 | 13 keys |
+
+Total wall-clock for E2E × 3: ~12 minutes. Base model `Llama-3.2-1B-Instruct-bnb-4bit` cached after first download (~2 min once); 2nd and 3rd training reused cache.
+
+**Negative + edge tests — 23 cases, all expected outcomes confirmed:**
+
+| # | Test | Result |
+|---|------|--------|
+| 1-3 | Format Detection on `*_mismatched.jsonl` × 3 task types | All field_mapping rewrites correct (message→text/category→label, prompt→question/response→answer, instruction→question/function_call→answer) |
+| 4 | PDF upload (qa) | dataset_id created, `pdf_uri=s3://datasets/seed-pdfs/...`, num_samples=0 |
+| 5 | PDF upload to cls — expect 400 | "PDF uploads are supported only for task_type=qa (got classification)" |
+| 6 | Cross-task seed (qa seed → cls SDG) — expect 400 | "seed dataset task_type is qa but request asks for classification" |
+| 7 | Invalid base_model — expect 422 | "base_model 'meta-llama/Llama-3.1-70B' is not in the supported list" |
+| 8 | Invalid task_type in project — expect 422 | "Input should be 'classification', 'tool_calling' or 'qa'" |
+| 9 | Training with non-existent dataset — expect 404 | "Dataset ... not found" |
+| 10 | GET /base-models | 11 models returned |
+| 11 | GET /tasks | 3 task types returned |
+| 12 | POST eval non-existent artifact — expect 404 | "Model ... not found" |
+| 13 | POST eval cross-task (cls art + qa ds) — expect 400 | "Dataset task_type=qa does not match artifact task_type=classification" |
+| 14 | Inference stream=true — expect 400 | "streaming is not supported on /api/v1/inference (set stream=false)" |
+| 15 | Inference unknown model — expect 404 | "ollama: model not found ..." |
+| 16 | GET non-existent training loss-history — expect 404 | "Training ... not found" |
+| 17 | dataset download | 405 on HEAD (allowed: GET only), GET works (NDJSON UTF-8) |
+| 18 | SDG holdout_size=0 (backward compat) | num_samples=10, holdout_dataset_id=null, holdout_size_actual=0, no child row created |
+| 19 | DELETE dataset with refs — expect 409 | "Dataset ... is referenced by 1 training_job(s)..." — verbose hint, clean envelope |
+| 20 | Legacy /completions endpoint | text="Hello! How can I help you today?" |
+| 21 | GET /datasets/{id}/preview | total=100, samples truncated to limit=3 |
+| 22 | GET /datasets/{id}/download | NDJSON streamed, Thai UTF-8 intact |
+| 23 | POST training → DELETE (cancel) | status=cancelled, idempotent |
+
+**3 FINDINGS (not test failures — usability + design notes):**
+
+1. **Format Detection has no semantic guard** *(memory `format-detection-semantic-gap` proposed)* — User uploaded `qa_canonical.jsonl` to a classification project by mistake. Format Detection silently renamed `question→text, answer→label` and the dataset passed structural validation, but every "label" was a unique long-sentence (clearly not classification). The cls SDG run then generated more QA-style content. Discovered when verifying Node 5 preview.
+   - **Proposed guard:** when target=`classification`, warn or 422 if `unique_labels / total_rows > 0.5` OR `avg_label_length > 30 chars`. For `tool_calling`, validate that every answer parses as JSON with `name`/`parameters`.
+   - **Workaround applied for test:** re-uploaded correct `classification_canonical.jsonl`, re-ran SDG, content verified.
+
+2. **`use_llm_judge=true` is silently ignored for classification** *(`workers/tasks/evaluation.py:134`)* — `if use_llm_judge and task_type in (TaskType.QA, TaskType.TOOL_CALLING):` skips classification. The API accepts the request and returns `llm_judge_score=null` without explanation.
+   - **Proposed fix (small):** add `notes` field in `metrics_json` saying "LLM judge does not apply to classification — use rule-based metrics (accuracy, f1) instead." OR return 400 at submission.
+
+3. **Smoke run quality is well below useful threshold** — As designed, 100 train rows + 1 epoch reproduces what Session 21 documented:
+   - cls: accuracy=0.0, all 20 holdout predictions went `out_of_set_predictions` (model outputs Thai prose, not labels)
+   - qa: rouge1=0.06, judge=1.4/5 (model defaults to "I'm an AI assistant" disclaimers)
+   - tool: json_validity=0 (model outputs English prose, not JSON tool calls)
+   - **This is mechanically expected** — Node 9 guidebook table predicts these ranges for smoke. Proof of pipeline correctness, not model utility.
+
+**Files touched (this session):**
+- `docs/guidebook-e2e/guide101.md`: seed_data overview table
+- `docs/guidebook-e2e/sub-node/1_create-project.html`: 3 task-type project examples
+- `docs/guidebook-e2e/sub-node/3a_add-seed-data.html`: 3 task-type form examples + PDF + Format Detection response variations
+- `docs/guidebook-e2e/sub-node/3b_description-only.html`: 3 descriptions matching seed_data domain (Thai support 3 labels / Thai return policy / Smart home 5 tools)
+- `docs/guidebook-e2e/sub-node/4_sdg-holdout-split.html`: 3 with_seed examples; removed `classification_config`/`tool_calling_config` (schema gap); added compare-with-3b table + with_seed gotcha callout
+- `docs/guidebook-e2e/sub-node/5_verify-dataset.html`: 3 task-type preview responses
+- `docs/guidebook-e2e/sub-node/6_training.html`: base model recommendation per task + parent-not-holdout warning + smoke vs proper run notes
+- `docs/guidebook-e2e/sub-node/8_inference.html`: 3 task-specific inference prompts
+- `docs/guidebook-e2e/sub-node/9_evaluation.html`: expected metric ranges (smoke vs proper) + 3 task-type response examples with actual Thai labels
+- `docs/guidebook-e2e/sub-node/10_llm-judge.html`: fixed default `judge_model` to current env default `google/gemini-3.1-flash-lite-preview`
+
+**Memory updated:**
+- New: `sdg_with_seed_no_task_config.md` — schema constraint that took a 422 to surface.
+
+**Test Summary:**
+- 23/23 negative/edge tests passed (HTTP codes, error shapes, conflict envelopes, idempotency).
+- 3/3 task types completed full E2E (cls / qa / tool_calling) — all 11 nodes touched per task.
+- Pipeline mechanically correct; smoke quality is low as expected.
+- Resources used: ~12 min wall-clock end-to-end (excluding initial Docker build).
+
+**Next Action:**
+- parks to review findings 1+2. If guard for finding 1 is wanted, file as an issue (touches `ai_engine/data_gen/upload_seed.py` + format_detection). For finding 2, suggest 1-line UX nudge: add `notes` to metrics_json on cls eval when `use_llm_judge=true`.
+- Open PR `feature/training-eval-smoke-v2` -> `dev` once docs + bugfix decisions land.
+- Rotate the OpenRouter key (`sk-or-v1-3ecce...`) before shipping — visible in chat + .env, flagged 2 sessions running.
+
+**Blockers:** None.
+
+---
+
 ## Session 21 — HO.8 live smoke on vast.ai (2026-05-14, autonomous overnight)
 
 **Who:** Claude (Opus 4.7), autonomous, while parks slept

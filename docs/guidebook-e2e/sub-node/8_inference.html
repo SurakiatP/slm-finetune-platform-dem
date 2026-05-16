@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>Node 8 — Serve / Inference</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; max-width: 920px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #2563eb; padding-bottom: 8px; }
+  h2 { color: #1e40af; margin-top: 28px; border-left: 4px solid #2563eb; padding-left: 10px; }
+  h3 { color: #374151; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.85em; font-weight: 600; margin-right: 6px; }
+  .badge-post { background: #16a34a; color: white; }
+  .badge-get { background: #2563eb; color: white; }
+  .path { font-family: "JetBrains Mono", Consolas, monospace; background: #f3f4f6; padding: 4px 8px; border-radius: 4px; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }
+  code { font-family: "JetBrains Mono", Consolas, monospace; }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  :not(pre) > code { background: #fef3c7; padding: 2px 6px; border-radius: 3px; font-size: 0.92em; color: #92400e; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; }
+  .nav { display: flex; justify-content: space-between; margin: 30px 0 10px; padding: 12px; background: #f9fafb; border-radius: 8px; }
+  .nav a { color: #2563eb; text-decoration: none; font-weight: 500; }
+  .nav a:hover { text-decoration: underline; }
+  .callout { background: #eff6ff; border-left: 4px solid #2563eb; padding: 10px 14px; margin: 14px 0; border-radius: 4px; }
+  .callout.warn { background: #fef3c7; border-left-color: #f59e0b; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="7_export-gguf.html">← Node 7</a>
+  <a href="../guide101.md">Index</a>
+  <a href="9_evaluation.html">ถัดไป: Node 9 →</a>
+</div>
+
+<h1>Node 8 — Serve / Inference</h1>
+
+<p>
+  <span class="badge badge-get">GET</span>
+  <span class="path">/api/v1/inference/models</span>
+  <br>
+  <span class="badge badge-post">POST</span>
+  <span class="path">/api/v1/inference/chat/completions</span>
+  &nbsp; · &nbsp;
+  <span class="badge badge-post">POST</span>
+  <span class="path">/api/v1/inference/completions</span> (legacy)
+</p>
+
+<h2>วัตถุประสงค์</h2>
+<p>ทดสอบ inference จริงกับ fine-tuned model ผ่าน OpenAI-compatible API (proxy ไป Ollama)</p>
+
+<h2>Prerequisite</h2>
+<ul>
+  <li><code>ollama_model_tag</code> จาก Node 7 populate แล้ว (เช่น <code>slm/cdeddfd5</code>)</li>
+  <li>Ollama container reachable</li>
+</ul>
+
+<h2>8.1 List Ollama models (verify)</h2>
+<pre><code>GET /api/v1/inference/models</code></pre>
+
+<p>Response (OpenAI-shape):</p>
+<pre><code>{
+  "object": "list",
+  "data": [
+    { "id": "slm/cdeddfd5:latest", "object": "model", "created": 0, "owned_by": "ollama" },
+    { "id": "llama3.2:1b",          "object": "model", "created": 0, "owned_by": "ollama" }
+  ]
+}</code></pre>
+
+<div class="callout">
+  ถ้า Ollama ว่าง → <code>data: []</code> (200, ไม่ใช่ 500)
+</div>
+
+<h2>8.2 Chat completion (OpenAI Chat API)</h2>
+
+<h3>Request (generic)</h3>
+<pre><code>{
+  "model": "&lt;artifact_id หรือ slm/&lt;id8&gt;&gt;",
+  "messages": [
+    { "role": "system", "content": "You are a helpful assistant." },
+    { "role": "user",   "content": "What is the capital of France?" }
+  ],
+  "max_tokens": 50,
+  "temperature": 0.0,
+  "stream": false
+}</code></pre>
+
+<h3>ตัวอย่าง prompt ต่อ task (ตรงกับ seed_data)</h3>
+
+<h4>🅰️ Classification — Thai support ticket</h4>
+<pre><code>{
+  "model": "&lt;slm/&lt;id8&gt; ของ cls run&gt;",
+  "messages": [
+    { "role": "user", "content": "แอปบนมือถือ Android เปิดแล้วเด้งออกทันทีหลังหน้า splash" }
+  ],
+  "max_tokens": 30,
+  "temperature": 0.0
+}</code></pre>
+<p>คาดหวัง output: <code>ปัญหาเทคนิค</code> (1 ใน 3 labels)</p>
+
+<h4>🅱️ QA — Thai return policy</h4>
+<pre><code>{
+  "model": "&lt;slm/&lt;id8&gt; ของ qa run&gt;",
+  "messages": [
+    { "role": "user", "content": "ระยะเวลาในการคืนสินค้าเท่าไรคะ?" }
+  ],
+  "max_tokens": 150,
+  "temperature": 0.2
+}</code></pre>
+<p>คาดหวัง output: ประมาณ <code>"ลูกค้าสามารถคืนสินค้าได้ภายใน 30 วัน..."</code></p>
+
+<h4>🅲 Tool Calling — Smart home</h4>
+<pre><code>{
+  "model": "&lt;slm/&lt;id8&gt; ของ tool run&gt;",
+  "messages": [
+    { "role": "user", "content": "Turn on the kitchen lights" }
+  ],
+  "max_tokens": 80,
+  "temperature": 0.0
+}</code></pre>
+<p>คาดหวัง output: <code>{"name":"light_on","parameters":{"room":"kitchen"}}</code> (JSON string)</p>
+
+<div class="callout warn">
+  <strong>Tool calling output ต้องเป็น JSON เท่านั้น</strong> — ถ้า model พ่นข้อความตามปกติออกมา (เช่น <code>"Sure, turning on..."</code>) แปลว่า fine-tune ไม่พอ → เพิ่ม <code>num_train_epochs</code> หรือ <code>num_samples</code>
+</div>
+
+<div class="callout">
+  <strong><code>model</code> รับทั้ง 2 รูปแบบ:</strong> artifact UUID หรือ Ollama tag — service resolve ให้เอง
+</div>
+
+<h3>Response 200</h3>
+<pre><code>{
+  "id": "chatcmpl-253",
+  "object": "chat.completion",
+  "created": 1778398708,
+  "model": "slm/cdeddfd5",
+  "choices": [
+    {
+      "index": 0,
+      "message": { "role": "assistant", "content": "Paris.", "name": null, "tool_call_id": null },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": { "prompt_tokens": 22, "completion_tokens": 3, "total_tokens": 25 }
+}</code></pre>
+
+<h2>8.3 Legacy completion (OpenAI Completions API)</h2>
+<p>สำหรับ tools เก่าที่ยังใช้ <code>prompt</code> แทน <code>messages</code></p>
+
+<pre><code>POST /api/v1/inference/completions
+{
+  "model": "&lt;artifact_id&gt;",
+  "prompt": "The capital of France is",
+  "max_tokens": 20,
+  "temperature": 0.0
+}</code></pre>
+
+<p>Response — note: <code>choices[].text</code> (ไม่ใช่ <code>choices[].message.content</code>)</p>
+<pre><code>{
+  "id": "cmpl-940",
+  "choices": [
+    { "index": 0, "text": " Paris.", "finish_reason": "stop" }
+  ],
+  "usage": { "prompt_tokens": 15, "completion_tokens": 3, "total_tokens": 18 }
+}</code></pre>
+
+<h2>A/B Compare (fine-tuned vs base)</h2>
+<p>เรียก 2 requests พร้อมกัน — model หนึ่งใช้ <code>ollama_model_tag</code>, อีกตัวใช้ <code>base_ollama_tag</code>:</p>
+<pre><code>POST /inference/chat/completions  { "model": "llama3.2:1b",   "messages": [...] }  ← base
+POST /inference/chat/completions  { "model": "slm/cdeddfd5",  "messages": [...] }  ← fine-tuned</code></pre>
+
+<h2>Caveats</h2>
+<table>
+<tr><th>เรื่อง</th><th>Note</th></tr>
+<tr><td>Streaming</td><td>ยังไม่รองรับ — <code>stream: true</code> จะได้ 400</td></tr>
+<tr><td>First request หลัง pull</td><td>~3-5 วิ (Ollama load model ลง VRAM), subsequent ~0.5-2 วิ</td></tr>
+<tr><td>Concurrency</td><td>Ollama default = serial per model — ตั้ง <code>OLLAMA_NUM_PARALLEL=2</code> ถ้าอยากเร็ว (VRAM × 2)</td></tr>
+</table>
+
+<h2>Error cases</h2>
+<table>
+<tr><th>Status</th><th>Detail</th></tr>
+<tr><td>404</td><td>model id/tag ไม่อยู่ใน Ollama</td></tr>
+<tr><td>400</td><td><code>stream: true</code> ส่งมา</td></tr>
+<tr><td>500</td><td>Ollama container down (ตรวจ <code>docker compose ps ollama</code>)</td></tr>
+</table>
+
+<div class="nav">
+  <a href="7_export-gguf.html">← Node 7</a>
+  <a href="../guide101.md">Index</a>
+  <a href="9_evaluation.html">ถัดไป: Node 9 →</a>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>Node 2 — gen data condition (Decision)</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; max-width: 920px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #2563eb; padding-bottom: 8px; }
+  h2 { color: #1e40af; margin-top: 28px; border-left: 4px solid #2563eb; padding-left: 10px; }
+  h3 { color: #374151; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.85em; font-weight: 600; margin-right: 6px; }
+  .badge-decision { background: #6b7280; color: white; }
+  .path { font-family: "JetBrains Mono", Consolas, monospace; background: #f3f4f6; padding: 4px 8px; border-radius: 4px; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }
+  code { font-family: "JetBrains Mono", Consolas, monospace; }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  :not(pre) > code { background: #fef3c7; padding: 2px 6px; border-radius: 3px; font-size: 0.92em; color: #92400e; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; }
+  .nav { display: flex; justify-content: space-between; margin: 30px 0 10px; padding: 12px; background: #f9fafb; border-radius: 8px; }
+  .nav a { color: #2563eb; text-decoration: none; font-weight: 500; }
+  .nav a:hover { text-decoration: underline; }
+  .callout { background: #eff6ff; border-left: 4px solid #2563eb; padding: 10px 14px; margin: 14px 0; border-radius: 4px; }
+  .callout.warn { background: #fef3c7; border-left-color: #f59e0b; }
+  .branch { display: flex; gap: 16px; margin: 20px 0; }
+  .branch-card { flex: 1; padding: 16px; border: 2px solid #e5e7eb; border-radius: 8px; background: #fafafa; }
+  .branch-card h3 { margin-top: 0; color: #2563eb; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="1_create-project.html">← Node 1</a>
+  <a href="../guide101.md">Index</a>
+  <a href="3a_add-seed-data.html">ถัดไป: Node 3a →</a>
+</div>
+
+<h1>Node 2 — gen data condition (Decision)</h1>
+
+<p>
+  <span class="badge badge-decision">DECISION</span>
+  <span class="path">(ไม่มี endpoint — เป็นจุดตัดสินใจ)</span>
+</p>
+
+<h2>วัตถุประสงค์</h2>
+<p>เลือกว่า project นี้จะ generate synthetic data <strong>โดย</strong>:</p>
+
+<div class="branch">
+  <div class="branch-card">
+    <h3>🅰️ With Seed</h3>
+    <p>มี seed data จริงอยู่แล้ว (JSONL / JSON / PDF) → upload ขึ้นระบบก่อน แล้ว SDG ใช้เป็น few-shot example</p>
+    <p><strong>เหมาะกับ:</strong> เคยมี dataset ของจริงอยู่บ้าง, อยากให้ output มี style/domain ตรงกับของจริง</p>
+    <p>→ ไป <strong>Node 3a</strong> (upload seed) แล้วต่อ Node 4 ด้วย <code>sdg_mode=with_seed</code></p>
+  </div>
+  <div class="branch-card">
+    <h3>🅱️ Description Only</h3>
+    <p>ไม่มี seed — มีแต่คำอธิบาย task + labels/tool definitions → ระบบ generate จากศูนย์</p>
+    <p><strong>เหมาะกับ:</strong> เริ่มจากศูนย์, prototype, อยากลอง task type ก่อนหาข้อมูลจริง</p>
+    <p>→ ข้าม 3a ไป <strong>Node 3b</strong> (description_only request)</p>
+  </div>
+</div>
+
+<h2>เกณฑ์การเลือก</h2>
+<table>
+<tr><th>ปัจจัย</th><th>With Seed</th><th>Description Only</th></tr>
+<tr><td>ความคล้าย domain ของจริง</td><td>สูง (เลียนแบบ seed)</td><td>ต่ำ (LLM imagines)</td></tr>
+<tr><td>Setup time</td><td>ต้องเตรียม seed file</td><td>เริ่มได้ทันที</td></tr>
+<tr><td>ความหลากหลายของข้อมูล</td><td>จำกัดตาม seed</td><td>สูง (creative)</td></tr>
+<tr><td>เหมาะกับ task</td><td>ทั้ง 3 task type (qa รับ PDF ด้วย)</td><td>ทั้ง 3 task type</td></tr>
+<tr><td>Format Detection จำเป็น</td><td>✓ (auto-run ถ้า keys ไม่ canonical)</td><td>—</td></tr>
+</table>
+
+<h2>Task-type-specific config (description_only)</h2>
+<table>
+<tr><th>Task type</th><th>Required config</th></tr>
+<tr><td><code>classification</code></td><td><code>classification_config.labels: ["urgent", "not_urgent", ...]</code></td></tr>
+<tr><td><code>tool_calling</code></td><td><code>tool_calling_config.tool_definitions: [{name, description, parameters}, ...]</code></td></tr>
+<tr><td><code>qa</code></td><td>ส่งแค่ <code>task_description</code> + <code>num_samples</code></td></tr>
+</table>
+
+<div class="callout warn">
+  <strong>กฎสำคัญ:</strong> <code>task_type</code> ใน SDG request <strong>ต้องตรงกับ</strong> <code>project.task_type</code> เสมอ — ถ้าไม่ตรงจะได้ 400.
+</div>
+
+<h2>Next</h2>
+<ul>
+  <li>เลือก <strong>With Seed</strong> → ไป <a href="3a_add-seed-data.html">Node 3a — Upload Seed Data</a></li>
+  <li>เลือก <strong>Description Only</strong> → ไป <a href="3b_description-only.html">Node 3b — Description Only Request</a></li>
+</ul>
+
+<div class="nav">
+  <a href="1_create-project.html">← Node 1</a>
+  <a href="../guide101.md">Index</a>
+  <a href="3a_add-seed-data.html">ถัดไป: Node 3a →</a>
+</div>
+
+</body>
+</html>
