@@ -105,6 +105,22 @@ Run the **DoD checklist** before claiming "Done":
 
 ---
 
+## Snapshot Harness (refactor safety net)
+
+See [`docs/runbooks/snapshot_harness.md`](./docs/runbooks/snapshot_harness.md).
+
+- 43 syrupy snapshots ใน `tests/unit/__snapshots__/*.ambr` ถูก checked-in — เป็น
+  baseline ของ pure functions (prompts, generator helpers, eval metrics)
+- **ก่อน refactor ใดๆ:** รัน `pytest -m "not integration" -q` — ต้อง 0 failed ก่อนเริ่ม
+- **หลัง refactor:** snapshot diff = 0 = ปลอดภัย; diff ≠ 0 = ตัดสินใจ
+  (a) intentional → `pytest --snapshot-update` + อธิบาย diff ใน commit message
+  (b) unintentional → revert code, retry
+- PR ที่มี `--snapshot-update` ต้องอธิบาย wording/schema change ใน body — ห้าม
+  reset เป็นนิสัยโดยไม่อ่าน diff
+- ขยาย harness ครอบ node ใหม่: ดู rollout roadmap §7 ใน runbook
+
+---
+
 ## Code Style (see `docs/standards/CODING_STYLE.md`)
 
 - Python 3.11+
