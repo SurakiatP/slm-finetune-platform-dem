@@ -37,7 +37,7 @@ import math
 import random
 from dataclasses import dataclass, field
 from json import JSONDecodeError
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Callable, Literal
 from uuid import uuid4
 
 from api.schemas.data_formats import ToolDefinition
@@ -109,7 +109,6 @@ class GenerationProgress:
 
 
 ProgressCallback = Callable[[GenerationProgress], None]
-AsyncProgressCallback = Callable[[GenerationProgress], Awaitable[None] | None]
 
 
 @dataclass

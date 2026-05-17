@@ -64,7 +64,6 @@ class Settings(BaseSettings):
 
     # ---- OpenRouter (SDG + LLM judge) -------------------------------------
     openrouter_api_key: str = ""
-    openrouter_teacher_model: str = "anthropic/claude-3.5-sonnet"
     openrouter_http_referer: str = "http://localhost:8000"
     openrouter_app_title: str = "slm-platform"
 

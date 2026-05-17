@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -349,8 +348,6 @@ def _supports_bf16() -> bool:
 
 
 # ---- public API ------------------------------------------------------------
-
-ProgressCallbackFactory = Callable[..., "TrainerCallback"]
 
 __all__ = [
     "TrainingResult",
