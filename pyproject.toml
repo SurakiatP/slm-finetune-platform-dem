@@ -77,6 +77,11 @@ dev = [
     # Snapshot / characterization-test harness (pilot).
     # Tier 1 — pure-function snapshots:
     "syrupy>=4.6.0",
+    # Tier 2 — mocked-external snapshots:
+    "respx>=0.21.0",
+    "moto[s3]>=5.0.0",
+    "fakeredis>=2.20.0",
+    "dirty-equals>=0.7.0",
 ]
 
 [project.urls]
@@ -125,6 +130,7 @@ asyncio_mode = "auto"
 markers = [
     "integration: tests that require docker-compose services",
     "gpu: tests that require a CUDA GPU",
+    "characterization: snapshot tests run before/after refactor — may need recorded fixtures",
 ]
 
 # ---- Mypy -------------------------------------------------------------------
