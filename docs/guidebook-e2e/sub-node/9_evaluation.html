@@ -44,6 +44,9 @@
   <span class="path">/api/v1/evaluations</span>
   <br>
   <span class="badge badge-get">GET</span>
+  <span class="path">/api/v1/evaluations</span>
+  &nbsp; · &nbsp;
+  <span class="badge badge-get">GET</span>
   <span class="path">/api/v1/evaluations/{id}</span>
   &nbsp; · &nbsp;
   <span class="badge badge-post">POST</span>
@@ -160,6 +163,48 @@
 
 <div class="callout warn">
   <strong>Leak-free rule:</strong> ใช้ <code>holdout_dataset_id</code> เท่านั้น — ไม่ใช่ parent. ถ้าใช้ parent → score จะสูงเกินจริง (model เห็น rows เหล่านี้ตอน train)
+</div>
+
+<h2>List evaluations</h2>
+<pre><code>GET /api/v1/evaluations?model_artifact_id=&lt;uuid&gt;&amp;status=completed</code></pre>
+
+<p>List eval runs (paginated, sort <code>created_at</code> DESC). Filters ทั้งหมด optional — รวมกันได้:</p>
+
+<table>
+<tr><th>Query</th><th>Type</th><th>Default</th><th>Note</th></tr>
+<tr><td><code>model_artifact_id</code></td><td>UUID</td><td>—</td><td>filter เฉพาะ eval ของ model ตัวนี้ (model history)</td></tr>
+<tr><td><code>dataset_id</code></td><td>UUID</td><td>—</td><td>filter เฉพาะ eval ที่รันบน dataset ตัวนี้ (per-dataset leaderboard)</td></tr>
+<tr><td><code>status</code></td><td>enum</td><td>—</td><td><code>pending</code> / <code>running</code> / <code>completed</code> / <code>failed</code> / <code>cancelled</code></td></tr>
+<tr><td><code>limit</code></td><td>int 1–200</td><td>50</td><td></td></tr>
+<tr><td><code>offset</code></td><td>int ≥0</td><td>0</td><td></td></tr>
+</table>
+
+<p><strong>Response 200</strong> — <code>Page[EvaluationResponse]</code>:</p>
+<pre><code>{
+  "items": [
+    {
+      "id": "...",
+      "model_artifact_id": "...",
+      "dataset_id": "...",
+      "status": "completed",
+      "metrics_json": { "bleu": 0.02, "rouge1": 0.286, "n": 10 },
+      "llm_judge_score": 4.6,
+      "llm_judge_model": "google/gemini-3.1-flash-lite-preview"
+    }
+  ],
+  "total": 12,
+  "limit": 50,
+  "offset": 0
+}</code></pre>
+
+<div class="callout">
+  <strong>FE pattern:</strong>
+  <ul>
+    <li>หน้า model detail (playground) — <code>?model_artifact_id=&lt;id&gt;</code> ดึงประวัติ eval ทั้งหมดของ model นั้นมาเรนเดอร์เป็นตาราง</li>
+    <li>หน้า leaderboard per dataset — <code>?dataset_id=&lt;id&gt;&amp;status=completed</code></li>
+    <li>polling รายการ pending/running — <code>?status=running</code> + refetch ทุก ~5s (แทน WS ถ้าไม่อยากเปิด socket เยอะ)</li>
+    <li>FE branch render <code>metrics_json</code> ตาม key (ดูตาราง Metrics ที่ออกแยกตาม task_type ด้านบน) — ไม่ต้องเรียก <code>/datasets/{id}</code> เพิ่มเพื่อหา task_type</li>
+  </ul>
 </div>
 
 <h2>N-way compare</h2>
