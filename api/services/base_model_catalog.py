@@ -43,8 +43,6 @@ _BASE_TO_OLLAMA_TAG: dict[str, str | None] = {
     "unsloth/SmolLM2-1.7B-Instruct-bnb-4bit": "smollm2:1.7b",
     # TinyLlama (smallest serious chat model)
     "unsloth/tinyllama-chat-bnb-4bit": "tinyllama:1.1b",
-    # DeepSeek-R1 distilled — reasoning specialist
-    "unsloth/DeepSeek-R1-Distill-Qwen-1.5B-unsloth-bnb-4bit": "deepseek-r1:1.5b",
 }
 
 

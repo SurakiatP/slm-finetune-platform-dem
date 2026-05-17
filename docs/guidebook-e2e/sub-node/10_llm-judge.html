@@ -51,6 +51,10 @@
   <li>เปรียบเทียบ models สอง trainings ที่ rule-based score ใกล้กัน</li>
 </ul>
 
+<div class="callout warn">
+  <strong>Task ที่ judge ทำงาน:</strong> <code>qa</code> และ <code>tool_calling</code> เท่านั้น. ถ้าส่ง <code>use_llm_judge=true</code> มากับ <code>classification</code> ระบบจะ <strong>skip judge</strong> + ใส่ <code>metrics_json.llm_judge_notes</code> อธิบายเหตุผล (rule-based accuracy/f1 เป็นเครื่องมือที่ถูกต้องสำหรับ closed-set labels อยู่แล้ว). <code>llm_judge_score</code> จะคืน <code>null</code>.
+</div>
+
 <h2>Prerequisite</h2>
 <ul>
   <li>เหมือน Node 9 ทุกอย่าง +</li>
@@ -126,6 +130,7 @@
 <h2>Error cases</h2>
 <table>
 <tr><th>Symptom</th><th>Note</th></tr>
+<tr><td><code>llm_judge_score = null</code> + <code>metrics_json.llm_judge_notes</code> populated</td><td>task_type = classification — judge ถูก skip โดยตั้งใจ. ดู <code>llm_judge_notes</code> สำหรับคำอธิบาย; ใช้ <code>accuracy</code> / <code>f1_macro</code> จาก Node 9 แทน</td></tr>
 <tr><td><code>llm_judge_score = null</code> + <code>skipped = n</code></td><td>judge_model OpenRouter 404 — ลองเปลี่ยน judge_model</td></tr>
 <tr><td><code>error_message</code> = <code>OPENROUTER_API_KEY empty</code></td><td>ตั้ง env ใน api container + restart</td></tr>
 </table>

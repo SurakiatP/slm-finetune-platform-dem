@@ -177,7 +177,7 @@ def test_default_3060_search_space_usable_with_hpo_config() -> None:
         (0.5, 1024, 16),
         (1.1, 2048, 8),
         (1.1, 4096, 4),
-        # ≤1.5B bucket (Qwen2.5-1.5B, DeepSeek-R1-1.5B)
+        # ≤1.5B bucket (Qwen2.5-1.5B); upper boundary kept for bucket-edge regression
         (1.5, 2048, 4),
         (1.78, 4096, 2),
         # ≤2B bucket (SmolLM2-1.7B, Qwen3-1.7B, Gemma2-2B)

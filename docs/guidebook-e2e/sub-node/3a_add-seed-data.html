@@ -193,7 +193,13 @@
 <tr><td>413</td><td><code>PDF has too many pages</code> (> 100)</td></tr>
 <tr><td>400</td><td><code>failed to parse PDF</code></td></tr>
 <tr><td>422</td><td>schema mismatch ที่ Format Detection แก้ไม่ไหว</td></tr>
+<tr><td>422</td><td><code>classification labels average N characters (threshold: 30). ...Did you upload a QA file by mistake?</code> — semantic guard: เนื้อหา label ดูเหมือน free-text ไม่ใช่ category สั้นๆ</td></tr>
+<tr><td>422</td><td><code>classification expects a closed label set, but N/M rows have unique 'label' values (ratio=X, threshold: 0.5)...</code> — semantic guard: labels ไม่ใช่ closed set (อาจเป็น QA file ที่ Format Detection rename มาผิด)</td></tr>
 </table>
+
+<div class="callout warn">
+  <strong>Semantic guard (cls เท่านั้น):</strong> หลังจาก Format Detection rename keys แล้ว ระบบจะเช็คเพิ่มสำหรับ classification ว่า labels ดูเป็น closed set จริงไหม — avg ความยาว ≤ 30 chars และ unique_ratio ≤ 0.5 (เมื่อ ≥10 rows). ถ้าไม่ผ่าน → 422 พร้อมข้อความเตือนชัดเจน. ผลคือ: อัปโหลด <code>qa_canonical.jsonl</code> เข้า classification project จะถูก reject ตรงนี้แทนที่จะปล่อยเข้าระบบ. tool_calling validation อยู่ที่ Pydantic <code>ToolCallingSample.answer</code> อยู่แล้ว; qa ไม่มี closed set ให้ enforce
+</div>
 
 <div class="nav">
   <a href="2_gen-data-condition.html">← Node 2</a>

@@ -177,17 +177,6 @@ _RAW_BASE_MODELS: list[BaseModelInfo] = [
         license="apache-2.0",
         notes="Drop-in upgrade for Qwen2.5-1.5B. Thinking-mode capable; strong general-purpose at sub-2B size.",
     ),
-    # ---- DeepSeek-R1 distilled (reasoning specialist) ---------------------
-    BaseModelInfo(
-        id="unsloth/DeepSeek-R1-Distill-Qwen-1.5B-unsloth-bnb-4bit",
-        display_name="DeepSeek-R1-Distill-Qwen 1.5B (4-bit)",
-        family="qwen",
-        params_billions=1.78,
-        context_length=131072,
-        recommended_max_seq_length=2048,
-        license="mit",
-        notes="Reasoning specialist — chain-of-thought built-in via R1 distillation. Best <=2B option for math/code/step-by-step tasks.",
-    ),
     # ---- SmolLM (HuggingFace native, fine-tune-optimized) -----------------
     BaseModelInfo(
         id="unsloth/SmolLM2-1.7B-Instruct-bnb-4bit",

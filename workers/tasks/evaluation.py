@@ -129,9 +129,19 @@ def run_evaluation(
                 raise ValueError(f"unsupported task_type: {task_type}")
 
             # ---- 5. Optional LLM judge -------------------------------------
+            # Judge applies to free-form outputs only (QA, tool-calling). For
+            # classification the closed-set rule-based metrics (accuracy /
+            # f1_macro / confusion_matrix) are the right tool — surface a note
+            # in metrics_json instead of returning a silent llm_judge_score=null,
+            # which used to confuse callers who passed use_llm_judge=true.
             judge_score: float | None = None
             judge_model_resolved: str | None = None
-            if use_llm_judge and task_type in (TaskType.QA, TaskType.TOOL_CALLING):
+            if use_llm_judge and task_type is TaskType.CLASSIFICATION:
+                metrics["llm_judge_notes"] = (
+                    "LLM judge does not apply to classification — "
+                    "use rule-based metrics (accuracy, f1_macro) instead."
+                )
+            elif use_llm_judge and task_type in (TaskType.QA, TaskType.TOOL_CALLING):
                 from ai_engine.data_gen.openrouter_client import OpenRouterClient
                 from ai_engine.evaluation.llm_judge import judge_rows
 

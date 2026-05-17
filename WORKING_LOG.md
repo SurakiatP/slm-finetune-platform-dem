@@ -6,6 +6,68 @@
 
 ---
 
+## Session 23 — drop DeepSeek-R1-Distill + close Session-22 Findings #1 & #2 (2026-05-17)
+
+**Who:** Claude (Opus 4.7) + parks
+**Status:** ✅ Catalog reduced 11 → 10. ✅ Finding #2 closed (silent judge-skip on cls now surfaces `metrics_json.llm_judge_notes`). ✅ Finding #1 closed (semantic guard for classification upload-seed). Unit tests 122/122 green (10 new for semantic_guard).
+
+**Why & What:**
+- parks asked how reasoning-model training (`unsloth/DeepSeek-R1-Distill-Qwen-1.5B-unsloth-bnb-4bit`) differs from regular instruct SLMs. Audit found 6 gaps in the platform that make R1-Distill produce a degraded model when fine-tuned through our pipeline:
+  - `_CHAT_TEMPLATE_BY_PREFIX` in `ai_engine/training/unsloth_trainer.py:40-44` has no entry for `unsloth/deepseek-r1` → falls through to `chatml` which doesn't preserve `<think>` token boundaries.
+  - `data_formatters.py` formatters are 2-message `user→assistant` only — no slot for chain-of-thought / reasoning chain. Training data with `reasoning` field would be silently dropped.
+  - Tool-calling formatter system prompt (`CHATML_SYSTEM_GENERIC`) explicitly says "Respond ONLY with a JSON object" — suppresses reasoning entirely.
+  - SDG pipeline generates (Q, A) tuples with no reasoning chains. Training R1-Distill on this data destroys the reasoning capability it was distilled for.
+  - Rule-based eval metrics (`metrics_qa.py` / `metrics_classification.py`) don't strip `<think>...</think>` before comparison → R1 output `<think>...</think>ปัญหาเทคนิค` vs ground-truth `ปัญหาเทคนิค` scores 0 even when correct.
+  - LLM judge sees raw `<think>` blocks in candidates → rubric scores degraded.
+- Decision: **remove from supported list rather than fix all 6**. Reasoning support is a Phase 10 item (new TaskType + reasoning-aware formatter + R1 chat-template entry + eval pre-processor), too big to bundle into the smoke-v2 PR. Keeping the model dropdown entry while ~half the pipeline misbehaves on it is over-promising to users. Re-add when reasoning is a real feature.
+- Reference table from this session's audit (kept here for context when reasoning support is reintroduced):
+
+| Layer | What needs to change to properly support R1-Distill |
+|-------|------------------------------------------------------|
+| `_CHAT_TEMPLATE_BY_PREFIX` | Add `("unsloth/deepseek-r1", "<r1-template-name>")` once verified against `unsloth.chat_templates.CHAT_TEMPLATES` |
+| `_EOS_BY_PREFIX` | R1-Distill uses Qwen tokenizer (`<|im_end|>` already in qwen2.5 fallback) but reasoning end token differs |
+| `data_formatters.py` | New `format_reasoning_qa(row)` that packs `<think>{reasoning}</think>{answer}` into assistant content |
+| `data_formats.py` (schema) | New `ReasoningQASample` with `reasoning` field; or extend QA schema with optional `reasoning` |
+| `TaskType` enum | Likely `reasoning_qa` to keep formatter dispatch clean |
+| SDG prompts | Need 2-step generation (first reasoning, then answer) or single-shot with explicit `<think>` instruction |
+| Eval pre-processor | Strip `<think>...</think>` before passing to `metrics_qa`/`metrics_classification`; pass full output to LLM judge but include in rubric "ignore reasoning blocks for scoring" |
+
+**Files touched (DeepSeek removal):**
+- `api/routers/tasks_meta.py`: removed `BaseModelInfo` entry (lines 180-190) — catalog now 10 entries.
+- `api/services/base_model_catalog.py`: removed `"unsloth/DeepSeek-R1-Distill-Qwen-1.5B-unsloth-bnb-4bit": "deepseek-r1:1.5b"` line — mapping now 10 entries, 1:1 mirror with `tasks_meta.py` restored.
+- `api/services/training_service.py:46`: comment updated `≤1.5B (Qwen2.5-1.5B, DeepSeek-R1)` → `≤1.5B (Qwen2.5-1.5B)`. Bucket logic itself unchanged — the 1.78B test param is kept as a bucket-upper-boundary regression case.
+- `tests/unit/test_training_config.py:180`: comment updated to note `1.78` is kept as boundary case (no longer represents a real model).
+- `docs/runbooks/training-hpo.md:551`: comment in VRAM ceiling table updated.
+
+**Files touched (Finding #2 fix — silent judge-skip on classification):**
+- `workers/tasks/evaluation.py:131-148`: added an explicit `elif use_llm_judge and task_type is TaskType.CLASSIFICATION` branch that writes `metrics["llm_judge_notes"] = "LLM judge does not apply to classification — use rule-based metrics (accuracy, f1_macro) instead."` instead of silently falling through. Existing QA/tool_calling branch unchanged. Worker contract: `llm_judge_score` still returns `null` for cls (no behavior change for callers reading that field), but `metrics_json.llm_judge_notes` is now populated so the API response self-documents the skip.
+- `docs/guidebook-e2e/sub-node/10_llm-judge.html`: added a warn callout under "วัตถุประสงค์" stating cls is auto-skipped + new row in Error cases table documenting `llm_judge_score=null + metrics_json.llm_judge_notes populated` symptom.
+
+**Files touched (Finding #1 fix — semantic guard on upload-seed classification):**
+- `ai_engine/data_gen/semantic_guard.py` **(new)**: pure-function `assert_semantic_fit(rows, task_type)` + `SemanticGuardError`. For classification only, rejects rows where `avg(len(label)) > 30` OR (when n≥10) `len(set(labels))/n > 0.5`. tool_calling and qa are deliberate no-ops (former enforced by Pydantic `ToolCallingSample.answer` validator; latter has no closed set).
+- `api/services/datasets_service.py`: import `SemanticGuardError, assert_semantic_fit`. In `_upload_jsonl_seed`, after the `if not valid` raise, wrap `assert_semantic_fit(valid, task_type)` in try/except and re-raise as `HTTPException(422)`. Order matters — must run AFTER `parse_samples` succeeds (we need string-typed `label` values).
+- `tests/unit/test_semantic_guard.py` **(new, 10 cases)**: passes — canonical Thai-support seed, tiny test dataset (ratio check skipped), at-threshold case (ratio=0.5 exactly), no-op for tool/qa/empty. Rejects — Session 22 qa-as-cls exact reproduction, long-but-low-cardinality labels (constant 50-char footer), high-cardinality short labels (ID column misidentified).
+- `docs/guidebook-e2e/sub-node/3a_add-seed-data.html`: 2 new rows in Error cases table + warn callout explaining the guard's scope (cls only, thresholds, why tool/qa exempt).
+
+**Memory updated:**
+- `format_detection_semantic_gap.md`: rewritten to reflect closure (status table per task type; tuning rationale for future guards).
+
+**Test Summary:**
+- `tests/unit/test_training_config.py`: 29/29 ✅
+- `tests/unit/test_semantic_guard.py`: 10/10 ✅ (new)
+- `tests/unit/` full sweep: 122/122 ✅
+- `python -m py_compile workers/tasks/evaluation.py`: clean
+- No code references remain — `Grep "DeepSeek-R1|deepseek-r1|DeepSeek"` after edits returns only this WORKING_LOG entry, TASK_TRACKER history, and the `WORKING_LOG` session-20 commit-hash line `01e4626` (historical, do not edit).
+- **Untested live (both findings):** need one round-trip on vast.ai to confirm (a) `metrics_json.llm_judge_notes` lands in the persisted EvaluationRun row for cls+judge=true; (b) uploading `qa_canonical.jsonl` into a cls project now returns 422 with the threshold message instead of accepting silently. Neither is a regression risk — worst case for (a) the new branch is silent and we keep Session-22 behavior; worst case for (b) is a 422 that future-us tunes the thresholds for.
+
+**Next Action:**
+- Roll up Session 22 findings + Session 23 closures into the PR `feature/training-eval-smoke-v2` → `dev` body when parks opens it. Findings #1 and #2 now closed; Finding #3 (smoke quality) is by design (`docs/guidebook-e2e/sub-node/9_evaluation.html` already documents the expected ranges).
+- ⚠️ Rotate the OpenRouter key (`sk-or-v1-3ecce...`) — visible in chat + `.env`, flagged across 3 sessions now.
+
+**Blockers:** None.
+
+---
+
 ## Session 22 — full guidebook-e2e autonomous test on vast.ai (2026-05-16)
 
 **Who:** Claude (Opus 4.7), autonomous, while parks AFK

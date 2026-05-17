@@ -548,7 +548,7 @@ POST /api/v1/trainings
 | base_model (params) | seq=1024 | seq=2048 | seq=4096 | seq=8192 | trial time<br>(3 epochs, 200 rows) |
 |---|---|---|---|---|---|
 | ≤1B (TinyLlama, Llama-3.2-1B, Qwen3-0.6B, Qwen2.5-0.5B) | batch=16 | **batch=8** | batch=4 | batch=2 | ~15-30 min |
-| ≤1.5B (Qwen2.5-1.5B, DeepSeek-R1-1.5B) | batch=8 | **batch=4** | batch=2 | batch=1 | ~30-45 min |
+| ≤1.5B (Qwen2.5-1.5B) | batch=8 | **batch=4** | batch=2 | batch=1 | ~30-45 min |
 | ≤2B (SmolLM2-1.7B, Qwen3-1.7B, Gemma2-2B) | batch=4 | **batch=4** | batch=2 | batch=1 | ~45-60 min |
 | ≤3B (Llama-3.2-3B, Qwen2.5-3B) | batch=4 | **batch=2** | batch=1 | batch=1 | ~1.5-3 hr |
 

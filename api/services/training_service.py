@@ -43,7 +43,7 @@ _PARAMS_BY_MODEL_ID: dict[str, float] = {m.id: m.params_billions for m in SUPPOR
 _MAX_SAFE_BATCH_3060: tuple[tuple[float, tuple[tuple[int, int], ...]], ...] = (
     # (params_upper_billions, ((seq_upper, max_batch), ...))
     (1.2, ((1024, 16), (2048, 8), (4096, 4), (8192, 2))),  # ≤1B (TinyLlama, Llama-1B)
-    (1.8, ((1024, 8), (2048, 4), (4096, 2), (8192, 1))),   # ≤1.5B (Qwen2.5-1.5B, DeepSeek-R1)
+    (1.8, ((1024, 8), (2048, 4), (4096, 2), (8192, 1))),   # ≤1.5B (Qwen2.5-1.5B)
     (2.2, ((1024, 4), (2048, 4), (4096, 2), (8192, 1))),   # ≤2B (SmolLM2, Qwen3-1.7B, Gemma2-2B)
     (3.5, ((1024, 4), (2048, 2), (4096, 1), (8192, 1))),   # ≤3B (Llama-3B, Qwen2.5-3B)
 )
