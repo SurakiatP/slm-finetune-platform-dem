@@ -773,6 +773,31 @@ Run evaluation (rule-based metrics + optional LLM judge). **Async** — 202.
 - `409 Dataset has no rows persisted yet` — dataset ยังว่าง (SDG ไม่จบ / upload fail)
 - `400 Dataset task_type=classification does not match artifact task_type=qa` — task_type ไม่ตรง
 
+### `GET /api/v1/evaluations`
+
+List eval runs (paginated, ordered by `created_at` DESC). Filters optional — all combinable.
+
+**Query params:**
+| Param | Type | Default | Note |
+|-------|------|---------|------|
+| `model_artifact_id` | UUID | — | filter เฉพาะ eval ของ model ตัวนี้ |
+| `dataset_id` | UUID | — | filter เฉพาะ eval ที่รันบน dataset ตัวนี้ (รวม holdout sets) |
+| `status` | enum | — | `pending` / `running` / `completed` / `failed` / `cancelled` |
+| `limit` | int (1..200) | 50 | |
+| `offset` | int (≥0) | 0 | |
+
+**Response 200** — `Page[EvaluationResponse]`:
+```json
+{
+  "items": [ { "id": "...", "model_artifact_id": "...", "dataset_id": "...", "status": "completed", "metrics_json": {...}, "llm_judge_score": 5.0, ... } ],
+  "total": 12,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+> 💡 **FE pattern:** ใน playground หน้า model detail ใช้ `GET /evaluations?model_artifact_id=<id>` ดึงประวัติ eval ทั้งหมดของ model นั้นมาแสดงเป็นตาราง (rule-based + judge). ใน leaderboard ตาม dataset ใช้ `?dataset_id=<id>` แทน
+
 ### `GET /api/v1/evaluations/{id}`
 
 Eval detail.
