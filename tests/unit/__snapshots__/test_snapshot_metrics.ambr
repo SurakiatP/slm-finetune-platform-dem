@@ -1,0 +1,207 @@
+# serializer version: 1
+# name: test_metrics_classification_all_wrong
+  dict({
+    'accuracy': 0.0,
+    'confusion_matrix': list([
+      list([
+        0,
+        0,
+        1,
+      ]),
+      list([
+        1,
+        0,
+        0,
+      ]),
+      list([
+        0,
+        1,
+        0,
+      ]),
+    ]),
+    'f1_macro': 0.0,
+    'f1_per_label': dict({
+      'คำถามทั่วไป': 0.0,
+      'ปัญหาการเงิน': 0.0,
+      'ปัญหาเทคนิค': 0.0,
+    }),
+    'labels': list([
+      'ปัญหาเทคนิค',
+      'ปัญหาการเงิน',
+      'คำถามทั่วไป',
+    ]),
+    'n': 3,
+    'out_of_set_predictions': 0,
+  })
+# ---
+# name: test_metrics_classification_partial
+  dict({
+    'accuracy': 0.6,
+    'confusion_matrix': list([
+      list([
+        2,
+        0,
+        0,
+      ]),
+      list([
+        1,
+        0,
+        0,
+      ]),
+      list([
+        0,
+        1,
+        1,
+      ]),
+    ]),
+    'f1_macro': 0.48888888888888893,
+    'f1_per_label': dict({
+      'คำถามทั่วไป': 0.6666666666666666,
+      'ปัญหาการเงิน': 0.0,
+      'ปัญหาเทคนิค': 0.8,
+    }),
+    'labels': list([
+      'ปัญหาเทคนิค',
+      'ปัญหาการเงิน',
+      'คำถามทั่วไป',
+    ]),
+    'n': 5,
+    'out_of_set_predictions': 0,
+  })
+# ---
+# name: test_metrics_classification_perfect
+  dict({
+    'accuracy': 1.0,
+    'confusion_matrix': list([
+      list([
+        2,
+        0,
+        0,
+      ]),
+      list([
+        0,
+        1,
+        0,
+      ]),
+      list([
+        0,
+        0,
+        1,
+      ]),
+    ]),
+    'f1_macro': 1.0,
+    'f1_per_label': dict({
+      'คำถามทั่วไป': 1.0,
+      'ปัญหาการเงิน': 1.0,
+      'ปัญหาเทคนิค': 1.0,
+    }),
+    'labels': list([
+      'ปัญหาเทคนิค',
+      'ปัญหาการเงิน',
+      'คำถามทั่วไป',
+    ]),
+    'n': 4,
+    'out_of_set_predictions': 0,
+  })
+# ---
+# name: test_metrics_classification_with_out_of_set
+  dict({
+    'accuracy': 0.6666666666666666,
+    'confusion_matrix': list([
+      list([
+        0,
+        0,
+        0,
+      ]),
+      list([
+        0,
+        1,
+        0,
+      ]),
+      list([
+        0,
+        0,
+        1,
+      ]),
+    ]),
+    'f1_macro': 0.6666666666666666,
+    'f1_per_label': dict({
+      'คำถามทั่วไป': 1.0,
+      'ปัญหาการเงิน': 1.0,
+      'ปัญหาเทคนิค': 0.0,
+    }),
+    'labels': list([
+      'ปัญหาเทคนิค',
+      'ปัญหาการเงิน',
+      'คำถามทั่วไป',
+    ]),
+    'n': 3,
+    'out_of_set_predictions': 1,
+  })
+# ---
+# name: test_metrics_qa_all_wrong
+  dict({
+    'bleu': 0.0,
+    'exact_match': 0.0,
+    'n': 3,
+    'rouge1': 0.0,
+    'rouge2': 0.0,
+    'rougeL': 0.0,
+  })
+# ---
+# name: test_metrics_qa_paraphrased
+  dict({
+    'bleu': 0.1693775827182049,
+    'exact_match': 0.0,
+    'n': 3,
+    'rouge1': 0.8717948717948718,
+    'rouge2': 0.3212121212121212,
+    'rougeL': 0.6581196581196581,
+  })
+# ---
+# name: test_metrics_qa_perfect_match
+  dict({
+    'bleu': 1.0000000000000004,
+    'exact_match': 1.0,
+    'n': 3,
+    'rouge1': 1.0,
+    'rouge2': 0.3333333333333333,
+    'rougeL': 1.0,
+  })
+# ---
+# name: test_metrics_tool_invalid_json
+  dict({
+    'arg_accuracy': 0.0,
+    'exact_match': 0.0,
+    'json_validity': 0.0,
+    'n': 1,
+    'name_accuracy': 0.0,
+  })
+# ---
+# name: test_metrics_tool_mixed
+  dict({
+    'arg_accuracy': 0.5,
+    'exact_match': 0.25,
+    'json_validity': 0.75,
+    'n': 4,
+    'name_accuracy': 0.5,
+  })
+# ---
+# name: test_metrics_tool_name_correct_args_wrong
+  dict({
+    'arg_accuracy': 0.0,
+    'exact_match': 0.0,
+    'json_validity': 1.0,
+    'n': 1,
+    'name_accuracy': 1.0,
+  })
+# ---
+# name: test_metrics_tool_perfect
+  dict({
+    'arg_accuracy': 1.0,
+    'exact_match': 1.0,
+    'json_validity': 1.0,
+    'n': 2,
+    'name_accuracy': 1.0,
+  })
+# ---

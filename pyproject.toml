@@ -74,6 +74,9 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "types-requests>=2.32.0",
+    # Snapshot / characterization-test harness (pilot).
+    # Tier 1 — pure-function snapshots:
+    "syrupy>=4.6.0",
 ]
 
 [project.urls]

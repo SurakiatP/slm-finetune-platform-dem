@@ -1,0 +1,563 @@
+# serializer version: 1
+# name: test_generator_prompt_classification_normal
+  tuple(
+    '''
+      You are a synthetic data generation assistant for fine-tuning small language models. You produce high-quality, diverse training data in strict JSON format. You never include explanations or markdown — only the JSON object matching the schema requested.
+      
+      [Role] You generate CLASSIFICATION training data. Each output row is {"text": "<input>", "label": "<one of the closed label set>"}.
+    ''',
+    '''
+      [Task]
+      ระบบจัดประเภทคำร้องขอของลูกค้า support
+      
+      [Closed label set — never invent a new label]
+      ["ปัญหาเทคนิค", "ปัญหาการเงิน", "คำถามทั่วไป", "unknown"]
+      
+      [Target label]
+      'ปัญหาเทคนิค'
+      
+      [Few-shot examples (2 rows)]
+      [
+        {
+          "text": "Wi-Fi กระตุก ใช้งานไม่ได้",
+          "label": "ปัญหาเทคนิค"
+        },
+        {
+          "text": "อยากขอคืนเงิน",
+          "label": "ปัญหาการเงิน"
+        }
+      ]
+      
+      [Diversity rule for this batch]
+      ใช้ภาษาเป็นทางการ เน้นถามแบบยาว
+      
+      [Difficulty]
+      medium
+      
+      [Output Instructions]
+      1. Produce EXACTLY 5 rows in the schema {"text": "...", "label": "..."}.
+      2. Apply the diversity rule and difficulty above to keep this batch distinct from anything that came before.
+      3. Output ONLY this JSON object (no prose, no markdown fences):
+         {"samples": [<5 rows>]}
+    ''',
+  )
+# ---
+# name: test_generator_prompt_classification_sentinel
+  tuple(
+    '''
+      You are a synthetic data generation assistant for fine-tuning small language models. You produce high-quality, diverse training data in strict JSON format. You never include explanations or markdown — only the JSON object matching the schema requested.
+      
+      [Role] You generate CLASSIFICATION training data. Each output row is {"text": "<input>", "label": "<one of the closed label set>"}.
+    ''',
+    '''
+      [Task]
+      ระบบจัดประเภทคำร้องขอของลูกค้า support
+      
+      [Closed label set — never invent a new label]
+      ["ปัญหาเทคนิค", "ปัญหาการเงิน", "คำถามทั่วไป", "unknown"]
+      
+      [Target label]
+      'unknown' — generate inputs that DO NOT fit any of the real labels above. Off-topic, ambiguous, or out-of-domain prompts.
+      
+      [Diversity rule for this batch]
+      off-topic small talk
+      
+      [Difficulty]
+      easy
+      
+      [Output Instructions]
+      1. Produce EXACTLY 5 rows in the schema {"text": "...", "label": "..."}.
+      2. Apply the diversity rule and difficulty above to keep this batch distinct from anything that came before.
+      3. Output ONLY this JSON object (no prose, no markdown fences):
+         {"samples": [<5 rows>]}
+    ''',
+  )
+# ---
+# name: test_generator_prompt_qa
+  tuple(
+    '''
+      You are a synthetic data generation assistant for fine-tuning small language models. You produce high-quality, diverse training data in strict JSON format. You never include explanations or markdown — only the JSON object matching the schema requested.
+      
+      [Role] You generate QUESTION-ANSWERING training data. Each output row is {"question": "<user question>", "answer": "<helpful answer>"}.
+    ''',
+    '''
+      [Task]
+      ระบบตอบคำถามนโยบายการคืนสินค้า
+      
+      [Few-shot examples (1 rows)]
+      [
+        {
+          "question": "นโยบายคืนสินค้ามีกี่วัน?",
+          "answer": "ภายใน 7 วันหลังได้รับ"
+        }
+      ]
+      
+      [Diversity rule for this batch]
+      ใช้ภาษาเป็นทางการ เน้นถามแบบยาว
+      
+      [Difficulty]
+      hard
+      
+      [Output Instructions]
+      1. Produce EXACTLY 5 rows in the schema {"question": "...", "answer": "..."}.
+      2. Apply the diversity rule and difficulty above to keep this batch distinct from anything that came before.
+      3. Output ONLY this JSON object (no prose, no markdown fences):
+         {"samples": [<5 rows>]}
+    ''',
+  )
+# ---
+# name: test_generator_prompt_tool_calling_normal
+  tuple(
+    '''
+      You are a synthetic data generation assistant for fine-tuning small language models. You produce high-quality, diverse training data in strict JSON format. You never include explanations or markdown — only the JSON object matching the schema requested.
+      
+      [Role] You generate TOOL CALLING training data. Each output row is {"question": "<user instruction>", "answer": "<JSON STRING containing \"name\" and \"parameters\">"}. The `answer` field MUST be a string (JSON-encoded), not an object.
+    ''',
+    '''
+      [Task]
+      ระบบ smart home สำหรับสั่งงานด้วยภาษาธรรมชาติ
+      
+      [Available tools — only invoke from this list; parameter names + types must match]
+      [
+        {
+          "name": "set_volume",
+          "description": "Adjust speaker volume.",
+          "parameters": {
+            "level": {
+              "type": "integer",
+              "description": "0-100",
+              "required": false
+            }
+          }
+        },
+        {
+          "name": "no_tool_needed",
+          "description": "Sentinel — no tool applies.",
+          "parameters": {}
+        }
+      ]
+      
+      [Target tool]
+      'set_volume'
+      
+      [Few-shot examples (1 rows)]
+      [
+        {
+          "question": "เปิดเสียงดังหน่อย",
+          "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":80}}"
+        }
+      ]
+      
+      [Diversity rule for this batch]
+      ใช้ภาษาเป็นทางการ เน้นถามแบบยาว
+      
+      [Difficulty]
+      medium
+      
+      [Output Instructions]
+      1. Produce EXACTLY 5 rows in the schema {"question": "...", "answer": "{\"name\":\"...\",""parameters\":{...}}"}.
+      2. Apply the diversity rule and difficulty above to keep this batch distinct from anything that came before.
+      3. Output ONLY this JSON object (no prose, no markdown fences):
+         {"samples": [<5 rows>]}
+    ''',
+  )
+# ---
+# name: test_generator_prompt_tool_calling_sentinel
+  tuple(
+    '''
+      You are a synthetic data generation assistant for fine-tuning small language models. You produce high-quality, diverse training data in strict JSON format. You never include explanations or markdown — only the JSON object matching the schema requested.
+      
+      [Role] You generate TOOL CALLING training data. Each output row is {"question": "<user instruction>", "answer": "<JSON STRING containing \"name\" and \"parameters\">"}. The `answer` field MUST be a string (JSON-encoded), not an object.
+    ''',
+    '''
+      [Task]
+      ระบบ smart home สำหรับสั่งงานด้วยภาษาธรรมชาติ
+      
+      [Available tools — only invoke from this list; parameter names + types must match]
+      [
+        {
+          "name": "set_volume",
+          "description": "Adjust speaker volume.",
+          "parameters": {
+            "level": {
+              "type": "integer",
+              "description": "0-100",
+              "required": false
+            }
+          }
+        },
+        {
+          "name": "no_tool_needed",
+          "description": "Sentinel — no tool applies.",
+          "parameters": {}
+        }
+      ]
+      
+      [Target tool]
+      'no_tool_needed' — generate user inputs that do NOT match any real tool (off-topic small talk, ambiguous queries, requests outside the catalog). The answer should call the sentinel tool with no parameters.
+      
+      [Diversity rule for this batch]
+      off-topic small talk
+      
+      [Difficulty]
+      easy
+      
+      [Output Instructions]
+      1. Produce EXACTLY 5 rows in the schema {"question": "...", "answer": "{\"name\":\"...\",""parameters\":{...}}"}.
+      2. Apply the diversity rule and difficulty above to keep this batch distinct from anything that came before.
+      3. Output ONLY this JSON object (no prose, no markdown fences):
+         {"samples": [<5 rows>]}
+    ''',
+  )
+# ---
+# name: test_judge_prompt_classification
+  tuple(
+    'You are an evaluator of synthetic training data. You score one row on three axes — fidelity, naturalness, utility — each in [0.0, 1.0]. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation outside the `reasoning` field.',
+    '''
+      [Task description]
+      ระบบจัดประเภทคำร้องขอของลูกค้า support
+      
+      [Row to evaluate]
+      {
+        "text": "อยากขอคืนเงิน",
+        "label": "ปัญหาการเงิน"
+      }
+      
+      [Rubric]
+      fidelity     — does the text actually belong to the assigned label given the task description?
+      naturalness  — would a real user write text like this?
+      utility      — is this row useful training material for the described classifier?
+      
+      [Closed label set]
+      ["ปัญหาเทคนิค", "ปัญหาการเงิน", "คำถามทั่วไป", "unknown"]
+      
+      [Output Instructions]
+      Output ONLY this JSON object (no markdown, no explanation outside `reasoning`):
+      {"fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>, "reasoning": "<one short sentence>"}
+    ''',
+  )
+# ---
+# name: test_judge_prompt_classification_sentinel
+  tuple(
+    'You are an evaluator of synthetic training data. You score one row on three axes — fidelity, naturalness, utility — each in [0.0, 1.0]. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation outside the `reasoning` field.',
+    '''
+      [Task description]
+      ระบบจัดประเภทคำร้องขอของลูกค้า support
+      
+      [Row to evaluate]
+      {
+        "text": "สวัสดีตอนเช้า",
+        "label": "unknown"
+      }
+      
+      [Rubric]
+      fidelity     — is the text genuinely off-topic / out-of-scope for the closed real-label set, making 'unknown' the correct catch-all assignment? Score HIGH (>=0.8) if YES.
+      naturalness  — would a real user actually send this kind of off-topic / ambiguous message in any context?
+      utility      — is this 'unknown'-labeled row useful training material for teaching the classifier when to refuse classification?
+      
+      [Sentinel row]
+      This row was deliberately produced for the off-topic / out-of-scope sentinel class. Score HIGH if the row genuinely fails to fit any real class/tool (which is what makes it useful training data for teaching the model when to refuse). Do NOT penalise it for not matching a real label or tool — that mismatch IS the point.
+      
+      [Closed label set]
+      ["ปัญหาเทคนิค", "ปัญหาการเงิน", "คำถามทั่วไป", "unknown"]
+      
+      [Output Instructions]
+      Output ONLY this JSON object (no markdown, no explanation outside `reasoning`):
+      {"fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>, "reasoning": "<one short sentence>"}
+    ''',
+  )
+# ---
+# name: test_judge_prompt_qa
+  tuple(
+    'You are an evaluator of synthetic training data. You score one row on three axes — fidelity, naturalness, utility — each in [0.0, 1.0]. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation outside the `reasoning` field.',
+    '''
+      [Task description]
+      ระบบตอบคำถามนโยบายการคืนสินค้า
+      
+      [Row to evaluate]
+      {
+        "question": "คืนสินค้ากี่วัน?",
+        "answer": "7 วันหลังได้รับ"
+      }
+      
+      [Rubric]
+      fidelity     — does the answer correctly answer the question, consistent with the task description?
+      naturalness  — would a real user phrase the question this way and find this answer helpful?
+      utility      — is this Q&A pair useful training material for the described task?
+      
+      [Output Instructions]
+      Output ONLY this JSON object (no markdown, no explanation outside `reasoning`):
+      {"fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>, "reasoning": "<one short sentence>"}
+    ''',
+  )
+# ---
+# name: test_judge_prompt_tool_calling
+  tuple(
+    'You are an evaluator of synthetic training data. You score one row on three axes — fidelity, naturalness, utility — each in [0.0, 1.0]. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation outside the `reasoning` field.',
+    '''
+      [Task description]
+      ระบบ smart home สำหรับสั่งงานด้วยภาษาธรรมชาติ
+      
+      [Row to evaluate]
+      {
+        "question": "เปิดเสียงดังหน่อย",
+        "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":80}}"
+      }
+      
+      [Rubric]
+      fidelity     — given the user's question, is the chosen tool + parameter set the correct one?
+      naturalness  — would a real user phrase the request this way?
+      utility      — is this row useful training material for the described tool-calling task?
+      
+      [Tool catalog]
+      [
+        {
+          "name": "set_volume",
+          "description": "Adjust speaker volume.",
+          "parameters": {
+            "level": {
+              "type": "integer",
+              "description": "0-100",
+              "required": false
+            }
+          }
+        },
+        {
+          "name": "no_tool_needed",
+          "description": "Sentinel — no tool applies.",
+          "parameters": {}
+        }
+      ]
+      
+      [Output Instructions]
+      Output ONLY this JSON object (no markdown, no explanation outside `reasoning`):
+      {"fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>, "reasoning": "<one short sentence>"}
+    ''',
+  )
+# ---
+# name: test_judge_prompt_tool_calling_sentinel
+  tuple(
+    'You are an evaluator of synthetic training data. You score one row on three axes — fidelity, naturalness, utility — each in [0.0, 1.0]. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation outside the `reasoning` field.',
+    '''
+      [Task description]
+      ระบบ smart home สำหรับสั่งงานด้วยภาษาธรรมชาติ
+      
+      [Row to evaluate]
+      {
+        "question": "วันนี้อากาศดีไหม",
+        "answer": "{\"name\":\"no_tool_needed\",\"parameters\":{}}"
+      }
+      
+      [Rubric]
+      fidelity     — is the user's question genuinely outside the available tool catalog (off-topic, ambiguous, or for a tool that simply does not exist in the catalog), making 'no_tool_needed' the correct refusal? Score HIGH (>=0.8) if YES.
+      naturalness  — would a real user phrase such an out-of-scope request this way?
+      utility      — is this 'no_tool_needed' row useful training material for teaching the model when to refuse to call any tool?
+      
+      [Sentinel row]
+      This row was deliberately produced for the off-topic / out-of-scope sentinel class. Score HIGH if the row genuinely fails to fit any real class/tool (which is what makes it useful training data for teaching the model when to refuse). Do NOT penalise it for not matching a real label or tool — that mismatch IS the point.
+      
+      [Tool catalog]
+      [
+        {
+          "name": "set_volume",
+          "description": "Adjust speaker volume.",
+          "parameters": {
+            "level": {
+              "type": "integer",
+              "description": "0-100",
+              "required": false
+            }
+          }
+        },
+        {
+          "name": "no_tool_needed",
+          "description": "Sentinel — no tool applies.",
+          "parameters": {}
+        }
+      ]
+      
+      [Output Instructions]
+      Output ONLY this JSON object (no markdown, no explanation outside `reasoning`):
+      {"fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>, "reasoning": "<one short sentence>"}
+    ''',
+  )
+# ---
+# name: test_meta_prompt_classification[False]
+  tuple(
+    'You design diversity rules for a synthetic data generation pipeline. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation.',
+    '''
+      [Task type]
+      classification
+      
+      [Task description]
+      ระบบจัดประเภทคำร้องขอของลูกค้า support
+      
+      [Label set]
+      ["ปัญหาเทคนิค", "ปัญหาการเงิน", "คำถามทั่วไป", "unknown"]
+      
+      [Output Instructions]
+      Produce >= 8 stylistic diversity rules covering topic, phrasing, register, length, and edge cases for synthetic rows in this task. Each rule is one short sentence.
+      Output ONLY this JSON object: {"diversity_rules": ["...", ... (>=8)]}
+    ''',
+  )
+# ---
+# name: test_meta_prompt_classification[True]
+  tuple(
+    'You design diversity rules for a synthetic data generation pipeline. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation.',
+    '''
+      [Task type]
+      classification
+      
+      [Task description]
+      ระบบจัดประเภทคำร้องขอของลูกค้า support
+      
+      [Label set]
+      ["ปัญหาเทคนิค", "ปัญหาการเงิน", "คำถามทั่วไป", "unknown"]
+      
+      [Output Instructions]
+      Produce >= 8 stylistic diversity rules covering topic, phrasing, register, length, and edge cases for synthetic rows in this task. Each rule is one short sentence.
+      Also produce >= 5 rules describing OFF-TOPIC / out-of-scope / ambiguous user inputs that should land in the sentinel class.
+      Output ONLY this JSON object: {"diversity_rules": ["...", ... (>=8)], "unknown_diversity_rules": ["...", ... (>=5)]}
+    ''',
+  )
+# ---
+# name: test_meta_prompt_qa[False]
+  tuple(
+    'You design diversity rules for a synthetic data generation pipeline. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation.',
+    '''
+      [Task type]
+      qa
+      
+      [Task description]
+      ระบบตอบคำถามนโยบายการคืนสินค้า
+      
+      [Output Instructions]
+      Produce >= 8 stylistic diversity rules covering topic, phrasing, register, length, and edge cases for synthetic rows in this task. Each rule is one short sentence.
+      Output ONLY this JSON object: {"diversity_rules": ["...", ... (>=8)]}
+    ''',
+  )
+# ---
+# name: test_meta_prompt_qa[True]
+  tuple(
+    'You design diversity rules for a synthetic data generation pipeline. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation.',
+    '''
+      [Task type]
+      qa
+      
+      [Task description]
+      ระบบตอบคำถามนโยบายการคืนสินค้า
+      
+      [Output Instructions]
+      Produce >= 8 stylistic diversity rules covering topic, phrasing, register, length, and edge cases for synthetic rows in this task. Each rule is one short sentence.
+      Also produce >= 5 rules describing OFF-TOPIC / out-of-scope / ambiguous user inputs that should land in the sentinel class.
+      Output ONLY this JSON object: {"diversity_rules": ["...", ... (>=8)], "unknown_diversity_rules": ["...", ... (>=5)]}
+    ''',
+  )
+# ---
+# name: test_meta_prompt_tool_calling[False]
+  tuple(
+    'You design diversity rules for a synthetic data generation pipeline. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation.',
+    '''
+      [Task type]
+      tool_calling
+      
+      [Task description]
+      ระบบ smart home สำหรับสั่งงานด้วยภาษาธรรมชาติ
+      
+      [Tool catalog]
+      [
+        {
+          "name": "set_volume",
+          "description": "Adjust speaker volume.",
+          "parameters": {
+            "level": {
+              "type": "integer",
+              "description": "0-100",
+              "required": false
+            }
+          }
+        },
+        {
+          "name": "no_tool_needed",
+          "description": "Sentinel — no tool applies.",
+          "parameters": {}
+        }
+      ]
+      
+      [Output Instructions]
+      Produce >= 8 stylistic diversity rules covering topic, phrasing, register, length, and edge cases for synthetic rows in this task. Each rule is one short sentence.
+      Output ONLY this JSON object: {"diversity_rules": ["...", ... (>=8)]}
+    ''',
+  )
+# ---
+# name: test_meta_prompt_tool_calling[True]
+  tuple(
+    'You design diversity rules for a synthetic data generation pipeline. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation.',
+    '''
+      [Task type]
+      tool_calling
+      
+      [Task description]
+      ระบบ smart home สำหรับสั่งงานด้วยภาษาธรรมชาติ
+      
+      [Tool catalog]
+      [
+        {
+          "name": "set_volume",
+          "description": "Adjust speaker volume.",
+          "parameters": {
+            "level": {
+              "type": "integer",
+              "description": "0-100",
+              "required": false
+            }
+          }
+        },
+        {
+          "name": "no_tool_needed",
+          "description": "Sentinel — no tool applies.",
+          "parameters": {}
+        }
+      ]
+      
+      [Output Instructions]
+      Produce >= 8 stylistic diversity rules covering topic, phrasing, register, length, and edge cases for synthetic rows in this task. Each rule is one short sentence.
+      Also produce >= 5 rules describing OFF-TOPIC / out-of-scope / ambiguous user inputs that should land in the sentinel class.
+      Output ONLY this JSON object: {"diversity_rules": ["...", ... (>=8)], "unknown_diversity_rules": ["...", ... (>=5)]}
+    ''',
+  )
+# ---
+# name: test_pdf_qa_messages
+  list([
+    dict({
+      'content': 'You extract question-answer training pairs from documents. You output ONLY a JSON object matching the schema; no prose, no markdown.',
+      'role': 'system',
+    }),
+    dict({
+      'content': list([
+        dict({
+          'text': '''
+            [Task description]
+            ระบบตอบคำถามนโยบายการคืนสินค้า
+            
+            [Output Instructions]
+            1. Read the attached PDF and produce 5 diverse, factually-grounded Q&A pairs that test understanding of its content.
+            2. Each Q&A pair must be answerable from the document alone.
+            3. Vary question style: factual recall, comparison, 'why', procedural.
+            4. Answers should be concise (1–4 sentences) grounded in document text.
+            5. Output ONLY: {"samples": [{"question": "...", "answer": "..."}, ...]}
+          ''',
+          'type': 'text',
+        }),
+        dict({
+          'file': dict({
+            'file_data': 'data:application/pdf;base64,JVBERi0xLjQK<TRUNCATED>',
+            'filename': 'seed.pdf',
+          }),
+          'type': 'file',
+        }),
+      ]),
+      'role': 'user',
+    }),
+  ])
+# ---
