@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.models.evaluation_run import EvaluationRun
@@ -22,6 +22,7 @@ from api.schemas.evaluations import (
     EvaluationCreate,
     EvaluationResponse,
 )
+from api.schemas.responses import Page
 
 
 async def submit_evaluation_job(
@@ -102,6 +103,37 @@ async def submit_evaluation_job(
     )
 
 
+async def list_evaluations(
+    db: AsyncSession,
+    *,
+    model_artifact_id: UUID | None,
+    dataset_id: UUID | None,
+    status_filter: JobStatus | None,
+    limit: int,
+    offset: int,
+) -> Page[EvaluationResponse]:
+    """List evaluation runs, optionally filtered by artifact / dataset / status."""
+    base = select(EvaluationRun).order_by(EvaluationRun.created_at.desc())
+    count = select(func.count()).select_from(EvaluationRun)
+    if model_artifact_id is not None:
+        base = base.where(EvaluationRun.model_artifact_id == model_artifact_id)
+        count = count.where(EvaluationRun.model_artifact_id == model_artifact_id)
+    if dataset_id is not None:
+        base = base.where(EvaluationRun.dataset_id == dataset_id)
+        count = count.where(EvaluationRun.dataset_id == dataset_id)
+    if status_filter is not None:
+        base = base.where(EvaluationRun.status == status_filter)
+        count = count.where(EvaluationRun.status == status_filter)
+    total = (await db.execute(count)).scalar_one()
+    rows = (await db.execute(base.limit(limit).offset(offset))).scalars().all()
+    return Page[EvaluationResponse](
+        items=[EvaluationResponse.model_validate(r) for r in rows],
+        total=int(total),
+        limit=limit,
+        offset=offset,
+    )
+
+
 async def get_evaluation(
     db: AsyncSession,
     evaluation_id: UUID,
@@ -168,6 +200,7 @@ async def compare_evaluations(
 
 __all__ = [
     "submit_evaluation_job",
+    "list_evaluations",
     "get_evaluation",
     "compare_evaluations",
 ]
