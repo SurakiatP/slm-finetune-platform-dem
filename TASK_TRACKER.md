@@ -262,7 +262,42 @@ After B6 closed, exercising `POST /api/v1/models/{id}/export` against the new fl
 | HO.6 | Worker over-generates, splits, persists 2 datasets | ✅ | Done — commit `f555f8d` |
 | HO.7 | api_docs.md + FE integration pattern | ✅ | Done — commit `d0c8f67` |
 | HO.8 | Live SDG smoke (cls + tool + qa) with `holdout_size>0` | ✅ | Session 21 overnight smoke on RTX 3090 vast.ai. All 3 task types + negative (holdout=0) green. qa judge=3.9 leak-free. Artifacts: `docs/runbooks/session25-holdout-{state.json,log}` |
-| HO.9 | Open PR `feature/training-eval-smoke-v2` → `dev` | ⏳ | parks to open via `gh pr create` |
+| HO.9 | Open PR `feature/training-eval-smoke-v2` → `dev` | ⏳ | parks to open via `gh pr create`. Bundles Phase 11 + Phase 12 work |
+
+---
+
+## Phase 12 — Code Health + Refactor Safety (Session 24)
+
+> Branch: same `feature/training-eval-smoke-v2`. Closes a missing list
+> endpoint, removes vulture-flagged dead code, and lands the snapshot-harness
+> pilot so future refactor sessions have a characterization safety net.
+> Plan: [`~/.claude/plans/peppy-sauteeing-rain.md`](../../Users/parks/.claude/plans/peppy-sauteeing-rain.md).
+
+| ID | Task | Status | Next Step |
+|----|------|--------|-----------|
+| CH.1 | `GET /api/v1/evaluations` list endpoint (only resource missing one) | ✅ | Commits `31960bb` (service+router), `f6c9b1e` (api_docs.md), `1cb12e1` (guidebook Node 9). Filters: `model_artifact_id` / `dataset_id` / `status`. Same `Page[T]` envelope as other 4 resources |
+| CH.2 | Dead-code cleanup pass 1 — 5 items removed via vulture 80% scan | ✅ | Commit `2ebc615`: `declared_attr` import, `openrouter_teacher_model` setting, `AsyncProgressCallback` + `ProgressCallbackFactory` type aliases, `MlflowRunHandle.run_url` property. `-13 / +2` lines |
+| CH.3 | Dead-code cleanup pass 2 — 6 items removed via vulture 60% scan | ✅ | Commit `c528726`: `MlflowRunHandle.tracking_uri` (chain reaction from CH.2), `OllamaModelInfo.modified_at`, `OllamaClient.has_model()` + `delete_model()`, `artifact_name` local var, `_first_gguf` helper (not `_first_gguf_object`). `-27` lines |
+| CH.4 | Snapshot harness Tier 1 — pure functions, 43 snapshots | ✅ | Commit `0af16ca`. Adds `syrupy>=4.6` to `[dev]`. New tests: `test_snapshot_prompts.py` (17 snapshots — generator/judge/meta/PDF × 3 task types × normal+sentinel), `test_snapshot_generator_builders.py` (15 — quota/group/sentinel helpers), `test_snapshot_metrics.py` (11 — compute_metrics × 3 task types × 4 scenarios) |
+| CH.5 | Snapshot harness Tier 2 — deps + characterization marker | ✅ | Commit `38d0f55`. Adds `respx>=0.21` + `moto[s3]>=5.0` + `fakeredis>=2.20` + `dirty-equals>=0.7` to `[dev]`. Registers `characterization` pytest marker |
+| CH.6 | Snapshot harness Tier 2 — `tests/conftest.py` + generator_full scaffold | ✅ | Commit `de9f33b`. 5 shared fixtures (`openrouter_responder`, `recorded_payload`, `fake_minio`, `fake_redis_pubsub`, `seed_dataset_factory`). 3 SDG full-pipeline tests skip with capture-instruction inline until recorded payloads land. 2 fixture-smoke tests confirm fake_minio + fake_redis round-trip |
+| CH.7 | Snapshot harness — runbook + CLAUDE.md workflow section | ✅ | Commit `c1c3b2d`. `docs/runbooks/snapshot_harness.md` (3-tier overview, install, before/after-refactor workflow, live-capture playbook, update-vs-revert decision table, rollout roadmap). CLAUDE.md "Snapshot Harness" section enforces the no-silent-`--snapshot-update` rule |
+| CH.8 | Tier 2 recorded fixtures — live capture from vast.ai SDG run | ⏳ | 9 files needed: `tests/fixtures/recorded/openrouter/sdg_{classification,qa,tool_calling}_{meta,batch,judge}.json`. Once landed, `pytest --snapshot-update` upgrades the 3 currently-skipping SDG full tests to passing snapshots. Capture playbook in runbook §4 |
+| CH.9 | Negative test verified — `_GENERATOR_BASE_SYSTEM` edit fails 5 snapshots cleanly | ✅ | Validated mid-session: editing 1 line in `prompts.py` produced 5 failures with readable diffs (all generator prompts share that constant), 12 unrelated snapshots stayed green. Revert restored 174/174 pass. Harness proven to catch real changes |
+| CH.10 | Rollout iteration 2 — Training (`unsloth_trainer.py`) snapshot pilot | ⏳ | Plan: Tier 1 pure helpers (`_resolve_eos_token`, `_chat_template_for`, config-assembly) + Tier 2 mock Unsloth/HF. See runbook §7 |
+| CH.11 | Rollout iteration 3 — Export (`workers/tasks/model_export.py`) | ⏳ | Tier 2 mock Ollama + MinIO + subprocess. See runbook §7 |
+| CH.12 | Rollout iteration 4 — Eval (`workers/tasks/evaluation.py`) | ⏳ | Tier 1 pure metrics already covered by CH.4; Tier 2 mock Ollama + OpenRouter judge needed |
+| CH.13 | Rollout iteration 5 — SDG worker (`workers/tasks/data_generation.py`) | ⏳ | Tier 2 DB + Redis + MinIO + OpenRouter combined; needs CH.8 fixtures to be in place first |
+| CH.14 | Rollout iteration 6 — HPO (`optuna_objective.py` + `workers/tasks/hpo_training.py`) | ⏳ | Tier 1 + Tier 2 mock trainer + capture trial callbacks |
+| CH.15 | Rollout iteration 7 — API CRUD services (`api/services/{projects,datasets}_service.py`) | ⏳ | Tier 2 DB + MinIO + format detection |
+| CH.16 | Rollout iteration 8 — Tier 3 live E2E (11 nodes mini-flow) | ⏳ | Compose stack, 1 epoch, 5 rows, captured snapshots ติด git. Only run manually before big refactor PRs |
+
+### Verification numbers (CH.4-CH.7 pilot landing)
+
+- Unit suite: **176 passed, 3 skipped, 0 failed** (122 baseline + 52 new snapshots + 2 fixture smoke; 3 SDG scaffolds skip)
+- 43 syrupy snapshots reproducible 100% across 3 consecutive runs — no flakes
+- vulture 80% scan post-cleanup returns 2 entries, both `cls` validator params (false positive)
+- 4 commits on `feature/training-eval-smoke-v2` pushed: `0af16ca` / `38d0f55` / `de9f33b` / `c1c3b2d`
 
 ---
 

@@ -6,6 +6,48 @@
 
 ---
 
+## Session 24 — GET /evaluations list + 11-item dead-code cleanup + snapshot harness pilot (2026-05-17)
+
+**Who:** Claude (Opus 4.7) + parks
+**Status:** ✅ 3 distinct deliverables on `feature/training-eval-smoke-v2`: API gap closed (GET /evaluations list), 11 dead-code items removed (vulture-driven cleanup), Tier-1+Tier-2-scaffold of snapshot harness landed. Unit tests 176/176 green (122 baseline + 52 new snapshot + 2 mock smoke; 3 Tier-2 SDG scaffolds skip pending recorded fixtures).
+
+**Why & What:**
+
+### (a) `GET /api/v1/evaluations` list endpoint (commits `31960bb`, `f6c9b1e`, `1cb12e1`)
+- parks asked to continue a "list endpoint" — discovered `evaluations` was the only resource without `GET ""` (projects/datasets/trainings/models already have one). Added `list_evaluations(model_artifact_id, dataset_id, status_filter, limit, offset)` to `api/services/evaluation_service.py` + wired the route in `api/routers/evaluations.py` between POST and GET detail. Same `Page[T]` envelope as the other 4 resources, same `created_at DESC` ordering.
+- Documented in `docs/runbooks/api_docs.md` §8 (query-param table + Page sample + FE patterns for model-history and per-dataset-leaderboard views).
+- Added the `GET` badge to `docs/guidebook-e2e/sub-node/9_evaluation.html` header + a "List evaluations" section right before "N-way compare".
+- One design choice deliberately NOT made: did NOT add `task_type` field to `EvaluationResponse`. parks confirmed the polymorphic `metrics_json` (FE branches on key presence — `accuracy` → cls, `json_validity` → tool, `bleu` → qa) is acceptable; `task_type` would be a convenience but is derivable from page context.
+
+### (b) Dead-code sweep — 11 items, -40 lines (commits `2ebc615`, `c528726`)
+- Installed `vulture` 2.16 in venv (only diagnostic; not committed to deps). Two passes at 80% and 60% confidence with manual filtering for Pydantic/ORM/FastAPI/Celery framework false positives.
+- Removed 5 in commit `2ebc615`: `declared_attr` unused import in `api/models/base.py`; `openrouter_teacher_model` setting in `api/core/config.py` (Phase 9 SDG hardening stopped reading it, worker passes literal `"placeholder/unused"`); `AsyncProgressCallback` type alias + `Awaitable` import in `generator.py`; `ProgressCallbackFactory` type alias + `Callable` import in `unsloth_trainer.py`; `MlflowRunHandle.run_url` property (re-implemented inline at `trainings_service.py:117-118`).
+- Removed 6 in commit `c528726`: `MlflowRunHandle.tracking_uri` (orphaned after `run_url` removal); `OllamaModelInfo.modified_at` field; `OllamaClient.has_model()` + `delete_model()` (zero callers anywhere); `artifact_name` local var in `model_export.py`; `_first_gguf()` helper in `model_export.py` (distinct from `_first_gguf_object()` in `model_service.py` which IS used).
+- Final vulture 60% scan: ~140 remaining entries, all confirmed false positives (Pydantic `model_config`, ORM `mapped_column`/`relationship`, FastAPI routes, exception handlers, Celery signal hooks, validator `cls` params) — documented categorization in session chat. **No further removable dead code.**
+
+### (c) Snapshot harness pilot — `~/.claude/plans/peppy-sauteeing-rain.md` (commits `0af16ca`, `38d0f55`, `de9f33b`, `c1c3b2d`)
+- parks wanted a refactor safety net: "function เพื่อครอบแต่ละ node และแต่ละส่วนของโค้ด เพื่อเปรียบเทียบว่าก่อน refactor และหลัง refactor สามารถทำงานได้เหมือนเดิมไหม". Chose Build-harness-first / Snapshot/golden approach / Let Claude propose pilot. Plan written + approved at `~/.claude/plans/peppy-sauteeing-rain.md`.
+- **Tier 1 (live):** `syrupy>=4.6.0` to `[dev]`. 43 snapshots committed in `tests/unit/__snapshots__/*.ambr` covering: `prompts.py` 4 builders × 3 task types × normal+sentinel (17 snapshots); `generator.py` pure helpers `_compute_*_quota` / `_group_by` / `_group_tool_examples` / `_make_sentinel_tool_def` (15 snapshots); `metrics_*.compute_metrics()` across qa/cls/tool × perfect/partial/wrong (11 snapshots).
+- **Tier 2 (scaffolded):** `respx`, `moto[s3]`, `fakeredis`, `dirty-equals` added to `[dev]`. New `characterization` pytest marker. `tests/conftest.py` (462 lines) with: `openrouter_responder` (promoted `_FakeCompletions` from existing test_async_openrouter_client.py), `recorded_payload` (skip-with-instruction loader), `fake_minio` (in-memory MinIO stub w/ `put_object`/`get_object`/`fput_object`/`fget_object`/`stat_object`/`list_objects`/`remove_object`), `fake_redis_pubsub` (fakeredis + publish spy), `seed_dataset_factory`. `tests/unit/test_snapshot_generator_full.py` — 3 SDG E2E tests skip pending `tests/fixtures/recorded/openrouter/sdg_{cls,qa,tool}_{meta,batch,judge}.json`; 2 smoke tests confirm fake_minio + fake_redis_pubsub round-trip.
+- **Docs:** `docs/runbooks/snapshot_harness.md` covers 3-tier overview, install, before/after-refactor workflow, live-capture playbook, update-vs-revert decision table, rollout roadmap. `CLAUDE.md` gets a "Snapshot Harness" section (load-bearing rule: no silent --snapshot-update without explaining diff).
+- **Negative test verified:** edited `_GENERATOR_BASE_SYSTEM` → 5 generator-prompt snapshots fail with readable diff; revert restores green. Harness catches real changes.
+
+**Test Summary:**
+- `pytest tests/unit -q`: **176 passed, 3 skipped, 0 failed** (43 snapshots reproduce identically across 3 consecutive runs — no flakes)
+- 122 baseline + 17 prompts + 15 generator_builders + 14 metrics + 5 generator_full (2 smoke pass, 3 SDG skip) = 173 deterministic + 3 skipped
+- Wait — 173 + 3 = 176 ✓
+- vulture 80% scan post-cleanup: 2 entries, both `cls` params on Pydantic validators (false positive)
+- All 9 commits on `feature/training-eval-smoke-v2` pushed to origin
+
+**Next Action:**
+- Open PR `feature/training-eval-smoke-v2` → `dev` (still pending from MT.7 / HO.9). PR body should bundle: smoke-v2 work + Session 22 findings + DeepSeek-R1 removal + GET /evaluations + dead-code sweep + snapshot harness pilot.
+- Tier 2 SDG full snapshots need 9 recorded OpenRouter payloads. Capture during next vast.ai SDG smoke (cls/qa/tool × meta/batch/judge); paths and schema documented in `docs/runbooks/snapshot_harness.md` §4. After capture, drop into `tests/fixtures/recorded/openrouter/` and the 3 skipping tests transition to passing snapshots.
+- ⚠️ OpenRouter key rotation still outstanding from Sessions 21-23.
+
+**Blockers:** None.
+
+---
+
 ## Session 23 — drop DeepSeek-R1-Distill + close Session-22 Findings #1 & #2 (2026-05-17)
 
 **Who:** Claude (Opus 4.7) + parks
