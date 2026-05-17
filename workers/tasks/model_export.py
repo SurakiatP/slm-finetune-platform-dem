@@ -95,7 +95,6 @@ def export_model(
                     )
                 base_model = artifact.base_model or training.base_model
                 adapter_uri = artifact.lora_adapter_uri
-                artifact_name = artifact.name
 
             # ---- 2. Pull adapter dir from MinIO ------------------------------
             minio = get_minio_client()
@@ -372,14 +371,6 @@ def _download_prefix(minio: Any, bucket: str, prefix: str, local_dir: str) -> No
         finally:
             response.close()
             response.release_conn()
-
-
-def _first_gguf(directory: str) -> str:
-    """Return the path of the first .gguf file in `directory` (depth-1 only)."""
-    for name in sorted(os.listdir(directory)):
-        if name.lower().endswith(".gguf"):
-            return os.path.join(directory, name)
-    raise RuntimeError(f"no .gguf produced in {directory}")
 
 
 def _register_with_ollama(*, ollama: OllamaClient, tag: str, gguf_path: str) -> None:
