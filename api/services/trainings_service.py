@@ -134,15 +134,26 @@ async def _load_training_or_404(db: AsyncSession, training_id: UUID) -> Training
 
 
 def _to_points(rows: list[mlflow_metrics.MetricPointDC]) -> list[MetricPoint]:
-    """Convert raw MLflow points to API schema, sorted by step ascending.
+    """Convert raw MLflow points to API schema, sorted + de-duped.
 
-    MLflow occasionally returns points out of order when steps were logged
-    asynchronously; sort here so the frontend can plot directly.
+    Two normalisations:
+      1. Sort by step ascending — MLflow may return points out of order when
+         steps were logged asynchronously; the frontend wants plot-ready data.
+      2. De-dupe by ``(step, value)`` — HF Trainer logs end-of-epoch eval
+         multiple times with identical values (initial + final + train-summary
+         aliased), and the frontend chart shouldn't render multiple dots on
+         top of each other. Different values at the same step are kept (real
+         info, e.g. re-evaluation after checkpoint).
     """
-    return [
-        MetricPoint(step=p.step, value=p.value, timestamp_ms=p.timestamp_ms)
-        for p in sorted(rows, key=lambda r: r.step)
-    ]
+    seen: set[tuple[int, float]] = set()
+    out: list[MetricPoint] = []
+    for p in sorted(rows, key=lambda r: r.step):
+        key = (p.step, p.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(MetricPoint(step=p.step, value=p.value, timestamp_ms=p.timestamp_ms))
+    return out
 
 
 async def get_training_loss_history(

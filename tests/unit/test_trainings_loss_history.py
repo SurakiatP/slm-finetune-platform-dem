@@ -124,3 +124,55 @@ async def test_loss_history_sorts_points_by_step(monkeypatch: pytest.MonkeyPatch
 
     assert [p.step for p in resp.train_loss] == [1, 2, 3]
     assert [p.value for p in resp.train_loss] == [4.5, 3.5, 2.5]
+
+
+@pytest.mark.asyncio
+async def test_loss_history_dedupes_identical_step_value_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HF Trainer logs end-of-epoch eval multiple times with identical (step, value).
+
+    Real example from Session 26 vast.ai E2E — eval_loss had 3 points:
+      [{step:0, value:2.374}, {step:6, value:2.374}, {step:6, value:2.374}]
+    The duplicate (step=6, value=2.374) must collapse to a single point.
+    Different values at the same step are preserved (real info).
+    """
+    training_id = uuid4()
+    fake_job = MagicMock()
+    fake_job.id = training_id
+    fake_job.mlflow_run_id = "mlflow-run-dedupe"
+
+    fake_db = MagicMock()
+    fake_db.get = AsyncMock(return_value=fake_job)
+
+    async def fake_get_metric_history(
+        run_id: str, metric_key: str, *, client: object | None = None
+    ) -> list[MetricPointDC]:
+        if metric_key == "eval_loss":
+            # Exact shape from Session 26 production data
+            return [
+                MetricPointDC(step=0, value=2.374, timestamp_ms=1000),
+                MetricPointDC(step=6, value=2.374, timestamp_ms=2000),
+                MetricPointDC(step=6, value=2.374, timestamp_ms=3000),
+            ]
+        # Different values at the same step — preserve both
+        return [
+            MetricPointDC(step=5, value=3.0, timestamp_ms=1000),
+            MetricPointDC(step=5, value=2.8, timestamp_ms=2000),
+        ]
+
+    monkeypatch.setattr(
+        trainings_service.mlflow_metrics, "get_metric_history", fake_get_metric_history
+    )
+
+    resp = await trainings_service.get_training_loss_history(fake_db, training_id)
+
+    assert len(resp.eval_loss) == 2, (
+        f"eval_loss must dedupe identical (step,value); got {len(resp.eval_loss)} points: "
+        f"{[(p.step, p.value) for p in resp.eval_loss]}"
+    )
+    assert [(p.step, p.value) for p in resp.eval_loss] == [(0, 2.374), (6, 2.374)]
+
+    # Different values at same step kept
+    assert len(resp.train_loss) == 2
+    assert {(p.step, p.value) for p in resp.train_loss} == {(5, 3.0), (5, 2.8)}
