@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>E2E Test on VM — Playbook</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; max-width: 980px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #2563eb; padding-bottom: 8px; }
+  h2 { color: #1e40af; margin-top: 32px; border-left: 4px solid #2563eb; padding-left: 10px; }
+  h3 { color: #374151; margin-top: 22px; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.85em; font-weight: 600; margin-right: 6px; }
+  .badge-post { background: #16a34a; color: white; }
+  .badge-get { background: #2563eb; color: white; }
+  .badge-delete { background: #dc2626; color: white; }
+  .badge-ws { background: #7c3aed; color: white; }
+  .badge-async { background: #ea580c; color: white; }
+  .badge-phase { background: #0f172a; color: white; }
+  .path { font-family: "JetBrains Mono", Consolas, monospace; background: #f3f4f6; padding: 4px 8px; border-radius: 4px; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }
+  code { font-family: "JetBrains Mono", Consolas, monospace; }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  :not(pre) > code { background: #fef3c7; padding: 2px 6px; border-radius: 3px; font-size: 0.92em; color: #92400e; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.95em; }
+  th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; }
+  .nav { display: flex; justify-content: space-between; margin: 30px 0 10px; padding: 12px; background: #f9fafb; border-radius: 8px; }
+  .nav a { color: #2563eb; text-decoration: none; font-weight: 500; }
+  .nav a:hover { text-decoration: underline; }
+  .callout { background: #eff6ff; border-left: 4px solid #2563eb; padding: 10px 14px; margin: 14px 0; border-radius: 4px; }
+  .callout.warn { background: #fef3c7; border-left-color: #f59e0b; }
+  .callout.error { background: #fee2e2; border-left-color: #dc2626; }
+  .callout.success { background: #dcfce7; border-left-color: #16a34a; }
+  ol li, ul li { margin: 6px 0; }
+  .toc { background: #f9fafb; border-radius: 8px; padding: 14px 22px; margin: 18px 0; }
+  .toc ol { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="./guide101.md">← Index (guide101.md)</a>
+  <a href="../runbooks/vast-ai-deployment.md">Runbook: vast-ai-deployment.md →</a>
+</div>
+
+<h1>E2E Test on VM — Playbook</h1>
+
+<p>Playbook สำหรับรัน <strong>11-node E2E workflow</strong> ของ SLM Fine-Tuning Platform บน vast.ai (หรือ remote Linux VM ที่มี NVIDIA GPU) เพื่อ validate ว่า code path ทำงานครบจากจุดเริ่ม (create project) ถึงจุดสุดท้าย (LLM judge eval) ก่อนเปิด PR <em>feature → dev</em></p>
+
+<div class="callout">
+  ใช้คู่กับ <a href="./guide101.md">guide101.md</a> (overview) + <a href="./sub-node/">sub-node/*.html</a> (per-node request/response detail) + <a href="../runbooks/vast-ai-deployment.md">vast-ai-deployment.md</a> (VM setup detail).<br>
+  Playbook นี้คือ <strong>recipe</strong> — sub-nodes คือ <strong>reference</strong>
+</div>
+
+<div class="toc">
+  <strong>สารบัญ</strong>
+  <ol>
+    <li><a href="#preconditions">Pre-conditions</a></li>
+    <li><a href="#constraints">Constraints + Base-model selector</a></li>
+    <li><a href="#scope">Test Scope (default: classification + with-seed)</a></li>
+    <li><a href="#phase-a">Phase A — Infrastructure Bring-up</a> <span class="badge badge-phase">~20 min</span></li>
+    <li><a href="#phase-b">Phase B — Sanity</a> <span class="badge badge-phase">~3 min</span></li>
+    <li><a href="#phase-c">Phase C — 11-Node E2E</a> <span class="badge badge-phase">~15-20 min</span></li>
+    <li><a href="#phase-d">Phase D — Capture + Cleanup</a> <span class="badge badge-phase">~5 min</span></li>
+    <li><a href="#success">Success Criteria</a></li>
+    <li><a href="#risks">Risk Mitigation</a></li>
+    <li><a href="#cost">Cost Estimate</a></li>
+    <li><a href="#rollback">Rollback by Phase</a></li>
+  </ol>
+</div>
+
+<h2 id="preconditions">1. Pre-conditions</h2>
+
+<p>Checklist ก่อนเริ่ม Phase A — ถ้าข้อใดยังไม่ ✓ <strong>หยุดและจัดการให้เสร็จก่อน</strong></p>
+
+<table>
+<tr><th>Item</th><th>Verify command / How</th></tr>
+<tr><td>Feature branch checked out + pushed</td><td><code>git status</code> clean, <code>git rev-parse HEAD</code> ตรงกับ origin</td></tr>
+<tr><td>vast.ai instance up (Linux VM, ไม่ใช่ Docker template)</td><td>SSH เข้าได้, <code>uname -a</code> ขึ้น Linux, <code>docker --version</code> ตอบกลับ</td></tr>
+<tr><td>Network OK (HF ≥ 50 MB/s)</td><td>SSH รัน <code>curl -o /dev/null -sL --max-time 30 -w "%{speed_download}\n" https://huggingface.co/unsloth/Llama-3.2-1B/resolve/main/model.safetensors</code></td></tr>
+<tr><td>GPU VRAM พอ (≥ base-model requirement)</td><td>SSH รัน <code>nvidia-smi --query-gpu=name,memory.total --format=csv</code></td></tr>
+<tr><td>NVIDIA Container Toolkit installed</td><td><code>docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi</code> ต้องขึ้น GPU info ไม่ใช่ <code>could not select device driver</code></td></tr>
+<tr><td>Repo cloned ที่ <code>~/slm-platform</code></td><td><code>cd ~/slm-platform && git rev-parse HEAD</code></td></tr>
+<tr><td><code>.env</code> มี <code>OPENROUTER_API_KEY</code></td><td><code>grep "^OPENROUTER_API_KEY=sk-" ~/slm-platform/.env</code></td></tr>
+</table>
+
+<div class="callout warn">
+  ถ้า preconditions ขาด → ใช้ skill <code>/vm-deployment</code> เพื่อ set up VM ใหม่ตั้งแต่ต้น (skill ครอบขั้นตอน NVIDIA toolkit → clone → .env stub → build → migrations → sanity)
+</div>
+
+<h2 id="constraints">2. Constraints + Base-model Selector</h2>
+
+<p>Base model ที่จะ pull ลง Ollama (Node 8 inference) + ใช้ train (Node 6) ต้องเลือกตาม VRAM</p>
+
+<table>
+<tr><th>GPU VRAM</th><th>แนะนำ base model</th><th>Ollama pull tag</th><th>หมายเหตุ</th></tr>
+<tr><td>4-6 GB</td><td><code>unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit</code></td><td><code>qwen2.5:0.5b</code></td><td>เร็วที่สุด แต่ accuracy ต่ำ</td></tr>
+<tr><td>8 GB</td><td><code>unsloth/Llama-3.2-1B-Instruct-bnb-4bit</code></td><td><code>llama3.2:1b</code></td><td>sweet spot สำหรับ RTX 3070</td></tr>
+<tr><td>10-12 GB</td><td><code>unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit</code></td><td><code>qwen2.5:1.5b</code></td><td>RTX 3060 12GB sweet spot</td></tr>
+<tr><td>16+ GB</td><td><code>unsloth/Llama-3.2-3B-Instruct-bnb-4bit</code></td><td><code>llama3.2:3b</code></td><td>full catalog model (จาก runbook)</td></tr>
+</table>
+
+<h2 id="scope">3. Test Scope</h2>
+
+<p>Default smoke path: <strong>classification + with-seed (Node 3a → 4)</strong></p>
+
+<table>
+<tr><th>เลือก path นี้เพราะ</th></tr>
+<tr><td>1. มี <code>seed_data/classification/classification_canonical.jsonl</code> พร้อม commit แล้ว → ไม่ต้องสร้าง seed</td></tr>
+<tr><td>2. Metrics ง่ายอ่าน (accuracy) → debug ง่ายถ้าพัง</td></tr>
+<tr><td>3. Node 4 exercise memory rule <code>sdg_with_seed_no_task_config</code> (ห้ามส่ง <code>classification_config.labels</code> เพราะ infer จาก seed)</td></tr>
+<tr><td>4. Node 9 exercise GET /evaluations endpoint ที่เพิ่ม Session 24 + Node 10 exercise LLM judge surfacing (Session 23 Finding #2)</td></tr>
+</table>
+
+<p><strong>Training settings:</strong> 1 epoch, batch_size=2, gradient_accumulation=4, max_seq_length=512 (สำหรับ 8GB VRAM — ถ้า OOM ลดเป็น 1 / 256)</p>
+
+<h2 id="phase-a">4. Phase A — Infrastructure Bring-up <span class="badge badge-phase">~20 min</span></h2>
+
+<p><strong>ทำไม:</strong> ต้องมี 7-container stack (postgres / redis / minio / mlflow / api / worker / ollama) ทำงานก่อนเรียก API ใด ๆ</p>
+
+<table>
+<tr><th>Step</th><th>Command (SSH'd in)</th><th>Why</th><th>Expected</th></tr>
+<tr>
+  <td><strong>A1</strong></td>
+  <td><pre><code>cd ~/slm-platform
+tmux new -d -s slm \
+  'docker compose build 2>&amp;1 | tee /tmp/build.log'</code></pre></td>
+  <td>Build images ใน tmux เพื่อ survive SSH disconnect (worker image มี pytorch ~3GB)</td>
+  <td>tmux session "slm" ขึ้น</td>
+</tr>
+<tr>
+  <td><strong>A2</strong></td>
+  <td><code>tmux capture-pane -t slm -p | tail -20</code> (poll เป็นช่วง ๆ)</td>
+  <td>ดู build progress</td>
+  <td>เห็น <code>Successfully tagged</code> ทั้ง 3 images (api/worker/ollama mounting)</td>
+</tr>
+<tr>
+  <td><strong>A3</strong></td>
+  <td><code>docker compose up -d</code></td>
+  <td>Start ทุก service</td>
+  <td>7 containers created</td>
+</tr>
+<tr>
+  <td><strong>A4</strong></td>
+  <td><code>watch -n 2 'docker compose ps'</code> หรือ <code>docker compose ps</code></td>
+  <td>Wait readiness</td>
+  <td>postgres/redis/minio/mlflow = <strong>healthy</strong>; api/worker/ollama = <strong>running</strong></td>
+</tr>
+<tr>
+  <td><strong>A5</strong></td>
+  <td><code>docker compose exec api alembic upgrade head</code></td>
+  <td>Apply 3 migrations</td>
+  <td>3 upgrades logged: <code>0001_initial → 0002_artifact_export_error → 0003_dataset_parent_id</code></td>
+</tr>
+<tr>
+  <td><strong>A6</strong></td>
+  <td><code>docker compose exec ollama ollama pull llama3.2:1b</code> <span class="callout warn">⚠️ เลือก tag ตาม VRAM ที่ §2 (ไม่ใช่ default 3b จาก runbook)</span></td>
+  <td>ดึง base model สำหรับ Node 8 inference</td>
+  <td>"success" + model อยู่ใน <code>ollama list</code></td>
+</tr>
+</table>
+
+<h2 id="phase-b">5. Phase B — Sanity <span class="badge badge-phase">~3 min</span></h2>
+
+<p><strong>ทำไม:</strong> ตรวจว่า code path บน VM เหมือนที่ pass local — ถ้า baseline แตก ห้ามไปต่อ Phase C</p>
+
+<table>
+<tr><th>Step</th><th>Command</th><th>Expected</th></tr>
+<tr><td><strong>B1</strong></td><td><code>curl -s http://localhost:8000/health</code></td><td><code>{"status":"ok"}</code></td></tr>
+<tr><td><strong>B2</strong></td><td><code>curl -s 'http://localhost:8000/api/v1/projects?limit=5'</code></td><td><code>{"items":[],"total":0,"limit":5,"offset":0}</code></td></tr>
+<tr><td><strong>B3</strong></td><td><code>docker compose exec api pip install -q -e '.[dev]'</code></td><td>install ปกติ (syrupy / respx / moto / fakeredis)</td></tr>
+<tr><td><strong>B4</strong></td><td><code>docker compose exec api python -m pytest tests/unit/ -q</code></td><td><strong>176 passed, 3 skipped</strong> (ตรงกับ local baseline ของ Session 25)</td></tr>
+</table>
+
+<div class="callout error">
+  ถ้า B4 ไม่ใช่ 176/3 → diff vs local; ถ้า test count &lt; ~120 มักเป็น <code>[dev]</code> extras ไม่ติด — เช็คด้วย <code>pip list | grep -iE 'syrupy|respx|moto|fakeredis'</code>
+</div>
+
+<h2 id="phase-c">6. Phase C — 11-Node E2E <span class="badge badge-phase">~15-20 min</span></h2>
+
+<p><strong>ทำไม:</strong> validate code paths ที่ Sessions 21-25 แตะ — Node 4 (SDG holdout split), Node 6 (training), Node 7 (export+Ollama register), Node 9 (GET /evaluations เพิ่มใหม่), Node 10 (LLM judge — Finding #2 ปิด)</p>
+
+<p>Test order: <code>1 → 2 → 3a → 4 → 5 → 6 + 11 (parallel) → 7 → 8 → 9 → 10</code></p>
+
+<p>Per-node detail (request/response shapes, error codes) อยู่ที่ <a href="./sub-node/">sub-node/*.html</a> — ตารางนี้คือ <em>smoke summary</em></p>
+
+<table>
+<tr><th>Node</th><th>Endpoint</th><th>Smoke Inputs</th><th>Verify</th><th>ถ้าพัง</th></tr>
+
+<tr>
+  <td><strong>1</strong> <a href="./sub-node/1_create-project.html">📄</a></td>
+  <td><span class="badge badge-post">POST</span> <code>/api/v1/projects</code></td>
+  <td><pre><code>{
+  "name":"smoke-cls-26",
+  "task_type":"classification"
+}</code></pre></td>
+  <td><code>id</code> (UUID), <code>task_type</code> locked ทุก resource ถัดไป</td>
+  <td>422 → ตรวจ schema; <code>name</code> ห้ามว่าง</td>
+</tr>
+
+<tr>
+  <td><strong>2</strong> <a href="./sub-node/2_gen-data-condition.html">📄</a></td>
+  <td>decision</td>
+  <td>เลือก path 3a (with seed) เพราะมี seed file พร้อม</td>
+  <td>—</td>
+  <td>—</td>
+</tr>
+
+<tr>
+  <td><strong>3a</strong> <a href="./sub-node/3a_add-seed-data.html">📄</a></td>
+  <td><span class="badge badge-post">POST</span> <code>/api/v1/datasets/upload-seed</code></td>
+  <td>multipart: file = <code>seed_data/classification/classification_canonical.jsonl</code>, project_id = node1.id</td>
+  <td><code>dataset_id</code>, <code>num_samples=40</code>, <code>format_detection.ran=false</code></td>
+  <td>422 → seed file shape ผิด; <em>format detection</em> memory note: ไม่มี semantic guard, อาจรับ qa-shaped file ลง cls project</td>
+</tr>
+
+<tr>
+  <td><strong>4</strong> <a href="./sub-node/4_sdg-holdout-split.html">📄</a></td>
+  <td><span class="badge badge-post">POST</span> <span class="badge badge-async">async</span> <code>/api/v1/datasets/generate</code></td>
+  <td><pre><code>{
+  "project_id": "...",
+  "sdg_mode": "with_seed",
+  "num_samples": 100,
+  "holdout_size": 20,
+  "seed_dataset_id": "...",
+  "task_description": "..."
+}</code></pre><strong>ห้าม</strong>ใส่ <code>classification_config</code> — memory rule <code>sdg_with_seed_no_task_config</code></td>
+  <td>202 → WS <code>/ws/jobs/{job_id}</code> → <code>completed</code>; <code>dataset_id</code> (parent, 80 rows) + <code>holdout_dataset_id</code> (20 rows)</td>
+  <td>SDG aborted (0 rows) → ตรวจ OpenRouter key; dedup over-reject → ลดเกณฑ์ minhash</td>
+</tr>
+
+<tr>
+  <td><strong>5</strong> <a href="./sub-node/5_verify-dataset.html">📄</a></td>
+  <td><span class="badge badge-get">GET</span> <code>/api/v1/datasets/{id}</code> (× 2) + <code>/preview</code></td>
+  <td>ดึง parent + holdout</td>
+  <td>parent: 80 rows; holdout: 20 rows; <code>generation_metadata.completed_at</code> populated; preview 10 รายการมี <code>text</code> + <code>label</code></td>
+  <td>counts ไม่ตรง → over-generate ratio ต่ำ ปรับ <code>num_samples</code> ขึ้น</td>
+</tr>
+
+<tr>
+  <td><strong>6</strong> <a href="./sub-node/6_training.html">📄</a></td>
+  <td><span class="badge badge-post">POST</span> <span class="badge badge-async">async</span> <code>/api/v1/trainings</code></td>
+  <td><pre><code>{
+  "mode": "manual",
+  "dataset_id": parent_id,
+  "base_model": "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
+  "num_train_epochs": 1,
+  "batch_size": 2,
+  "gradient_accumulation_steps": 4,
+  "max_seq_length": 512
+}</code></pre></td>
+  <td>202 → WS <code>training_progress</code> → <code>completed</code>; <code>model_artifact_id</code></td>
+  <td>OOM → batch=1 / max_seq=256 / gradient_accumulation=8; "dataset is holdout" error → ใช้ <code>parent_id</code> ไม่ใช่ holdout</td>
+</tr>
+
+<tr>
+  <td><strong>11</strong> <a href="./sub-node/11_mlflow-tracking.html">📄</a> (parallel กับ 6)</td>
+  <td><span class="badge badge-get">GET</span> <code>/api/v1/trainings/{id}/loss-history</code> + <code>/metrics</code> + <code>/mlflow-url</code></td>
+  <td>poll ระหว่าง Node 6 รัน</td>
+  <td><code>train_loss[]</code> ไม่ว่าง, monotonically decreasing</td>
+  <td>MLflow down → 502 (ตรวจ <code>docker compose ps mlflow</code>)</td>
+</tr>
+
+<tr>
+  <td><strong>7</strong> <a href="./sub-node/7_export-gguf.html">📄</a></td>
+  <td><span class="badge badge-post">POST</span> <span class="badge badge-async">async</span> <code>/api/v1/models/{id}/export</code></td>
+  <td><pre><code>{
+  "format": "gguf",
+  "quantization": "q4_k_m"
+}</code></pre></td>
+  <td>202 → completed; <code>gguf_uri</code> (MinIO), <code>ollama_model_tag</code> populated</td>
+  <td>Ollama register fail → continue (GGUF ใน MinIO ใช้ได้, mention ใน WORKING_LOG)</td>
+</tr>
+
+<tr>
+  <td><strong>8</strong> <a href="./sub-node/8_inference.html">📄</a></td>
+  <td><span class="badge badge-get">GET</span> <code>/api/v1/inference/models</code> + <span class="badge badge-post">POST</span> <code>/api/v1/inference/chat/completions</code></td>
+  <td><pre><code>{
+  "model": ollama_model_tag,
+  "messages": [
+    {"role":"user","content":"จองตั๋ว..."}
+  ],
+  "max_tokens": 50
+}</code></pre></td>
+  <td>fine-tuned model อยู่ใน <code>data[]</code>; response มี <code>choices[].message.content</code></td>
+  <td>404 model → Node 7 ไม่ได้ register; first req 3-5s warmup ปกติ</td>
+</tr>
+
+<tr>
+  <td><strong>9</strong> <a href="./sub-node/9_evaluation.html">📄</a></td>
+  <td><span class="badge badge-post">POST</span> <span class="badge badge-async">async</span> <code>/api/v1/evaluations</code></td>
+  <td><pre><code>{
+  "model_artifact_id": "...",
+  "dataset_id": holdout_id,
+  "use_llm_judge": false
+}</code></pre></td>
+  <td>202 → completed; <code>metrics_json.accuracy</code> (float 0-1); <code>llm_judge_score=null</code></td>
+  <td>task_type mismatch (400) → holdout ต้องตรง training task; data leak → ใช้ holdout ไม่ใช่ parent</td>
+</tr>
+
+<tr>
+  <td><strong>10</strong> <a href="./sub-node/10_llm-judge.html">📄</a></td>
+  <td><span class="badge badge-post">POST</span> <span class="badge badge-async">async</span> <code>/api/v1/evaluations</code></td>
+  <td><pre><code>{
+  "model_artifact_id": "...",
+  "dataset_id": holdout_id,
+  "use_llm_judge": true,
+  "judge_model": "google/gemini-2.5-flash"
+}</code></pre></td>
+  <td>202 → completed; <code>llm_judge_score</code> (float 1.0-5.0) ไม่ null; <code>metrics_json.llm_judge_notes</code> populated (Session 23 Finding #2 surface — silent skip ไม่เงียบแล้ว)</td>
+  <td>OPENROUTER_API_KEY missing → 400; cost ~$0.02 ต่อ 20 rows</td>
+</tr>
+</table>
+
+<h2 id="phase-d">7. Phase D — Capture + Cleanup <span class="badge badge-phase">~5 min</span></h2>
+
+<table>
+<tr><th>Step</th><th>Action</th><th>Why</th></tr>
+<tr><td><strong>D1</strong></td><td>Save แต่ละ node response → <code>/tmp/e2e-session{N}-{node}.json</code> บน VM</td><td>Trace สำหรับ debug ภายหลัง</td></tr>
+<tr><td><strong>D2</strong></td><td><code>docker compose logs --since 30m api worker &gt; /tmp/e2e-logs.txt</code></td><td>Error context ถ้ามี</td></tr>
+<tr><td><strong>D3</strong></td><td><code>scp -P &lt;port&gt; -r root@&lt;ip&gt;:/tmp/e2e-*.{json,txt} ./vast-ai-e2e-results/</code> (รันจาก laptop)</td><td>Preserve evidence ก่อน destroy</td></tr>
+<tr><td><strong>D4</strong></td><td><strong>อย่า</strong> destroy instance จนกว่า user confirm artifacts ครบ</td><td>Billing ตัด ณ destroy — ไม่กลับมาเปิดดูได้</td></tr>
+<tr><td><strong>D5</strong></td><td>⚠️ <strong>Rotate OpenRouter key</strong> — สร้างใหม่ที่ openrouter.ai/keys + revoke ตัวเก่า ถ้าเคยส่งใน chat</td><td>Outstanding rotation จาก Sessions 21-24 (memory)</td></tr>
+</table>
+
+<h2 id="success">8. Success Criteria</h2>
+
+<ul>
+  <li>✅ <strong>Phase B:</strong> 176 passed, 3 skipped (ตรงกับ local baseline)</li>
+  <li>✅ <strong>Phase C ทั้ง 11 nodes:</strong> ทุก request 2xx; all async jobs → <code>completed</code>; ไม่มี node ใด skip</li>
+  <li>✅ <strong>Node 9:</strong> <code>metrics_json.accuracy ≥ 0.2</code> (smoke threshold — proof of training, not production quality)</li>
+  <li>✅ <strong>Node 10:</strong> <code>llm_judge_score ≠ null</code> และไม่ skipped — Finding #2 ปิดสนิท</li>
+  <li>✅ ไม่มี <code>OOMError</code> / <code>CUDA out of memory</code> ระหว่าง Node 6</li>
+</ul>
+
+<h2 id="risks">9. Risk Mitigation</h2>
+
+<table>
+<tr><th>Risk</th><th>Likelihood</th><th>Mitigation</th></tr>
+<tr><td>Node 6 OOM @ 8GB</td><td>Medium (1B + batch=2 ตึง)</td><td>Fallback: batch=1, max_seq=256, gradient_accumulation=8</td></tr>
+<tr><td>Node 4 OpenRouter ratelimit</td><td>Low</td><td>Retry built-in; ถ้า persist → switch <code>judge_model</code> เป็น cheaper</td></tr>
+<tr><td>Node 7 Ollama register fails</td><td>Medium (1B+adapter merge ใน 8GB ตึง)</td><td>Continue — GGUF อยู่ใน MinIO inference path อื่นใช้ได้</td></tr>
+<tr><td>Build timeout (&gt;30 min)</td><td>Low ที่ HF ~277 Mbps</td><td>tmux survives; รอ — ถ้า &lt;500 KB/s &gt;5 min → destroy + new instance per runbook §3</td></tr>
+<tr><td>Network drop ระหว่าง E2E</td><td>Low</td><td>Per-node response saved to <code>/tmp</code> ก่อน next node — resume ได้</td></tr>
+</table>
+
+<h2 id="cost">10. Cost Estimate</h2>
+
+<table>
+<tr><th>Item</th><th>Cost (USD)</th></tr>
+<tr><td>VM rental (~1 hr × $0.30/hr)</td><td>$0.30</td></tr>
+<tr><td>OpenRouter SDG (~100 rows, gemini-2.5-flash)</td><td>~$0.03</td></tr>
+<tr><td>OpenRouter LLM judge Node 10 (20 rows)</td><td>~$0.02</td></tr>
+<tr><td><strong>Total</strong></td><td><strong>~$0.35</strong></td></tr>
+</table>
+
+<h2 id="rollback">11. Rollback by Phase</h2>
+
+<table>
+<tr><th>Failed Phase</th><th>Action</th></tr>
+<tr><td>Phase A (build/up)</td><td>SSH in → <code>tmux capture-pane -t slm -p</code>; ถ้า build &lt; 500 KB/s &gt; 5 min → destroy + new instance (per runbook §3)</td></tr>
+<tr><td>Phase B (unit tests ≠ 176/3)</td><td>Diff vs local; re-run <code>pip install -e '.[dev]'</code>; ตรวจ deps importable</td></tr>
+<tr><td>Phase C mid-flow</td><td>Save state ของ completed nodes (jsonl ใน /tmp); debug specific node; resume from failing node (most idempotent except project/dataset create)</td></tr>
+<tr><td>Critical bug ใน Sessions 24/25 code</td><td>Flag in chat; <strong>ห้าม</strong> push fix จาก VM (no commit/push from VM — fix locally ใน session ถัดไป)</td></tr>
+</table>
+
+<div class="nav">
+  <a href="./guide101.md">← Index</a>
+  <a href="../runbooks/vast-ai-deployment.md">Runbook: vast-ai-deployment.md →</a>
+</div>
+
+</body>
+</html>
