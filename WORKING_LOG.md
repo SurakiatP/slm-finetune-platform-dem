@@ -6,6 +6,69 @@
 
 ---
 
+## Session 26 — vast.ai E2E test + MLflow loss-history bug fixes (2026-05-18 → 2026-05-19)
+
+**Who:** Claude (Opus 4.7) + parks
+**Status:** ✅ E2E 11/11 nodes pipeline pass on real GPU (RTX 3070 8 GB on vast.ai). 4 fix/docs commits landed on `feature/training-eval-smoke-v2`. 180 unit tests + 43 snapshots green on **both** local + vast.ai api container. Session 23 Finding #2 verified closed live. vast.ai instance **still running** (211.21.106.81:37843) — needs destroy / stop decision before tomorrow.
+
+**Why & What:**
+
+### (a) vast.ai provisioning + 11-node E2E test (2026-05-18)
+- 1st vast.ai instance (`120.238.149.205`, RTX 3090 24 GB) destroyed after diagnostic: download ~10 Mbps (CN datacenter, CDN throttled/blocked). 2nd instance (`211.21.106.81:37843`, RTX 3070 8 GB, TW datacenter) verified: HF download ~277 Mbps, ping 3.4 ms, ample for our workflow despite lower VRAM.
+- Followed `docs/runbooks/vast-ai-deployment.md` §6-11: NVIDIA Container Toolkit install (gotcha: shipped half-configured by vast.ai — toolkit missing despite `daemon.json` pointing at it), `git clone -b feature/training-eval-smoke-v2`, `.env` stub. tmux'd `docker compose build` + `up` finished ~12 min. `alembic upgrade head` (3 migrations 0001 → 0002 → 0003). `ollama pull llama3.2:1b` (8 GB-friendly base — runbook default `llama3.2:3b` would OOM here). `pip install -e '.[dev]'` in api container for pytest.
+- Ran 11-node E2E from `docs/guidebook-e2e/guide101.md` for **classification + with-seed** path:
+  - Node 1 `POST /projects` → uuid `04137da6...`
+  - Node 3a `POST /datasets/upload-seed` multipart 40 rows → `081b23ff...` (format detection skipped — already canonical). ⚠️ ครั้งแรก 422 because schema needs `task_type` in form
+  - Node 4 `POST /datasets/generate with_seed` → completed in 60 s. Parent=100 + holdout=20 (220 OpenRouter calls, judge rejected 10, dedup 0, rejected 2). ⚠️ ครั้งแรก 422 because schema forbids `name` and `classification_config` here ([[sdg_with_seed_no_task_config]] confirmed)
+  - Node 5 `GET /datasets` verify → parent/holdout linked correctly via `parent_dataset_id`
+  - Node 6 `POST /trainings` manual Llama-3.2-1B + batch=2/ga=8/max_seq=512 → completed in 69 s, `model_artifact_id=37ecc85f...`, LoRA adapter 38 MB in MinIO
+  - Node 7 `POST /models/{id}/export gguf q4_k_m` → `slm/37ecc85f` registered in Ollama
+  - Node 8 `POST /inference/chat/completions` → model responded in Thai but free-form text not labels (model didn't learn classification format in 6 steps × 90 examples — expected at this data scale)
+  - Node 9 `POST /evaluations rule-based` on holdout → pipeline ✅, accuracy=0% (downstream of Node 8 — not a bug)
+  - Node 10 `POST /evaluations LLM judge` → **Session 23 Finding #2 verified closed**: `llm_judge_score=null` + `metrics_json.llm_judge_notes="LLM judge does not apply to classification — use rule-based metrics (accuracy, f1_macro) instead."` (was silent skip pre-fix in Session 23)
+  - Node 11 (parallel) `GET /trainings/{id}/loss-history` → endpoint ✅, payload ❌ — only 2 points (step=0 + step=6, both 3.4250 — epoch-aggregate) instead of per-step curve
+- 11/11 plumbing nodes PASS. 4 bugs found.
+
+### (b) Fix MLflow loss-history bug (2026-05-19, commit `69b3816`)
+- Explore agent traced root cause: `ai_engine/training/callbacks.py:82-86` correctly logs per-step training loss to MLflow under HF Trainer's native key `"loss"`. But `api/services/trainings_service.py:164` queried `"train_loss"` — a key that only exists from post-training `log_metrics_dict(result.metrics)` call at `workers/tasks/training.py:163` (single epoch-aggregate point logged at MLflow's default step=0).
+- Fix: 1-line in `trainings_service.py:164` changing `"train_loss"` → `"loss"`. Response JSON shape **unchanged** (key `train_loss` preserved per [[frontend_contract_frozen]]).
+- TDD: new `tests/unit/test_trainings_loss_history.py` with 3 cases (regression metric-key, no-mlflow-run-id, sorting). Red phase confirmed bug; green phase confirmed fix.
+- Verified on vast.ai by `git pull` + `docker compose build api` + curl with Session 26's training_id → loss-history returned all 6 real per-step values: **4.4979 → 4.5697 → 3.5624 → 2.9642 → 2.5668 → 2.3892** (47% reduction across 6 steps, matches worker log exactly).
+
+### (c) Dedupe eval_loss + add `rouge-score`/`sacrebleu` to `[dev]` (commits `1e4f89a` + `8f57082`)
+- Bug 2 (dedupe): `_to_points` (`trainings_service.py:136`) now sorts by step **and** de-dupes by `(step, value)`. Session 26 production payload had `eval_loss=[{step:0,v:2.374},{step:6,v:2.374},{step:6,v:2.374}]` (HF Trainer logs end-of-epoch eval 3× with identical values). After fix: 2 points (duplicate `(6, 2.374)` collapsed). Distinct values at same step preserved (real info, e.g. re-eval). New 4th unit test covers this.
+- Bug 3 (deps): `rouge-score>=0.1.2` + `sacrebleu>=2.4.0` added to `[dev]` extras (both already in `[eval]`). Required because `ai_engine/evaluation/metrics_qa.py` has deferred imports of both → pytest qa-metric tests fail without them. `scikit-learn 1.8.0` confirmed present transitively. Adds ~10 MB to api dev install — acceptable trade-off.
+- Verified on vast.ai (after `docker cp pyproject.toml slm-api:/app/pyproject.toml` + `pip install -e '.[dev]'`): **180 passed, 3 skipped** (was 177/3 → now matches local).
+
+### (d) Durable artifacts (per user observation that workflows would recur)
+- `docs/guidebook-e2e/test-e2e-on-vm.html` — 11-node playbook with 4 phases, base-model selector, risk table (commit `e12626e`)
+- `~/.claude/skills/vm-deployment/SKILL.md` — Skill for full VM deployment, triggers `/vm-deployment` (user-level, not in repo)
+- Memory entry `feedback_durable_artifacts_first.md` — preference rule for future sessions
+
+### (e) Process gotcha discovered (not in scope to fix)
+- `pyproject.toml` is **not bind-mounted** in `docker-compose.yml` api service. After `git pull` on VM, `docker compose exec api pip install -e '.[dev]'` reads the OLD pyproject.toml from inside the container (cached at build time) → new deps don't install even after rebuild (Docker cache hit on the COPY layer).
+- Workarounds today: `docker cp pyproject.toml slm-api:/app/pyproject.toml` then reinstall, OR `docker compose build --no-cache api` (slow).
+- Recommendation for tomorrow: add `- ./pyproject.toml:/app/pyproject.toml:ro` to api `volumes:` in `docker-compose.yml` (1-line, harmless). Defer or fold into Bug #3 cleanup PR.
+
+**Test Summary:**
+- Local: `pytest -m "not integration" -q` → **180 passed, 3 skipped**, 43 snapshots (was 176 pre-Session-26; +4 new tests across 2 commits)
+- vast.ai api container: **180 passed, 3 skipped** (qa metric tests now pass after sacrebleu fix)
+- 11-node E2E: all 2xx, all async jobs reach `completed`, no OOM during Llama-3.2-1B training
+- Commits pushed: `08092e2..8f57082` (4 commits: 1 fix + 1 docs + 2 follow-up fixes)
+- Wall time E2E first-run: ~12 min (Node 1 15:42 → Node 10 15:54). Fix iterations: ~30 min wall.
+- vast.ai cost ~$0.65 total (rental + OpenRouter ~$0.05)
+
+**Next Action (tomorrow):**
+- **Resume on vast.ai instance** (currently running; decide whether to `docker compose stop` overnight or destroy + recreate tomorrow)
+- **Bug #3 technical debt cleanup** — `workers/tasks/training.py:163` `log_metrics_dict(result.metrics)` should pass `step=state.global_step` or skip the `train_loss` key (since `loss` per-step is already in MLflow). Currently hides behind today's fix but pollutes MLflow data
+- **Polish** — bind-mount `pyproject.toml` in compose api service (1 line) so future dep changes work without `docker cp`
+- **Open PR** `feature/training-eval-smoke-v2` → `dev` (HO.9 still pending from Phase 11; now bundles Sessions 20-26 work)
+- ⚠️ **OpenRouter key rotation** — outstanding from Sessions 21-24 **+ leaked in chat at start of Session 26** (user pasted plaintext key); rotate before more public exposure
+
+**Blockers:** None.
+
+---
+
 ## Session 25 — Revert dead-code sweeps `2ebc615` + `c528726` (2026-05-18)
 
 **Who:** Claude (Opus 4.7) + parks
