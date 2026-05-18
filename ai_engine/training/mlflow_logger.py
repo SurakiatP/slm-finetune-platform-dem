@@ -28,6 +28,7 @@ class MlflowRunHandle:
     run_id: str
     run_name: str
     experiment_id: str
+    tracking_uri: str
 
 
 @contextmanager
@@ -48,6 +49,7 @@ def mlflow_run_scope(
             run_id=info.run_id,
             run_name=info.run_name or run_name,
             experiment_id=info.experiment_id,
+            tracking_uri=str(settings.mlflow_tracking_uri),
         )
         log.info(
             "mlflow run started: experiment=%s run=%s id=%s",

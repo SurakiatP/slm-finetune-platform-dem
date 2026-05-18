@@ -29,6 +29,7 @@ class OllamaModelInfo:
     name: str
     digest: str
     size_bytes: int
+    modified_at: str
 
 
 class OllamaError(RuntimeError):
@@ -68,9 +69,13 @@ class OllamaClient:
                     name=entry["name"],
                     digest=entry.get("digest", ""),
                     size_bytes=int(entry.get("size", 0)),
+                    modified_at=entry.get("modified_at", ""),
                 )
             )
         return out
+
+    def has_model(self, tag: str) -> bool:
+        return any(m.name == tag for m in self.list_models())
 
     def upload_blob(self, file_path: str) -> str:
         """Upload a file to Ollama as a content-addressable blob.
@@ -124,6 +129,17 @@ class OllamaClient:
         with httpx.Client(timeout=self._timeout) as client:
             resp = client.post(f"{self._base}/api/create", json=body)
         _raise_if_error(resp, "create")
+
+    def delete_model(self, tag: str) -> None:
+        with httpx.Client(timeout=self._timeout) as client:
+            resp = client.request(
+                "DELETE",
+                f"{self._base}/api/delete",
+                json={"name": tag},
+            )
+        if resp.status_code == 404:
+            return  # idempotent
+        _raise_if_error(resp, "delete")
 
 
 # ---- helpers ---------------------------------------------------------------
