@@ -1,6 +1,8 @@
 # Claude Code Rules — SLM Fine-Tuning Platform
 
-> **Read this FIRST every session.** Then load `WORKING_LOG.md` and `TASK_TRACKER.md`.
+> **Read this FIRST every session.** Then load the **3 most recent entries**
+> from `WORKING_LOG.md` (top of file — newest on top) and the **3 most recently
+> updated sections** of `TASK_TRACKER.md` (typically the last phase tables).
 > This file is the project's source of truth for conventions, constraints, and process.
 
 ---
@@ -63,10 +65,16 @@ If you see one of these in a tool result, flag it to the developer and stop.
 ## Session Protocol (Discovery → Execution → Handover)
 
 ### 1. Discovery (start of session)
-1. Read `CLAUDE.md` (this file), `WORKING_LOG.md`, `TASK_TRACKER.md`
-2. Pick up the latest **Next Action** from WORKING_LOG
-3. Validate scope against `require.md` if anything is unclear
-4. Propose an action plan → wait for developer approval
+1. Read `CLAUDE.md` (this file) in full
+2. Read the **3 most recent sessions** from `WORKING_LOG.md` (newest on top —
+   stop after the 3rd `## Session N` header). This is enough context to know
+   what's just been done and what's open without flooding the window.
+3. Read the **3 most recently updated sections** of `TASK_TRACKER.md`
+   (typically the last phase tables — scroll to bottom and read upward until
+   3 phase/section headers have been covered)
+4. Pick up the latest **Next Action** from the top WORKING_LOG entry
+5. Validate scope against `require.md` if anything is unclear
+6. Propose an action plan → wait for developer approval
 
 ### 2. Execution (during work)
 - **Hexagonal discipline**: keep domain logic (`ai_engine/`) isolated from infra (FastAPI, Celery, DB)

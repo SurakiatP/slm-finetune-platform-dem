@@ -6,6 +6,33 @@
 
 ---
 
+## Session 25 — Revert dead-code sweeps `2ebc615` + `c528726` (2026-05-18)
+
+**Who:** Claude (Opus 4.7) + parks
+**Status:** ✅ Both dead-code commits reverted via non-destructive `git revert`. All 11 items restored to source. Unit tests 176/176 green, 43 snapshots identical. Branch `feature/training-eval-smoke-v2` not yet pushed post-revert.
+
+**Why & What:**
+- parks asked to revert the Session-24 dead-code sweeps. Likely rationale: keep `OllamaClient.has_model()` / `delete_model()` available for upcoming model lifecycle management, and keep `MlflowRunHandle.run_url` available for UI/log composition rather than the inline reconstruction at `trainings_service.get_mlflow_url:117-118`.
+- Plan: [`~/.claude/plans/commit-dead-code-delegated-lantern.md`](../../Users/parks/.claude/plans/commit-dead-code-delegated-lantern.md). Explore agent pre-verified: zero conflict (no commit after `c528726` touches the 7 files), zero snapshot references to deleted symbols, zero test references, clean working tree.
+- Executed `git revert --no-edit c528726 2ebc615` (new→old order is required because `tracking_uri` removal in `c528726` cascaded from `run_url` removal in `2ebc615`). Created 2 revert commits:
+  - `7c04fce` Revert "chore: remove 6 more dead-code items from vulture 60% pass"
+  - `5500217` Revert "chore: remove 5 dead-code items surfaced by vulture"
+- Verified `git diff 1cb12e1 -- ai_engine api workers` = empty → source identical to baseline. All 11 symbols grep-confirmed back in their original locations.
+
+**Test Summary:**
+- `pytest -m "not integration" -q`: **176 passed, 5 skipped, 0 failed** (5 skips: 2 integration tests requiring compose, 3 SDG snapshots awaiting CH.8 recorded payloads — all expected per CH.6/CH.8)
+- 43 syrupy snapshots all pass — revert didn't touch any pure function that's snapshot-covered
+- Sanity import check confirmed `AsyncProgressCallback` restored
+
+**Next Action:**
+- Push branch to origin (revert commits not yet on remote)
+- Reopen PR target (`feature/training-eval-smoke-v2` → `dev`) — PR body should note the revert + reason in addition to original Session-24 bundle
+- ⚠️ OpenRouter key rotation still outstanding from Sessions 21-24
+
+**Blockers:** None.
+
+---
+
 ## Session 24 — GET /evaluations list + 11-item dead-code cleanup + snapshot harness pilot (2026-05-17)
 
 **Who:** Claude (Opus 4.7) + parks
