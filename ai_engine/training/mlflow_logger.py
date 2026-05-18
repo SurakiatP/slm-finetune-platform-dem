@@ -30,6 +30,12 @@ class MlflowRunHandle:
     experiment_id: str
     tracking_uri: str
 
+    @property
+    def run_url(self) -> str:
+        """Web URL pointing at the run in the MLflow UI."""
+        base = self.tracking_uri.rstrip("/")
+        return f"{base}/#/experiments/{self.experiment_id}/runs/{self.run_id}"
+
 
 @contextmanager
 def mlflow_run_scope(
