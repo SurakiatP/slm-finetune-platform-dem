@@ -161,7 +161,7 @@ async def get_training_loss_history(
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             train_rows, eval_rows = await asyncio.gather(
-                mlflow_metrics.get_metric_history(job.mlflow_run_id, "train_loss", client=client),
+                mlflow_metrics.get_metric_history(job.mlflow_run_id, "loss", client=client),
                 mlflow_metrics.get_metric_history(job.mlflow_run_id, "eval_loss", client=client),
             )
         except httpx.HTTPError as exc:
