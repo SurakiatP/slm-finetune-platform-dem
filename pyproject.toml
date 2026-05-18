@@ -82,10 +82,13 @@ dev = [
     "moto[s3]>=5.0.0",
     "fakeredis>=2.20.0",
     "dirty-equals>=0.7.0",
-    # Eval libs needed by pytest (ai_engine.evaluation imports them); the runtime
-    # worker installs `[eval]` separately, but pytest in the api container needs
-    # these to collect+run test_snapshot_metrics qa cases.
+    # Eval libs needed by pytest (ai_engine.evaluation has deferred imports of
+    # these inside metric functions). The runtime worker installs `[eval]`
+    # separately for full coverage; pytest in the api container needs at least
+    # these two to run test_snapshot_metrics qa cases (rouge + BLEU).
+    # scikit-learn (used by metrics_classification) arrives transitively.
     "rouge-score>=0.1.2",
+    "sacrebleu>=2.4.0",
 ]
 
 [project.urls]
