@@ -1,0 +1,82 @@
+# serializer version: 1
+# name: test_chat_template_by_prefix_table
+  list([
+    tuple(
+      'unsloth/gemma-2',
+      'gemma-2',
+    ),
+    tuple(
+      'unsloth/llama-3.2',
+      'llama-3.2',
+    ),
+    tuple(
+      'unsloth/qwen2.5',
+      'chatml',
+    ),
+  ])
+# ---
+# name: test_chat_template_for_all_supported[UNSLOTH/LLAMA-3.2-1B-INSTRUCT-BNB-4BIT]
+  'llama-3.2'
+# ---
+# name: test_chat_template_for_all_supported[]
+  'chatml'
+# ---
+# name: test_chat_template_for_all_supported[meta-llama/Llama-3.2-1B-Instruct]
+  'chatml'
+# ---
+# name: test_chat_template_for_all_supported[unsloth/Llama-3.2-1B-Instruct-bnb-4bit]
+  'llama-3.2'
+# ---
+# name: test_chat_template_for_all_supported[unsloth/Llama-3.2-3B-Instruct-bnb-4bit]
+  'llama-3.2'
+# ---
+# name: test_chat_template_for_all_supported[unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit]
+  'chatml'
+# ---
+# name: test_chat_template_for_all_supported[unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit]
+  'chatml'
+# ---
+# name: test_chat_template_for_all_supported[unsloth/Qwen2.5-3B-Instruct-bnb-4bit]
+  'chatml'
+# ---
+# name: test_chat_template_for_all_supported[unsloth/SmolLM2-1.7B-Instruct-bnb-4bit]
+  'chatml'
+# ---
+# name: test_chat_template_for_all_supported[unsloth/gemma-2-2b-it-bnb-4bit]
+  'gemma-2'
+# ---
+# name: test_eos_by_prefix_table
+  list([
+    tuple(
+      'unsloth/gemma-2',
+      '<end_of_turn>',
+    ),
+    tuple(
+      'unsloth/llama-3.2',
+      '<|eot_id|>',
+    ),
+    tuple(
+      'unsloth/qwen2.5',
+      '<|im_end|>',
+    ),
+  ])
+# ---
+# name: test_resolve_eos_token_falls_back_to_per_family_table
+  dict({
+    'unsloth/Llama-3.2-1B-Instruct-bnb-4bit': '<|eot_id|>',
+    'unsloth/Qwen2.5-3B-Instruct-bnb-4bit': '<|im_end|>',
+    'unsloth/gemma-2-2b-it-bnb-4bit': '<end_of_turn>',
+  })
+# ---
+# name: test_resolve_eos_token_id_lookup_returns_unknown_token
+  '<|im_end|>'
+# ---
+# name: test_resolve_eos_token_skips_placeholder_uses_id_lookup
+  '<|im_end|>'
+# ---
+# name: test_resolve_eos_token_tolerates_id_conversion_exception
+  '<|eot_id|>'
+# ---
+# name: test_resolve_eos_token_uses_real_eos_when_in_vocab
+  '<|eot_id|>'
+# ---
