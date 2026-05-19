@@ -30,11 +30,21 @@ Available fixtures (all session-scoped factories where it helps):
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
+
+# Provide a benign DATABASE_URL so importing modules that touch
+# `api.core.config.get_settings()` (e.g. anything via `workers.celery_app`)
+# doesn't fail collection. Tests that need real DB access mark
+# themselves @pytest.mark.integration and skip when compose isn't up.
+os.environ.setdefault(
+    "DATABASE_URL",
+    "postgresql+asyncpg://test:test@localhost:5432/test_unused",
+)
 
 import pytest
 
