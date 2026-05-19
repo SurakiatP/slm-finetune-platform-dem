@@ -418,4 +418,67 @@ def _release_gpu_memory() -> None:
     gc.collect()
 
 
+# ---- pure helpers (characterized by tests/unit/test_snapshot_node_7.py) ----
+#
+# These are split out so the refactor of ``export_model`` can call them in
+# place of equivalent inline code without changing observable behaviour.
+# Snapshot diff = 0 after refactor proves byte-stability.
+
+
+def _compute_ollama_tag(artifact_id: str) -> str:
+    """Build the Ollama model tag for a fine-tuned artifact.
+
+    Format: ``slm/<first-8-chars-of-uuid>`` — short enough to type, long
+    enough that real-world artifact collisions are vanishingly unlikely
+    on the dev box. Used by ``export_model`` to register the fine-tuned
+    GGUF with Ollama.
+    """
+    return f"slm/{artifact_id[:8]}"
+
+
+def _convert_hf_to_gguf_argv(stage_dir: str, f16_path: str) -> list[str]:
+    """Argv for the HF → GGUF f16 conversion step.
+
+    We drive the *original* llama.cpp ``convert_hf_to_gguf.py`` (not
+    Unsloth's patched copy, which calls a removed AutoTokenizer
+    signature and dies on transformers ≥4.51).
+    """
+    return [
+        "python",
+        "/app/llama.cpp/convert_hf_to_gguf.py",
+        "--outfile", f16_path,
+        "--outtype", "f16",
+        stage_dir,
+    ]
+
+
+def _quantize_gguf_argv(f16_path: str, gguf_path: str, quant: str) -> list[str]:
+    """Argv for the f16 → quantized GGUF step.
+
+    Uses our statically-linked ``llama-quantize`` binary baked into the
+    worker image at ``/app/llama.cpp/llama-quantize``.
+    """
+    return [
+        "/app/llama.cpp/llama-quantize",
+        f16_path, gguf_path, quant,
+    ]
+
+
+def _bump_transformers_version_if_buggy(cfg: dict[str, Any]) -> bool:
+    """Workaround transformers 4.57.2 ``model_type``-on-dict AttributeError.
+
+    The bug at ``tokenization_utils_base.py:2419`` only triggers when the
+    saved ``config.json`` has ``transformers_version <= 4.57.2``. Bumping
+    the field in-place skips the buggy branch entirely without affecting
+    inference behaviour (the field is purely informational at load time).
+
+    Mutates ``cfg`` in place. Returns True iff a bump happened — callers
+    use that to decide whether to re-serialize.
+    """
+    if cfg.get("transformers_version", "0") <= "4.57.2":
+        cfg["transformers_version"] = "4.58.0"
+        return True
+    return False
+
+
 __all__ = ["export_model"]

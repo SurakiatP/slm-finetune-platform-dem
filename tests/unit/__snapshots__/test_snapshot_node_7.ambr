@@ -1,0 +1,267 @@
+# serializer version: 1
+# name: test_bump_transformers_version_above_threshold
+  dict({
+    'cfg_after': dict({
+      'model_type': 'llama',
+      'transformers_version': '4.58.0',
+    }),
+    'mutated': False,
+  })
+# ---
+# name: test_bump_transformers_version_below_threshold
+  dict({
+    'cfg_after': dict({
+      'model_type': 'llama',
+      'transformers_version': '4.58.0',
+    }),
+    'mutated': True,
+  })
+# ---
+# name: test_bump_transformers_version_missing_field
+  dict({
+    'cfg_after': dict({
+      'model_type': 'llama',
+      'transformers_version': '4.58.0',
+    }),
+    'mutated': True,
+  })
+# ---
+# name: test_bump_transformers_version_older_release
+  dict({
+    'cfg_after': dict({
+      'model_type': 'llama',
+      'transformers_version': '4.58.0',
+    }),
+    'mutated': True,
+  })
+# ---
+# name: test_compute_ollama_tag_canonical
+  'slm/a1b2c3d4'
+# ---
+# name: test_compute_ollama_tag_various
+  dict({
+    'exact_8_chars': 'slm/01234567',
+    'short_id_under_8': 'slm/short',
+    'uppercase_hex': 'slm/AABBCCDD',
+    'uuid_dashed_lower': 'slm/1234abcd',
+    'uuid_no_dashes': 'slm/1234abcd',
+  })
+# ---
+# name: test_convert_hf_to_gguf_argv_default
+  list([
+    'python',
+    '/app/llama.cpp/convert_hf_to_gguf.py',
+    '--outfile',
+    '/tmp/export-1/gguf/model.f16.gguf',
+    '--outtype',
+    'f16',
+    '/tmp/export-1/stage',
+  ])
+# ---
+# name: test_convert_hf_to_gguf_argv_windows_paths
+  list([
+    'python',
+    '/app/llama.cpp/convert_hf_to_gguf.py',
+    '--outfile',
+    'C:\\work\\export-2\\gguf\\model.f16.gguf',
+    '--outtype',
+    'f16',
+    'C:\\work\\export-2\\stage',
+  ])
+# ---
+# name: test_download_prefix_handles_trailing_slash
+  dict({
+    'no_slash_calls': list([
+      tuple(
+        'list_objects',
+        'b|p/|True',
+      ),
+      tuple(
+        'get_object',
+        'p/f1.txt',
+      ),
+      tuple(
+        'get_object',
+        'p/f2.txt',
+      ),
+    ]),
+    'no_slash_files': dict({
+      'f1.txt': 'one',
+      'f2.txt': 'two',
+    }),
+    'with_slash_calls': list([
+      tuple(
+        'list_objects',
+        'b|p/|True',
+      ),
+      tuple(
+        'get_object',
+        'p/f1.txt',
+      ),
+      tuple(
+        'get_object',
+        'p/f2.txt',
+      ),
+    ]),
+    'with_slash_files': dict({
+      'f1.txt': 'one',
+      'f2.txt': 'two',
+    }),
+  })
+# ---
+# name: test_download_prefix_skips_prefix_marker
+  dict({
+    'files': dict({
+      'model.gguf': '<gguf>',
+    }),
+  })
+# ---
+# name: test_download_prefix_writes_all_objects
+  dict({
+    'calls': list([
+      tuple(
+        'list_objects',
+        'models|adapters/abc/|True',
+      ),
+      tuple(
+        'get_object',
+        'adapters/abc/adapter_config.json',
+      ),
+      tuple(
+        'get_object',
+        'adapters/abc/adapter_model.safetensors',
+      ),
+      tuple(
+        'get_object',
+        'adapters/abc/subdir/extra.bin',
+      ),
+      tuple(
+        'get_object',
+        'adapters/abc/tokenizer.json',
+      ),
+    ]),
+    'files': dict({
+      'adapter_config.json': '{"task": "CAUSAL_LM"}',
+      'adapter_model.safetensors': '<bin1>',
+      'subdir/extra.bin': '<bin2>',
+      'tokenizer.json': '{"version": "1.0"}',
+    }),
+  })
+# ---
+# name: test_first_gguf_ignores_non_gguf_files
+  'weights.q4_k_m.gguf'
+# ---
+# name: test_first_gguf_returns_lowest_sorted
+  'model.q4_k_m.gguf'
+# ---
+# name: test_gguf_subprocess_sequence_default_quant
+  list([
+    dict({
+      'argv': list([
+        'python',
+        '/app/llama.cpp/convert_hf_to_gguf.py',
+        '--outfile',
+        '/work/gguf/model.f16.gguf',
+        '--outtype',
+        'f16',
+        '/work/stage',
+      ]),
+      'check': True,
+    }),
+    dict({
+      'argv': list([
+        '/app/llama.cpp/llama-quantize',
+        '/work/gguf/model.f16.gguf',
+        '/work/gguf/model.q4_k_m.gguf',
+        'q4_k_m',
+      ]),
+      'check': True,
+    }),
+  ])
+# ---
+# name: test_gguf_subprocess_sequence_q5_k_m
+  list([
+    dict({
+      'argv': list([
+        'python',
+        '/app/llama.cpp/convert_hf_to_gguf.py',
+        '--outfile',
+        '/work/gguf/model.f16.gguf',
+        '--outtype',
+        'f16',
+        '/work/stage',
+      ]),
+      'check': True,
+    }),
+    dict({
+      'argv': list([
+        '/app/llama.cpp/llama-quantize',
+        '/work/gguf/model.f16.gguf',
+        '/work/gguf/model.q5_k_m.gguf',
+        'q5_k_m',
+      ]),
+      'check': True,
+    }),
+  ])
+# ---
+# name: test_quantize_gguf_argv_q4_k_m
+  list([
+    '/app/llama.cpp/llama-quantize',
+    '/tmp/export-1/gguf/model.f16.gguf',
+    '/tmp/export-1/gguf/model.q4_k_m.gguf',
+    'q4_k_m',
+  ])
+# ---
+# name: test_quantize_gguf_argv_various_quants
+  dict({
+    'f16': list([
+      '/app/llama.cpp/llama-quantize',
+      '/tmp/f16.gguf',
+      '/tmp/out.f16.gguf',
+      'f16',
+    ]),
+    'q4_k_m': list([
+      '/app/llama.cpp/llama-quantize',
+      '/tmp/f16.gguf',
+      '/tmp/out.q4_k_m.gguf',
+      'q4_k_m',
+    ]),
+    'q5_k_m': list([
+      '/app/llama.cpp/llama-quantize',
+      '/tmp/f16.gguf',
+      '/tmp/out.q5_k_m.gguf',
+      'q5_k_m',
+    ]),
+    'q8_0': list([
+      '/app/llama.cpp/llama-quantize',
+      '/tmp/f16.gguf',
+      '/tmp/out.q8_0.gguf',
+      'q8_0',
+    ]),
+  })
+# ---
+# name: test_register_with_ollama_daemon_down
+  dict({
+    'blob_called': False,
+    'create_called': False,
+  })
+# ---
+# name: test_register_with_ollama_happy_path
+  dict({
+    'blob_uploaded': True,
+    'create_payloads': list([
+      dict({
+        'files': dict({
+          'model.gguf': 'sha256:54a5c27625a82f59cf1e0f00de5e47efbf420088481162c1bca810f6ea93ed66',
+        }),
+        'model': 'slm/abc12345',
+        'parameters': dict({
+          'num_ctx': 2048,
+          'temperature': 0.0,
+        }),
+        'stream': False,
+      }),
+    ]),
+    'health_called': True,
+  })
+# ---
