@@ -54,6 +54,19 @@ def probe(
     Pure CPU; no network. Safe to call inline in an async handler — pypdf
     is fast enough for sub-100-page PDFs that we don't bother offloading.
     """
+    size = _check_size(pdf_bytes, max_bytes=max_bytes)
+    num_pages = _count_pages(pdf_bytes, max_pages=max_pages)
+    return PdfProbe(size_bytes=size, num_pages=num_pages)
+
+
+def _check_size(pdf_bytes: bytes, *, max_bytes: int) -> int:
+    """Return the byte length after enforcing non-empty + size-cap invariants.
+
+    Raises :class:`PdfCorruptError` for empty input and
+    :class:`PdfTooLargeError` when ``len(pdf_bytes) > max_bytes``. Pulled
+    out of :func:`probe` so the size gate can be unit-tested on its own
+    without having to construct a valid PDF.
+    """
     size = len(pdf_bytes)
     if size == 0:
         raise PdfCorruptError("empty PDF bytes")
@@ -62,7 +75,17 @@ def probe(
             f"PDF size {size} bytes exceeds cap {max_bytes} "
             f"({max_bytes // (1024 * 1024)} MiB)"
         )
+    return size
 
+
+def _count_pages(pdf_bytes: bytes, *, max_pages: int) -> int:
+    """Parse the PDF and return its page count, enforcing the page cap.
+
+    Raises :class:`PdfCorruptError` for unparseable or zero-page bytes,
+    and :class:`PdfTooManyPagesError` when the page count exceeds
+    ``max_pages``. Pulled out of :func:`probe` so the parse seam is
+    isolated from the size gate.
+    """
     try:
         reader = PdfReader(BytesIO(pdf_bytes))
         # Force iteration so corruption surfaces as PdfReadError, not at
@@ -77,8 +100,7 @@ def probe(
         raise PdfTooManyPagesError(
             f"PDF has {num_pages} pages; cap is {max_pages}"
         )
-
-    return PdfProbe(size_bytes=size, num_pages=num_pages)
+    return num_pages
 
 
 def to_base64_data_url(pdf_bytes: bytes) -> str:

@@ -145,22 +145,7 @@ def detect_and_rename(
         # required-key check below decide what to drop.
         return _apply_no_mapping(rows, required_keys, notes="llm returned no mapping")
 
-    canonical_rows: list[dict[str, Any]] = []
-    dropped = 0
-    for row in rows:
-        renamed = _rename_keys(row, mapping)
-        if not required_keys.issubset(renamed.keys()):
-            dropped += 1
-            continue
-        canonical_rows.append(renamed)
-
-    return FormatDetectionResult(
-        ran=True,
-        canonical_rows=canonical_rows,
-        field_mapping=mapping,
-        rows_dropped=dropped,
-        notes=None,
-    )
+    return _apply_mapping(rows, mapping, required_keys)
 
 
 # ---- Internals ------------------------------------------------------------
@@ -220,6 +205,34 @@ def _rename_keys(row: dict[str, Any], mapping: dict[str, str]) -> dict[str, Any]
         new_key = mapping.get(k, k)
         out[new_key] = v
     return out
+
+
+def _apply_mapping(
+    rows: list[dict[str, Any]],
+    mapping: dict[str, str],
+    required_keys: set[str],
+) -> FormatDetectionResult:
+    """Apply ``mapping`` to every row; drop rows still missing required keys.
+
+    Counterpart to :func:`passthrough_with_required_check` for the case when
+    the LLM produced a usable rename map. Kept as a private helper so the
+    public :func:`detect_and_rename` orchestrator stays short and readable.
+    """
+    canonical_rows: list[dict[str, Any]] = []
+    dropped = 0
+    for row in rows:
+        renamed = _rename_keys(row, mapping)
+        if not required_keys.issubset(renamed.keys()):
+            dropped += 1
+            continue
+        canonical_rows.append(renamed)
+    return FormatDetectionResult(
+        ran=True,
+        canonical_rows=canonical_rows,
+        field_mapping=mapping,
+        rows_dropped=dropped,
+        notes=None,
+    )
 
 
 def passthrough_with_required_check(
