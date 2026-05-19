@@ -6,6 +6,75 @@
 
 ---
 
+## Session 27 — Per-node refactor workflow + 6 PRs via parallel agents (2026-05-19 → 2026-05-20)
+
+**Who:** Claude (Opus 4.7) + parks
+**Status:** ✅ 6 refactor PRs opened (#5-#10) covering all 6 refactor-target nodes (9/7/10/3a/6/3b+4). 5 trivial nodes (1/2/5/8/11) skipped per plan classification. Workflow demonstrated end-to-end: pre-refactor snapshot harness → refactor → snapshot diff=0 → vast.ai Tier 3 verify. Cost ~$1.00 total (vs ~$5-8 estimated for sequential). vast.ai instance **still running** (`211.21.106.81:37843`) — parks to destroy + rotate OpenRouter key before next session.
+
+**Why & What:**
+
+### (a) Pre-flight + Node 9 manual cycle
+- Closed integration debt first: opened PR #4 (HO.9, 60 commits Sessions 18-26 from `feature/training-eval-smoke-v2` → dev), parks merged → branch refactor from clean dev (`2a3d57c`)
+- Plan file at `~/.claude/plans/1-api-key-moonlit-moonbeam.md` defined per-node workflow (5 steps: baseline → harness → refactor → vast.ai verify → PR). Locked decisions: PR HO.9 first; start at Node 9 (lowest risk + snapshot already covered metrics)
+- **Node 9 (Eval rule-based, PR #5)** — manual cycle to validate workflow:
+  - Baseline: promoted Session 26 `e2e-node9-final.json` into `tests/fixtures/baseline/node-9/` as schema contract
+  - Harness: `tests/unit/test_snapshot_node_9.py` 17 snapshots (Tier 1 pure helpers + Tier 2 respx-mocked `_predict_rows`)
+  - Refactor: extracted `_compute_metrics_for_task` + `_apply_llm_judge` from `run_evaluation` (180 → 151 LOC)
+  - Tier 3: `scripts/verify_node_9_eval_rulebased.py` on vast.ai returned CONTRACT PASS (all top-level keys, status=completed, metrics_json shape matches, llm_judge_score=null)
+  - 4 commits, suite 180 → 197 passed
+- Also added `DATABASE_URL` setdefault to `tests/conftest.py` so importing `workers.celery_app` doesn't fail collection
+
+### (b) Parallel agent dispatch for Nodes 7/10/3a/6/3b+4 (the key time-saver)
+- While vast.ai setup (`scripts/session25_holdout_e2e.py --task classification --num 40 --holdout 20`) ran in tmux background (~7 min on RTX 3070), dispatched **5 Explore-isolation agents in parallel** (per `superpowers:dispatching-parallel-agents`), one per node, each with own git worktree:
+  - Agent prompts: comprehensive context (plan file, harness runbook, reference test, target files), branch naming, push instructions, structured output format
+  - Each agent: read targets → write `tests/unit/test_snapshot_node_<N>.py` → `pytest --snapshot-update` → Option B refactor (extract 2-3 helpers, byte-stable) → verify snapshot diff=0 → commit + push
+- **All 5 agents completed in ~18 min concurrent** (vs estimated 3-4 hr sequential)
+
+| Node | Branch | Commits | New snapshots | Helpers | Suite |
+|------|--------|---------|---------------|---------|-------|
+| 7 (Export GGUF) | feature/refactor-node-7-export | 2 | 19 | 7 (3 orch + 4 pure) | 201 ✅ |
+| 10 (LLM Judge) | feature/refactor-node-10-judge (stacked on #9) | 2 | 15 | 5 | 212 ✅ |
+| 3a (Upload seed) | feature/refactor-node-3a-upload | 2 | 39 | 8 across 3 files | 220 ✅ |
+| 6 (Training) | feature/refactor-node-6-training | 2 | 17 (Tier 1 only — Unsloth not mocked per runbook §6) | 5 | 198 ✅ |
+| 3b+4 (SDG) | feature/refactor-node-3b4-sdg | 2 | 7 (conservative — 929 LOC file) | 2 | 191 ✅ |
+
+### (c) Sequential Tier 3 verify on shared vast.ai stack
+- One VM, switch branches + restart worker between each verify (~30s overhead per node)
+- **Node 7**: re-export same artifact (`6d748bb3`) — completed in 106s, all response fields preserved (`gguf_uri`, `ollama_model_tag`, `safetensors_uri:null`, blob/create/pull all 200)
+- **Node 10**: cls+judge eval — auto-skip path verified (`llm_judge_score:null`, `metrics_json.llm_judge_notes` exact wording preserved)
+- **Node 3a**: upload 5-row cls JSONL — `dataset_id`, `format_detection.ran:false` (canonical), `invalid_rows:[]` all preserved
+- **Node 6**: new training on parent dataset — completed in 84s, MLflow run logged, ADR-002 cleanup preserved
+- **Node 3b+4**: SDG with `num_samples=8, holdout_size=2` — parent (8 rows) + child holdout (2 rows) created with correct `parent_dataset_id` back-link in 68s
+
+### (d) Pre-flight gotchas (worth remembering for future VM sessions)
+- vast.ai instance came with Docker but no NVIDIA Container Toolkit (skill Step 2 needed)
+- HF download speed 34 MB/s — slightly below skill threshold (50 MB/s) but workable (matched Session 26's good experience on same TW datacenter)
+- `scripts/` not mounted in api container — workaround was running `session25_holdout_e2e.py` from host python (only uses stdlib) instead of `docker compose exec api python ...`
+- Worker mounts `./workers` so code changes after `git checkout` are visible immediately, but celery doesn't auto-reload → `docker compose restart worker` needed after each branch switch
+- API training endpoint field names: `training_name` + `manual_config` (not `name` + `config`) — easy to miss when reading docs vs schema
+
+### (e) Memory & artifacts
+- Plan file `~/.claude/plans/1-api-key-moonlit-moonbeam.md` evolved from "remaining work survey" → "per-node refactor framework" → "locked decisions + immediate next steps"
+- 11 git worktrees still exist at `.claude/worktrees/agent-*` (agents kept them; parks can prune after PR reviews)
+- 5 trivial nodes (1/2/5/8/11) deliberately skipped per plan classification: pure CRUD or thin proxies, no meaningful refactor seam without churn
+
+**Test Summary:**
+- Local suite per branch (before push): 180 baseline → 191-220 passed (each branch + its harness)
+- Live vast.ai integration: 5/5 sequential verifies PASS
+- Setup phase (SDG + train + export + eval w/ judge): 7 min on RTX 3070 8 GB
+- Zero rollbacks needed — all 6 refactors preserved snapshot byte-equivalence and live contract
+
+**Next Action (tomorrow):**
+- ⚠️ **Stop/destroy vast.ai instance `211.21.106.81:37843`** — still billing
+- ⚠️ **Rotate OpenRouter key** `sk-or-v1-e177...` (visible in chat + .env on VM)
+- Review + merge PRs in suggested order: #5 (Node 9 foundation) → #7 (Node 10, rebase base from `feature/refactor-node-9-eval` → `dev` after #5 merges) → #6/#8/#9/#10 (independent)
+- Prune git worktrees at `.claude/worktrees/agent-*` once PRs merged
+- (Optional) Consider Tier 1 harness for the 5 trivial nodes if "11/11 demonstration" is wanted later — ~30-45 min local-only work (no VM needed)
+
+**Blockers:** None — workflow proven, all PRs queued for review.
+
+---
+
 ## Session 26 — vast.ai E2E test + MLflow loss-history bug fixes (2026-05-18 → 2026-05-19)
 
 **Who:** Claude (Opus 4.7) + parks
