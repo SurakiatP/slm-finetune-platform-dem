@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>Node 10 — LLM as Judge</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; max-width: 920px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #2563eb; padding-bottom: 8px; }
+  h2 { color: #1e40af; margin-top: 28px; border-left: 4px solid #2563eb; padding-left: 10px; }
+  h3 { color: #374151; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.85em; font-weight: 600; margin-right: 6px; }
+  .badge-post { background: #16a34a; color: white; }
+  .badge-get { background: #2563eb; color: white; }
+  .badge-async { background: #ea580c; color: white; }
+  .path { font-family: "JetBrains Mono", Consolas, monospace; background: #f3f4f6; padding: 4px 8px; border-radius: 4px; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }
+  code { font-family: "JetBrains Mono", Consolas, monospace; }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  :not(pre) > code { background: #fef3c7; padding: 2px 6px; border-radius: 3px; font-size: 0.92em; color: #92400e; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; }
+  .nav { display: flex; justify-content: space-between; margin: 30px 0 10px; padding: 12px; background: #f9fafb; border-radius: 8px; }
+  .nav a { color: #2563eb; text-decoration: none; font-weight: 500; }
+  .nav a:hover { text-decoration: underline; }
+  .callout { background: #eff6ff; border-left: 4px solid #2563eb; padding: 10px 14px; margin: 14px 0; border-radius: 4px; }
+  .callout.warn { background: #fef3c7; border-left-color: #f59e0b; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="9_evaluation.html">← Node 9</a>
+  <a href="../guide101.md">Index</a>
+  <a href="11_mlflow-tracking.html">ถัดไป: Node 11 →</a>
+</div>
+
+<h1>Node 10 — LLM as Judge</h1>
+
+<p>
+  <span class="badge badge-post">POST</span>
+  <span class="badge badge-async">ASYNC 202</span>
+  <span class="path">/api/v1/evaluations</span> with <code>use_llm_judge: true</code>
+</p>
+
+<h2>วัตถุประสงค์</h2>
+<p>วัด <strong>qualitative quality</strong> ของ fine-tuned model ด้วย LLM-as-judge (rubric 1-5) — เสริม rule-based metrics จาก Node 9. ใช้เมื่อ:</p>
+<ul>
+  <li>BLEU/ROUGE สูงแต่ output แปลก ๆ → judge จะ catch</li>
+  <li>QA / open-ended task ที่มี multiple correct answers</li>
+  <li>เปรียบเทียบ models สอง trainings ที่ rule-based score ใกล้กัน</li>
+</ul>
+
+<div class="callout warn">
+  <strong>Task ที่ judge ทำงาน:</strong> <code>qa</code> และ <code>tool_calling</code> เท่านั้น. ถ้าส่ง <code>use_llm_judge=true</code> มากับ <code>classification</code> ระบบจะ <strong>skip judge</strong> + ใส่ <code>metrics_json.llm_judge_notes</code> อธิบายเหตุผล (rule-based accuracy/f1 เป็นเครื่องมือที่ถูกต้องสำหรับ closed-set labels อยู่แล้ว). <code>llm_judge_score</code> จะคืน <code>null</code>.
+</div>
+
+<h2>Prerequisite</h2>
+<ul>
+  <li>เหมือน Node 9 ทุกอย่าง +</li>
+  <li><code>OPENROUTER_API_KEY</code> ใน <code>.env</code> ของ api container (Node 9 ไม่ต้อง)</li>
+</ul>
+
+<h2>Request — minimal (ใช้ default judge model)</h2>
+<pre><code>{
+  "model_artifact_id": "&lt;uuid&gt;",
+  "dataset_id": "&lt;holdout_dataset_id&gt;",
+  "use_llm_judge": true
+}</code></pre>
+
+<h2>Request — เลือก judge_model เอง</h2>
+<pre><code>{
+  "model_artifact_id": "&lt;uuid&gt;",
+  "dataset_id": "&lt;holdout_dataset_id&gt;",
+  "use_llm_judge": true,
+  "judge_model": "google/gemini-3.1-flash-lite-preview"
+}</code></pre>
+
+<table>
+<tr><th>Field</th><th>Default</th><th>Note</th></tr>
+<tr><td><code>use_llm_judge</code></td><td><code>false</code></td><td>set <code>true</code> เพื่อ trigger judge</td></tr>
+<tr><td><code>judge_model</code></td><td><code>LLM_JUDGE_MODEL</code> ใน <code>.env</code> (ปัจจุบัน <code>google/gemini-3.1-flash-lite-preview</code> — ถูกที่สุดบน OpenRouter)</td><td>OpenRouter model id — แนะนำให้ใช้ default ก่อน</td></tr>
+</table>
+
+<div class="callout warn">
+  <strong>Tip judge_model สำหรับ Thai content</strong> (QA Thai return policy, Classification Thai support): Gemini handle Thai ได้ดีกว่า Claude Haiku ของรุ่นเก่า. ใช้ default ของระบบ (gemini-3.1-flash-lite) ได้เลย — ราคาประมาณ $0.04 ต่อ 1k rows
+</div>
+
+<h2>Response 202 + GET result</h2>
+<pre><code>GET /api/v1/evaluations/{evaluation_id}
+
+{
+  "id": "&lt;uuid&gt;",
+  "status": "completed",
+  "metrics_json": {
+    "exact_match": 0.0,
+    "rouge1": 0.286,
+    "rouge2": 0.0,
+    "rougeL": 0.286,
+    "bleu": 0.020,
+    "n": 5,
+    "llm_judge_skipped_rows": 0
+  },
+  "llm_judge_score": 4.6,                          ← 1.0-5.0 mean
+  "llm_judge_model": "anthropic/claude-haiku-4.5",
+  "error_message": null,
+  "started_at": "...",
+  "ended_at": "..."
+}</code></pre>
+
+<div class="callout">
+  <strong>Judge ทำงานยังไง:</strong>
+  <ul>
+    <li>ส่งทุก row ของ holdout dataset → judge model พร้อม rubric 1-5</li>
+    <li>คิด mean score จาก rows ที่ judge parse ได้ (skip rows ที่ judge ตอบ JSON ไม่ถูก)</li>
+    <li><code>llm_judge_skipped_rows</code> = จำนวน rows ที่ skip (ควรน้อยกว่า 10% ของ <code>n</code>)</li>
+  </ul>
+</div>
+
+<h2>Interpret score</h2>
+<table>
+<tr><th>Score</th><th>หมายความ</th></tr>
+<tr><td>4.5 – 5.0</td><td>excellent — output ถูกต้อง + เขียนดี</td></tr>
+<tr><td>3.5 – 4.5</td><td>good — ถูกแต่อาจเป๋นิดหน่อย</td></tr>
+<tr><td>2.5 – 3.5</td><td>acceptable — partial answer หรือ phrasing แปลก</td></tr>
+<tr><td>1.5 – 2.5</td><td>poor — ผิด หรือ off-topic</td></tr>
+<tr><td>1.0 – 1.5</td><td>bad — fail ชัดเจน</td></tr>
+</table>
+
+<h2>Error cases</h2>
+<table>
+<tr><th>Symptom</th><th>Note</th></tr>
+<tr><td><code>llm_judge_score = null</code> + <code>metrics_json.llm_judge_notes</code> populated</td><td>task_type = classification — judge ถูก skip โดยตั้งใจ. ดู <code>llm_judge_notes</code> สำหรับคำอธิบาย; ใช้ <code>accuracy</code> / <code>f1_macro</code> จาก Node 9 แทน</td></tr>
+<tr><td><code>llm_judge_score = null</code> + <code>skipped = n</code></td><td>judge_model OpenRouter 404 — ลองเปลี่ยน judge_model</td></tr>
+<tr><td><code>error_message</code> = <code>OPENROUTER_API_KEY empty</code></td><td>ตั้ง env ใน api container + restart</td></tr>
+</table>
+
+<div class="callout warn">
+  <strong>Cost note:</strong> Judge เรียก OpenRouter 1 ครั้งต่อ row → ระวัง dataset ใหญ่. ใช้ holdout ที่ ~50-100 rows กำลังดี
+</div>
+
+<h2>Compare กับ baseline</h2>
+<pre><code>POST /api/v1/evaluations/compare
+{ "evaluation_ids": ["&lt;rule-based-uuid&gt;", "&lt;judge-uuid&gt;"] }</code></pre>
+
+<p>จะเห็น <code>judge_scores</code> ของ rule-based เป็น <code>null</code>, ของ judge run = float</p>
+
+<div class="nav">
+  <a href="9_evaluation.html">← Node 9</a>
+  <a href="../guide101.md">Index</a>
+  <a href="11_mlflow-tracking.html">ถัดไป: Node 11 →</a>
+</div>
+
+</body>
+</html>

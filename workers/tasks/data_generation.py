@@ -55,12 +55,14 @@ def generate_synthetic_data(
 
     Args:
         request_payload: serialized `SDGRequest` (mode-discriminated).
-        dataset_id: pre-created dataset row id (UUID string).
+        dataset_id: pre-created (parent) dataset row id (UUID string).
     """
     job_id: str = self.request.id
     settings = get_settings()
     request = _sdg_adapter.validate_python(request_payload)
-    dataset_uuid = UUID(dataset_id)
+    parent_uuid = UUID(dataset_id)
+    holdout_size = request.holdout_size
+    effective_target = request.num_samples + holdout_size
 
     with sync_redis_scope() as redis:
 
@@ -85,21 +87,23 @@ def generate_synthetic_data(
 
         try:
             log.info(
-                "SDG starting (Phase 9): job=%s dataset=%s task=%s mode=%s target=%d",
+                "SDG starting: job=%s dataset=%s task=%s mode=%s "
+                "train_target=%d holdout=%d effective=%d",
                 job_id,
                 dataset_id,
                 request.task_type.value,
                 request.sdg_mode.value,
                 request.num_samples,
+                holdout_size,
+                effective_target,
             )
 
-            # ---- Resolve seed payload from MinIO ---------------------------
             seed_rows, pdf_bytes = _load_seed_payload(request, settings)
 
-            # ---- Run async generator loop ---------------------------------
             result = asyncio.run(
                 _run_generator(
                     request=request,
+                    effective_target=effective_target,
                     seed_rows=seed_rows,
                     pdf_bytes=pdf_bytes,
                     settings=settings,
@@ -107,12 +111,23 @@ def generate_synthetic_data(
                 )
             )
 
-            # ---- Persist to MinIO ----------------------------------------
+            import random as _random
+
+            from ai_engine.data_gen.holdout_split import split_rows
+
+            rng = _random.Random(_split_seed(request, dataset_id))
+            train_rows, holdout_rows = split_rows(
+                result.valid_rows,
+                request.task_type,
+                holdout_size,
+                rng=rng,
+            )
+
             emit_progress(
                 GenerationProgress(
                     phase="persisting",
                     samples_generated=len(result.valid_rows),
-                    samples_target=request.num_samples,
+                    samples_target=effective_target,
                     samples_valid=len(result.valid_rows),
                     samples_rejected=result.rejected_count,
                     duplicates_removed=result.duplicate_count,
@@ -120,22 +135,34 @@ def generate_synthetic_data(
             )
             minio = get_minio_client()
             bucket = settings.minio_datasets_bucket
-            key = f"sdg/{dataset_id}.jsonl"
-            size_bytes = put_jsonl(minio, bucket, key, result.valid_rows)
-            uri = s3_uri(bucket, key)
+            train_key = f"sdg/{dataset_id}.jsonl"
+            train_size = put_jsonl(minio, bucket, train_key, train_rows)
+            train_uri = s3_uri(bucket, train_key)
 
-            # ---- Update Dataset row --------------------------------------
+            holdout_uuid: UUID | None = None
+            holdout_uri: str | None = None
+            holdout_size_bytes: int | None = None
+            if holdout_rows:
+                from uuid import uuid4
+
+                holdout_uuid = uuid4()
+                holdout_key = f"sdg/{holdout_uuid}.jsonl"
+                holdout_size_bytes = put_jsonl(
+                    minio, bucket, holdout_key, holdout_rows
+                )
+                holdout_uri = s3_uri(bucket, holdout_key)
+
             with session_scope() as session:
-                dataset = session.get(Dataset, dataset_uuid)
-                if dataset is None:
+                parent = session.get(Dataset, parent_uuid)
+                if parent is None:
                     raise RuntimeError(
                         f"Dataset {dataset_id} disappeared mid-generation"
                     )
-                dataset.num_samples = len(result.valid_rows)
-                dataset.storage_uri = uri
-                dataset.size_bytes = size_bytes
-                meta = dict(dataset.generation_metadata or {})
-                meta.update(
+                parent.num_samples = len(train_rows)
+                parent.storage_uri = train_uri
+                parent.size_bytes = train_size
+                parent_meta = dict(parent.generation_metadata or {})
+                parent_meta.update(
                     {
                         "completed_at": datetime.now(timezone.utc).isoformat(),
                         "rejected_count": result.rejected_count,
@@ -143,51 +170,87 @@ def generate_synthetic_data(
                         "judge_rejected_count": result.judge_rejected_count,
                         "judge_parse_failures": result.judge_parse_failures,
                         "api_calls": result.api_calls,
+                        "holdout_size_requested": holdout_size,
+                        "holdout_size_actual": len(holdout_rows),
+                        "role": "train",
+                        "holdout_dataset_id": (
+                            str(holdout_uuid) if holdout_uuid else None
+                        ),
                     }
                 )
-                dataset.generation_metadata = meta
+                parent.generation_metadata = parent_meta
 
-            # ---- Publish completion --------------------------------------
+                if holdout_uuid is not None:
+                    child = Dataset(
+                        id=holdout_uuid,
+                        project_id=parent.project_id,
+                        name=f"{parent.name}-holdout",
+                        task_type=parent.task_type,
+                        source=DatasetSource.SDG,
+                        num_samples=len(holdout_rows),
+                        storage_uri=holdout_uri,
+                        size_bytes=holdout_size_bytes,
+                        parent_dataset_id=parent.id,
+                        generation_metadata={
+                            "role": "holdout",
+                            "parent_dataset_id": str(parent.id),
+                            "sdg_mode": request.sdg_mode.value,
+                            "task_description": request.task_description,
+                            "completed_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                    session.add(child)
+
             publish_ws_message(
                 redis,
                 job_id,
                 JobCompleted(
                     job_id=job_id,
                     result={
-                        "samples_generated": len(result.valid_rows),
+                        "samples_generated": len(train_rows),
+                        "holdout_samples": len(holdout_rows),
                         "rejected_count": result.rejected_count,
                         "duplicate_count": result.duplicate_count,
                         "judge_rejected_count": result.judge_rejected_count,
                         "judge_parse_failures": result.judge_parse_failures,
                         "api_calls": result.api_calls,
-                        "storage_uri": uri,
-                        "size_bytes": size_bytes,
+                        "storage_uri": train_uri,
+                        "holdout_storage_uri": holdout_uri,
+                        "holdout_dataset_id": (
+                            str(holdout_uuid) if holdout_uuid else None
+                        ),
+                        "size_bytes": train_size,
                     },
-                    dataset_id=dataset_uuid,
+                    dataset_id=parent_uuid,
                 ),
             )
 
             log.info(
-                "SDG done: job=%s dataset=%s samples=%d rejected=%d dup=%d "
-                "judge_low=%d judge_parse=%d calls=%d",
+                "SDG done: job=%s parent=%s holdout=%s train=%d holdout=%d "
+                "rejected=%d dup=%d calls=%d",
                 job_id,
                 dataset_id,
-                len(result.valid_rows),
+                holdout_uuid,
+                len(train_rows),
+                len(holdout_rows),
                 result.rejected_count,
                 result.duplicate_count,
-                result.judge_rejected_count,
-                result.judge_parse_failures,
                 result.api_calls,
             )
 
             return {
                 "status": "completed",
                 "dataset_id": dataset_id,
-                "samples_generated": len(result.valid_rows),
+                "holdout_dataset_id": (
+                    str(holdout_uuid) if holdout_uuid else None
+                ),
+                "samples_generated": len(train_rows),
+                "holdout_samples": len(holdout_rows),
                 "rejected_count": result.rejected_count,
                 "duplicate_count": result.duplicate_count,
                 "judge_rejected_count": result.judge_rejected_count,
-                "storage_uri": uri,
+                "storage_uri": train_uri,
+                "holdout_storage_uri": holdout_uri,
             }
 
         except Exception as exc:
@@ -202,7 +265,7 @@ def generate_synthetic_data(
                         error_type=type(exc).__name__,
                     ),
                 )
-            except Exception:  # noqa: BLE001 — never let publish failure mask the original
+            except Exception:  # noqa: BLE001
                 log.warning("failed to publish JobFailed message", exc_info=True)
             raise
 
@@ -213,17 +276,20 @@ def generate_synthetic_data(
 async def _run_generator(
     *,
     request: SDGRequestWithSeed | SDGRequestDescriptionOnly,
+    effective_target: int,
     seed_rows: list[dict[str, Any]],
     pdf_bytes: bytes | None,
     settings,
     progress_cb,
 ):
-    """Set up async + sync clients, run the generator, tear down."""
+    """Set up async + sync clients, run the generator with an explicit target.
+
+    `effective_target = num_samples + holdout_size` when holdout is requested;
+    otherwise equals num_samples.
+    """
+    effective_request = request.model_copy(update={"num_samples": effective_target})
     sync_client = OpenRouterClient(
         api_key=settings.openrouter_api_key,
-        # The teacher_model field is no longer used; pass a placeholder
-        # — every Phase 9 call site supplies an explicit model from
-        # ai_engine.data_gen.models.
         teacher_model="placeholder/unused",
         http_referer=settings.openrouter_http_referer,
         app_title=settings.openrouter_app_title,
@@ -235,7 +301,7 @@ async def _run_generator(
     ) as async_client:
         gen = SyntheticDataGenerator(async_client, sync_client)
         return await gen.generate(
-            request,
+            effective_request,
             seed_rows=seed_rows,
             pdf_bytes=pdf_bytes,
             progress_cb=progress_cb,
@@ -286,6 +352,20 @@ def _load_seed_payload(
                 response.release_conn()
 
     return seed_rows, pdf_bytes
+
+
+def _split_seed(
+    request: SDGRequestWithSeed | SDGRequestDescriptionOnly,
+    dataset_id: str,
+) -> int:
+    """Deterministic split seed derived from request + dataset id.
+
+    Keeping this deterministic means re-running the same SDG request against
+    the same dataset_id produces the same train/holdout assignment - useful
+    if a downstream step crashed and the operator needs to retry.
+    """
+    raw = f"{dataset_id}|{request.task_type.value}|{request.holdout_size}"
+    return abs(hash(raw)) % (2**31 - 1)
 
 
 __all__ = ["generate_synthetic_data"]

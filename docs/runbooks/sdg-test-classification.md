@@ -72,18 +72,20 @@ POST /api/v1/projects
 
 ### ✅ Expected response (201)
 
+> **Note:** `num_samples` reflects the **actual rows in the seed file**. The shipped `classification_canonical.jsonl` contains **40 rows** (verified 2026-05-10). If you regenerate the seed with a different size, expect that count instead.
+
 ```json
 {
   "dataset_id": "...",
   "task_type": "classification",
-  "num_samples": 9,
+  "num_samples": 40,
   "invalid_rows": [],
   "format_detection": {
     "ran": false,                                              // ← key
     "model_used": null,
     "field_mapping": {},
-    "rows_total": 9,
-    "rows_canonicalised": 9,
+    "rows_total": 40,
+    "rows_canonicalised": 40,
     "rows_dropped": 0,
     "notes": "already canonical — Format Detection skipped"
   },
@@ -97,9 +99,9 @@ POST /api/v1/projects
 
 | Check | Where | Expected |
 |-------|-------|----------|
-| File บน MinIO | http://localhost:9001 → bucket `datasets` → folder `seeds/` | `<seed_cls_canonical_jsonl_id>.jsonl` ขนาด ~2KB |
+| File บน MinIO | http://localhost:9001 → bucket `datasets` → folder `seeds/` | `<seed_cls_canonical_jsonl_id>.jsonl` ~ขนาดของ source file |
 | Content canonical | คลิกไฟล์ → preview | ทุกแถวมี `text` + `label` (ไม่ใช่ `message`/`category`) |
-| Dataset row | `GET /api/v1/datasets/{seed_cls_canonical_jsonl_id}` | `source: "seed"`, `num_samples: 9` |
+| Dataset row | `GET /api/v1/datasets/{seed_cls_canonical_jsonl_id}` | `source: "seed"`, `num_samples: 40` |
 | Preview | `GET /api/v1/datasets/{id}/preview?limit=3` | 3 rows ภาษาไทย, มี `text`/`label` |
 | celery log | terminal #2 | (ไม่มี log ใหม่ — Format Detection ทำใน API process) |
 
@@ -115,7 +117,7 @@ POST /api/v1/projects
 - `name` = `seed-cls-canonical-json`
 - `file` = `seed_data/classification/classification_canonical.json`
 
-### ✅ Expected: เหมือน Task 1 (`format_detection.ran: false`, `num_samples: 9`)
+### ✅ Expected: เหมือน Task 1 (`format_detection.ran: false`, `num_samples: 40`)
 
 🔖 **เก็บ → `<seed_cls_canonical_json_id>`**
 
@@ -142,7 +144,7 @@ POST /api/v1/projects
 {
   "dataset_id": "...",
   "task_type": "classification",
-  "num_samples": 9,
+  "num_samples": 40,
   "invalid_rows": [],
   "format_detection": {
     "ran": true,                                                 // ← LLM ทำงาน
@@ -151,8 +153,8 @@ POST /api/v1/projects
       "message": "text",
       "category": "label"
     },
-    "rows_total": 9,
-    "rows_canonicalised": 9,
+    "rows_total": 40,
+    "rows_canonicalised": 40,
     "rows_dropped": 0,
     "notes": null
   },
@@ -368,20 +370,27 @@ POST /api/v1/datasets/generate
 
 ### ✅ Expected: 422
 
+> **Note:** Pydantic อาจคืน error message ที่อ้าง `seed_dataset_id missing` แทน `seed_data extra_forbidden` ถ้า payload ขาด `seed_dataset_id` ด้วย (validator priority). ทั้งสองรูปแบบ acceptable — สำคัญคือ status = **422** + อย่างใดอย่างหนึ่งใน `loc` ของ error: `seed_data` หรือ `seed_dataset_id`.
+
 ```json
+// ตัวอย่าง response แบบที่เคยเจอ:
 {
-  "detail": [
-    {
-      "type": "extra_forbidden",
-      "loc": ["body", "with_seed", "seed_data"],   // (or similar)
-      "msg": "Extra inputs are not permitted",
-      "input": [...]
-    }
-  ]
+  "detail": "body.with_seed.seed_dataset_id: Field required",
+  "code": "validation_error",
+  "extra": {
+    "errors": [
+      {
+        "type": "missing",
+        "loc": ["body", "with_seed", "seed_dataset_id"],
+        "msg": "Field required",
+        "input": {...}
+      }
+    ]
+  }
 }
 ```
 
-> Field `seed_data` อาจปรากฏใน `loc` หลายแบบ ตาม discriminator handling ของ Pydantic — สำคัญคือ status 422 + พูดถึง `seed_data`
+ถ้า payload ส่ง `seed_dataset_id` ครบด้วย จะได้ error เกี่ยวกับ `seed_data` extra_forbidden ตรงๆ.
 
 ---
 

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>Node 6 — Training (Manual / HPO)</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; max-width: 920px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #2563eb; padding-bottom: 8px; }
+  h2 { color: #1e40af; margin-top: 28px; border-left: 4px solid #2563eb; padding-left: 10px; }
+  h3 { color: #374151; margin-top: 22px; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.85em; font-weight: 600; margin-right: 6px; }
+  .badge-post { background: #16a34a; color: white; }
+  .badge-get { background: #2563eb; color: white; }
+  .badge-ws { background: #7c3aed; color: white; }
+  .badge-delete { background: #dc2626; color: white; }
+  .badge-async { background: #ea580c; color: white; }
+  .path { font-family: "JetBrains Mono", Consolas, monospace; background: #f3f4f6; padding: 4px 8px; border-radius: 4px; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }
+  code { font-family: "JetBrains Mono", Consolas, monospace; }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  :not(pre) > code { background: #fef3c7; padding: 2px 6px; border-radius: 3px; font-size: 0.92em; color: #92400e; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; }
+  .nav { display: flex; justify-content: space-between; margin: 30px 0 10px; padding: 12px; background: #f9fafb; border-radius: 8px; }
+  .nav a { color: #2563eb; text-decoration: none; font-weight: 500; }
+  .nav a:hover { text-decoration: underline; }
+  .callout { background: #eff6ff; border-left: 4px solid #2563eb; padding: 10px 14px; margin: 14px 0; border-radius: 4px; }
+  .callout.warn { background: #fef3c7; border-left-color: #f59e0b; }
+  .callout.error { background: #fee2e2; border-left-color: #dc2626; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="5_verify-dataset.html">← Node 5</a>
+  <a href="../guide101.md">Index</a>
+  <a href="7_export-gguf.html">ถัดไป: Node 7 →</a>
+</div>
+
+<h1>Node 6 — Training (Manual / HPO)</h1>
+
+<p>
+  <span class="badge badge-post">POST</span>
+  <span class="badge badge-async">ASYNC 202</span>
+  <span class="path">/api/v1/trainings</span>
+  <br>
+  <span class="badge badge-ws">WS</span>
+  <span class="path">/ws/jobs/{job_id}</span>
+  <br>
+  <span class="badge badge-delete">DELETE</span>
+  <span class="path">/api/v1/trainings/{id}</span> (cancel — idempotent)
+</p>
+
+<h2>วัตถุประสงค์</h2>
+<p>Fine-tune <strong>base model ≤3B</strong> ด้วย QLoRA + Unsloth บน train dataset จาก Node 4. มี 2 modes:</p>
+<ul>
+  <li><strong>Manual</strong> — กำหนด hyperparameters เอง (ใช้เมื่อรู้ค่าที่ดีแล้ว)</li>
+  <li><strong>HPO</strong> — Optuna search หลาย trials (ใช้เมื่อยังหา hyperparameters ไม่เจอ)</li>
+</ul>
+
+<h2>Prerequisite</h2>
+<ul>
+  <li><code>project_id</code> (Node 1) + <code>train_dataset_id</code> (Node 4, <strong>parent</strong> — ไม่ใช่ holdout child)</li>
+  <li>ตรวจ base model ที่อนุญาต: <code>GET /api/v1/base-models</code> (11 ตัว, ทั้งหมด ≤3B + bnb-4bit)</li>
+  <li>GPU พร้อม + worker container ขึ้น</li>
+</ul>
+
+<div class="callout warn">
+  <strong>ใช้ parent dataset เท่านั้น</strong> — ห้ามใช้ <code>holdout_dataset_id</code> มาเทรน (ถ้าเทรนกับ holdout → leak ทันที, Node 9 จะวัดผลไม่ได้)
+</div>
+
+<h2>Base model แนะนำต่อ task (จาก seed_data)</h2>
+<table>
+<tr><th>Task</th><th>seed_data domain</th><th>Base model แนะนำ</th><th>หมายเหตุ</th></tr>
+<tr><td><code>classification</code></td><td>Thai support</td><td><code>unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit</code></td><td>multilingual ดี + เร็ว</td></tr>
+<tr><td><code>qa</code></td><td>Thai return policy</td><td><code>unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit</code> หรือ <code>unsloth/gemma-2-2b-it-bnb-4bit</code></td><td>Thai handling ดี</td></tr>
+<tr><td><code>tool_calling</code></td><td>English smart home</td><td><code>unsloth/Llama-3.2-1B-Instruct-bnb-4bit</code></td><td>JSON-mode ทำได้ดี + เล็กที่สุด</td></tr>
+</table>
+
+<h2>Mode 1 — Manual</h2>
+
+<h3>Request (QA example — ใช้ Llama-3.2-1B 1 epoch สำหรับ smoke test)</h3>
+<pre><code>{
+  "mode": "manual",
+  "project_id": "&lt;uuid&gt;",
+  "dataset_id": "&lt;train_dataset_id จาก Node 4 (parent)&gt;",
+  "base_model": "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
+  "training_name": "qa-smoke",
+  "manual_config": {
+    "num_train_epochs": 1,
+    "per_device_train_batch_size": 2,
+    "gradient_accumulation_steps": 8,
+    "learning_rate": 2e-4,
+    "max_seq_length": 2048,
+    "optim": "adamw_8bit",
+    "packing": false,
+    "lora": {
+      "r": 16,
+      "alpha": 32,
+      "dropout": 0.05,
+      "target_modules": ["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]
+    }
+  }
+}</code></pre>
+
+<div class="callout">
+  <strong>Smoke vs proper run:</strong>
+  <ul>
+    <li><code>num_train_epochs=1</code> + <code>num_samples=30</code> → smoke test เร็ว (~1-2 นาที บน 3090/4090) แต่ accuracy ต่ำ — ใช้พิสูจน์ pipeline ทำงาน</li>
+    <li><code>num_train_epochs=3</code> + <code>num_samples=200+</code> → ผล accuracy จริงสำหรับ classification/tool</li>
+  </ul>
+</div>
+
+<h2>Mode 2 — HPO (Optuna)</h2>
+
+<h3>Request</h3>
+<pre><code>{
+  "mode": "hpo",
+  "project_id": "&lt;uuid&gt;",
+  "dataset_id": "&lt;train_dataset_id&gt;",
+  "base_model": "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
+  "training_name": "hpo-search-1",
+  "hpo_config": {
+    "n_trials": 6,
+    "objective_metric": "eval_loss",
+    "direction": "minimize",
+    "sampler": "tpe",
+    "pruner": "median",
+    "timeout_seconds": 14400,
+    "search_space": {
+      "learning_rate": { "type": "float", "low": 1e-5, "high": 5e-4, "log": true },
+      "lora_r": { "type": "categorical", "choices": [8, 16, 32] },
+      "lora_alpha": { "type": "categorical", "choices": [16, 32, 64] },
+      "num_train_epochs": { "type": "int", "low": 2, "high": 4 },
+      "gradient_accumulation_steps": { "type": "categorical", "choices": [4, 8, 16] }
+    },
+    "fixed_config": {
+      "per_device_train_batch_size": 2,
+      "max_seq_length": 2048
+    }
+  }
+}</code></pre>
+
+<div class="callout warn">
+  <strong>HPO safety guard:</strong> ห้ามใส่ <code>per_device_train_batch_size</code> ใน <code>search_space</code> สำหรับ 3B base — service จะ reject 422.
+</div>
+
+<h2>Response 202 (ทั้ง 2 modes)</h2>
+<pre><code>{
+  "training_id": "&lt;uuid&gt;",
+  "job_id": "&lt;celery_uuid&gt;",
+  "mlflow_run_id": null,
+  "mlflow_url": null,
+  "status": "pending",
+  "websocket_url": "/ws/jobs/&lt;celery_uuid&gt;"
+}</code></pre>
+
+<h2>WebSocket events</h2>
+<table>
+<tr><th>Mode</th><th>Sequence</th></tr>
+<tr><td>Manual</td><td><code>training_progress</code> × N (1 ต่อ step) → <code>completed</code> | <code>failed</code></td></tr>
+<tr><td>HPO</td><td><code>hpo_progress</code> × N (1 ต่อ trial) + nested <code>inner_progress</code> ต่อ step → <code>completed</code> | <code>failed</code></td></tr>
+</table>
+
+<h3>Sample <code>training_progress</code></h3>
+<pre><code>{
+  "type": "training_progress",
+  "epoch": 1.5,
+  "epochs_total": 3,
+  "step": 25,
+  "steps_total": 50,
+  "train_loss": 1.43,
+  "eval_loss": 1.87,
+  "learning_rate": 0.00018,
+  "samples_per_second": 12.3,
+  "gpu_memory_mb": 4520.5
+}</code></pre>
+
+<h3>Sample <code>completed</code></h3>
+<pre><code>{
+  "type": "completed",
+  "result": {
+    "training_id": "...",
+    "model_artifact_id": "&lt;artifact_uuid&gt;",
+    "lora_adapter_uri": "s3://models/adapters/&lt;training_id&gt;",
+    "final_train_loss": 0.42,
+    "final_eval_loss": 0.51,
+    "steps_completed": 50,
+    "train_runtime_seconds": 49.2,
+    "metrics": { /* ... */ }
+  },
+  "mlflow_run_id": "&lt;run_id&gt;",
+  "model_artifact_id": "&lt;artifact_uuid&gt;"
+}</code></pre>
+
+<div class="callout">
+  <strong>เก็บค่าไว้:</strong> <code>model_artifact_id</code> = <code>result.model_artifact_id</code> — ใช้ใน Node 7 (export)
+</div>
+
+<h2>Verify post-training</h2>
+<pre><code>GET /api/v1/trainings/{training_id}              → status=completed, mlflow_run_id populate
+GET /api/v1/models?training_job_id={training_id} → ควรได้ 1 artifact</code></pre>
+
+<h2>Cancel (mid-training)</h2>
+<pre><code>DELETE /api/v1/trainings/{training_id}
+→ 202 { "training_id": "...", "status": "cancelled" }</code></pre>
+<p>Idempotent — เรียกซ้ำได้ ไม่ 500</p>
+
+<h2>Error cases</h2>
+<table>
+<tr><th>เคส</th><th>Note</th></tr>
+<tr><td><code>OutOfMemoryError</code></td><td>ลด <code>per_device_train_batch_size</code> หรือ <code>max_seq_length</code></td></tr>
+<tr><td><code>ValueError: No trials are completed yet.</code></td><td>HPO: ทุก trial fail (เช่น dataset เล็กเกินไปจน eval split=0)</td></tr>
+<tr><td>422 บน <code>base_model</code></td><td>ไม่อยู่ใน allowlist — ตรวจ <code>GET /base-models</code></td></tr>
+</table>
+
+<div class="nav">
+  <a href="5_verify-dataset.html">← Node 5</a>
+  <a href="../guide101.md">Index</a>
+  <a href="7_export-gguf.html">ถัดไป: Node 7 →</a>
+</div>
+
+</body>
+</html>

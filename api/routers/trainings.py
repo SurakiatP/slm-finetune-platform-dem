@@ -17,7 +17,12 @@ from api.schemas.training import (
     TrainingJobAcceptedResponse,
     TrainingRequest,
 )
-from api.schemas.trainings import MlflowUrlResponse, TrainingResponse
+from api.schemas.trainings import (
+    MlflowUrlResponse,
+    TrainingLossHistoryResponse,
+    TrainingMetricsResponse,
+    TrainingResponse,
+)
 from api.services import trainings_service
 from api.services.training_service import (
     submit_hpo_training_job,
@@ -99,3 +104,27 @@ async def get_mlflow_url(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MlflowUrlResponse:
     return await trainings_service.get_mlflow_url(db, training_id)
+
+
+@router.get(
+    "/{training_id}/metrics",
+    response_model=TrainingMetricsResponse,
+    summary="Full metric history (all keys) + HPO child summary",
+)
+async def get_training_metrics(
+    training_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TrainingMetricsResponse:
+    return await trainings_service.get_training_metrics(db, training_id)
+
+
+@router.get(
+    "/{training_id}/loss-history",
+    response_model=TrainingLossHistoryResponse,
+    summary="Lightweight train_loss + eval_loss series for chart components",
+)
+async def get_training_loss_history(
+    training_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TrainingLossHistoryResponse:
+    return await trainings_service.get_training_loss_history(db, training_id)

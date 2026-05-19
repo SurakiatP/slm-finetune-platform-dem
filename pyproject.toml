@@ -62,6 +62,7 @@ training = [
 eval = [
     "evaluate>=0.4.3",
     "rouge-score>=0.1.2",
+    "sacrebleu>=2.4.0",
     "scikit-learn>=1.6.0",
     "deepeval>=2.0.9",
 ]
@@ -73,6 +74,21 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "types-requests>=2.32.0",
+    # Snapshot / characterization-test harness (pilot).
+    # Tier 1 — pure-function snapshots:
+    "syrupy>=4.6.0",
+    # Tier 2 — mocked-external snapshots:
+    "respx>=0.21.0",
+    "moto[s3]>=5.0.0",
+    "fakeredis>=2.20.0",
+    "dirty-equals>=0.7.0",
+    # Eval libs needed by pytest (ai_engine.evaluation has deferred imports of
+    # these inside metric functions). The runtime worker installs `[eval]`
+    # separately for full coverage; pytest in the api container needs at least
+    # these two to run test_snapshot_metrics qa cases (rouge + BLEU).
+    # scikit-learn (used by metrics_classification) arrives transitively.
+    "rouge-score>=0.1.2",
+    "sacrebleu>=2.4.0",
 ]
 
 [project.urls]
@@ -121,6 +137,7 @@ asyncio_mode = "auto"
 markers = [
     "integration: tests that require docker-compose services",
     "gpu: tests that require a CUDA GPU",
+    "characterization: snapshot tests run before/after refactor — may need recorded fixtures",
 ]
 
 # ---- Mypy -------------------------------------------------------------------

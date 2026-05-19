@@ -46,4 +46,65 @@ class MlflowUrlResponse(BaseModel):
     mlflow_url: str | None
 
 
-__all__ = ["TrainingResponse", "MlflowUrlResponse"]
+class MetricPoint(BaseModel):
+    """One data point of a logged metric series."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    step: int
+    value: float
+    timestamp_ms: int
+
+
+class HpoChildSummary(BaseModel):
+    """Compact view of one HPO trial run (no full series — just final + params)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    name: str
+    final_eval_loss: float | None
+    params: dict[str, str]
+
+
+class TrainingMetricsResponse(BaseModel):
+    """Full metric history of a training run, plus HPO child summary if applicable.
+
+    `metrics` is keyed by MLflow metric name (e.g. `train_loss`, `eval_loss`,
+    `learning_rate`). Each value is a list of points sorted by step ascending.
+    `hpo_children` is `None` for manual mode and a list for HPO mode.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    training_id: UUID
+    mlflow_run_id: str | None
+    metrics: dict[str, list[MetricPoint]]
+    hpo_children: list[HpoChildSummary] | None
+
+
+class TrainingLossHistoryResponse(BaseModel):
+    """Lightweight loss-only payload — meant for chart components.
+
+    Only `train_loss` and `eval_loss` series are populated. Empty lists are
+    returned when MLflow has no data for the metric (e.g. eval split=0,
+    training failed before first eval, etc.) so the frontend can render an
+    empty axis without special-casing nulls.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    training_id: UUID
+    mlflow_run_id: str | None
+    train_loss: list[MetricPoint]
+    eval_loss: list[MetricPoint]
+
+
+__all__ = [
+    "TrainingResponse",
+    "MlflowUrlResponse",
+    "MetricPoint",
+    "HpoChildSummary",
+    "TrainingMetricsResponse",
+    "TrainingLossHistoryResponse",
+]

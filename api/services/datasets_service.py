@@ -36,6 +36,7 @@ from ai_engine.data_gen.format_detector import (
     passthrough_with_required_check,
 )
 from ai_engine.data_gen.openrouter_client import OpenRouterClient
+from ai_engine.data_gen.semantic_guard import SemanticGuardError, assert_semantic_fit
 from ai_engine.data_gen.pdf_loader import (
     PdfCorruptError,
     PdfTooLargeError,
@@ -374,6 +375,19 @@ async def _upload_jsonl_seed(
                 f"invalid_indexes={invalid})"
             ),
         )
+
+    # Semantic guard: rows passed structural validation but may still be the
+    # wrong *kind* of content (e.g. a QA file Format-Detected into a
+    # classification project — Session 22 Finding #1). Currently only
+    # classification has a semantic guard; tool_calling is enforced by the
+    # ToolCallingSample Pydantic validator, qa has no closed set to enforce.
+    try:
+        assert_semantic_fit(valid, task_type)
+    except SemanticGuardError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
 
     # Persist Dataset row + JSONL.
     dataset_name = name or f"seed-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"

@@ -111,8 +111,10 @@ Run this whole block (copy-paste safe, idempotent):
 
 ```bash
 # A. Add NVIDIA repo (only if not already present)
+# Note: --batch --no-tty --yes prevent `gpg --dearmor` from opening /dev/tty
+# under non-interactive SSH (otherwise: "cannot open '/dev/tty'").
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-    gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    gpg --batch --no-tty --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
 curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
     sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
     tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
@@ -141,9 +143,12 @@ If step D errors with `nvidia-container-runtime: executable file not found` → 
 
 ```bash
 cd ~
-git clone https://github.com/SurakiatP/slm-finetune-platform-dem.git slm-platform
+# Replace <BRANCH> with the branch you want to deploy:
+#   - dev      → default integration branch (recommended)
+#   - main     → only after a release PR has merged
+#   - feature/<name> → smoke-testing a feature branch before PR
+git clone -b <BRANCH> https://github.com/SurakiatP/slm-finetune-platform-dem.git slm-platform
 cd slm-platform
-git checkout dev          # or main, after a release PR has merged
 
 cp .env.example .env
 nano .env
@@ -154,6 +159,8 @@ nano .env
 ```
 
 `.env` is gitignored, so it won't survive a `git pull --hard` or a fresh clone — set it once per VM.
+
+> **⚠️ Stale-env pitfall:** if you edit `.env` *after* `docker compose up -d` has already started the `api` / `worker` containers, the running containers keep the old values (env is baked in at start). Re-roll them with `docker compose up -d api worker` after any `.env` change — `restart` alone is NOT enough on Compose v2.
 
 ---
 
@@ -193,9 +200,13 @@ If `docker compose build` is downloading the worker base image at < 500 KB/s for
 ## 10. Migrations + model pull (5–15 min depending on connection)
 
 ```bash
-# 1. App schema
+# 1. App schema (currently 3 migrations — count grows over time)
 docker compose exec api alembic upgrade head
-# Must show: "Running upgrade  -> 0001_initial, initial schema"
+# Must show all 3 revisions applied in order:
+#   Running upgrade  -> 0001_initial, initial schema
+#   Running upgrade 0001_initial -> 0002_artifact_export_error_message, add export_error_message
+#   Running upgrade 0002_artifact_export_error_message -> 0003_dataset_parent_id, add parent_dataset_id for hold-out splits
+# (Cross-check current head with: docker compose exec api alembic heads)
 
 # 2. Verify the schema looks right (6 application tables, all in `slm` DB)
 docker compose exec postgres psql -U slm -d slm -c '\dt'
@@ -218,10 +229,15 @@ curl -s http://localhost:8000/health
 curl -s "http://localhost:8000/api/v1/projects?limit=5"
 # {"items":[],"total":0,"limit":5,"offset":0}
 
-# B. Unit tests (regression guards)
-docker compose exec api pip install -q pytest pytest-asyncio httpx
-docker compose exec api python -m pytest tests/unit/ -v
-# Expect: 5 passed (test_config.py)
+# B. Unit tests (regression guards — includes snapshot harness)
+docker compose exec api pip install -q -e '.[dev]'
+docker compose exec api python -m pytest tests/unit/ -q
+# Expect: 176 passed, 3 skipped (the 3 SDG full-pipeline snapshots skip
+# until recorded OpenRouter fixtures land in tests/fixtures/recorded/openrouter/ —
+# see docs/runbooks/snapshot_harness.md §4)
+#
+# If fewer than ~120 tests run, [dev] extras likely failed to install — check
+# that syrupy/respx/moto/fakeredis are present: `pip list | grep -iE 'syrupy|respx|moto|fakeredis'`
 
 # C. Integration test (with GPU)
 docker compose exec -e INTEGRATION_HAS_GPU=1 api \
@@ -261,6 +277,9 @@ Then destroy from the vast.ai web console — billing stops at the moment of des
 | API endpoints return 500 with weird MLflow-shaped errors | MLflow + app sharing the `slm` DB (init script didn't run) | Run `docker compose exec postgres psql -U slm -d postgres -c "CREATE DATABASE mlflow"` then re-create the mlflow service. |
 | `worker` container exits with bitsandbytes / PyTorch errors on Blackwell GPU (RTX 50-series) | `worker.Dockerfile` pinned to PyTorch 2.5.1 + CUDA 12.1, predates Blackwell native support | Either accept PTX JIT (slower warmup, works) or upgrade base image to `pytorch/pytorch:2.6.0-cuda12.8-cudnn9-runtime` and bump `bitsandbytes` to a version with sm_120 kernels. |
 | `ssh ... command` fails with `Connection reset` mid-run | VM is heavily loaded (build IO contention) — SSHd kills the channel | Smaller commands, or wait until build is in a quiet phase, or run the orchestrator script in `tmux` and just `tail -f` the log over a fresh SSH. |
+| `docker compose up -d` fails with `nvidia-container-cli: initialization error: nvml error: driver/library version mismatch: unknown` | Kernel module loaded at boot doesn't match the userspace lib that `nvidia-container-toolkit` just installed (first `--gpus all` after §6 on a running host) | Reload the nvidia stack in-place without rebooting: `systemctl stop docker docker.socket && rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia && modprobe nvidia_uvm nvidia_drm && systemctl start docker`. Verify with `docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi` before retrying compose up. If `rmmod` complains "module is in use", stop all GPU containers first. |
+| API container picks up empty / stale env values even though `.env` looks correct on disk | `api` (or `worker`) was started before `.env` had the value — env is baked in at container start | `docker compose up -d api worker` after editing `.env`. Plain `restart` is NOT enough on Compose v2. |
+| `pytest tests/unit/` collects only ~5 tests | `[dev]` extras not installed — snapshot / mock libraries (`syrupy`, `respx`, `moto`, `fakeredis`) missing → 13 of 17 test modules fail to import | `docker compose exec api pip install -q -e '.[dev]'` then re-run. |
 
 ---
 
@@ -287,7 +306,7 @@ Re-deploys (after destroy) re-pay the build/pull cost. So **don't destroy until 
 # After ssh -p <PORT> root@<IP> -L 8000:localhost:8000
 
 # Step 6 — NVIDIA toolkit
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --batch --no-tty --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
 curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
 apt-get update
 systemctl mask unattended-upgrades
@@ -295,24 +314,24 @@ kill -9 $(pgrep -f unattended-upgr) 2>/dev/null || true
 DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-container-toolkit
 nvidia-ctk runtime configure --runtime=docker
 systemctl restart docker
-docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi  # verify
+docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi  # verify — if "nvml driver/library mismatch", see §13
 
-# Step 7-9 — repo + boot
+# Step 7-9 — repo + boot   (set BRANCH to dev / main / feature/<name>)
+BRANCH=dev
 apt-get install -y tmux
 tmux new -s slm
-cd ~ && git clone https://github.com/SurakiatP/slm-finetune-platform-dem.git slm-platform && cd slm-platform
-git checkout dev
-cp .env.example .env && nano .env       # set OPENROUTER_API_KEY etc
+cd ~ && git clone -b "$BRANCH" https://github.com/SurakiatP/slm-finetune-platform-dem.git slm-platform && cd slm-platform
+cp .env.example .env && nano .env       # set OPENROUTER_API_KEY etc — BEFORE compose up
 docker login                              # optional: avoid Docker Hub rate limit
 docker compose build && docker compose up -d
 watch -n 2 'docker compose ps'            # Ctrl+C when all healthy → Ctrl+B D to detach tmux
 
-# Step 10 — migrations
-docker compose exec api alembic upgrade head
+# Step 10 — migrations + base model
+docker compose exec api alembic upgrade head   # expect 3 revisions: 0001 → 0002 → 0003
 docker compose exec ollama ollama pull llama3.2:3b
 
 # Step 11 — validate
 curl -s http://localhost:8000/health
-docker compose exec api pip install -q pytest pytest-asyncio httpx
-docker compose exec api python -m pytest tests/unit/ -v
+docker compose exec api pip install -q -e '.[dev]'
+docker compose exec api python -m pytest tests/unit/ -q   # expect 176 passed, 3 skipped
 ```

@@ -31,6 +31,42 @@ from api.schemas.training import (
 )
 
 _SUPPORTED_MODEL_IDS: frozenset[str] = frozenset(m.id for m in SUPPORTED_BASE_MODELS)
+_PARAMS_BY_MODEL_ID: dict[str, float] = {m.id: m.params_billions for m in SUPPORTED_BASE_MODELS}
+
+
+# RTX 3060 12GB safe `per_device_train_batch_size` ceiling per
+# (params_billions_bucket, max_seq_length_bucket). Values include a ~20%
+# headroom over what Unsloth/community benchmarks show fits comfortably with
+# QLoRA 4-bit + LoRA r=16 on all-linear modules. Used by the HPO service
+# guard to reject search-space `per_device_train_batch_size` choices that
+# would OOM mid-trial and zombie the whole study.
+_MAX_SAFE_BATCH_3060: tuple[tuple[float, tuple[tuple[int, int], ...]], ...] = (
+    # (params_upper_billions, ((seq_upper, max_batch), ...))
+    (1.2, ((1024, 16), (2048, 8), (4096, 4), (8192, 2))),  # ≤1B (TinyLlama, Llama-1B)
+    (1.8, ((1024, 8), (2048, 4), (4096, 2), (8192, 1))),   # ≤1.5B (Qwen2.5-1.5B)
+    (2.2, ((1024, 4), (2048, 4), (4096, 2), (8192, 1))),   # ≤2B (SmolLM2, Qwen3-1.7B, Gemma2-2B)
+    (3.5, ((1024, 4), (2048, 2), (4096, 1), (8192, 1))),   # ≤3B (Llama-3B, Qwen2.5-3B)
+)
+
+
+def _max_safe_batch_for_3060(params_billions: float, max_seq_length: int) -> int:
+    """Return the largest `per_device_train_batch_size` we expect to fit in
+    12GB VRAM for the given model size and sequence length on RTX 3060 with
+    QLoRA 4-bit + LoRA r=16 + all-linear target modules.
+
+    Used by HPO submission to reject search-space choices that would OOM.
+    Manual mode skips this check — power users get to overshoot at their
+    own risk (a single OOM fails one job, not a whole study).
+    """
+    for params_upper, seq_table in _MAX_SAFE_BATCH_3060:
+        if params_billions <= params_upper:
+            for seq_upper, max_batch in seq_table:
+                if max_seq_length <= seq_upper:
+                    return max_batch
+            return seq_table[-1][1]  # seq > 8192 — clamp to longest row's ceiling
+    # Shouldn't happen: SUPPORTED_BASE_MODELS caps at 3.5B per BaseModelInfo.
+    # Be conservative and return the 3B row.
+    return _MAX_SAFE_BATCH_3060[-1][1][-1][1]
 
 
 async def submit_manual_training_job(
@@ -200,6 +236,28 @@ async def submit_hpo_training_job(
                 f"({settings.default_hpo_max_trials}). Lower it or raise DEFAULT_HPO_MAX_TRIALS."
             ),
         )
+
+    # 4b. 3060 VRAM safety — if the search space includes
+    # `per_device_train_batch_size`, every choice must fit on the GPU at the
+    # `fixed_config.max_seq_length`. A trial that OOMs mid-epoch poisons
+    # Optuna's pruner and wastes the wall-clock budget.
+    bs_space = request.hpo_config.search_space.per_device_train_batch_size
+    if bs_space is not None:
+        seq = request.hpo_config.fixed_config.max_seq_length
+        params_b = _PARAMS_BY_MODEL_ID.get(base_model)
+        if params_b is not None:
+            max_batch = _max_safe_batch_for_3060(params_b, seq)
+            unsafe = [c for c in bs_space.choices if isinstance(c, int) and c > max_batch]
+            if unsafe:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"hpo_config.search_space.per_device_train_batch_size choices {unsafe} "
+                        f"exceed the safe ceiling ({max_batch}) for base_model='{base_model}' "
+                        f"({params_b:.2f}B params) at max_seq_length={seq} on RTX 3060 12GB. "
+                        f"Lower the choices or shorten max_seq_length."
+                    ),
+                )
 
     # 5. Insert TrainingJob row.
     job_row = TrainingJob(

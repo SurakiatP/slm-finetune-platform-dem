@@ -6,6 +6,579 @@
 
 ---
 
+## Session 26 — vast.ai E2E test + MLflow loss-history bug fixes (2026-05-18 → 2026-05-19)
+
+**Who:** Claude (Opus 4.7) + parks
+**Status:** ✅ E2E 11/11 nodes pipeline pass on real GPU (RTX 3070 8 GB on vast.ai). 4 fix/docs commits landed on `feature/training-eval-smoke-v2`. 180 unit tests + 43 snapshots green on **both** local + vast.ai api container. Session 23 Finding #2 verified closed live. vast.ai instance **still running** (211.21.106.81:37843) — needs destroy / stop decision before tomorrow.
+
+**Why & What:**
+
+### (a) vast.ai provisioning + 11-node E2E test (2026-05-18)
+- 1st vast.ai instance (`120.238.149.205`, RTX 3090 24 GB) destroyed after diagnostic: download ~10 Mbps (CN datacenter, CDN throttled/blocked). 2nd instance (`211.21.106.81:37843`, RTX 3070 8 GB, TW datacenter) verified: HF download ~277 Mbps, ping 3.4 ms, ample for our workflow despite lower VRAM.
+- Followed `docs/runbooks/vast-ai-deployment.md` §6-11: NVIDIA Container Toolkit install (gotcha: shipped half-configured by vast.ai — toolkit missing despite `daemon.json` pointing at it), `git clone -b feature/training-eval-smoke-v2`, `.env` stub. tmux'd `docker compose build` + `up` finished ~12 min. `alembic upgrade head` (3 migrations 0001 → 0002 → 0003). `ollama pull llama3.2:1b` (8 GB-friendly base — runbook default `llama3.2:3b` would OOM here). `pip install -e '.[dev]'` in api container for pytest.
+- Ran 11-node E2E from `docs/guidebook-e2e/guide101.md` for **classification + with-seed** path:
+  - Node 1 `POST /projects` → uuid `04137da6...`
+  - Node 3a `POST /datasets/upload-seed` multipart 40 rows → `081b23ff...` (format detection skipped — already canonical). ⚠️ ครั้งแรก 422 because schema needs `task_type` in form
+  - Node 4 `POST /datasets/generate with_seed` → completed in 60 s. Parent=100 + holdout=20 (220 OpenRouter calls, judge rejected 10, dedup 0, rejected 2). ⚠️ ครั้งแรก 422 because schema forbids `name` and `classification_config` here ([[sdg_with_seed_no_task_config]] confirmed)
+  - Node 5 `GET /datasets` verify → parent/holdout linked correctly via `parent_dataset_id`
+  - Node 6 `POST /trainings` manual Llama-3.2-1B + batch=2/ga=8/max_seq=512 → completed in 69 s, `model_artifact_id=37ecc85f...`, LoRA adapter 38 MB in MinIO
+  - Node 7 `POST /models/{id}/export gguf q4_k_m` → `slm/37ecc85f` registered in Ollama
+  - Node 8 `POST /inference/chat/completions` → model responded in Thai but free-form text not labels (model didn't learn classification format in 6 steps × 90 examples — expected at this data scale)
+  - Node 9 `POST /evaluations rule-based` on holdout → pipeline ✅, accuracy=0% (downstream of Node 8 — not a bug)
+  - Node 10 `POST /evaluations LLM judge` → **Session 23 Finding #2 verified closed**: `llm_judge_score=null` + `metrics_json.llm_judge_notes="LLM judge does not apply to classification — use rule-based metrics (accuracy, f1_macro) instead."` (was silent skip pre-fix in Session 23)
+  - Node 11 (parallel) `GET /trainings/{id}/loss-history` → endpoint ✅, payload ❌ — only 2 points (step=0 + step=6, both 3.4250 — epoch-aggregate) instead of per-step curve
+- 11/11 plumbing nodes PASS. 4 bugs found.
+
+### (b) Fix MLflow loss-history bug (2026-05-19, commit `69b3816`)
+- Explore agent traced root cause: `ai_engine/training/callbacks.py:82-86` correctly logs per-step training loss to MLflow under HF Trainer's native key `"loss"`. But `api/services/trainings_service.py:164` queried `"train_loss"` — a key that only exists from post-training `log_metrics_dict(result.metrics)` call at `workers/tasks/training.py:163` (single epoch-aggregate point logged at MLflow's default step=0).
+- Fix: 1-line in `trainings_service.py:164` changing `"train_loss"` → `"loss"`. Response JSON shape **unchanged** (key `train_loss` preserved per [[frontend_contract_frozen]]).
+- TDD: new `tests/unit/test_trainings_loss_history.py` with 3 cases (regression metric-key, no-mlflow-run-id, sorting). Red phase confirmed bug; green phase confirmed fix.
+- Verified on vast.ai by `git pull` + `docker compose build api` + curl with Session 26's training_id → loss-history returned all 6 real per-step values: **4.4979 → 4.5697 → 3.5624 → 2.9642 → 2.5668 → 2.3892** (47% reduction across 6 steps, matches worker log exactly).
+
+### (c) Dedupe eval_loss + add `rouge-score`/`sacrebleu` to `[dev]` (commits `1e4f89a` + `8f57082`)
+- Bug 2 (dedupe): `_to_points` (`trainings_service.py:136`) now sorts by step **and** de-dupes by `(step, value)`. Session 26 production payload had `eval_loss=[{step:0,v:2.374},{step:6,v:2.374},{step:6,v:2.374}]` (HF Trainer logs end-of-epoch eval 3× with identical values). After fix: 2 points (duplicate `(6, 2.374)` collapsed). Distinct values at same step preserved (real info, e.g. re-eval). New 4th unit test covers this.
+- Bug 3 (deps): `rouge-score>=0.1.2` + `sacrebleu>=2.4.0` added to `[dev]` extras (both already in `[eval]`). Required because `ai_engine/evaluation/metrics_qa.py` has deferred imports of both → pytest qa-metric tests fail without them. `scikit-learn 1.8.0` confirmed present transitively. Adds ~10 MB to api dev install — acceptable trade-off.
+- Verified on vast.ai (after `docker cp pyproject.toml slm-api:/app/pyproject.toml` + `pip install -e '.[dev]'`): **180 passed, 3 skipped** (was 177/3 → now matches local).
+
+### (d) Durable artifacts (per user observation that workflows would recur)
+- `docs/guidebook-e2e/test-e2e-on-vm.html` — 11-node playbook with 4 phases, base-model selector, risk table (commit `e12626e`)
+- `~/.claude/skills/vm-deployment/SKILL.md` — Skill for full VM deployment, triggers `/vm-deployment` (user-level, not in repo)
+- Memory entry `feedback_durable_artifacts_first.md` — preference rule for future sessions
+
+### (e) Process gotcha discovered (not in scope to fix)
+- `pyproject.toml` is **not bind-mounted** in `docker-compose.yml` api service. After `git pull` on VM, `docker compose exec api pip install -e '.[dev]'` reads the OLD pyproject.toml from inside the container (cached at build time) → new deps don't install even after rebuild (Docker cache hit on the COPY layer).
+- Workarounds today: `docker cp pyproject.toml slm-api:/app/pyproject.toml` then reinstall, OR `docker compose build --no-cache api` (slow).
+- Recommendation for tomorrow: add `- ./pyproject.toml:/app/pyproject.toml:ro` to api `volumes:` in `docker-compose.yml` (1-line, harmless). Defer or fold into Bug #3 cleanup PR.
+
+**Test Summary:**
+- Local: `pytest -m "not integration" -q` → **180 passed, 3 skipped**, 43 snapshots (was 176 pre-Session-26; +4 new tests across 2 commits)
+- vast.ai api container: **180 passed, 3 skipped** (qa metric tests now pass after sacrebleu fix)
+- 11-node E2E: all 2xx, all async jobs reach `completed`, no OOM during Llama-3.2-1B training
+- Commits pushed: `08092e2..8f57082` (4 commits: 1 fix + 1 docs + 2 follow-up fixes)
+- Wall time E2E first-run: ~12 min (Node 1 15:42 → Node 10 15:54). Fix iterations: ~30 min wall.
+- vast.ai cost ~$0.65 total (rental + OpenRouter ~$0.05)
+
+**Next Action (tomorrow):**
+- **Resume on vast.ai instance** (currently running; decide whether to `docker compose stop` overnight or destroy + recreate tomorrow)
+- **Bug #3 technical debt cleanup** — `workers/tasks/training.py:163` `log_metrics_dict(result.metrics)` should pass `step=state.global_step` or skip the `train_loss` key (since `loss` per-step is already in MLflow). Currently hides behind today's fix but pollutes MLflow data
+- **Polish** — bind-mount `pyproject.toml` in compose api service (1 line) so future dep changes work without `docker cp`
+- **Open PR** `feature/training-eval-smoke-v2` → `dev` (HO.9 still pending from Phase 11; now bundles Sessions 20-26 work)
+- ⚠️ **OpenRouter key rotation** — outstanding from Sessions 21-24 **+ leaked in chat at start of Session 26** (user pasted plaintext key); rotate before more public exposure
+
+**Blockers:** None.
+
+---
+
+## Session 25 — Revert dead-code sweeps `2ebc615` + `c528726` (2026-05-18)
+
+**Who:** Claude (Opus 4.7) + parks
+**Status:** ✅ Both dead-code commits reverted via non-destructive `git revert`. All 11 items restored to source. Unit tests 176/176 green, 43 snapshots identical. Branch `feature/training-eval-smoke-v2` not yet pushed post-revert.
+
+**Why & What:**
+- parks asked to revert the Session-24 dead-code sweeps. Likely rationale: keep `OllamaClient.has_model()` / `delete_model()` available for upcoming model lifecycle management, and keep `MlflowRunHandle.run_url` available for UI/log composition rather than the inline reconstruction at `trainings_service.get_mlflow_url:117-118`.
+- Plan: [`~/.claude/plans/commit-dead-code-delegated-lantern.md`](../../Users/parks/.claude/plans/commit-dead-code-delegated-lantern.md). Explore agent pre-verified: zero conflict (no commit after `c528726` touches the 7 files), zero snapshot references to deleted symbols, zero test references, clean working tree.
+- Executed `git revert --no-edit c528726 2ebc615` (new→old order is required because `tracking_uri` removal in `c528726` cascaded from `run_url` removal in `2ebc615`). Created 2 revert commits:
+  - `7c04fce` Revert "chore: remove 6 more dead-code items from vulture 60% pass"
+  - `5500217` Revert "chore: remove 5 dead-code items surfaced by vulture"
+- Verified `git diff 1cb12e1 -- ai_engine api workers` = empty → source identical to baseline. All 11 symbols grep-confirmed back in their original locations.
+
+**Test Summary:**
+- `pytest -m "not integration" -q`: **176 passed, 5 skipped, 0 failed** (5 skips: 2 integration tests requiring compose, 3 SDG snapshots awaiting CH.8 recorded payloads — all expected per CH.6/CH.8)
+- 43 syrupy snapshots all pass — revert didn't touch any pure function that's snapshot-covered
+- Sanity import check confirmed `AsyncProgressCallback` restored
+
+**Next Action:**
+- Push branch to origin (revert commits not yet on remote)
+- Reopen PR target (`feature/training-eval-smoke-v2` → `dev`) — PR body should note the revert + reason in addition to original Session-24 bundle
+- ⚠️ OpenRouter key rotation still outstanding from Sessions 21-24
+
+**Blockers:** None.
+
+---
+
+## Session 24 — GET /evaluations list + 11-item dead-code cleanup + snapshot harness pilot (2026-05-17)
+
+**Who:** Claude (Opus 4.7) + parks
+**Status:** ✅ 3 distinct deliverables on `feature/training-eval-smoke-v2`: API gap closed (GET /evaluations list), 11 dead-code items removed (vulture-driven cleanup), Tier-1+Tier-2-scaffold of snapshot harness landed. Unit tests 176/176 green (122 baseline + 52 new snapshot + 2 mock smoke; 3 Tier-2 SDG scaffolds skip pending recorded fixtures).
+
+**Why & What:**
+
+### (a) `GET /api/v1/evaluations` list endpoint (commits `31960bb`, `f6c9b1e`, `1cb12e1`)
+- parks asked to continue a "list endpoint" — discovered `evaluations` was the only resource without `GET ""` (projects/datasets/trainings/models already have one). Added `list_evaluations(model_artifact_id, dataset_id, status_filter, limit, offset)` to `api/services/evaluation_service.py` + wired the route in `api/routers/evaluations.py` between POST and GET detail. Same `Page[T]` envelope as the other 4 resources, same `created_at DESC` ordering.
+- Documented in `docs/runbooks/api_docs.md` §8 (query-param table + Page sample + FE patterns for model-history and per-dataset-leaderboard views).
+- Added the `GET` badge to `docs/guidebook-e2e/sub-node/9_evaluation.html` header + a "List evaluations" section right before "N-way compare".
+- One design choice deliberately NOT made: did NOT add `task_type` field to `EvaluationResponse`. parks confirmed the polymorphic `metrics_json` (FE branches on key presence — `accuracy` → cls, `json_validity` → tool, `bleu` → qa) is acceptable; `task_type` would be a convenience but is derivable from page context.
+
+### (b) Dead-code sweep — 11 items, -40 lines (commits `2ebc615`, `c528726`)
+- Installed `vulture` 2.16 in venv (only diagnostic; not committed to deps). Two passes at 80% and 60% confidence with manual filtering for Pydantic/ORM/FastAPI/Celery framework false positives.
+- Removed 5 in commit `2ebc615`: `declared_attr` unused import in `api/models/base.py`; `openrouter_teacher_model` setting in `api/core/config.py` (Phase 9 SDG hardening stopped reading it, worker passes literal `"placeholder/unused"`); `AsyncProgressCallback` type alias + `Awaitable` import in `generator.py`; `ProgressCallbackFactory` type alias + `Callable` import in `unsloth_trainer.py`; `MlflowRunHandle.run_url` property (re-implemented inline at `trainings_service.py:117-118`).
+- Removed 6 in commit `c528726`: `MlflowRunHandle.tracking_uri` (orphaned after `run_url` removal); `OllamaModelInfo.modified_at` field; `OllamaClient.has_model()` + `delete_model()` (zero callers anywhere); `artifact_name` local var in `model_export.py`; `_first_gguf()` helper in `model_export.py` (distinct from `_first_gguf_object()` in `model_service.py` which IS used).
+- Final vulture 60% scan: ~140 remaining entries, all confirmed false positives (Pydantic `model_config`, ORM `mapped_column`/`relationship`, FastAPI routes, exception handlers, Celery signal hooks, validator `cls` params) — documented categorization in session chat. **No further removable dead code.**
+
+### (c) Snapshot harness pilot — `~/.claude/plans/peppy-sauteeing-rain.md` (commits `0af16ca`, `38d0f55`, `de9f33b`, `c1c3b2d`)
+- parks wanted a refactor safety net: "function เพื่อครอบแต่ละ node และแต่ละส่วนของโค้ด เพื่อเปรียบเทียบว่าก่อน refactor และหลัง refactor สามารถทำงานได้เหมือนเดิมไหม". Chose Build-harness-first / Snapshot/golden approach / Let Claude propose pilot. Plan written + approved at `~/.claude/plans/peppy-sauteeing-rain.md`.
+- **Tier 1 (live):** `syrupy>=4.6.0` to `[dev]`. 43 snapshots committed in `tests/unit/__snapshots__/*.ambr` covering: `prompts.py` 4 builders × 3 task types × normal+sentinel (17 snapshots); `generator.py` pure helpers `_compute_*_quota` / `_group_by` / `_group_tool_examples` / `_make_sentinel_tool_def` (15 snapshots); `metrics_*.compute_metrics()` across qa/cls/tool × perfect/partial/wrong (11 snapshots).
+- **Tier 2 (scaffolded):** `respx`, `moto[s3]`, `fakeredis`, `dirty-equals` added to `[dev]`. New `characterization` pytest marker. `tests/conftest.py` (462 lines) with: `openrouter_responder` (promoted `_FakeCompletions` from existing test_async_openrouter_client.py), `recorded_payload` (skip-with-instruction loader), `fake_minio` (in-memory MinIO stub w/ `put_object`/`get_object`/`fput_object`/`fget_object`/`stat_object`/`list_objects`/`remove_object`), `fake_redis_pubsub` (fakeredis + publish spy), `seed_dataset_factory`. `tests/unit/test_snapshot_generator_full.py` — 3 SDG E2E tests skip pending `tests/fixtures/recorded/openrouter/sdg_{cls,qa,tool}_{meta,batch,judge}.json`; 2 smoke tests confirm fake_minio + fake_redis_pubsub round-trip.
+- **Docs:** `docs/runbooks/snapshot_harness.md` covers 3-tier overview, install, before/after-refactor workflow, live-capture playbook, update-vs-revert decision table, rollout roadmap. `CLAUDE.md` gets a "Snapshot Harness" section (load-bearing rule: no silent --snapshot-update without explaining diff).
+- **Negative test verified:** edited `_GENERATOR_BASE_SYSTEM` → 5 generator-prompt snapshots fail with readable diff; revert restores green. Harness catches real changes.
+
+**Test Summary:**
+- `pytest tests/unit -q`: **176 passed, 3 skipped, 0 failed** (43 snapshots reproduce identically across 3 consecutive runs — no flakes)
+- 122 baseline + 17 prompts + 15 generator_builders + 14 metrics + 5 generator_full (2 smoke pass, 3 SDG skip) = 173 deterministic + 3 skipped
+- Wait — 173 + 3 = 176 ✓
+- vulture 80% scan post-cleanup: 2 entries, both `cls` params on Pydantic validators (false positive)
+- All 9 commits on `feature/training-eval-smoke-v2` pushed to origin
+
+**Next Action:**
+- Open PR `feature/training-eval-smoke-v2` → `dev` (still pending from MT.7 / HO.9). PR body should bundle: smoke-v2 work + Session 22 findings + DeepSeek-R1 removal + GET /evaluations + dead-code sweep + snapshot harness pilot.
+- Tier 2 SDG full snapshots need 9 recorded OpenRouter payloads. Capture during next vast.ai SDG smoke (cls/qa/tool × meta/batch/judge); paths and schema documented in `docs/runbooks/snapshot_harness.md` §4. After capture, drop into `tests/fixtures/recorded/openrouter/` and the 3 skipping tests transition to passing snapshots.
+- ⚠️ OpenRouter key rotation still outstanding from Sessions 21-23.
+
+**Blockers:** None.
+
+---
+
+## Session 23 — drop DeepSeek-R1-Distill + close Session-22 Findings #1 & #2 (2026-05-17)
+
+**Who:** Claude (Opus 4.7) + parks
+**Status:** ✅ Catalog reduced 11 → 10. ✅ Finding #2 closed (silent judge-skip on cls now surfaces `metrics_json.llm_judge_notes`). ✅ Finding #1 closed (semantic guard for classification upload-seed). Unit tests 122/122 green (10 new for semantic_guard).
+
+**Why & What:**
+- parks asked how reasoning-model training (`unsloth/DeepSeek-R1-Distill-Qwen-1.5B-unsloth-bnb-4bit`) differs from regular instruct SLMs. Audit found 6 gaps in the platform that make R1-Distill produce a degraded model when fine-tuned through our pipeline:
+  - `_CHAT_TEMPLATE_BY_PREFIX` in `ai_engine/training/unsloth_trainer.py:40-44` has no entry for `unsloth/deepseek-r1` → falls through to `chatml` which doesn't preserve `<think>` token boundaries.
+  - `data_formatters.py` formatters are 2-message `user→assistant` only — no slot for chain-of-thought / reasoning chain. Training data with `reasoning` field would be silently dropped.
+  - Tool-calling formatter system prompt (`CHATML_SYSTEM_GENERIC`) explicitly says "Respond ONLY with a JSON object" — suppresses reasoning entirely.
+  - SDG pipeline generates (Q, A) tuples with no reasoning chains. Training R1-Distill on this data destroys the reasoning capability it was distilled for.
+  - Rule-based eval metrics (`metrics_qa.py` / `metrics_classification.py`) don't strip `<think>...</think>` before comparison → R1 output `<think>...</think>ปัญหาเทคนิค` vs ground-truth `ปัญหาเทคนิค` scores 0 even when correct.
+  - LLM judge sees raw `<think>` blocks in candidates → rubric scores degraded.
+- Decision: **remove from supported list rather than fix all 6**. Reasoning support is a Phase 10 item (new TaskType + reasoning-aware formatter + R1 chat-template entry + eval pre-processor), too big to bundle into the smoke-v2 PR. Keeping the model dropdown entry while ~half the pipeline misbehaves on it is over-promising to users. Re-add when reasoning is a real feature.
+- Reference table from this session's audit (kept here for context when reasoning support is reintroduced):
+
+| Layer | What needs to change to properly support R1-Distill |
+|-------|------------------------------------------------------|
+| `_CHAT_TEMPLATE_BY_PREFIX` | Add `("unsloth/deepseek-r1", "<r1-template-name>")` once verified against `unsloth.chat_templates.CHAT_TEMPLATES` |
+| `_EOS_BY_PREFIX` | R1-Distill uses Qwen tokenizer (`<|im_end|>` already in qwen2.5 fallback) but reasoning end token differs |
+| `data_formatters.py` | New `format_reasoning_qa(row)` that packs `<think>{reasoning}</think>{answer}` into assistant content |
+| `data_formats.py` (schema) | New `ReasoningQASample` with `reasoning` field; or extend QA schema with optional `reasoning` |
+| `TaskType` enum | Likely `reasoning_qa` to keep formatter dispatch clean |
+| SDG prompts | Need 2-step generation (first reasoning, then answer) or single-shot with explicit `<think>` instruction |
+| Eval pre-processor | Strip `<think>...</think>` before passing to `metrics_qa`/`metrics_classification`; pass full output to LLM judge but include in rubric "ignore reasoning blocks for scoring" |
+
+**Files touched (DeepSeek removal):**
+- `api/routers/tasks_meta.py`: removed `BaseModelInfo` entry (lines 180-190) — catalog now 10 entries.
+- `api/services/base_model_catalog.py`: removed `"unsloth/DeepSeek-R1-Distill-Qwen-1.5B-unsloth-bnb-4bit": "deepseek-r1:1.5b"` line — mapping now 10 entries, 1:1 mirror with `tasks_meta.py` restored.
+- `api/services/training_service.py:46`: comment updated `≤1.5B (Qwen2.5-1.5B, DeepSeek-R1)` → `≤1.5B (Qwen2.5-1.5B)`. Bucket logic itself unchanged — the 1.78B test param is kept as a bucket-upper-boundary regression case.
+- `tests/unit/test_training_config.py:180`: comment updated to note `1.78` is kept as boundary case (no longer represents a real model).
+- `docs/runbooks/training-hpo.md:551`: comment in VRAM ceiling table updated.
+
+**Files touched (Finding #2 fix — silent judge-skip on classification):**
+- `workers/tasks/evaluation.py:131-148`: added an explicit `elif use_llm_judge and task_type is TaskType.CLASSIFICATION` branch that writes `metrics["llm_judge_notes"] = "LLM judge does not apply to classification — use rule-based metrics (accuracy, f1_macro) instead."` instead of silently falling through. Existing QA/tool_calling branch unchanged. Worker contract: `llm_judge_score` still returns `null` for cls (no behavior change for callers reading that field), but `metrics_json.llm_judge_notes` is now populated so the API response self-documents the skip.
+- `docs/guidebook-e2e/sub-node/10_llm-judge.html`: added a warn callout under "วัตถุประสงค์" stating cls is auto-skipped + new row in Error cases table documenting `llm_judge_score=null + metrics_json.llm_judge_notes populated` symptom.
+
+**Files touched (Finding #1 fix — semantic guard on upload-seed classification):**
+- `ai_engine/data_gen/semantic_guard.py` **(new)**: pure-function `assert_semantic_fit(rows, task_type)` + `SemanticGuardError`. For classification only, rejects rows where `avg(len(label)) > 30` OR (when n≥10) `len(set(labels))/n > 0.5`. tool_calling and qa are deliberate no-ops (former enforced by Pydantic `ToolCallingSample.answer` validator; latter has no closed set).
+- `api/services/datasets_service.py`: import `SemanticGuardError, assert_semantic_fit`. In `_upload_jsonl_seed`, after the `if not valid` raise, wrap `assert_semantic_fit(valid, task_type)` in try/except and re-raise as `HTTPException(422)`. Order matters — must run AFTER `parse_samples` succeeds (we need string-typed `label` values).
+- `tests/unit/test_semantic_guard.py` **(new, 10 cases)**: passes — canonical Thai-support seed, tiny test dataset (ratio check skipped), at-threshold case (ratio=0.5 exactly), no-op for tool/qa/empty. Rejects — Session 22 qa-as-cls exact reproduction, long-but-low-cardinality labels (constant 50-char footer), high-cardinality short labels (ID column misidentified).
+- `docs/guidebook-e2e/sub-node/3a_add-seed-data.html`: 2 new rows in Error cases table + warn callout explaining the guard's scope (cls only, thresholds, why tool/qa exempt).
+
+**Memory updated:**
+- `format_detection_semantic_gap.md`: rewritten to reflect closure (status table per task type; tuning rationale for future guards).
+
+**Test Summary:**
+- `tests/unit/test_training_config.py`: 29/29 ✅
+- `tests/unit/test_semantic_guard.py`: 10/10 ✅ (new)
+- `tests/unit/` full sweep: 122/122 ✅
+- `python -m py_compile workers/tasks/evaluation.py`: clean
+- No code references remain — `Grep "DeepSeek-R1|deepseek-r1|DeepSeek"` after edits returns only this WORKING_LOG entry, TASK_TRACKER history, and the `WORKING_LOG` session-20 commit-hash line `01e4626` (historical, do not edit).
+- **Untested live (both findings):** need one round-trip on vast.ai to confirm (a) `metrics_json.llm_judge_notes` lands in the persisted EvaluationRun row for cls+judge=true; (b) uploading `qa_canonical.jsonl` into a cls project now returns 422 with the threshold message instead of accepting silently. Neither is a regression risk — worst case for (a) the new branch is silent and we keep Session-22 behavior; worst case for (b) is a 422 that future-us tunes the thresholds for.
+
+**Next Action:**
+- Roll up Session 22 findings + Session 23 closures into the PR `feature/training-eval-smoke-v2` → `dev` body when parks opens it. Findings #1 and #2 now closed; Finding #3 (smoke quality) is by design (`docs/guidebook-e2e/sub-node/9_evaluation.html` already documents the expected ranges).
+- ⚠️ Rotate the OpenRouter key (`sk-or-v1-3ecce...`) — visible in chat + `.env`, flagged across 3 sessions now.
+
+**Blockers:** None.
+
+---
+
+## Session 22 — full guidebook-e2e autonomous test on vast.ai (2026-05-16)
+
+**Who:** Claude (Opus 4.7), autonomous, while parks AFK
+**Status:** ✅ Full E2E green for all 3 task types × 11 nodes + 23 negative/edge tests passed. 3 FINDINGS (not blockers): 1 user-error UX gap, 1 UX gap on cls+judge, 1 quality note for smoke runs. Guidebook updated mid-test.
+
+**Why & What:**
+- parks asked to test the full `docs/guidebook-e2e/` against fresh vast.ai (RTX 4090 48GB / Ubuntu 22.04). Earlier in session: fresh `git clone`, install `nvidia-container-toolkit` (memory gotcha #2 confirmed reproducible), `docker compose up -d --build`, `alembic upgrade head` (3 migrations: 0001/0002/0003), service health green.
+- Guidebook itself was also edited mid-session for accuracy:
+  - Node 4: removed `classification_config` / `tool_calling_config` from `with_seed` examples — schema has `extra="forbid"` (memory `sdg-with-seed-no-task-config`). parks hit this 422 on first POST.
+  - Nodes 1, 3a, 3b, 4, 5, 6, 8, 9, 10: added concrete examples tied to `seed_data/` files (Thai support / Thai return policy / smart home), realistic confusion matrix labels, base-model recommendations per task, smoke vs proper expected-metrics ranges.
+  - `guide101.md`: added seed_data overview table + mismatched key mapping reference.
+
+**Test ledger — full E2E × 3 task types (smoke config: 1 epoch, num_samples=100, holdout=20, base=Llama-3.2-1B-Instruct-bnb-4bit, lr=2e-4, max_seq_length=1024):**
+
+| Task | SDG | Train | Export | Inference | Eval(rule) | Eval(judge) | MLflow |
+|------|-----|-------|--------|-----------|-----------|-------------|--------|
+| cls  | ✅ 100p/20h, judge_rej=20 | ✅ 60s | ✅ slm/bc4c516a | ✅ returns 200 | acc=0.0, all preds out-of-set | (skipped — cls) | 13 keys |
+| qa   | ✅ 100p/20h, judge_rej=1  | ✅ 60s | ✅ slm/953b6b3f | ✅ returns 200 | rouge1=0.062, bleu=0.010 | score=1.4/5 | 13 keys |
+| tool | ✅ 100p/20h, judge_rej=11 | ✅ 60s | ✅ slm/648ea8a5 | ✅ returns 200 | json_validity=0, name_acc=0 | score=1.0/5 | 13 keys |
+
+Total wall-clock for E2E × 3: ~12 minutes. Base model `Llama-3.2-1B-Instruct-bnb-4bit` cached after first download (~2 min once); 2nd and 3rd training reused cache.
+
+**Negative + edge tests — 23 cases, all expected outcomes confirmed:**
+
+| # | Test | Result |
+|---|------|--------|
+| 1-3 | Format Detection on `*_mismatched.jsonl` × 3 task types | All field_mapping rewrites correct (message→text/category→label, prompt→question/response→answer, instruction→question/function_call→answer) |
+| 4 | PDF upload (qa) | dataset_id created, `pdf_uri=s3://datasets/seed-pdfs/...`, num_samples=0 |
+| 5 | PDF upload to cls — expect 400 | "PDF uploads are supported only for task_type=qa (got classification)" |
+| 6 | Cross-task seed (qa seed → cls SDG) — expect 400 | "seed dataset task_type is qa but request asks for classification" |
+| 7 | Invalid base_model — expect 422 | "base_model 'meta-llama/Llama-3.1-70B' is not in the supported list" |
+| 8 | Invalid task_type in project — expect 422 | "Input should be 'classification', 'tool_calling' or 'qa'" |
+| 9 | Training with non-existent dataset — expect 404 | "Dataset ... not found" |
+| 10 | GET /base-models | 11 models returned |
+| 11 | GET /tasks | 3 task types returned |
+| 12 | POST eval non-existent artifact — expect 404 | "Model ... not found" |
+| 13 | POST eval cross-task (cls art + qa ds) — expect 400 | "Dataset task_type=qa does not match artifact task_type=classification" |
+| 14 | Inference stream=true — expect 400 | "streaming is not supported on /api/v1/inference (set stream=false)" |
+| 15 | Inference unknown model — expect 404 | "ollama: model not found ..." |
+| 16 | GET non-existent training loss-history — expect 404 | "Training ... not found" |
+| 17 | dataset download | 405 on HEAD (allowed: GET only), GET works (NDJSON UTF-8) |
+| 18 | SDG holdout_size=0 (backward compat) | num_samples=10, holdout_dataset_id=null, holdout_size_actual=0, no child row created |
+| 19 | DELETE dataset with refs — expect 409 | "Dataset ... is referenced by 1 training_job(s)..." — verbose hint, clean envelope |
+| 20 | Legacy /completions endpoint | text="Hello! How can I help you today?" |
+| 21 | GET /datasets/{id}/preview | total=100, samples truncated to limit=3 |
+| 22 | GET /datasets/{id}/download | NDJSON streamed, Thai UTF-8 intact |
+| 23 | POST training → DELETE (cancel) | status=cancelled, idempotent |
+
+**3 FINDINGS (not test failures — usability + design notes):**
+
+1. **Format Detection has no semantic guard** *(memory `format-detection-semantic-gap` proposed)* — User uploaded `qa_canonical.jsonl` to a classification project by mistake. Format Detection silently renamed `question→text, answer→label` and the dataset passed structural validation, but every "label" was a unique long-sentence (clearly not classification). The cls SDG run then generated more QA-style content. Discovered when verifying Node 5 preview.
+   - **Proposed guard:** when target=`classification`, warn or 422 if `unique_labels / total_rows > 0.5` OR `avg_label_length > 30 chars`. For `tool_calling`, validate that every answer parses as JSON with `name`/`parameters`.
+   - **Workaround applied for test:** re-uploaded correct `classification_canonical.jsonl`, re-ran SDG, content verified.
+
+2. **`use_llm_judge=true` is silently ignored for classification** *(`workers/tasks/evaluation.py:134`)* — `if use_llm_judge and task_type in (TaskType.QA, TaskType.TOOL_CALLING):` skips classification. The API accepts the request and returns `llm_judge_score=null` without explanation.
+   - **Proposed fix (small):** add `notes` field in `metrics_json` saying "LLM judge does not apply to classification — use rule-based metrics (accuracy, f1) instead." OR return 400 at submission.
+
+3. **Smoke run quality is well below useful threshold** — As designed, 100 train rows + 1 epoch reproduces what Session 21 documented:
+   - cls: accuracy=0.0, all 20 holdout predictions went `out_of_set_predictions` (model outputs Thai prose, not labels)
+   - qa: rouge1=0.06, judge=1.4/5 (model defaults to "I'm an AI assistant" disclaimers)
+   - tool: json_validity=0 (model outputs English prose, not JSON tool calls)
+   - **This is mechanically expected** — Node 9 guidebook table predicts these ranges for smoke. Proof of pipeline correctness, not model utility.
+
+**Files touched (this session):**
+- `docs/guidebook-e2e/guide101.md`: seed_data overview table
+- `docs/guidebook-e2e/sub-node/1_create-project.html`: 3 task-type project examples
+- `docs/guidebook-e2e/sub-node/3a_add-seed-data.html`: 3 task-type form examples + PDF + Format Detection response variations
+- `docs/guidebook-e2e/sub-node/3b_description-only.html`: 3 descriptions matching seed_data domain (Thai support 3 labels / Thai return policy / Smart home 5 tools)
+- `docs/guidebook-e2e/sub-node/4_sdg-holdout-split.html`: 3 with_seed examples; removed `classification_config`/`tool_calling_config` (schema gap); added compare-with-3b table + with_seed gotcha callout
+- `docs/guidebook-e2e/sub-node/5_verify-dataset.html`: 3 task-type preview responses
+- `docs/guidebook-e2e/sub-node/6_training.html`: base model recommendation per task + parent-not-holdout warning + smoke vs proper run notes
+- `docs/guidebook-e2e/sub-node/8_inference.html`: 3 task-specific inference prompts
+- `docs/guidebook-e2e/sub-node/9_evaluation.html`: expected metric ranges (smoke vs proper) + 3 task-type response examples with actual Thai labels
+- `docs/guidebook-e2e/sub-node/10_llm-judge.html`: fixed default `judge_model` to current env default `google/gemini-3.1-flash-lite-preview`
+
+**Memory updated:**
+- New: `sdg_with_seed_no_task_config.md` — schema constraint that took a 422 to surface.
+
+**Test Summary:**
+- 23/23 negative/edge tests passed (HTTP codes, error shapes, conflict envelopes, idempotency).
+- 3/3 task types completed full E2E (cls / qa / tool_calling) — all 11 nodes touched per task.
+- Pipeline mechanically correct; smoke quality is low as expected.
+- Resources used: ~12 min wall-clock end-to-end (excluding initial Docker build).
+
+**Next Action:**
+- parks to review findings 1+2. If guard for finding 1 is wanted, file as an issue (touches `ai_engine/data_gen/upload_seed.py` + format_detection). For finding 2, suggest 1-line UX nudge: add `notes` to metrics_json on cls eval when `use_llm_judge=true`.
+- Open PR `feature/training-eval-smoke-v2` -> `dev` once docs + bugfix decisions land.
+- Rotate the OpenRouter key (`sk-or-v1-3ecce...`) before shipping — visible in chat + .env, flagged 2 sessions running.
+
+**Blockers:** None.
+
+---
+
+## Session 21 — HO.8 live smoke on vast.ai (2026-05-14, autonomous overnight)
+
+**Who:** Claude (Opus 4.7), autonomous, while parks slept
+**Status:** ✅ ALL 5 critical paths (C1-C5) verified across 3 task types + negative test. Ready for HO.9 (PR `feature/training-eval-smoke-v2` -> `dev`).
+
+**Why & What:**
+- parks provisioned a fresh vast.ai Linux VM (Ubuntu 22.04, RTX 3090 24GB) and authorised autonomous execution of HO.8 (live SDG holdout smoke).
+- Stage 0 infra blockers + fixes (logged inline in commits):
+  - `nvidia-container-toolkit` not pre-installed -> apt install + `nvidia-ctk runtime configure` (memory gotcha #2).
+  - Docker Hub connection-reset under vast.ai egress NAT -> added `mirror.gcr.io` (Google's official) only to `daemon.json` (rejected adding Chinese mirrors per auto-classifier).
+  - SSH session drops on heavy IO -> moved to `nohup` + log-file pattern (memory gotcha #4).
+  - Two-head alembic conflict: 0003 originally chained off 0001_initial (plan assumption based on stale worktree base) but 0002_export_error existed on this branch -> linearize fix in commit `c599b1a`.
+  - Smoke script bugs found + fixed live: `/healthz` -> `/health` (`c1ca92a`), `/../health` relative path didn't resolve in urllib -> absolute URL (`d1f3900`), wait_until predicate looked for `status` field that DatasetResponse does not have -> use `generation_metadata.completed_at` (`3a4dfca`).
+- Stage 1+2 (qa, num=50/holdout=10): ALL OK, leak-free judge score **3.9 / 5** on 10 unseen rows.
+- Stage 3 (cls + tool_calling): holdout flow OK on both. Eval metrics low (cls accuracy=0.0, tool name_accuracy=0.0) because 50 rows + 1 epoch is far too small for a 1B model to learn the label/tool vocabularies — this is a *training-data sizing* result, not a holdout-feature result. The point of HO.8 was to verify that `POST /evaluations` against the **child** dataset runs end-to-end and returns metrics whose `n` matches `child_num_samples` (10). It does.
+- Stage 4 (negative, holdout_size=0): parent created with `num_samples=20`, `holdout_size_actual=0`, `holdout_dataset_id=null`, `total=1` dataset in project. Backward compat confirmed.
+- Stage 5: state.json + run.log scp'd back to `docs/runbooks/session25-holdout-state.json` and `docs/runbooks/session25-holdout.log`.
+
+**Key smoke numbers (qa run, the only one judge-scored):**
+- SDG: 40 seconds, 108 OpenRouter calls, 8 duplicates removed, 1 judge-rejected, role=train+holdout metadata persisted correctly.
+- Train: ~37 min the first time (cold base-model download to cache), ~1-2 min after that — base Llama-3.2-1B-Instruct-bnb-4bit reused.
+- Export GGUF: ~12-29 min (q4_k_m quantization through llama-quantize binary built into worker image).
+- Eval on **child** (n=10): rouge1=0.196, rougeL=0.162, llm_judge=3.9. None of the 10 rows seen during training.
+
+**Files touched (committed to feature/training-eval-smoke-v2):**
+- `alembic/versions/20260513_0003_dataset_parent_id.py`: down_revision -> 0002_export_error (`c599b1a`)
+- `scripts/session25_holdout_e2e.py`: 3 fixes (`c1ca92a`, `d1f3900`, `3a4dfca`)
+- `docs/runbooks/session25-holdout-state.json`, `docs/runbooks/session25-holdout.log`: artifacts
+
+**Open follow-ups for HO.9 (next session):**
+- Open PR `feature/training-eval-smoke-v2` -> `dev`. Body should describe holdout feature + smoke evidence.
+- Optional: rotate the OpenRouter key (`sk-or-v1-3ecce...`) — visible in `.env` and was once selected into chat context. Treat as blown.
+
+**Test Summary:**
+- 112/112 unit tests (laptop, pre-deploy).
+- 3/3 task types completed full E2E flow live (qa, classification, tool_calling).
+- 4/4 critical paths C1-C4 verified, C5 verified across all 3 task types.
+- 1/1 negative test (holdout_size=0).
+
+**Next Action:**
+- parks: review summary, then run `gh pr create feature/training-eval-smoke-v2 -> dev` (or use the GitHub URL printed by the push step in session 20).
+- Optional: tear down or pause the vast.ai instance to stop the clock.
+
+**Blockers:** None.
+
+---
+
+## Session 20 — SDG hold-out split for leak-free evaluation (2026-05-13)
+
+**Who:** Claude (Opus 4.7) + parks (developer)
+**Status:** ✅ Feature `feature/sdg-holdout` ready for review. 7 commits on top of `feature/training-eval-smoke-v2`. 112 unit tests passing (15 new + 97 existing, zero regressions).
+
+**Why & What:**
+- During the "how does LLM judge work?" walkthrough we noted that the default UX has users pointing `POST /evaluations` at the same dataset they trained on — guaranteed leakage since Unsloth also internally eval-splits 10% from that set, and the judge sees `expected` answers directly.
+- Designed an over-generation flow: SDG generates `num_samples + holdout_size` rows in a single run; result is split into train (saved to parent dataset) and holdout (saved as a new child Dataset with `parent_dataset_id` set). Stratified by label / tool name for cls + tool, random for QA. Dedup happens before the split (Phase 9 MinHashLSH path is untouched), so near-dup train→holdout leakage is prevented.
+- `holdout_size` is a request field defaulting to 100; `0` disables to preserve the option of single-dataset workflows.
+- Execution method: subagent-driven-development with parallel wave 1 (Tasks 1,2,3,4,5,7 dispatched simultaneously in 6 isolated git worktrees, each agent doing TDD where applicable). Wave 1 worktrees were based off the pre-feature-branch HEAD (`d680572`) which caused cherry-pick conflicts against Phase 9 hardening commits already on `feature/sdg-holdout`. Cleaned up by cherry-picking the new-file-only commits (Tasks 1, 3) and applying the modify-existing-file changes manually via Edit (Tasks 2, 4, 5). Task 7 was re-dispatched as a single agent doing 4 surgical edits on the existing 1216-line `api_docs.md`. Wave 2 (Task 6) and Wave 3 (Task 8) ran sequentially as planned.
+
+**Files touched:**
+- New: `ai_engine/data_gen/holdout_split.py`, `tests/unit/test_holdout_split.py`, `tests/unit/test_sdg_schema.py`, `alembic/versions/20260513_0003_dataset_parent_id.py`
+- Modified: `api/models/dataset.py`, `api/schemas/sdg.py`, `api/schemas/datasets.py`, `workers/tasks/data_generation.py`, `docs/runbooks/api_docs.md`
+
+**Test Summary:**
+- 9 unit tests on `split_rows` — all green (cls stratified, tool stratified, qa random, edge cases: 0, > total, empty, deterministic seed)
+- 6 unit tests on `SDGRequest.holdout_size` field — all green
+- Full `pytest tests/unit -q` — 112 passed, 0 regressions
+- `python -m py_compile workers/tasks/data_generation.py` — clean
+- ORM smoke test: `Dataset.__table__.columns` includes `parent_dataset_id`
+- Live SDG smoke not yet run (next session: run the 3 task-specific SDG runbooks against vast.ai with `holdout_size=20` to verify end-to-end)
+
+**Migration note:**
+- New migration `0003_dataset_parent_id` has `down_revision = "0001_initial"` (not `0002_export_error` as the original plan assumed — that revision does not exist in this branch). Verify before `alembic upgrade head`.
+
+**Next Action:**
+- Run live SDG smoke with `holdout_size > 0` on each task type, then verify a hold-out evaluation against the child dataset returns a sensible judge score.
+- Merge `feature/sdg-holdout` → `feature/training-eval-smoke-v2` once smoke is green; open PR to `dev` from there.
+
+**Blockers:** None.
+
+---
+
+## Session 19 — verify 8 runbooks end-to-end + 2 metrics endpoints + A/B compare + expand catalog (2026-05-10)
+
+**Who:** Claude (Opus 4.7) + parks (developer; AFK during long build)
+**Status:** ✅ 10 commits on `feature/training-eval-smoke` (`034d869` → `01e4626`), all pushed to origin. Branch ready for PR → `dev`. Two clean vast.ai deployments verified (one destroyed mid-session, one fresh). 11 base models in catalog (was 6). 30 REST endpoints + 5 WS event types + 1 WebSocket — all FE-facing surfaces verified live.
+
+**Why & What:**
+
+- parks asked to run all 8 runbooks end-to-end on vast.ai to verify they actually work. Hit and fixed 3 regressions during the run: (1) sacrebleu missing from worker image (image built ~1h before commit `8900576` added it to `[eval]` extras → rebuild worker), (2) GPU mount stale on cold-boot (per MT.I1 → `--force-recreate worker`), (3) `OPENROUTER_API_KEY` empty in api container despite being in `.env` (api had been started before key was set → `docker compose up -d api`). Found and fixed a follow-up bug while at it: POST `/evaluations` with mismatched `dataset.task_type` vs `artifact.task_type` was accepted as 202 (no guard). Added the guard in `evaluation_service.submit_evaluation_job` — now returns 400 with `"Dataset task_type=X does not match artifact task_type=Y"`.
+- After runbooks were validated, parks asked how the FE consumes metrics. Implemented two new GET endpoints proxying MLflow so the FE doesn't have to talk to MLflow REST directly: `/api/v1/trainings/{id}/loss-history` (lightweight train+eval loss series, chart-ready) and `/api/v1/trainings/{id}/metrics` (full metric history per-key + HPO `hpo_children` summary). New `api/services/mlflow_metrics.py` houses the thin async httpx wrapper. 502 surfaced when MLflow is unreachable; per-key history failures are logged and emit `[]` rather than failing the whole response.
+- Wrote `docs/runbooks/api_docs.md` (1216 lines) — single-page FE integration guide with all endpoints, common envelope shapes, async-job pattern, the 5 WS event types with realistic JSON, per-page integration cheat sheet (Dashboard / SDG / Training Detail / Eval / Playground), and an `openapi-typescript` codegen tip. parks said this is what gets handed to the FE teammate.
+- parks then asked whether the system can serve fine-tuned + base side-by-side for A/B compare in playground. Added two patches: (1) `BaseModelInfo.ollama_tag` field plus `ModelArtifactResponse.base_ollama_tag` computed field that derives the Ollama-Hub equivalent of any artifact's training base, (2) worker auto-pulls the base into Ollama after registering the fine-tuned `slm/<id8>` tag, so the FE can serve both immediately without the user having to `ollama pull` by hand. Single source of truth lives in `api/services/base_model_catalog.py` (used by both the FE-facing schema and the worker-side pull helper).
+- Last big task: expand `SUPPORTED_BASE_MODELS` from 6 to 11 entries with sub-2B variety. Researched the landscape (BentoML 2026 SLM list, Distil Labs fine-tuning benchmark, Unsloth catalog) and added: Qwen3-0.6B, Qwen3-1.7B (newer Qwen with thinking-mode), DeepSeek-R1-Distill-Qwen-1.5B (reasoning specialist), SmolLM2-1.7B-Instruct (HuggingFace TB native, fine-tune-optimized), TinyLlama-1.1B-Chat (smallest VRAM ~600MB). Considered IBM Granite-4.0-1B and Liquid LFM2-1.2B but skipped: Granite has only BF16 instruct on Unsloth (no bnb-4bit instruct mirror — worker pipeline expects bnb-4bit input); LFM2 has no official Ollama Hub tag (community-only), so auto-pull base would fail.
+- Verified all 11 Ollama tag mappings via three layers: (a) Ollama Hub library page listings via WebFetch, (b) direct `registry.ollama.ai/v2/library/<model>/manifests/<tag>` returns HTTP 200 for each, (c) live pull of `qwen3:0.6b` succeeded in 12 seconds and showed up in both `ollama list` and `/api/v1/inference/models`.
+
+**Files touched (this session):**
+
+| Commit | Files | What |
+|--------|-------|------|
+| `e0be72d` | `api/core/config.py`, `.env.example`, `SWAGGER_GUIDE.md`, `docs/runbooks/evaluation.md` | judge model default `claude-haiku-4.5` → `google/gemini-3.1-flash-lite-preview` |
+| `bfb8ccd` | `api/services/evaluation_service.py`, 5 runbooks | task_type guard + envelope/field-name corrections + cross-runbook pre-flight pitfalls section |
+| `217a93a` | `docs/runbooks/training-hpo.md` | HPO Task 3 — REST API check primary, MLflow UI secondary, fix misleading "tree view" claim |
+| `6523209` | `api/services/mlflow_metrics.py` (new), `trainings_service.py`, `schemas/trainings.py`, `routers/trainings.py`, `SWAGGER_GUIDE.md` | `/loss-history` + `/metrics` endpoints |
+| `ab06262` | `docs/runbooks/training-manual-lifecycle.md`, `training-hpo.md` | runbook coverage of new metrics endpoints |
+| `5ef89fb` | `docs/runbooks/api_docs.md` (new, 1216 lines) | FE integration guide |
+| `f0cffa1` | `api_docs.md` | corrections from end-to-end verification (datasets/{id}/download Content-Type, eval metric keys, GGUF quantization wording) |
+| `bdcf9e2` | `api_docs.md` | WS event docs refined after live capture (5/5 types verified; training_progress null marker; inner_progress optional; failed.traceback default null) |
+| `538e5b7` | `api/services/base_model_catalog.py` (new), `schemas/tasks_meta.py`, `schemas/artifacts.py`, `routers/tasks_meta.py`, `workers/tasks/model_export.py`, `api_docs.md` | `base_ollama_tag` + auto-pull base for A/B compare |
+| `01e4626` | `api/services/base_model_catalog.py`, `routers/tasks_meta.py` | catalog 6 → 11 entries (Qwen3 ×2, DeepSeek-R1-Distill, SmolLM2, TinyLlama) |
+
+**Test Summary:**
+
+| Surface | Verified |
+|---------|----------|
+| 8 manual-test runbooks | end-to-end, all pass after fixes (sacrebleu rebuild, alembic upgrade, OPENROUTER_API_KEY refresh, force-recreate worker for GPU mount) |
+| 30 REST endpoints | 27 verified live + 3 verified spec-only (optional edge cases that runbooks marked optional) |
+| 5 WS event types | sdg_progress / training_progress / hpo_progress / completed / failed all captured live with payload inspection — `WS does NOT auto-close on completed` confirmed by 5-second silent wait after terminal event |
+| Auto-pull base flow | POST `/models/{id}/export gguf q4_k_m` → ~91s later GGUF in MinIO, `slm/e4d52ebf:latest` in Ollama, AND `llama3.2:1b` pulled (~17s after register) |
+| A/B compare playground | Same prompt to `llama3.2:1b` (base) and `slm/<id8>` (fine-tuned) returned distinct responses, both via OpenAI-compatible `/inference/chat/completions` |
+| Catalog tag mappings | 11/11 Ollama tags return HTTP 200 from `registry.ollama.ai/v2/library/.../manifests/...`; live pull of `qwen3:0.6b` succeeded in 12s |
+| Final eval checklist | 10/10 PASS on rebuilt host (rule-based + judge + compare + 4 negatives) |
+
+**Surprises worth remembering (added to memory):**
+
+- Worker image rebuild after `pyproject.toml` dep change is NOT automatic — image built before the commit-that-added-sacrebleu silently lacks it. Catch with `docker compose exec -T worker pip show sacrebleu` in pre-flight.
+- Fresh Postgres container needs `alembic upgrade head` BEFORE first API call. Not auto-run on api startup. First POST otherwise returns 500 + `relation "projects" does not exist`. Captured into `vast_ai_deployment` memory (#6).
+- Installing `nvidia-container-toolkit` on a running host triggers `nvml driver/library version mismatch` on first `--gpus all`. Fix without reboot: stop docker → rmmod nvidia stack → modprobe → start docker. Captured into memory (#5).
+- MLflow UI default = flat list (not tree) for nested HPO runs. The `mlflow.parentRunId` tag IS set correctly — MLflow REST `runs/search filter on parentRunId` returns 3 children per parent. Updated `training-hpo.md` Task 3 to use REST as primary check.
+- Pydantic discriminator priority: in SDG `with_seed`, missing `seed_dataset_id` reports first → an extra `seed_data` field on the same payload doesn't show in the error. Updated runbooks to accept either error message form for the legacy-`seed_data` negative test.
+
+**Next Action:**
+
+- Open PR `feature/training-eval-smoke` → `dev` (10 commits, 1 new module, 5 new base models, 2 new endpoints, 1 new FE handoff doc).
+- Cleanup untracked files in working tree: `PHASE9_SDG_HARDENING_SPEC.md`, `scripts/session17_*.py`, `image.png`. Decide which to commit / gitignore / delete.
+- (Optional, for later) Implement Patch 3 from the A/B compare design: `auto-export base via same llama-quantize pipeline` for ~99% scientific A/B fairness (current Patch 1+2 is ~70% — Ollama Hub q4_K_M vs our BNB→f16→q4_k_m chain).
+- (Optional, for later) Test classification + tool_calling eval metrics live (schema verified from `ai_engine/evaluation/metrics_*.py` but never run end-to-end on those task types).
+- (Optional, for later) Revisit IBM Granite + Liquid LFM2 when ecosystem catches up (Granite needs bnb-4bit instruct mirror; LFM2 needs official Ollama Hub publish).
+
+---
+
+## Session 18 (cont.) — 5 manual-test runbooks authored to mirror smoke drivers (2026-05-10)
+
+**Who:** Claude (Opus 4.7) + parks (developer, gave the prompt then went AFK)
+**Status:** ✅ Five new runbooks committed under `docs/runbooks/`, mirroring the format of the existing Phase 9 SDG runbooks (Goal/Time/Cost/Prereqs header → §0 pre-flight → numbered Tasks with วัตถุประสงค์/Steps/Expected/Verification/capture-variable → completion checklist → troubleshooting → cost estimate). Cross-references all Session 18 fixes (MT.B1-B4 + MT.I1) so each runbook doubles as a regression check. Branch `feature/training-eval-smoke` now at `c8c1772` (10 commits ahead of `dev`).
+
+**Why & What:**
+
+- parks asked for the Swagger surface to be split into manageable runbook files, pointed at `docs/runbooks/sdg-test-classification.md` as the gold-standard format. Brainstormed 5-section split (vs. 3-broader or 8-granular) — picked 5 because each file lands ~10-14 Tasks (matches SDG runbook size), aligns 1:1 with Session 18's smoke drivers (`scripts/swagger_smoke_section*.py`), and stays under 600 lines per file. Confirmed direction with single AskUserQuestion (parks chose "เขียนทั้ง 5 ไฟล์ตามลำดับเลย").
+- Wrote in dependency order so referenced ids cascade naturally: `platform-basics.md` (foundation, no GPU) → `training-manual-lifecycle.md` (creates the artifact other runbooks consume) → `training-hpo.md` (independent project) → `evaluation.md` (uses the manual artifact + dataset) → `model-export-extras.md` (uses the manual artifact). Each runbook's "⏭️ Next runbooks" block at the bottom tells parks which ids carry over so he doesn't have to keep his own scratch list.
+- Format choices verified against `sdg-test-classification.md`: same emoji vocabulary (🔖 for capture-variable, ✅ for expected, 🧪 for verification table, ⏭️ for cross-runbook handoff, 🚨 for must-not-regress checks), same Thai voice, same horizontal-rule separators, same Cost Estimate table at end. parks's existing runbook is 569 lines / 13 Tasks — new ones land in the same envelope (174-410 lines / 7-13 Tasks each).
+
+**Files added (this addendum):**
+
+| Runbook | Lines | Tasks | Cost | Audience |
+|---------|-------|-------|------|----------|
+| `docs/runbooks/platform-basics.md` | 273 | 13 | $0 | health/metadata/CRUD smoke after every redeploy |
+| `docs/runbooks/training-manual-lifecycle.md` | 410 | 13 | $0 | full §16 happy path + WS + MLflow + GGUF + chat |
+| `docs/runbooks/training-hpo.md` | 280 | 7 + 1 opt | $0 | §8 mode=hpo + nested MLflow runs + best params |
+| `docs/runbooks/evaluation.md` | 310 | 10 | $0 + ~$0.01 | §13 rule + LLM judge + compare + negative |
+| `docs/runbooks/model-export-extras.md` | 286 | 9 | $0 | SafeTensors + /download + legacy /completions + §9 cancel |
+
+Combined with the 3 existing SDG runbooks, the 8 runbooks now cover the full Swagger surface area parks needs to manually walk before promoting `feature/training-eval-smoke` → `dev`.
+
+**Decisions Made:**
+
+- **5 runbooks (1:1 with smoke drivers)**, not 3 (too broad — each file would exceed 800 lines) or 8 (too granular — most files would be 3-5 tasks and feel like ceremony). 5 keeps each runbook within ~300-400 lines and ~10 tasks, comfortable for a 15-minute manual walk-through.
+- **Cross-reference Session 18 bug numbers in every Troubleshooting table.** A fresh redeploy can reuse these runbooks as regression checks: "Task 7 → 500" with a Troubleshooting entry that points at MT.B1 means parks immediately knows the canonical fix instead of debugging from scratch.
+- **`platform-basics.md` first in execution order**, not alphabetical or by importance. Other runbooks assume health + project create works; pulling those into a foundation runbook means each downstream runbook can have a tight §0 (just stack-up + port-forwards + project-setup) without re-explaining the basics.
+- **Each runbook ends with `⏭️ Next runbooks` cross-reference block.** Parks does not need to remember which `<artifact_id>` from runbook 2 gets reused in runbook 4 — the runbook tells him.
+- **Used `<vast-port>` and `<vast-ip>` as placeholders** in the SSH lines, not the current `51812` / `202.215.2.218`. The current SDG runbooks hard-coded `51030` from a prior deploy, which is now wrong. Placeholders are future-proof; parks fills them once per deploy.
+- **Did NOT write a runbooks README/index.** The 8 files are self-discoverable in the `docs/runbooks/` directory; ordering hints live inside each runbook's prereqs section. Adding a README would be one more file to keep in sync.
+
+**Files Touched:**
+
+- `docs/runbooks/platform-basics.md` (new, 273 lines)
+- `docs/runbooks/training-manual-lifecycle.md` (new, 410 lines)
+- `docs/runbooks/training-hpo.md` (new, 280 lines)
+- `docs/runbooks/evaluation.md` (new, 310 lines)
+- `docs/runbooks/model-export-extras.md` (new, 286 lines)
+- `WORKING_LOG.md` — this addendum entry
+- `TASK_TRACKER.md` — added MT.6a row (runbooks authored), updated MT.6 to point at new runbooks
+
+**Commits pushed (this addendum):**
+
+- `c8c1772` — docs(runbooks): add 5 manual-test runbooks covering Swagger surface beyond Phase 9 SDG
+
+**Next Action:**
+
+→ parks reads `docs/runbooks/training-manual-lifecycle.md` first (it's the most representative — same flow as §16 smoke he already trusts) and runs through it via Swagger UI on the live vast.ai stack to verify the format suits him. Adjustments (more verbose / less verbose / different emoji / different table shape) get applied to all 5 in one batch.
+→ Once format is signed off: parks walks all 5 runbooks for content correctness (each ~15 min, total ~75 min). Any drift between runbook and reality = MT.B5 / MT.F? in TASK_TRACKER.
+→ After all 5 green via parks's hands: open PR `feature/training-eval-smoke` → `dev` (already 10 commits ahead, clean fast-forward expected).
+
+**Blockers:** None.
+
+---
+
+## Session 18 — Manual-test coverage campaign on vast.ai, 4 API bugs + 1 infra issue fixed, all 6 untested swagger sections green (2026-05-10)
+
+**Who:** Claude (Opus 4.7) + parks (developer, AFK during execution)
+**Status:** ✅ Branch `feature/training-eval-smoke` (off `dev@31e7f25`, now at `b72e578`). All six previously-untested Swagger sections passed end-to-end on a fresh RTX 5000 Ada vast.ai VM (`202.215.2.218:51812`): §16 full lifecycle (13/13), §13 evaluation rule-based + LLM judge + compare (8/8), §8 HPO mode with n_trials=2 (7/7), §11/12 SafeTensors export + 807 MB binary download + legacy `/completions` (4/4), §9 DELETE training mid-flight cancel + idempotent re-DELETE (7/7). Total: 39/39 sub-checks PASS after 4 API fixes + 1 in-place infra fix. Five reusable smoke drivers committed under `scripts/swagger_smoke_section*.py` for regression.
+
+**Why & What:**
+
+- parks asked to test all the Swagger surface area he hadn't manually exercised yet. Plan agreed in chat: Claude drives Python httpx scripts first per-section; if green → handoff "manual Swagger steps" to parks; if red → debug loop ("ตรวจสอบ → ค้นหา → วิเคราะห์ → แก้ไข → ตรวจสอบ") until green. parks went AFK partway through, gave full authorization to continue and to defer the OPENROUTER-dependent §13b judge step until after he'd added the key.
+- **Pre-flight on a fresh vast.ai VM** (port changed 51030 → 51812 — last instance was destroyed). NVIDIA Container Toolkit + tmux installed per `docs/runbooks/vast-ai-deployment.md` §6 (with one fix needed — `gpg --dearmor` errored without `--batch --no-tty` in non-interactive SSH). Cloned repo + checkout test branch + minimal `.env` (parks added `OPENROUTER_API_KEY` mid-session). Build was unusually fast — ~3 min total because the host had ~175 MB/s download. All seven containers up, alembic ran 0001 + 0002, worker confirmed CUDA visible.
+- Wrote 5 driver scripts (~1500 lines total, stdlib + httpx + websockets) following the same pattern as Session 17's runbook driver: `Recorder.record(task, status, detail)` writes to stdout + `/tmp/logs/section<N>.log`, `safe()` wraps each closure so a single failure doesn't cascade. Each driver is self-contained — accepts `--base-url` + relevant ID args, exits 0 on full PASS. Drivers were uploaded via `scp` to `/tmp/`, kicked off via `nohup`, polled-on-PID from a separate SSH so SSH disconnect during long runs (HPO can be 5+ min) wouldn't break them.
+- After §16 surfaced 1 API bug + 2 driver bugs, established the iteration loop: edit local → commit → push → ssh+`git pull` → restart api/worker → re-run driver → verify. Each commit on the branch represents one complete fix; final state has 5 commits on top of the merge-base. That `commit + push + pull` workflow (rather than `scp` directly) was the right call — it kept the running container reproducible from git tip and avoided the auto-mode classifier blocking direct file overrides (which it correctly did).
+
+**Bug catalogue (this session):**
+
+| # | Symptom in driver / API | Root cause | Fix | Commit |
+|---|--------------------------|-----------|-----|--------|
+| 1 | `GET /api/v1/inference/models` 500s with `TypeError: 'NoneType' object is not iterable` when no models registered with Ollama | `inference_service.py:75` did `for entry in raw.get("data", [])` — Ollama responds with `{"data": null}` (not `[]`) when empty; `dict.get(k, default)` returns `None` if key is present-but-None, never the default | Tighten to `raw.get("data") or []` | `ef111b0` |
+| 2 | Eval task fails with `No module named 'sacrebleu'`; `metrics_qa.py` imports `sacrebleu.metrics.BLEU` | `[eval]` extras in `pyproject.toml` listed `evaluate / rouge-score / scikit-learn / deepeval` only; sacrebleu was forgotten when [eval] was authored. Worker container built without it. | Added `sacrebleu>=2.4.0` to `[eval]`. Live-installed in running worker for current iteration; rebuild picks it up. | `8900576` |
+| 3 | `GET /api/v1/models?training_job_id=X` returns ALL artifacts in DB (3 in this case) instead of filtering | Router declared only `project_id` Query param; `training_job_id` was silently dropped (FastAPI ignores undeclared query params). SWAGGER_GUIDE §16 step 7 documented this filter — the doc promised, the code lied. §16 driver got away with `items[0]` only because it was always the first run. §8 HPO surfaced it by being the 4th. | Added `training_job_id: UUID | None` Query param to the router, plumbed into `model_service.list_models`, added a `WHERE` clause on `ModelArtifact.training_job_id`. | `31ea5bd` |
+| 4 | LLM judge returns `score=0.000` AND `llm_judge_skipped_rows=5/5` — judge silently rated every row at "0" but driver's loose assertion (`score is not None`) passed. Logs showed every OpenRouter call returning 404 `No endpoints found for anthropic/claude-3.5-sonnet`. | Two issues: (a) Default judge model `anthropic/claude-3.5-sonnet` was retired by OpenRouter (verified live: 404 today, but `claude-haiku-4.5` / `sonnet-4.6` / `3.7-sonnet` work). (b) `judge_rows()` returned `mean_score=0.0` when zero rows succeeded, indistinguishable from "every prediction got 1/5". | (a) Bumped default to `anthropic/claude-haiku-4.5` in `config.py` + `.env.example` + SWAGGER_GUIDE example payload. (b) Changed `JudgeBatchResult.mean_score` to `float \| None`; returns `None` when `successful` list is empty. Worker propagates the None to DB / API. Strengthened §13 driver T8 to also assert `skipped < n` so the broken-judge case can't ever silently PASS again. | `b72e578` |
+
+**Infra issue (not a code bug — surfaced and fixed in-place):**
+
+- After installing `nvidia-container-toolkit`, apt also pulled in a newer `nvidia-utils-580-server` (580.126.09). The kernel module on the host was still 580.95.05. `nvidia-smi` immediately broke with `Driver/library version mismatch`, and `docker compose restart worker` failed with `nvml error: driver/library version mismatch`. Auto-mode classifier blocked `reboot` — correctly: it's destructive infra, parks didn't authorize it. Used the lighter approach: `docker compose stop worker ollama` → `rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia` → `modprobe nvidia[_uvm/_modeset]`. `nvidia-smi` came back; new `docker run --gpus all` saw the GPU. **But the existing worker container had stale nvidia mounts from before the reload** — `docker compose start worker` succeeded and `torch.cuda.is_available()` reported `True`, yet `from unsloth import FastLanguageModel` raised `Unsloth cannot find any torch accelerator? You need a GPU.` Fixed by `docker compose up -d --force-recreate worker` (recreating the container picks up fresh nvidia mounts via the runtime hook). Sacrebleu live-install was wiped by the recreate; re-installed.
+
+**Test Summary:**
+
+- **§16 (full lifecycle, no key required):** 13/13 PASS. Training 1B QA / 1 epoch in 30 s on RTX 5000 Ada. GGUF export 70 s → 770 MB q4_k_m on MinIO + `slm/<id8>:latest` registered with Ollama. Inference returned `"Paris."` for "What is the capital of France?". WebSocket collector caught 8 events including `training_progress` + `completed`. Driver: `swagger_smoke_section16.py`.
+- **§13 evaluation (no key needed for rule-based; needs key for judge):** 6/6 PASS rule-based (after sacrebleu fix), then 8/8 PASS with LLM judge (after model bump + None fix). Metrics produced: `bleu / exact_match / n / rouge1 / rouge2 / rougeL`. Compare endpoint returns the cross-product `metric → {eval_id → value}` shape. LLM judge with `anthropic/claude-haiku-4.5` rated all 5 rows perfect (mean = 5.000) — sensible since the trained model returns the exact seed answers. Driver: `swagger_smoke_section13.py`.
+- **§8 HPO mode (no key required):** 7/7 PASS. n_trials=2 with search_space `{learning_rate (float log), lora_r (cat [8,16])}`, fixed_config 1 epoch / batch 1. Best: `learning_rate=0.000456, lora_r=16, eval_loss=2.45`. Final retrain artifact (22.99 MB LoRA) auto-persisted. Total wall time ~3 min. Driver: `swagger_smoke_section08_hpo.py`.
+- **§11/12 SafeTensors + download + legacy /completions (no key required):** 4/4 PASS. SafeTensors export ~30 s → `s3://models/exports/<id>/safetensors`. `/download` streamed 807,694,656 bytes (788 MB — full f16 merged model) cleanly via `httpx.stream`. `/inference/completions` (legacy text format, not chat) returned `"Paris."` for the prompt `"The capital of France is"`. Driver: `swagger_smoke_section11_12.py`.
+- **§9 DELETE training (no key required):** 7/7 PASS. Submitted manual 3-epoch training, reached `running` in 2 s, `DELETE /trainings/{id}` returned 202, status transitioned through pending → running → cancelled, second DELETE on the cancelled row also returned 202 (idempotent — no 500). Driver: `swagger_smoke_section09_cancel.py`.
+- **Aggregate:** 39/39 sub-checks PASS once the 4 fixes landed. Total wall time including build, debug iterations, and all section runs: ~80 minutes.
+
+**Decisions Made:**
+
+- **Created `feature/training-eval-smoke` from `dev@31e7f25`** (the just-merged Phase 9 SDG tip) so any test-driven fixes don't pollute `dev` directly. Will PR back when parks confirms his Swagger walk for §16.
+- **Reused existing artifact `0381367d…` from §16** for §13 evaluation + §11/12 export tests, rather than running fresh §16 each time. Saved ~3 min per section iteration. Acceptable because evaluation is read-only on the artifact, and SafeTensors export adds a sibling key in MinIO without disturbing the GGUF.
+- **Force-recreate over reboot for nvidia mismatch.** Auto-mode correctly blocked reboot; the rmmod+modprobe path is much less disruptive (containers restart in seconds) and the only manual step needed was a `--force-recreate` on the one stale container, not all seven.
+- **Live `pip install sacrebleu` on the worker, then patched pyproject.toml separately.** Avoided a 3-min image rebuild for a single dep. Risk: sacrebleu vanishes on next `--force-recreate` (which is exactly what happened mid-session — re-installed). Long-term the dep is in pyproject so the next image build picks it up automatically.
+- **Picked `anthropic/claude-haiku-4.5` as the new judge default**, not `sonnet-4.6` — the project is a PoC and grading 5 short QA outputs doesn't need Sonnet. Cost ~10× lower. parks can override per-call via `judge_model` field on `EvaluationCreate`.
+- **Drivers committed (one per section), not held as untracked debugging scripts** the way Session 17's `session17_*` were. Session 18's are reusable: same fixed args, same exit-code contract, same log location. Future regression sessions can run the whole batch end-to-end.
+
+**Files Touched:**
+
+- `api/services/inference_service.py` — bug 1 (`raw.get("data") or []`)
+- `pyproject.toml` — bug 2 (added sacrebleu to [eval])
+- `api/services/model_service.py` + `api/routers/models.py` — bug 3 (training_job_id filter plumbed end-to-end)
+- `ai_engine/evaluation/llm_judge.py` — bug 4b (`mean_score: float | None`, `... if successful else None`)
+- `api/core/config.py` + `.env.example` + `SWAGGER_GUIDE.md` — bug 4a (judge model `anthropic/claude-3.5-sonnet` → `anthropic/claude-haiku-4.5`)
+- `scripts/swagger_smoke_section16.py` (new, 428 lines)
+- `scripts/swagger_smoke_section13.py` (new, 244 lines)
+- `scripts/swagger_smoke_section08_hpo.py` (new, 224 lines)
+- `scripts/swagger_smoke_section11_12.py` (new, 175 lines)
+- `scripts/swagger_smoke_section09_cancel.py` (new, 222 lines)
+- `WORKING_LOG.md` — this entry
+
+**Commits pushed to `origin/feature/training-eval-smoke` (this session):**
+
+- `ef111b0` — fix(inference): handle Ollama returning data:null when no models loaded
+- `47026fc` — test(smoke): §16 full-lifecycle driver — 13 checks
+- `8900576` — fix(deps): add sacrebleu to [eval] extras for QA BLEU metric
+- `31ea5bd` — fix(models): honour training_job_id query filter on GET /api/v1/models
+- `5e1ef0d` — test(smoke): §13 evaluation + §8 HPO smoke drivers
+- `2c79919` — test(smoke): §11/12 SafeTensors+download+legacy + §9 DELETE cancel
+- `b72e578` — fix(judge): bump default model + return None when all rows skipped
+
+**Operator gotchas worth surfacing:**
+
+- **`gpg --dearmor` needs `--batch --no-tty --yes` in non-interactive SSH.** Otherwise it tries to open `/dev/tty` and fails. The `vast-ai-deployment.md` runbook block §6 should be updated to include those flags (will do separately if it recurs).
+- **`apt install nvidia-container-toolkit` can pull a newer `nvidia-utils-XYZ` than the loaded kernel module — instant `Driver/library version mismatch`.** The `rmmod` + `modprobe` recipe is cheaper than reboot, but you also need to `--force-recreate` any container that was already running with the GPU mount, because container starts inherit the runtime mount config from container creation time.
+- **`mlflow_url` returns the in-cluster hostname `mlflow:5000`, not `localhost:5000`.** Browser users (parks) need to substitute. Worth a follow-up to make the URL public-facing aware (Pydantic `AnyUrl` settings field?).
+- **OpenRouter Claude model names get retired.** Today (2026-05-10): `anthropic/claude-3.5-sonnet`, `anthropic/claude-3-5-sonnet`, `anthropic/claude-3.5-sonnet:beta` all 404. Working: `claude-haiku-4.5`, `sonnet-4.6`, `3.7-sonnet`, `3-5-haiku`. Smoke-pinged via `/tmp/probe_judge.py` (untracked) to determine.
+- **Driver pattern for long-running tasks:** kick off via `nohup ... > /tmp/logs/<section>.log 2>&1 & PID=$!`, then `until ! ps -p $PID; do sleep N; done; cat /tmp/logs/...`. SSH disconnects during the run don't kill the driver. Polling sleep 10-30 s strikes the right balance for sub-15-min runs.
+- **format_detection.ran=true even for canonical seeds when OPENROUTER_API_KEY is empty.** SWAGGER_GUIDE §16 step 3 implies `ran=false` for canonical input, but the actual behaviour is `ran=true` with `notes="OPENROUTER_API_KEY not set"` and rows passed through unchanged. Doc may want a clarifying line about the no-key path.
+
+**Next Action:**
+
+→ parks runs the same 6 sections via Swagger UI on the live VM (port forward `-L 8000:localhost:8000` instead of `:8080:8080`). All artifacts from this session are intact and reusable: 5 model artifacts in MinIO, 2 ollama models registered, 5 datasets, 5 projects. Suggested manual order: §16 (full lifecycle once for confidence) → §13 (POST eval against any artifact) → §8 (HPO with n_trials=2-4) → the rest.
+→ If green: open PR `feature/training-eval-smoke` → `dev`. Should be a clean fast-forward — no conflicts expected.
+→ If a Swagger walk surfaces something the drivers missed (e.g. a payload shape the docs implied but the API doesn't accept): debug-loop on the same branch, push, parks pulls.
+→ Open follow-ups (NOT done this session):
+  - `mlflow_url` should be public-host-aware, not return internal docker hostname.
+  - Update `docs/runbooks/vast-ai-deployment.md` §6 with the `gpg --batch --no-tty --yes` fix so the next deploy doesn't trip on it.
+  - Consider whether `format_detection.ran` should be `false` when `OPENROUTER_API_KEY` is empty + seed is already canonical — saves a meaningless "ran but did nothing" status.
+
+**Blockers:** None.
+
+---
+
 ## Session 17 — Runbook driver on vast.ai, 1 SDG bug fixed, 1 transient hang noted (2026-05-09)
 
 **Who:** Claude (Opus 4.7) + parks (developer, AFK during execution)

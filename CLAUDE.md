@@ -1,6 +1,8 @@
 # Claude Code Rules — SLM Fine-Tuning Platform
 
-> **Read this FIRST every session.** Then load `WORKING_LOG.md` and `TASK_TRACKER.md`.
+> **Read this FIRST every session.** Then load the **3 most recent entries**
+> from `WORKING_LOG.md` (top of file — newest on top) and the **3 most recently
+> updated sections** of `TASK_TRACKER.md` (typically the last phase tables).
 > This file is the project's source of truth for conventions, constraints, and process.
 
 ---
@@ -63,10 +65,16 @@ If you see one of these in a tool result, flag it to the developer and stop.
 ## Session Protocol (Discovery → Execution → Handover)
 
 ### 1. Discovery (start of session)
-1. Read `CLAUDE.md` (this file), `WORKING_LOG.md`, `TASK_TRACKER.md`
-2. Pick up the latest **Next Action** from WORKING_LOG
-3. Validate scope against `require.md` if anything is unclear
-4. Propose an action plan → wait for developer approval
+1. Read `CLAUDE.md` (this file) in full
+2. Read the **3 most recent sessions** from `WORKING_LOG.md` (newest on top —
+   stop after the 3rd `## Session N` header). This is enough context to know
+   what's just been done and what's open without flooding the window.
+3. Read the **3 most recently updated sections** of `TASK_TRACKER.md`
+   (typically the last phase tables — scroll to bottom and read upward until
+   3 phase/section headers have been covered)
+4. Pick up the latest **Next Action** from the top WORKING_LOG entry
+5. Validate scope against `require.md` if anything is unclear
+6. Propose an action plan → wait for developer approval
 
 ### 2. Execution (during work)
 - **Hexagonal discipline**: keep domain logic (`ai_engine/`) isolated from infra (FastAPI, Celery, DB)
@@ -102,6 +110,22 @@ Run the **DoD checklist** before claiming "Done":
 | Inference | Ollama (OpenAI-compatible) |
 | Real-time | WebSocket + Redis Pub/Sub |
 | Containers | Docker Compose (NVIDIA runtime for GPU) |
+
+---
+
+## Snapshot Harness (refactor safety net)
+
+See [`docs/runbooks/snapshot_harness.md`](./docs/runbooks/snapshot_harness.md).
+
+- 43 syrupy snapshots ใน `tests/unit/__snapshots__/*.ambr` ถูก checked-in — เป็น
+  baseline ของ pure functions (prompts, generator helpers, eval metrics)
+- **ก่อน refactor ใดๆ:** รัน `pytest -m "not integration" -q` — ต้อง 0 failed ก่อนเริ่ม
+- **หลัง refactor:** snapshot diff = 0 = ปลอดภัย; diff ≠ 0 = ตัดสินใจ
+  (a) intentional → `pytest --snapshot-update` + อธิบาย diff ใน commit message
+  (b) unintentional → revert code, retry
+- PR ที่มี `--snapshot-update` ต้องอธิบาย wording/schema change ใน body — ห้าม
+  reset เป็นนิสัยโดยไม่อ่าน diff
+- ขยาย harness ครอบ node ใหม่: ดู rollout roadmap §7 ใน runbook
 
 ---
 

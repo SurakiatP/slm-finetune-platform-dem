@@ -251,7 +251,7 @@ class UnslothTrainer:
         # ---- 4. SFTConfig ------------------------------------------------------
         # SFTConfig (TRL >=0.13) extends TrainingArguments and absorbs the
         # SFT-specific knobs (`max_length`, `packing`, `dataset_text_field`).
-        sft_config = SFTConfig(
+        sft_kwargs: dict[str, Any] = dict(
             output_dir=self.output_dir,
             per_device_train_batch_size=self.config.per_device_train_batch_size,
             gradient_accumulation_steps=self.config.gradient_accumulation_steps,
@@ -264,16 +264,21 @@ class UnslothTrainer:
             logging_steps=1,
             save_strategy="no",                  # Worker handles persistence to MinIO.
             eval_strategy="epoch" if eval_ds is not None else "no",
-            optim="adamw_8bit",
+            optim=self.config.optim,
             bf16=_supports_bf16(),
             fp16=not _supports_bf16(),
             report_to=[],                        # MLflow is wired via callback, not HF integration.
             disable_tqdm=True,                   # Progress streams via callback.
             dataset_text_field="text",
             max_length=self.config.max_seq_length,
-            packing=False,
+            packing=self.config.packing,
             eos_token=eos_token,
         )
+        # NEFTune is opt-in — passing 0/None to SFTConfig still enables the
+        # wrapper, so only set the kwarg when the user actually wants noise.
+        if self.config.neftune_noise_alpha is not None:
+            sft_kwargs["neftune_noise_alpha"] = self.config.neftune_noise_alpha
+        sft_config = SFTConfig(**sft_kwargs)
 
         # ---- 5. SFT trainer ----------------------------------------------------
         # TRL >=0.12 renamed `tokenizer=` to `processing_class=` (hard-removed

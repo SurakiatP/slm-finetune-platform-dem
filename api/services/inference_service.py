@@ -72,7 +72,7 @@ async def list_models() -> ModelDescriptorList:
     """List models known to the local Ollama daemon (OpenAI shape)."""
     raw = await _get_json("/v1/models")
     items = []
-    for entry in raw.get("data", []):
+    for entry in raw.get("data") or []:
         items.append(
             ModelDescriptor(
                 id=entry["id"],

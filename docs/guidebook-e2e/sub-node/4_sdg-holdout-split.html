@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>Node 4 — SDG + Holdout Split (MINHASH)</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; max-width: 920px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #2563eb; padding-bottom: 8px; }
+  h2 { color: #1e40af; margin-top: 28px; border-left: 4px solid #2563eb; padding-left: 10px; }
+  h3 { color: #374151; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.85em; font-weight: 600; margin-right: 6px; }
+  .badge-post { background: #16a34a; color: white; }
+  .badge-ws { background: #7c3aed; color: white; }
+  .badge-async { background: #ea580c; color: white; }
+  .path { font-family: "JetBrains Mono", Consolas, monospace; background: #f3f4f6; padding: 4px 8px; border-radius: 4px; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }
+  code { font-family: "JetBrains Mono", Consolas, monospace; }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  :not(pre) > code { background: #fef3c7; padding: 2px 6px; border-radius: 3px; font-size: 0.92em; color: #92400e; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; }
+  .nav { display: flex; justify-content: space-between; margin: 30px 0 10px; padding: 12px; background: #f9fafb; border-radius: 8px; }
+  .nav a { color: #2563eb; text-decoration: none; font-weight: 500; }
+  .nav a:hover { text-decoration: underline; }
+  .callout { background: #eff6ff; border-left: 4px solid #2563eb; padding: 10px 14px; margin: 14px 0; border-radius: 4px; }
+  .callout.warn { background: #fef3c7; border-left-color: #f59e0b; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="3a_add-seed-data.html">← Node 3a/3b</a>
+  <a href="../guide101.md">Index</a>
+  <a href="5_verify-dataset.html">ถัดไป: Node 5 →</a>
+</div>
+
+<h1>Node 4 — SDG + Holdout Split (MINHASH)</h1>
+
+<p>
+  <span class="badge badge-post">POST</span>
+  <span class="badge badge-async">ASYNC 202</span>
+  <span class="path">/api/v1/datasets/generate</span>
+  <br>
+  <span class="badge badge-ws">WS</span>
+  <span class="path">/ws/jobs/{job_id}</span>
+</p>
+
+<h2>วัตถุประสงค์</h2>
+<p>Trigger Synthetic Data Generation แบบ <code>with_seed</code> (อ้าง dataset ที่ upload จาก Node 3a) + ทำ <strong>holdout split</strong> เพื่อ generate เพิ่มสำหรับใช้ evaluate (รัน MinHashLSH dedup ตลอดทาง).</p>
+
+<h2>Pipeline ภายใน worker</h2>
+<ol>
+  <li><strong>Meta-prompting</strong> — LLM สร้าง diversity hints จาก task_description</li>
+  <li><strong>Generating</strong> — call OpenRouter (async batched, <code>chat_batch</code>) จนได้ <code>num_samples + holdout_size</code> rows</li>
+  <li><strong>Validating</strong> — Pydantic + per-task validators (closed-label, tool-name, JSON-decode)</li>
+  <li><strong>Deduplicating</strong> — MinHashLSH near-dup removal + seed-aware</li>
+  <li><strong>Judging</strong> — LLM-as-judge 1-5 (weighted 0.4/0.3/0.3) — reject score &lt; 3</li>
+  <li><strong>Holdout split</strong> — stratified (cls / tool) หรือ random (qa) — สร้าง child Dataset</li>
+  <li><strong>Persisting</strong> — JSONL ขึ้น MinIO + DB rows update</li>
+</ol>
+
+<h2>Prerequisite</h2>
+<ul>
+  <li>มี <code>project_id</code> + <code>seed_dataset_id</code> (จาก Node 3a) — ถ้ามาจาก Node 3b (description_only) ก็ข้าม seed_dataset_id ได้</li>
+</ul>
+
+<div class="callout">
+  ตัวอย่างด้านล่างใช้ <strong>domain เดียวกัน</strong>กับ <code>seed_data/</code> — <code>task_description</code> ต้องสอดคล้องกับเนื้อหา seed file ที่ upload ที่ Node 3a
+</div>
+
+<div class="callout warn">
+  <strong>กฎสำคัญสำหรับ <code>with_seed</code>:</strong> <em>ห้าม</em>ใส่ <code>classification_config</code> หรือ <code>tool_calling_config</code> — schema มี <code>extra="forbid"</code> จะ 422 <code>"Extra inputs are not permitted"</code>. <br>
+  เหตุผล: labels / tool_definitions ถูก <strong>infer จาก seed dataset rows อัตโนมัติ</strong> — ส่งซ้ำไม่ได้
+</div>
+
+<h2>Request — With Seed (Classification — Thai support)</h2>
+<pre><code>{
+  "sdg_mode": "with_seed",
+  "project_id": "&lt;uuid จาก Node 1&gt;",
+  "task_type": "classification",
+  "task_description": "Classify Thai customer support tickets into 3 categories: ปัญหาการเงิน (financial), ปัญหาเทคนิค (technical), or คำถามทั่วไป (general).",
+  "num_samples": 100,
+  "temperature": 0.8,
+  "dataset_name": "cls-sdg-1",
+  "seed_dataset_id": "&lt;uuid จาก Node 3a cls&gt;",
+  "holdout_size": 20
+}</code></pre>
+
+<h2>Request — With Seed (Tool Calling — Smart home)</h2>
+<pre><code>{
+  "sdg_mode": "with_seed",
+  "project_id": "&lt;uuid จาก Node 1&gt;",
+  "task_type": "tool_calling",
+  "task_description": "Smart home assistant; map English user commands to JSON tool calls. Tools: set_oven, start_timer, set_volume, play_music, light_on.",
+  "num_samples": 100,
+  "temperature": 0.8,
+  "dataset_name": "tool-sdg-1",
+  "seed_dataset_id": "&lt;uuid จาก Node 3a tool&gt;",
+  "holdout_size": 20
+}</code></pre>
+
+<h2>Request — With Seed (QA — Thai return policy)</h2>
+<pre><code>{
+  "sdg_mode": "with_seed",
+  "project_id": "&lt;uuid จาก Node 1&gt;",
+  "task_type": "qa",
+  "task_description": "ตอบคำถามเกี่ยวกับนโยบายคืนสินค้าและขั้นตอนคืนเงินของร้านค้าออนไลน์ ครอบคลุมระยะเวลาคืน เงื่อนไข ค่าจัดส่งคืน",
+  "num_samples": 100,
+  "temperature": 0.8,
+  "dataset_name": "qa-sdg-1",
+  "seed_dataset_id": "&lt;uuid จาก Node 3a qa&gt;",
+  "holdout_size": 20
+}</code></pre>
+
+<h2>เปรียบเทียบ field กับ Node 3b (description_only)</h2>
+<table>
+<tr><th>Field</th><th><code>with_seed</code> (Node 4)</th><th><code>description_only</code> (Node 3b)</th></tr>
+<tr><td><code>seed_dataset_id</code></td><td>✅ required</td><td>❌ ห้าม</td></tr>
+<tr><td><code>classification_config.labels</code></td><td>❌ ห้าม (infer จาก seed)</td><td>✅ required (สำหรับ cls)</td></tr>
+<tr><td><code>tool_calling_config.tool_definitions</code></td><td>❌ ห้าม (infer จาก seed)</td><td>✅ required (สำหรับ tool)</td></tr>
+<tr><td><code>task_description</code></td><td>✅ required</td><td>✅ required</td></tr>
+</table>
+
+<div class="callout warn">
+  <strong>กฎเพิ่มเติม:</strong> <code>seed_dataset_id</code> ต้องมาจาก dataset ที่ <code>source=seed</code> เท่านั้น (Node 3a) — ใช้ output ของ SDG (Node 4) เป็น seed ไม่ได้ → จะได้ 400 <code>"Dataset has source=sdg; with_seed requires upload-seed"</code>
+</div>
+
+<h2>Response 202</h2>
+<pre><code>{
+  "dataset_id": "&lt;parent_dataset_uuid&gt;",
+  "job_id": "&lt;celery_task_uuid&gt;",
+  "status": "pending",
+  "websocket_url": "/ws/jobs/&lt;celery_task_uuid&gt;"
+}</code></pre>
+
+<h2>Subscribe WebSocket (real-time progress)</h2>
+<p>เปิดอีก tab Swagger ไม่ได้ — ใช้ browser console:</p>
+<pre><code>const ws = new WebSocket("ws://localhost:8000/ws/jobs/&lt;job_id&gt;");
+ws.onmessage = (e) =&gt; {
+  const msg = JSON.parse(e.data);
+  console.log(msg.type, msg);
+  if (msg.type === "completed" || msg.type === "failed") ws.close();
+};</code></pre>
+
+<h3>Events ที่จะเห็น</h3>
+<table>
+<tr><th>Event</th><th>Phase ที่เป็นไปได้</th></tr>
+<tr><td><code>sdg_progress</code> × N</td><td><code>meta_prompting</code> → <code>generating</code> → <code>validating</code> → <code>judging</code> → <code>dedup</code> → <code>persisting</code></td></tr>
+<tr><td><code>completed</code> (1 ครั้งสุดท้าย)</td><td>มี <code>result.holdout_dataset_id</code> ถ้า <code>holdout_size &gt; 0</code></td></tr>
+<tr><td><code>failed</code></td><td>error_type + error message</td></tr>
+</table>
+
+<h3>Sample <code>completed</code> event</h3>
+<pre><code>{
+  "type": "completed",
+  "job_id": "...",
+  "result": {
+    "samples_generated": 30,
+    "rejected_count": 2,
+    "duplicate_count": 1,
+    "judge_rejected_count": 3,
+    "judge_parse_failures": 0,
+    "api_calls": 38,
+    "storage_uri": "s3://datasets/sdg/&lt;parent_id&gt;.jsonl",
+    "size_bytes": 8123,
+    "holdout_samples": 20,
+    "holdout_dataset_id": "&lt;child_uuid&gt;",
+    "holdout_storage_uri": "s3://datasets/holdout/&lt;child_id&gt;.jsonl"
+  },
+  "dataset_id": "&lt;parent_uuid&gt;"
+}</code></pre>
+
+<div class="callout">
+  <strong>เก็บค่าไว้ทั้ง 2:</strong>
+  <ul>
+    <li><code>train_dataset_id</code> = <code>dataset_id</code> (parent) → ใช้ <em>train</em> ใน Node 6</li>
+    <li><code>holdout_dataset_id</code> = <code>result.holdout_dataset_id</code> (child) → ใช้ <em>evaluate</em> ใน Node 9</li>
+  </ul>
+</div>
+
+<h2>Error cases</h2>
+<table>
+<tr><th>Status</th><th>Detail</th></tr>
+<tr><td>400</td><td><code>seed dataset task_type is qa but request asks for classification</code> — cross-task seed</td></tr>
+<tr><td>400</td><td><code>Dataset ... has source=sdg; with_seed requires a dataset uploaded via /datasets/upload-seed</code></td></tr>
+<tr><td>422</td><td><code>body.with_seed.seed_dataset_id: Field required</code></td></tr>
+<tr><td>WS <code>failed</code></td><td><code>SDGAbortedError</code> — เกินรอบที่ generate 0 rows ติดกัน (เช่น sentinel routing bug, judge reject 100%)</td></tr>
+</table>
+
+<div class="callout warn">
+  <strong>Tip:</strong> ถ้า <code>holdout_size &gt; 0</code> และต้องการ leak-free eval — <strong>ห้าม</strong> ใช้ parent_dataset เป็น eval input. ใช้ <code>holdout_dataset_id</code> เท่านั้น
+</div>
+
+<div class="nav">
+  <a href="3a_add-seed-data.html">← Node 3a/3b</a>
+  <a href="../guide101.md">Index</a>
+  <a href="5_verify-dataset.html">ถัดไป: Node 5 →</a>
+</div>
+
+</body>
+</html>

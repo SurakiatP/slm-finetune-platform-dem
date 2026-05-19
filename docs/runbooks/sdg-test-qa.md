@@ -42,17 +42,19 @@ file:        seed_data/qa/qa_canonical.jsonl
 
 ### ✅ Expected (201)
 
+> **Note:** `num_samples` reflects the **actual rows in the seed file**. Shipped `qa_canonical.jsonl` has **40 rows** (verified 2026-05-10).
+
 ```json
 {
   "dataset_id": "...",
   "task_type": "qa",
-  "num_samples": 8,
+  "num_samples": 40,
   "invalid_rows": [],
   "format_detection": {
     "ran": false,
     "field_mapping": {},
-    "rows_total": 8,
-    "rows_canonicalised": 8,
+    "rows_total": 40,
+    "rows_canonicalised": 40,
     "rows_dropped": 0,
     "notes": "already canonical — Format Detection skipped"
   },
@@ -88,7 +90,7 @@ file:        seed_data/qa/qa_mismatched.jsonl
 {
   "dataset_id": "...",
   "task_type": "qa",
-  "num_samples": 8,
+  "num_samples": 40,
   "format_detection": {
     "ran": true,
     "model_used": "google/gemini-2.5-flash-lite",
@@ -96,8 +98,8 @@ file:        seed_data/qa/qa_mismatched.jsonl
       "prompt": "question",
       "response": "answer"
     },
-    "rows_total": 8,
-    "rows_canonicalised": 8,
+    "rows_total": 40,
+    "rows_canonicalised": 40,
     "rows_dropped": 0
   }
 }
@@ -340,8 +342,10 @@ POST /api/v1/datasets/generate
 ### ✅ Final state
 
 ใน metadata ดู:
-- `api_calls` > 10 (1 PDF + N Generator + N Judge + 1 Meta)
-- `judge_rejected_count` >= 0
+- `api_calls` >= 1
+  - **Common:** ถ้า PDF first-pass call เดียวคืน Q&A pairs ครบ `num_samples` แล้ว worker จะ short-circuit ไม่รัน Generator/Judge loop ต่อ → `api_calls = 1` (verified 2026-05-10 with 10-page paper, num_samples=10 → 10 pairs from one Gemini multimodal call)
+  - **Otherwise:** `api_calls > 10` (1 PDF + N Generator + N Judge + 1 Meta) เมื่อ first-pass ไม่ครบ target
+- `judge_rejected_count` >= 0 (= 0 เมื่อ short-circuit)
 
 ### 🧪 Quality verification
 

@@ -45,6 +45,15 @@ class BaseModelInfo(BaseModel):
     quantization: str = "bnb-4bit"
     license: str | None = None
     notes: str | None = None
+    ollama_tag: str | None = Field(
+        default=None,
+        description=(
+            "Ollama-Hub tag of the same instruct weights (e.g. 'llama3.2:1b'). "
+            "Frontend can use this with `/inference/chat/completions` to A/B "
+            "compare a fine-tuned artifact against its base in the playground. "
+            "`None` if no Ollama-Hub equivalent is mapped for this base."
+        ),
+    )
 
 
 __all__ = ["TaskTypeInfo", "BaseModelInfo"]

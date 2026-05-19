@@ -1,0 +1,140 @@
+# serializer version: 1
+# name: test_compute_classification_quota[100_4cls]
+  dict({
+    'a': 30,
+    'b': 30,
+    'c': 30,
+    'unknown': 10,
+  })
+# ---
+# name: test_compute_classification_quota[10_2cls]
+  dict({
+    'a': 9,
+    'unknown': 1,
+  })
+# ---
+# name: test_compute_classification_quota[20_sentinel_only]
+  dict({
+    'unknown': 20,
+  })
+# ---
+# name: test_compute_classification_quota[47_4cls_uneven]
+  dict({
+    'a': 14,
+    'b': 14,
+    'c': 14,
+    'unknown': 5,
+  })
+# ---
+# name: test_compute_classification_quota[50_no_sentinel]
+  dict({
+    'a': 25,
+    'b': 25,
+  })
+# ---
+# name: test_compute_tool_quota[100_4tools]
+  dict({
+    'light_on': 30,
+    'no_tool_needed': 10,
+    'play_music': 30,
+    'set_volume': 30,
+  })
+# ---
+# name: test_compute_tool_quota[11_2tools]
+  dict({
+    'no_tool_needed': 2,
+    'set_volume': 9,
+  })
+# ---
+# name: test_compute_tool_quota[30_sentinel_only]
+  dict({
+    'no_tool_needed': 30,
+  })
+# ---
+# name: test_compute_tool_quota[33_3tools]
+  dict({
+    'no_tool_needed': 4,
+    'play_music': 15,
+    'set_volume': 15,
+  })
+# ---
+# name: test_compute_tool_quota[50_no_sentinel]
+  dict({
+    'play_music': 25,
+    'set_volume': 25,
+  })
+# ---
+# name: test_group_by_classification_rows
+  dict({
+    'คำถามทั่วไป': list([
+      dict({
+        'label': 'คำถามทั่วไป',
+        'text': 'เปลี่ยน address',
+      }),
+    ]),
+    'ปัญหาการเงิน': list([
+      dict({
+        'label': 'ปัญหาการเงิน',
+        'text': 'ขอคืนเงิน',
+      }),
+    ]),
+    'ปัญหาเทคนิค': list([
+      dict({
+        'label': 'ปัญหาเทคนิค',
+        'text': 'wifi เน่า',
+      }),
+      dict({
+        'label': 'ปัญหาเทคนิค',
+        'text': 'vpn ใช้ไม่ได้',
+      }),
+    ]),
+  })
+# ---
+# name: test_group_by_drops_blank_keys
+  dict({
+    'real': list([
+      dict({
+        'label': 'real',
+        'text': 'c',
+      }),
+    ]),
+  })
+# ---
+# name: test_group_tool_examples_normal
+  dict({
+    'play_music': list([
+      dict({
+        'answer': '{"name":"play_music","parameters":{"track":"X"}}',
+        'question': 'เปิดเพลง',
+      }),
+    ]),
+    'set_volume': list([
+      dict({
+        'answer': '{"name":"set_volume","parameters":{"level":80}}',
+        'question': 'เพิ่มเสียง',
+      }),
+      dict({
+        'answer': '{"name":"set_volume","parameters":{"level":20}}',
+        'question': 'ลดเสียงหน่อย',
+      }),
+    ]),
+  })
+# ---
+# name: test_group_tool_examples_skips_bad_json
+  dict({
+    'set_volume': list([
+      dict({
+        'answer': '{"name":"set_volume","parameters":{}}',
+        'question': 'ok',
+      }),
+    ]),
+  })
+# ---
+# name: test_make_sentinel_tool_def
+  dict({
+    'description': "Use this when the user's request does not match any available tool (off-topic small talk, ambiguous queries, or requests outside the catalog). Returns no parameters; the orchestrator handles the response.",
+    'name': 'no_tool_needed',
+    'parameters': dict({
+    }),
+  })
+# ---

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>Node 5 — Verify Generated Dataset</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; max-width: 920px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #2563eb; padding-bottom: 8px; }
+  h2 { color: #1e40af; margin-top: 28px; border-left: 4px solid #2563eb; padding-left: 10px; }
+  h3 { color: #374151; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.85em; font-weight: 600; margin-right: 6px; }
+  .badge-get { background: #2563eb; color: white; }
+  .path { font-family: "JetBrains Mono", Consolas, monospace; background: #f3f4f6; padding: 4px 8px; border-radius: 4px; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }
+  code { font-family: "JetBrains Mono", Consolas, monospace; }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  :not(pre) > code { background: #fef3c7; padding: 2px 6px; border-radius: 3px; font-size: 0.92em; color: #92400e; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; }
+  .nav { display: flex; justify-content: space-between; margin: 30px 0 10px; padding: 12px; background: #f9fafb; border-radius: 8px; }
+  .nav a { color: #2563eb; text-decoration: none; font-weight: 500; }
+  .nav a:hover { text-decoration: underline; }
+  .callout { background: #eff6ff; border-left: 4px solid #2563eb; padding: 10px 14px; margin: 14px 0; border-radius: 4px; }
+  .callout.warn { background: #fef3c7; border-left-color: #f59e0b; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="4_sdg-holdout-split.html">← Node 4</a>
+  <a href="../guide101.md">Index</a>
+  <a href="6_training.html">ถัดไป: Node 6 →</a>
+</div>
+
+<h1>Node 5 — Verify Generated Dataset</h1>
+
+<p>
+  <span class="badge badge-get">GET</span>
+  <span class="path">/api/v1/datasets/{id}</span>
+  &nbsp; · &nbsp;
+  <span class="badge badge-get">GET</span>
+  <span class="path">/api/v1/datasets/{id}/preview</span>
+  &nbsp; · &nbsp;
+  <span class="badge badge-get">GET</span>
+  <span class="path">/api/v1/datasets?project_id={id}</span>
+</p>
+
+<h2>วัตถุประสงค์</h2>
+<p>ก่อนเริ่มเทรนต้อง verify ว่า dataset ที่ generate ออกมา (ทั้ง parent + holdout) มี:</p>
+<ul>
+  <li>จำนวน rows ตามที่ขอ</li>
+  <li>content / schema ถูกต้อง</li>
+  <li>parent ↔ child relationship ถูกต้อง (สำหรับ holdout flow)</li>
+  <li><code>generation_metadata</code> รายงาน reject/dup count ที่ยอมรับได้</li>
+</ul>
+
+<h2>ขั้นตอนใน Swagger</h2>
+
+<h3>5.1 ดู dataset detail (parent)</h3>
+<ol>
+  <li><code>GET /api/v1/datasets/{train_dataset_id}</code> — ใส่ id จาก Node 4</li>
+  <li>กด Execute</li>
+  <li>ตรวจ <code>num_samples</code>, <code>source</code>, <code>generation_metadata</code></li>
+</ol>
+
+<pre><code>{
+  "id": "&lt;parent_uuid&gt;",
+  "project_id": "&lt;uuid&gt;",
+  "name": "qa-sdg-1",
+  "task_type": "qa",
+  "source": "sdg",
+  "num_samples": 30,
+  "storage_uri": "s3://datasets/sdg/&lt;id&gt;.jsonl",
+  "size_bytes": 8123,
+  "parent_dataset_id": null,
+  "generation_metadata": {
+    "sdg_mode": "with_seed",
+    "api_calls": 38,
+    "rejected_count": 2,
+    "duplicate_count": 1,
+    "judge_rejected_count": 3,
+    "judge_parse_failures": 0,
+    "seed_dataset_id": "&lt;uuid&gt;",
+    "task_description": "...",
+    "requested_samples": 30,
+    "submitted_at": "...",
+    "completed_at": "..."
+  },
+  "created_at": "...",
+  "updated_at": "..."
+}</code></pre>
+
+<h3>5.2 ดู holdout child</h3>
+<ol>
+  <li><code>GET /api/v1/datasets/{holdout_dataset_id}</code></li>
+  <li>ตรวจว่า <code>parent_dataset_id</code> = <code>train_dataset_id</code></li>
+</ol>
+
+<h3>5.3 List datasets ทั้งหมดใน project</h3>
+<pre><code>GET /api/v1/datasets?project_id=&lt;uuid&gt;&amp;limit=20</code></pre>
+<p>ควรเห็น 3 rows:</p>
+<ul>
+  <li>seed (Node 3a)</li>
+  <li>parent (Node 4) — <code>parent_dataset_id=null</code></li>
+  <li>holdout (Node 4) — <code>parent_dataset_id=&lt;parent&gt;</code></li>
+</ul>
+
+<h3>5.4 Preview rows จริง</h3>
+<pre><code>GET /api/v1/datasets/{train_dataset_id}/preview?limit=10</code></pre>
+
+<p><strong>Response — <code>samples</code> ไม่ใช่ <code>items</code></strong></p>
+
+<h4>QA (Thai return policy)</h4>
+<pre><code>{
+  "dataset_id": "...",
+  "task_type": "qa",
+  "samples": [
+    { "question": "ระยะเวลาในการคืนสินค้าเท่าไรคะ?",
+      "answer": "ลูกค้าสามารถคืนสินค้าได้ภายใน 30 วันนับจากวันที่ซื้อ..." },
+    { "question": "ต้องเก็บใบเสร็จไว้ไหมเพื่อใช้คืนสินค้า?",
+      "answer": "ใช่ค่ะ กรุณาเก็บใบเสร็จหรือหลักฐานการสั่งซื้อไว้..." }
+  ],
+  "total": 30
+}</code></pre>
+
+<h4>Classification (Thai support)</h4>
+<pre><code>{
+  "dataset_id": "...",
+  "task_type": "classification",
+  "samples": [
+    { "text": "ฉันโอนเงินไปแล้วเมื่อวานแต่ระบบยังไม่อัปเดตยอด...", "label": "ปัญหาการเงิน" },
+    { "text": "ลืมรหัสผ่าน กดลิงก์รีเซ็ตแล้วไม่ได้รับอีเมล", "label": "ปัญหาเทคนิค" }
+  ],
+  "total": 30
+}</code></pre>
+
+<h4>Tool Calling (Smart home)</h4>
+<pre><code>{
+  "dataset_id": "...",
+  "task_type": "tool_calling",
+  "samples": [
+    { "question": "Set the oven to 200 degrees Celsius please",
+      "answer": "{\"name\":\"set_oven\",\"parameters\":{\"celsius\":200}}" },
+    { "question": "Turn on the kitchen lights",
+      "answer": "{\"name\":\"light_on\",\"parameters\":{\"room\":\"kitchen\"}}" }
+  ],
+  "total": 30
+}</code></pre>
+
+<h3>5.5 (Optional) Download JSONL ทั้งไฟล์</h3>
+<pre><code>GET /api/v1/datasets/{id}/download
+Content-Type: application/x-ndjson</code></pre>
+
+<h2>Checklist ก่อนไป Node 6</h2>
+<table>
+<tr><th>เช็ค</th><th>ค่าที่คาดหวัง</th></tr>
+<tr><td><code>num_samples</code> (parent)</td><td>≈ <code>num_samples</code> ใน request</td></tr>
+<tr><td><code>num_samples</code> (holdout child)</td><td>≈ <code>holdout_size</code> ใน request</td></tr>
+<tr><td><code>parent_dataset_id</code> (child)</td><td>= parent id</td></tr>
+<tr><td><code>judge_rejected_count</code></td><td>&lt; 30% ของ requested (ถ้าเกิน — task description กว้างไป)</td></tr>
+<tr><td>Preview content</td><td>ตรง task + อ่านได้</td></tr>
+</table>
+
+<div class="callout warn">
+  <strong>ถ้า preview แปลก ๆ:</strong> เช่น answer เป็น JSON สำหรับ qa, label out-of-set สำหรับ classification — กลับไปเช็ค <code>task_description</code> ที่ Node 4 ว่าชัดเจนพอไหม
+</div>
+
+<div class="nav">
+  <a href="4_sdg-holdout-split.html">← Node 4</a>
+  <a href="../guide101.md">Index</a>
+  <a href="6_training.html">ถัดไป: Node 6 →</a>
+</div>
+
+</body>
+</html>

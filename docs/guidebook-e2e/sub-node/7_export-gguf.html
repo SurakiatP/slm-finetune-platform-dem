@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>Node 7 — Export GGUF + Register Ollama</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; max-width: 920px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+  h1 { border-bottom: 3px solid #2563eb; padding-bottom: 8px; }
+  h2 { color: #1e40af; margin-top: 28px; border-left: 4px solid #2563eb; padding-left: 10px; }
+  h3 { color: #374151; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.85em; font-weight: 600; margin-right: 6px; }
+  .badge-post { background: #16a34a; color: white; }
+  .badge-get { background: #2563eb; color: white; }
+  .badge-ws { background: #7c3aed; color: white; }
+  .badge-async { background: #ea580c; color: white; }
+  .path { font-family: "JetBrains Mono", Consolas, monospace; background: #f3f4f6; padding: 4px 8px; border-radius: 4px; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }
+  code { font-family: "JetBrains Mono", Consolas, monospace; }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  :not(pre) > code { background: #fef3c7; padding: 2px 6px; border-radius: 3px; font-size: 0.92em; color: #92400e; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; }
+  .nav { display: flex; justify-content: space-between; margin: 30px 0 10px; padding: 12px; background: #f9fafb; border-radius: 8px; }
+  .nav a { color: #2563eb; text-decoration: none; font-weight: 500; }
+  .nav a:hover { text-decoration: underline; }
+  .callout { background: #eff6ff; border-left: 4px solid #2563eb; padding: 10px 14px; margin: 14px 0; border-radius: 4px; }
+  .callout.warn { background: #fef3c7; border-left-color: #f59e0b; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="6_training.html">← Node 6</a>
+  <a href="../guide101.md">Index</a>
+  <a href="8_inference.html">ถัดไป: Node 8 →</a>
+</div>
+
+<h1>Node 7 — Export GGUF + Register Ollama</h1>
+
+<p>
+  <span class="badge badge-post">POST</span>
+  <span class="badge badge-async">ASYNC 202</span>
+  <span class="path">/api/v1/models/{id}/export</span>
+  <br>
+  <span class="badge badge-get">GET</span>
+  <span class="path">/api/v1/models/{id}</span>
+  &nbsp; · &nbsp;
+  <span class="badge badge-get">GET</span>
+  <span class="path">/api/v1/models/{id}/download</span>
+</p>
+
+<h2>วัตถุประสงค์</h2>
+<p>Convert LoRA adapter ที่ได้จาก Node 6 → GGUF (q4_k_m) + auto-register กับ Ollama → พร้อมให้ Node 8 (inference) เรียกใช้.</p>
+
+<h3>Pipeline ภายใน worker</h3>
+<ol>
+  <li>Load LoRA adapter จาก MinIO</li>
+  <li><code>save_pretrained_merged</code> — รวม adapter เข้า base weights (HF f16)</li>
+  <li><code>llama.cpp/convert_hf_to_gguf.py</code> → GGUF f16</li>
+  <li><code>llama-quantize</code> → q4_k_m (~770 MB สำหรับ 1B base)</li>
+  <li>Upload GGUF → MinIO (<code>s3://models/exports/{id}/gguf</code>)</li>
+  <li>Stream blob → Ollama (<code>POST /api/blobs/sha256:&lt;hex&gt;</code>)</li>
+  <li>Register tag (<code>POST /api/create</code> with <code>files</code> mapping)</li>
+  <li>(best-effort) <code>ollama pull</code> base equivalent ตาม <code>base_ollama_tag</code> เพื่อ A/B compare ใน Node 8</li>
+</ol>
+
+<h2>Prerequisite</h2>
+<ul>
+  <li><code>model_artifact_id</code> จาก Node 6 (training สำเร็จแล้ว)</li>
+  <li>Worker image มี llama.cpp pre-built (<code>llama-quantize</code> + <code>convert_hf_to_gguf.py</code>)</li>
+  <li>Ollama container ขึ้น + reachable จาก worker</li>
+</ul>
+
+<h2>Request — GGUF (default recommended)</h2>
+<pre><code>{
+  "format": "gguf",
+  "quantization": "q4_k_m"
+}</code></pre>
+
+<h2>Request — SafeTensors (เก็บ checkpoint ดิบ)</h2>
+<pre><code>{
+  "format": "safetensors"
+}</code></pre>
+
+<h2>Response 202</h2>
+<pre><code>{
+  "artifact_id": "&lt;uuid&gt;",
+  "format": "gguf",
+  "job_id": "&lt;celery_uuid&gt;",
+  "status": "pending",
+  "websocket_url": "/ws/jobs/&lt;celery_uuid&gt;"
+}</code></pre>
+
+<h2>WebSocket — ไม่มี per-step progress</h2>
+<p>Export ไม่ส่ง progress event ระหว่างทำ — รอ <code>completed</code> หรือ <code>failed</code> เลย (~90s สำหรับ 1B base บน 3060)</p>
+
+<h3>Sample <code>completed</code></h3>
+<pre><code>{
+  "type": "completed",
+  "result": {
+    "artifact_id": "&lt;uuid&gt;",
+    "format": "gguf",
+    "gguf_uri": "s3://models/exports/&lt;artifact_id&gt;/gguf",
+    "safetensors_uri": null,
+    "ollama_model_tag": "slm/cdeddfd5"
+  }
+}</code></pre>
+
+<h2>Verify post-export</h2>
+<pre><code>GET /api/v1/models/{artifact_id}</code></pre>
+
+<pre><code>{
+  "id": "...",
+  "gguf_uri": "s3://models/exports/.../gguf",
+  "safetensors_uri": null,
+  "size_mb": 770.2,
+  "ollama_model_tag": "slm/cdeddfd5",        ← populate แล้ว
+  "export_error_message": null,
+  "base_ollama_tag": "llama3.2:1b"           ← derived (จาก base_model)
+}</code></pre>
+
+<div class="callout">
+  <strong>เก็บค่าไว้:</strong>
+  <ul>
+    <li><code>ollama_model_tag</code> — fine-tuned model (เช่น <code>slm/cdeddfd5</code>)</li>
+    <li><code>base_ollama_tag</code> — base model สำหรับ A/B compare</li>
+  </ul>
+</div>
+
+<h2>(Optional) Download binary</h2>
+<pre><code>GET /api/v1/models/{id}/download
+Content-Type: application/octet-stream
+(~770 MB GGUF q4_k_m / ~800MB-1.5GB SafeTensors)</code></pre>
+
+<h2>Error cases</h2>
+<table>
+<tr><th>Symptom</th><th>Note</th></tr>
+<tr><td><code>export_error_message</code> != null</td><td>worker เขียน error message ไว้ที่ row — อ่านได้จาก <code>GET /models/{id}</code></td></tr>
+<tr><td><code>ollama_model_tag</code> = null แต่ <code>gguf_uri</code> populate</td><td>GGUF สำเร็จแต่ Ollama register fail (best-effort) — ใช้ GGUF จาก MinIO ได้</td></tr>
+<tr><td>409 บน download</td><td>artifact ยังไม่ export</td></tr>
+</table>
+
+<div class="callout warn">
+  <strong>หมายเหตุ:</strong> <code>base_ollama_tag</code> = null = base model ตัวนี้ไม่มี Ollama-Hub mapping (rare) → ซ่อนปุ่ม A/B compare ใน FE
+</div>
+
+<div class="nav">
+  <a href="6_training.html">← Node 6</a>
+  <a href="../guide101.md">Index</a>
+  <a href="8_inference.html">ถัดไป: Node 8 →</a>
+</div>
+
+</body>
+</html>
