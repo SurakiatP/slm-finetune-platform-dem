@@ -221,6 +221,12 @@ def _compute_metrics_for_task(
     raise ValueError(f"unsupported task_type: {task_type}")
 
 
+_CLASSIFICATION_JUDGE_NOTE = (
+    "LLM judge does not apply to classification — "
+    "use rule-based metrics (accuracy, f1_macro) instead."
+)
+
+
 def _apply_llm_judge(
     *,
     use_llm_judge: bool,
@@ -244,25 +250,16 @@ def _apply_llm_judge(
         return None, None
 
     if task_type is TaskType.CLASSIFICATION:
-        metrics["llm_judge_notes"] = (
-            "LLM judge does not apply to classification — "
-            "use rule-based metrics (accuracy, f1_macro) instead."
-        )
+        metrics["llm_judge_notes"] = _CLASSIFICATION_JUDGE_NOTE
         return None, None
 
     if task_type not in (TaskType.QA, TaskType.TOOL_CALLING):
         return None, None
 
-    from ai_engine.data_gen.openrouter_client import OpenRouterClient
     from ai_engine.evaluation.llm_judge import judge_rows
 
     judge_model_resolved = judge_model or settings.llm_judge_model
-    client = OpenRouterClient(
-        api_key=settings.openrouter_api_key,
-        teacher_model=judge_model_resolved,
-        http_referer=settings.openrouter_http_referer,
-        app_title=settings.openrouter_app_title,
-    )
+    client = _build_judge_client(settings, judge_model_resolved)
     jb = judge_rows(
         client=client,
         judge_model=judge_model_resolved,
@@ -272,6 +269,25 @@ def _apply_llm_judge(
     )
     metrics["llm_judge_skipped_rows"] = jb.skipped
     return jb.mean_score, judge_model_resolved
+
+
+def _build_judge_client(settings: Any, judge_model: str) -> Any:
+    """Construct an ``OpenRouterClient`` wired to the configured judge model.
+
+    Centralises the OpenRouter attribution threading (HTTP-Referer, X-Title)
+    so the orchestrator stays focused on judge orchestration rather than
+    client wiring. Returns ``Any`` to keep the import lazy — pulling
+    ``OpenRouterClient`` at module scope would force the openai SDK to load
+    even on Celery tasks that never run the judge.
+    """
+    from ai_engine.data_gen.openrouter_client import OpenRouterClient
+
+    return OpenRouterClient(
+        api_key=settings.openrouter_api_key,
+        teacher_model=judge_model,
+        http_referer=settings.openrouter_http_referer,
+        app_title=settings.openrouter_app_title,
+    )
 
 
 # ---- prediction loop -------------------------------------------------------
