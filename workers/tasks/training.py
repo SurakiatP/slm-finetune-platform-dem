@@ -17,6 +17,7 @@ from __future__ import annotations
 import gc
 import shutil
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -76,36 +77,17 @@ def train_manual(
 
         try:
             # ---- 1. Load TrainingJob + Dataset (sync DB) -----------------------
-            with session_scope() as session:
-                job = session.get(TrainingJob, training_uuid)
-                if job is None:
-                    raise RuntimeError(f"TrainingJob {training_id} not found")
-                if job.mode.value != "manual":
-                    raise RuntimeError(
-                        f"train.manual called on job with mode={job.mode.value}"
-                    )
-
-                dataset = session.get(Dataset, job.dataset_id)
-                if dataset is None:
-                    raise RuntimeError(
-                        f"Dataset {job.dataset_id} not found for training {training_id}"
-                    )
-                if not dataset.storage_uri:
-                    raise RuntimeError(
-                        f"Dataset {dataset.id} has no storage_uri — generation may have failed"
-                    )
-
-                # Snapshot what we need; close session before heavy work.
-                base_model = job.base_model
-                config = ManualTrainingConfig.model_validate(job.config_json)
-                task_type = dataset.task_type
-                tool_definitions = _extract_tool_definitions(dataset.generation_metadata)
-                dataset_uri = dataset.storage_uri
-                training_name = job.training_name or f"manual-{job_id[:8]}"
-
-                # Flip RUNNING + record started_at
-                job.status = JobStatus.RUNNING
-                job.started_at = datetime.now(timezone.utc)
+            ctx = _load_train_context(
+                training_uuid=training_uuid,
+                training_id=training_id,
+                job_id=job_id,
+            )
+            base_model = ctx.base_model
+            config = ctx.config
+            task_type = ctx.task_type
+            tool_definitions = ctx.tool_definitions
+            dataset_uri = ctx.dataset_uri
+            training_name = ctx.training_name
 
             # ---- 2. Pull dataset rows from MinIO -------------------------------
             log.info(
@@ -183,27 +165,14 @@ def train_manual(
                     shutil.rmtree(workdir, ignore_errors=True)
 
             # ---- 6. Persist ModelArtifact + flip COMPLETED ---------------------
-            artifact_id: UUID | None = None
-            with session_scope() as session:
-                job_row = session.get(TrainingJob, training_uuid)
-                if job_row is None:
-                    raise RuntimeError(
-                        f"TrainingJob {training_id} disappeared mid-run"
-                    )
-                artifact = ModelArtifact(
-                    training_job_id=job_row.id,
-                    name=training_name,
-                    base_model=base_model,
-                    mlflow_run_id=job_row.mlflow_run_id,
-                    lora_adapter_uri=artifact_uri,
-                    size_mb=round(size_bytes / (1024 * 1024), 2),
-                )
-                session.add(artifact)
-                session.flush()
-                artifact_id = artifact.id
-
-                job_row.status = JobStatus.COMPLETED
-                job_row.ended_at = datetime.now(timezone.utc)
+            artifact_id = _persist_artifact(
+                training_uuid=training_uuid,
+                training_id=training_id,
+                training_name=training_name,
+                base_model=base_model,
+                artifact_uri=artifact_uri,
+                size_bytes=size_bytes,
+            )
 
             # ---- 7. Publish completion -----------------------------------------
             publish(
@@ -271,6 +240,106 @@ def train_manual(
 
 
 # ---- helpers ---------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _TrainContext:
+    """Snapshot of TrainingJob + Dataset fields needed for one fine-tune run.
+
+    Built by `_load_train_context` inside a brief DB session so the caller can
+    drop the session before kicking off heavy GPU work.
+    """
+
+    base_model: str
+    config: ManualTrainingConfig
+    task_type: Any                       # api.schemas.enums.TaskType (avoid import cycle)
+    tool_definitions: list | None
+    dataset_uri: str
+    training_name: str
+
+
+def _load_train_context(
+    *,
+    training_uuid: UUID,
+    training_id: str,
+    job_id: str,
+) -> _TrainContext:
+    """Load TrainingJob + Dataset, validate, flip RUNNING, and snapshot fields.
+
+    Pulled out of `train_manual` so the orchestrator reads top-down. Keeps the
+    same DB session boundary: open → validate → snapshot → set status →
+    commit on context exit, before any heavy work begins.
+    """
+    with session_scope() as session:
+        job = session.get(TrainingJob, training_uuid)
+        if job is None:
+            raise RuntimeError(f"TrainingJob {training_id} not found")
+        if job.mode.value != "manual":
+            raise RuntimeError(
+                f"train.manual called on job with mode={job.mode.value}"
+            )
+
+        dataset = session.get(Dataset, job.dataset_id)
+        if dataset is None:
+            raise RuntimeError(
+                f"Dataset {job.dataset_id} not found for training {training_id}"
+            )
+        if not dataset.storage_uri:
+            raise RuntimeError(
+                f"Dataset {dataset.id} has no storage_uri — generation may have failed"
+            )
+
+        ctx = _TrainContext(
+            base_model=job.base_model,
+            config=ManualTrainingConfig.model_validate(job.config_json),
+            task_type=dataset.task_type,
+            tool_definitions=_extract_tool_definitions(dataset.generation_metadata),
+            dataset_uri=dataset.storage_uri,
+            training_name=job.training_name or f"manual-{job_id[:8]}",
+        )
+
+        # Flip RUNNING + record started_at (committed on session-scope exit).
+        job.status = JobStatus.RUNNING
+        job.started_at = datetime.now(timezone.utc)
+
+    return ctx
+
+
+def _persist_artifact(
+    *,
+    training_uuid: UUID,
+    training_id: str,
+    training_name: str,
+    base_model: str,
+    artifact_uri: str,
+    size_bytes: int,
+) -> UUID:
+    """Insert ModelArtifact + flip TrainingJob.COMPLETED + return artifact_id.
+
+    Pulled out of `train_manual` so the post-training DB step is one call.
+    Same single-session boundary as before — both writes commit together.
+    """
+    with session_scope() as session:
+        job_row = session.get(TrainingJob, training_uuid)
+        if job_row is None:
+            raise RuntimeError(
+                f"TrainingJob {training_id} disappeared mid-run"
+            )
+        artifact = ModelArtifact(
+            training_job_id=job_row.id,
+            name=training_name,
+            base_model=base_model,
+            mlflow_run_id=job_row.mlflow_run_id,
+            lora_adapter_uri=artifact_uri,
+            size_mb=round(size_bytes / (1024 * 1024), 2),
+        )
+        session.add(artifact)
+        session.flush()
+        artifact_id = artifact.id
+
+        job_row.status = JobStatus.COMPLETED
+        job_row.ended_at = datetime.now(timezone.utc)
+    return artifact_id
 
 
 def _extract_tool_definitions(metadata: dict[str, Any] | None) -> list | None:
