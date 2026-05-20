@@ -234,62 +234,22 @@ class UnslothTrainer:
             train_ds, eval_ds = ds, None
 
         # ---- 3. Attach LoRA adapters ------------------------------------------
-        lora: LoRAConfig = self.config.lora
-        model = FastLanguageModel.get_peft_model(
-            model,
-            r=lora.r,
-            lora_alpha=lora.alpha,
-            lora_dropout=lora.dropout,
-            target_modules=list(lora.target_modules),
-            bias="none",
-            use_gradient_checkpointing="unsloth",
-            random_state=self.config.seed,
-            use_rslora=False,
-            loftq_config=None,
-        )
+        model = self._attach_lora(FastLanguageModel, model)
 
         # ---- 4. SFTConfig ------------------------------------------------------
-        # SFTConfig (TRL >=0.13) extends TrainingArguments and absorbs the
-        # SFT-specific knobs (`max_length`, `packing`, `dataset_text_field`).
-        sft_kwargs: dict[str, Any] = dict(
-            output_dir=self.output_dir,
-            per_device_train_batch_size=self.config.per_device_train_batch_size,
-            gradient_accumulation_steps=self.config.gradient_accumulation_steps,
-            num_train_epochs=self.config.num_train_epochs,
-            learning_rate=self.config.learning_rate,
-            warmup_ratio=self.config.warmup_ratio,
-            weight_decay=self.config.weight_decay,
-            lr_scheduler_type=self.config.lr_scheduler_type,
-            seed=self.config.seed,
-            logging_steps=1,
-            save_strategy="no",                  # Worker handles persistence to MinIO.
-            eval_strategy="epoch" if eval_ds is not None else "no",
-            optim=self.config.optim,
-            bf16=_supports_bf16(),
-            fp16=not _supports_bf16(),
-            report_to=[],                        # MLflow is wired via callback, not HF integration.
-            disable_tqdm=True,                   # Progress streams via callback.
-            dataset_text_field="text",
-            max_length=self.config.max_seq_length,
-            packing=self.config.packing,
-            eos_token=eos_token,
+        sft_config = self._build_sft_config(
+            SFTConfig, eos_token=eos_token, has_eval=eval_ds is not None
         )
-        # NEFTune is opt-in — passing 0/None to SFTConfig still enables the
-        # wrapper, so only set the kwarg when the user actually wants noise.
-        if self.config.neftune_noise_alpha is not None:
-            sft_kwargs["neftune_noise_alpha"] = self.config.neftune_noise_alpha
-        sft_config = SFTConfig(**sft_kwargs)
 
         # ---- 5. SFT trainer ----------------------------------------------------
-        # TRL >=0.12 renamed `tokenizer=` to `processing_class=` (hard-removed
-        # in 0.16). All SFT-specific kwargs now live on `sft_config` above.
-        trainer = SFTTrainer(
+        trainer = self._build_trainer(
+            SFTTrainer,
             model=model,
-            processing_class=tokenizer,
-            args=sft_config,
-            train_dataset=train_ds,
-            eval_dataset=eval_ds,
-            callbacks=list(callbacks or []),
+            tokenizer=tokenizer,
+            sft_config=sft_config,
+            train_ds=train_ds,
+            eval_ds=eval_ds,
+            callbacks=callbacks,
         )
 
         # ---- 6. Train + save adapter ------------------------------------------
@@ -329,6 +289,95 @@ class UnslothTrainer:
             train_samples_per_second=merged.get("train_samples_per_second"),
             steps_completed=int(train_output.global_step or 0),
             metrics=merged,
+        )
+
+    # -- Internals -------------------------------------------------------------
+
+    def _attach_lora(self, FastLanguageModel: Any, model: Any) -> Any:
+        """Wrap the base model with PEFT LoRA adapters per `self.config.lora`.
+
+        Pulled out of `train()` so the call site reads as one line. Takes the
+        deferred-imported `FastLanguageModel` class as an arg to keep the
+        deferred-import discipline (the class isn't available at module load).
+        """
+        lora: LoRAConfig = self.config.lora
+        return FastLanguageModel.get_peft_model(
+            model,
+            r=lora.r,
+            lora_alpha=lora.alpha,
+            lora_dropout=lora.dropout,
+            target_modules=list(lora.target_modules),
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+            random_state=self.config.seed,
+            use_rslora=False,
+            loftq_config=None,
+        )
+
+    def _build_sft_config(
+        self,
+        SFTConfig: Any,
+        *,
+        eos_token: str,
+        has_eval: bool,
+    ) -> Any:
+        """Assemble the kwargs dict + instantiate TRL `SFTConfig`.
+
+        SFTConfig (TRL >=0.13) extends TrainingArguments and absorbs the
+        SFT-specific knobs (`max_length`, `packing`, `dataset_text_field`).
+        NEFTune is opt-in — passing 0/None to SFTConfig still enables the
+        wrapper, so only set the kwarg when the user actually wants noise.
+        """
+        sft_kwargs: dict[str, Any] = dict(
+            output_dir=self.output_dir,
+            per_device_train_batch_size=self.config.per_device_train_batch_size,
+            gradient_accumulation_steps=self.config.gradient_accumulation_steps,
+            num_train_epochs=self.config.num_train_epochs,
+            learning_rate=self.config.learning_rate,
+            warmup_ratio=self.config.warmup_ratio,
+            weight_decay=self.config.weight_decay,
+            lr_scheduler_type=self.config.lr_scheduler_type,
+            seed=self.config.seed,
+            logging_steps=1,
+            save_strategy="no",                  # Worker handles persistence to MinIO.
+            eval_strategy="epoch" if has_eval else "no",
+            optim=self.config.optim,
+            bf16=_supports_bf16(),
+            fp16=not _supports_bf16(),
+            report_to=[],                        # MLflow is wired via callback, not HF integration.
+            disable_tqdm=True,                   # Progress streams via callback.
+            dataset_text_field="text",
+            max_length=self.config.max_seq_length,
+            packing=self.config.packing,
+            eos_token=eos_token,
+        )
+        if self.config.neftune_noise_alpha is not None:
+            sft_kwargs["neftune_noise_alpha"] = self.config.neftune_noise_alpha
+        return SFTConfig(**sft_kwargs)
+
+    def _build_trainer(
+        self,
+        SFTTrainer: Any,
+        *,
+        model: Any,
+        tokenizer: Any,
+        sft_config: Any,
+        train_ds: Any,
+        eval_ds: Any,
+        callbacks: list["TrainerCallback"] | None,
+    ) -> Any:
+        """Construct the TRL `SFTTrainer`.
+
+        TRL >=0.12 renamed `tokenizer=` to `processing_class=` (hard-removed
+        in 0.16); all SFT-specific kwargs now live on `sft_config`.
+        """
+        return SFTTrainer(
+            model=model,
+            processing_class=tokenizer,
+            args=sft_config,
+            train_dataset=train_ds,
+            eval_dataset=eval_ds,
+            callbacks=list(callbacks or []),
         )
 
 
