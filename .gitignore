@@ -76,3 +76,13 @@ scripts/session*_retries.py
 scripts/session*_runbook_driver.py
 *.png
 !docs/**/*.png
+
+# Private documentation — kept local, not published to GitHub
+docs/
+CLAUDE.md
+API_GUIDE.md
+PHASE9_SDG_HARDENING_SPEC.md
+SWAGGER_GUIDE.md
+TASK_TRACKER.md
+WORKING_LOG.md
+require.md
