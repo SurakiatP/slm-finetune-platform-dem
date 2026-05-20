@@ -1,0 +1,431 @@
+# serializer version: 1
+# name: test_already_canonical[canonical_subset]
+  True
+# ---
+# name: test_already_canonical[empty_rows]
+  True
+# ---
+# name: test_already_canonical[extra_key]
+  False
+# ---
+# name: test_already_canonical[misnamed_keys]
+  False
+# ---
+# name: test_already_canonical[mixed_canonical_and_extra]
+  False
+# ---
+# name: test_already_canonical[non_dict_row]
+  False
+# ---
+# name: test_build_user_prompt_classification
+  '''
+  [Task type] classification
+  
+  [Canonical schema]
+  All keys: ['label', 'text']
+  Required: ['label', 'text']
+  
+  [Sample rows from upload (first 2)]
+  [
+    {
+      "text1": "I want a refund",
+      "answer": "billing"
+    },
+    {
+      "text1": "App crashes",
+      "answer": "technical"
+    }
+  ]
+  
+  [Output Instructions]
+  1. ONLY rename keys; do NOT alter values.
+  2. If a key already matches a canonical key, OMIT it from the mapping.
+  3. If a key cannot be confidently mapped, OMIT it (rows with unmapped required keys will be dropped).
+  4. Output ONLY a JSON object: {"field_mapping": {"old_key": "new_key", ...}}
+  
+  '''
+# ---
+# name: test_build_user_prompt_tool_calling
+  '''
+  [Task type] tool_calling
+  
+  [Canonical schema]
+  All keys: ['answer', 'question']
+  Required: ['answer', 'question']
+  
+  [Sample rows from upload (first 1)]
+  [
+    {
+      "user_msg": "เปิดเพลง",
+      "response": "{\"name\": \"play_music\", \"parameters\": {}}"
+    }
+  ]
+  
+  [Output Instructions]
+  1. ONLY rename keys; do NOT alter values.
+  2. If a key already matches a canonical key, OMIT it from the mapping.
+  3. If a key cannot be confidently mapped, OMIT it (rows with unmapped required keys will be dropped).
+  4. Output ONLY a JSON object: {"field_mapping": {"old_key": "new_key", ...}}
+  
+  '''
+# ---
+# name: test_canonical_field_names_per_task
+  dict({
+    'classification': list([
+      'label',
+      'text',
+    ]),
+    'qa': list([
+      'answer',
+      'question',
+    ]),
+    'tool_calling': list([
+      'answer',
+      'question',
+    ]),
+  })
+# ---
+# name: test_detect_canonical_passthrough_no_llm_call
+  dict({
+    'fd_result': dict({
+      'canonical_rows': list([
+        dict({
+          'label': 'greet',
+          'text': 'hi',
+        }),
+        dict({
+          'label': 'farewell',
+          'text': 'bye',
+        }),
+      ]),
+      'field_mapping': dict({
+      }),
+      'notes': 'already canonical — Format Detection skipped',
+      'ran': False,
+      'rows_dropped': 0,
+    }),
+    'llm_call_count': 0,
+  })
+# ---
+# name: test_detect_drops_unmappable_required_rows
+  dict({
+    'fd_result': dict({
+      'canonical_rows': list([
+        dict({
+          'label': 'ok',
+          'text': 'has label',
+        }),
+      ]),
+      'field_mapping': dict({
+        'text1': 'text',
+      }),
+      'notes': None,
+      'ran': True,
+      'rows_dropped': 1,
+    }),
+    'llm_call_count': 1,
+  })
+# ---
+# name: test_detect_empty_rows_short_circuits
+  dict({
+    'fd_result': dict({
+      'canonical_rows': list([
+      ]),
+      'field_mapping': dict({
+      }),
+      'notes': 'empty input',
+      'ran': False,
+      'rows_dropped': 0,
+    }),
+    'llm_call_count': 0,
+  })
+# ---
+# name: test_detect_gemini_raises_exception
+  dict({
+    'fd_result': dict({
+      'canonical_rows': list([
+        dict({
+          'label': 'a',
+          'text': 'row1',
+        }),
+      ]),
+      'field_mapping': dict({
+      }),
+      'notes': 'llm error: openrouter unreachable',
+      'ran': True,
+      'rows_dropped': 1,
+    }),
+    'llm_call_count': 1,
+    'notes_starts_with_llm_error': True,
+  })
+# ---
+# name: test_detect_gemini_returns_unparseable_garbage
+  dict({
+    'fd_result': dict({
+      'canonical_rows': list([
+        dict({
+          'label': 'a',
+          'text': 'row1',
+        }),
+      ]),
+      'field_mapping': dict({
+      }),
+      'notes': 'llm returned no mapping',
+      'ran': True,
+      'rows_dropped': 1,
+    }),
+    'llm_call_count': 1,
+  })
+# ---
+# name: test_detect_gemini_returns_wrong_json_shape
+  dict({
+    'fd_result': dict({
+      'canonical_rows': list([
+        dict({
+          'label': 'stays',
+          'text': 'already canonical',
+        }),
+      ]),
+      'field_mapping': dict({
+      }),
+      'notes': 'llm returned no mapping',
+      'ran': True,
+      'rows_dropped': 1,
+    }),
+    'llm_call_count': 1,
+  })
+# ---
+# name: test_detect_renames_keys_via_gemini
+  dict({
+    'fd_result': dict({
+      'canonical_rows': list([
+        dict({
+          'label': 'billing',
+          'text': 'I want a refund',
+        }),
+        dict({
+          'label': 'technical',
+          'text': 'App crashes on launch',
+        }),
+      ]),
+      'field_mapping': dict({
+        'answer': 'label',
+        'text1': 'text',
+      }),
+      'notes': None,
+      'ran': True,
+      'rows_dropped': 0,
+    }),
+    'llm_call_count': 1,
+    'llm_call_kwargs': dict({
+      'max_tokens': 512,
+      'model': 'google/gemini-2.5-flash-lite',
+      'response_format': dict({
+        'type': 'json_object',
+      }),
+      'system': 'You are a schema-mapping assistant. Given sample rows from a user-uploaded seed dataset and the canonical schema for a task, produce a JSON object that maps each non-canonical key in the samples to its canonical equivalent. Output ONLY a JSON object — no prose, no markdown, no explanation.',
+      'temperature': 0.0,
+      'user': '''
+        [Task type] classification
+        
+        [Canonical schema]
+        All keys: ['label', 'text']
+        Required: ['label', 'text']
+        
+        [Sample rows from upload (first 2)]
+        [
+          {
+            "text1": "I want a refund",
+            "answer": "billing"
+          },
+          {
+            "text1": "App crashes on launch",
+            "answer": "technical"
+          }
+        ]
+        
+        [Output Instructions]
+        1. ONLY rename keys; do NOT alter values.
+        2. If a key already matches a canonical key, OMIT it from the mapping.
+        3. If a key cannot be confidently mapped, OMIT it (rows with unmapped required keys will be dropped).
+        4. Output ONLY a JSON object: {"field_mapping": {"old_key": "new_key", ...}}
+  
+      ''',
+    }),
+  })
+# ---
+# name: test_detect_tool_calling_rename
+  dict({
+    'fd_result': dict({
+      'canonical_rows': list([
+        dict({
+          'answer': '{"name": "play_music", "parameters": {}}',
+          'question': 'เปิดเพลง',
+        }),
+      ]),
+      'field_mapping': dict({
+        'response': 'answer',
+        'user_msg': 'question',
+      }),
+      'notes': None,
+      'ran': True,
+      'rows_dropped': 0,
+    }),
+    'llm_call_count': 1,
+  })
+# ---
+# name: test_parse_mapping[empty_string]
+  dict({
+  })
+# ---
+# name: test_parse_mapping[empty_value_filtered]
+  dict({
+    'answer': 'label',
+  })
+# ---
+# name: test_parse_mapping[extra_field_ignored]
+  dict({
+    'a': 'b',
+  })
+# ---
+# name: test_parse_mapping[identity_filtered]
+  dict({
+    'answer': 'label',
+  })
+# ---
+# name: test_parse_mapping[invalid_json]
+  dict({
+  })
+# ---
+# name: test_parse_mapping[nested_value_rejected]
+  dict({
+  })
+# ---
+# name: test_parse_mapping[standard]
+  dict({
+    'answer': 'label',
+    'text1': 'text',
+  })
+# ---
+# name: test_parse_mapping[whitespace_only]
+  dict({
+  })
+# ---
+# name: test_parse_mapping[wrong_schema]
+  dict({
+  })
+# ---
+# name: test_passthrough_all_canonical_no_drops
+  dict({
+    'canonical_rows': list([
+      dict({
+        'label': 'a',
+        'text': 'hi',
+      }),
+      dict({
+        'label': 'b',
+        'text': 'yo',
+      }),
+    ]),
+    'field_mapping': dict({
+    }),
+    'notes': 'llm error: ConnectionError',
+    'ran': True,
+    'rows_dropped': 0,
+  })
+# ---
+# name: test_passthrough_drops_rows_missing_required
+  dict({
+    'canonical_rows': list([
+      dict({
+        'label': 'greet',
+        'text': 'hi',
+      }),
+      dict({
+        'label': 'greet',
+        'text': 'hey',
+        'x': 1,
+      }),
+    ]),
+    'field_mapping': dict({
+    }),
+    'notes': 'OPENROUTER_API_KEY not set',
+    'ran': True,
+    'rows_dropped': 2,
+  })
+# ---
+# name: test_pdf_probe_corrupt_error_message
+  dict({
+    'error_type': 'PdfCorruptError',
+    'starts_with_failed_to_parse': True,
+  })
+# ---
+# name: test_pdf_probe_one_page
+  dict({
+    'num_pages': 1,
+  })
+# ---
+# name: test_pdf_probe_three_pages
+  dict({
+    'num_pages': 3,
+  })
+# ---
+# name: test_pdf_probe_too_large_error_message
+  dict({
+    'error_type': 'PdfTooLargeError',
+    'mentions_cap': True,
+    'mentions_mib': True,
+  })
+# ---
+# name: test_pdf_probe_too_many_pages_error_message
+  dict({
+    'error_type': 'PdfTooManyPagesError',
+    'message': 'PDF has 5 pages; cap is 2',
+  })
+# ---
+# name: test_rename_keys[collision_to_existing_key]
+  dict({
+    'text': 'RENAMED',
+  })
+# ---
+# name: test_rename_keys[empty_mapping]
+  dict({
+    'a': 1,
+    'b': 2,
+  })
+# ---
+# name: test_rename_keys[passthrough_no_match]
+  dict({
+    'label': 'greet',
+    'text': 'hello',
+  })
+# ---
+# name: test_rename_keys[standard_rename]
+  dict({
+    'label': 'greet',
+    'score': 0.9,
+    'text': 'hello',
+  })
+# ---
+# name: test_required_field_names_per_task
+  dict({
+    'classification': list([
+      'label',
+      'text',
+    ]),
+    'qa': list([
+      'answer',
+      'question',
+    ]),
+    'tool_calling': list([
+      'answer',
+      'question',
+    ]),
+  })
+# ---
+# name: test_to_base64_data_url_prefix_and_payload
+  dict({
+    'payload_is_ascii_base64': True,
+    'scheme_prefix': 'data:application/pdf;base64',
+  })
+# ---

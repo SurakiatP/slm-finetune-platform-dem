@@ -323,28 +323,11 @@ async def _upload_jsonl_seed(
     name: str | None,
     file: UploadFile,
 ) -> SeedUploadResponse:
-    raw = await file.read(_MAX_SEED_BYTES + 1)
-    if len(raw) > _MAX_SEED_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"seed file exceeds {_MAX_SEED_BYTES // (1024*1024)} MiB cap",
-        )
-    if not raw.strip():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="seed file is empty",
-        )
+    # Stage 1: read + parse the upload bytes into row candidates.
+    candidates = await _read_and_parse_jsonl_upload(file)
 
-    candidates = _parse_seed_bytes(raw)
-    if not candidates:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="no parseable rows in seed file",
-        )
-
-    # Format Detection (LLM, sync) — runs only when rows aren't already
-    # canonical. We invoke from this async handler via asyncio.to_thread
-    # so we don't block the event loop for ~1s.
+    # Stage 2: Format Detection — Gemini key-rename when rows aren't
+    # already canonical. asyncio.to_thread keeps the event loop free.
     canonical_keys = canonical_field_names(task_type)
     required_keys = required_field_names(task_type)
     fd_result = await _run_format_detection(
@@ -357,15 +340,8 @@ async def _upload_jsonl_seed(
         app_title=settings.openrouter_app_title,
     )
 
-    # Validate canonicalised rows row-by-row against the Pydantic schema.
-    valid: list[dict] = []
-    invalid: list[int] = []
-    for idx, row in enumerate(fd_result.canonical_rows):
-        try:
-            parse_samples(task_type, [row])
-            valid.append(row)
-        except Exception:  # noqa: BLE001 — row-level rejection
-            invalid.append(idx)
+    # Stage 3: per-row Pydantic validation + semantic guard.
+    valid, invalid = _validate_canonical_rows(fd_result.canonical_rows, task_type)
     if not valid:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -375,7 +351,6 @@ async def _upload_jsonl_seed(
                 f"invalid_indexes={invalid})"
             ),
         )
-
     # Semantic guard: rows passed structural validation but may still be the
     # wrong *kind* of content (e.g. a QA file Format-Detected into a
     # classification project — Session 22 Finding #1). Currently only
@@ -389,33 +364,22 @@ async def _upload_jsonl_seed(
             detail=str(exc),
         ) from exc
 
-    # Persist Dataset row + JSONL.
-    dataset_name = name or f"seed-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    # Stage 4: persist Dataset row + JSONL to MinIO.
     fd_report = _to_report(
         fd_result,
         rows_total=len(candidates),
         rows_canonicalised=len(fd_result.canonical_rows),
         model_used=llm_models.FORMAT_DETECTION if fd_result.ran else None,
     )
-    dataset = Dataset(
-        project_id=project.id,
-        name=dataset_name,
+    dataset = await _persist_jsonl_dataset(
+        db,
+        settings=settings,
+        project=project,
         task_type=task_type,
-        source=DatasetSource.SEED,
-        num_samples=len(valid),
-        generation_metadata={"format_detection": fd_report.model_dump()},
+        name=name,
+        valid_rows=valid,
+        fd_report=fd_report,
     )
-    db.add(dataset)
-    await db.flush()
-
-    minio = get_minio_client()
-    key = f"seeds/{dataset.id}.jsonl"
-    bucket = settings.minio_datasets_bucket
-    size_bytes = put_jsonl(minio, bucket, key, valid)
-    dataset.storage_uri = s3_uri(bucket, key)
-    dataset.size_bytes = size_bytes
-    await db.commit()
-    await db.refresh(dataset)
 
     return SeedUploadResponse(
         dataset_id=dataset.id,
@@ -424,6 +388,90 @@ async def _upload_jsonl_seed(
         invalid_rows=invalid,
         format_detection=fd_report,
     )
+
+
+async def _read_and_parse_jsonl_upload(file: UploadFile) -> list[dict]:
+    """Read the upload bytes, enforce the size + non-empty caps, return rows.
+
+    Raises HTTPException 413/400 on cap breach / empty input / unparseable
+    content. Centralised here so :func:`_upload_jsonl_seed` doesn't open
+    with 25 lines of input plumbing.
+    """
+    raw = await file.read(_MAX_SEED_BYTES + 1)
+    if len(raw) > _MAX_SEED_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"seed file exceeds {_MAX_SEED_BYTES // (1024*1024)} MiB cap",
+        )
+    if not raw.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="seed file is empty",
+        )
+    candidates = _parse_seed_bytes(raw)
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="no parseable rows in seed file",
+        )
+    return candidates
+
+
+def _validate_canonical_rows(
+    rows: list[dict], task_type: TaskType
+) -> tuple[list[dict], list[int]]:
+    """Pydantic-validate each row; return (valid_rows, invalid_indexes).
+
+    Pulled out of :func:`_upload_jsonl_seed` so the validation seam is
+    one named thing — Stage 3 of the upload pipeline.
+    """
+    valid: list[dict] = []
+    invalid: list[int] = []
+    for idx, row in enumerate(rows):
+        try:
+            parse_samples(task_type, [row])
+            valid.append(row)
+        except Exception:  # noqa: BLE001 — row-level rejection
+            invalid.append(idx)
+    return valid, invalid
+
+
+async def _persist_jsonl_dataset(
+    db: AsyncSession,
+    *,
+    settings,
+    project: Project,
+    task_type: TaskType,
+    name: str | None,
+    valid_rows: list[dict],
+    fd_report: FormatDetectionReport,
+) -> Dataset:
+    """Create the Dataset row + write the canonicalised JSONL to MinIO.
+
+    Returns the freshly-refreshed Dataset (so the caller can read
+    ``dataset.id`` for the response). Stage 4 of the upload pipeline.
+    """
+    dataset_name = name or f"seed-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    dataset = Dataset(
+        project_id=project.id,
+        name=dataset_name,
+        task_type=task_type,
+        source=DatasetSource.SEED,
+        num_samples=len(valid_rows),
+        generation_metadata={"format_detection": fd_report.model_dump()},
+    )
+    db.add(dataset)
+    await db.flush()
+
+    minio = get_minio_client()
+    key = f"seeds/{dataset.id}.jsonl"
+    bucket = settings.minio_datasets_bucket
+    size_bytes = put_jsonl(minio, bucket, key, valid_rows)
+    dataset.storage_uri = s3_uri(bucket, key)
+    dataset.size_bytes = size_bytes
+    await db.commit()
+    await db.refresh(dataset)
+    return dataset
 
 
 def _parse_seed_bytes(raw: bytes) -> list[dict]:
@@ -529,6 +577,46 @@ async def _upload_pdf_seed(
             ),
         )
 
+    raw, probe_result = await _read_and_probe_pdf_upload(file)
+
+    fd_report = FormatDetectionReport(
+        ran=False,
+        model_used=None,
+        field_mapping={},
+        rows_total=0,
+        rows_canonicalised=0,
+        rows_dropped=0,
+        notes="PDF upload — Format Detection not applicable",
+    )
+
+    dataset, pdf_uri = await _persist_pdf_dataset(
+        db,
+        settings=settings,
+        project=project,
+        task_type=task_type,
+        name=name,
+        raw=raw,
+        num_pages=probe_result.num_pages,
+        fd_report=fd_report,
+    )
+
+    return SeedUploadResponse(
+        dataset_id=dataset.id,
+        task_type=task_type,
+        num_samples=0,
+        invalid_rows=[],
+        format_detection=fd_report,
+        pdf_uri=pdf_uri,
+    )
+
+
+async def _read_and_probe_pdf_upload(file: UploadFile):
+    """Read the PDF upload, enforce size cap, run pdf_loader.probe.
+
+    Returns the raw bytes + the ``PdfProbe`` so the caller can persist
+    both without re-reading. Raises HTTPException with the right status
+    code for each failure mode.
+    """
     raw = await file.read(_MAX_SEED_PDF_BYTES + 1)
     if len(raw) > _MAX_SEED_PDF_BYTES:
         raise HTTPException(
@@ -540,7 +628,6 @@ async def _upload_pdf_seed(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="empty PDF upload",
         )
-
     try:
         probe_result = pdf_probe(raw)
     except PdfTooLargeError as exc:
@@ -555,21 +642,29 @@ async def _upload_pdf_seed(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
+    return raw, probe_result
 
+
+async def _persist_pdf_dataset(
+    db: AsyncSession,
+    *,
+    settings,
+    project: Project,
+    task_type: TaskType,
+    name: str | None,
+    raw: bytes,
+    num_pages: int,
+    fd_report: FormatDetectionReport,
+) -> tuple[Dataset, str]:
+    """Create the Dataset row + write the PDF bytes to MinIO.
+
+    Returns (refreshed Dataset, pdf_uri). Mirrors :func:`_persist_jsonl_dataset`
+    so both upload paths share the same stage shape.
+    """
     dataset_name = (
         name
         or f"seed-pdf-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     )
-    fd_report = FormatDetectionReport(
-        ran=False,
-        model_used=None,
-        field_mapping={},
-        rows_total=0,
-        rows_canonicalised=0,
-        rows_dropped=0,
-        notes="PDF upload — Format Detection not applicable",
-    )
-
     bucket = settings.minio_datasets_bucket
     dataset = Dataset(
         project_id=project.id,
@@ -579,7 +674,7 @@ async def _upload_pdf_seed(
         num_samples=0,
         generation_metadata={
             "format_detection": fd_report.model_dump(),
-            "pdf_pages": probe_result.num_pages,
+            "pdf_pages": num_pages,
         },
     )
     db.add(dataset)
@@ -602,15 +697,7 @@ async def _upload_pdf_seed(
     dataset.generation_metadata = meta
     await db.commit()
     await db.refresh(dataset)
-
-    return SeedUploadResponse(
-        dataset_id=dataset.id,
-        task_type=task_type,
-        num_samples=0,
-        invalid_rows=[],
-        format_detection=fd_report,
-        pdf_uri=pdf_uri,
-    )
+    return dataset, pdf_uri
 
 
 # ---- helpers --------------------------------------------------------------
