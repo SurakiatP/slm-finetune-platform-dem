@@ -79,23 +79,9 @@ def export_model(
 
         try:
             # ---- 1. Load artifact + base_model -------------------------------
-            with session_scope() as session:
-                artifact = session.get(ModelArtifact, artifact_uuid)
-                if artifact is None:
-                    raise RuntimeError(f"ModelArtifact {artifact_id} not found")
-                if not artifact.lora_adapter_uri:
-                    raise RuntimeError(
-                        f"Artifact {artifact_id} has no lora_adapter_uri — "
-                        "training likely never completed"
-                    )
-                training = session.get(TrainingJob, artifact.training_job_id)
-                if training is None:
-                    raise RuntimeError(
-                        f"TrainingJob {artifact.training_job_id} missing for artifact {artifact_id}"
-                    )
-                base_model = artifact.base_model or training.base_model
-                adapter_uri = artifact.lora_adapter_uri
-                artifact_name = artifact.name
+            base_model, adapter_uri, _artifact_name = _load_export_context(
+                artifact_uuid=artifact_uuid, artifact_id=artifact_id
+            )
 
             # ---- 2. Pull adapter dir from MinIO ------------------------------
             minio = get_minio_client()
@@ -162,48 +148,12 @@ def export_model(
                         tokenizer,
                         save_method="merged_16bit",
                     )
-
-                    # Workaround transformers 4.57.2 bug at
-                    # tokenization_utils_base.py:2419 — when the saved
-                    # config.json has transformers_version <= 4.57.2,
-                    # _from_pretrained does `_config.model_type` on a
-                    # dict (json.load returned a dict, not a
-                    # PretrainedConfig). AttributeError. The check is
-                    # gated on version, so bumping the field in the
-                    # saved config skips the buggy branch entirely.
-                    cfg_path = os.path.join(stage_dir, "config.json")
-                    with open(cfg_path, "r", encoding="utf-8") as fh:
-                        cfg = json.load(fh)
-                    if cfg.get("transformers_version", "0") <= "4.57.2":
-                        cfg["transformers_version"] = "4.58.0"
-                        with open(cfg_path, "w", encoding="utf-8") as fh:
-                            json.dump(cfg, fh, indent=2)
-
-                    out_dir = os.path.join(workdir, "gguf")
-                    os.makedirs(out_dir, exist_ok=True)
-                    f16_path = os.path.join(out_dir, "model.f16.gguf")
-                    log.info("export: job=%s converting HF→GGUF (f16)", job_id)
-                    subprocess.run(
-                        [
-                            "python",
-                            "/app/llama.cpp/convert_hf_to_gguf.py",
-                            "--outfile", f16_path,
-                            "--outtype", "f16",
-                            stage_dir,
-                        ],
-                        check=True,
+                    gguf_path = _quantize_merged_to_gguf(
+                        stage_dir=stage_dir,
+                        workdir=workdir,
+                        quant=quant,
+                        job_id=job_id,
                     )
-
-                    gguf_path = os.path.join(out_dir, f"model.{quant}.gguf")
-                    log.info("export: job=%s quantizing GGUF → %s", job_id, quant)
-                    subprocess.run(
-                        [
-                            "/app/llama.cpp/llama-quantize",
-                            f16_path, gguf_path, quant,
-                        ],
-                        check=True,
-                    )
-                    os.remove(f16_path)
                 elif fmt is ArtifactFormat.SAFETENSORS:
                     merged_dir = os.path.join(workdir, "merged")
                     os.makedirs(merged_dir, exist_ok=True)
@@ -247,7 +197,7 @@ def export_model(
                     # changes (modelfile string → from/files), so isolating its
                     # failure keeps gguf_uri persistable on partial success.
                     try:
-                        candidate_tag = f"slm/{artifact_id[:8]}"
+                        candidate_tag = _compute_ollama_tag(artifact_id)
                         _register_with_ollama(
                             ollama=OllamaClient(str(settings.ollama_base_url)),
                             tag=candidate_tag,
@@ -287,17 +237,13 @@ def export_model(
                     )
 
                 # ---- 7. Persist artifact URIs --------------------------------
-                with session_scope() as session:
-                    art = session.get(ModelArtifact, artifact_uuid)
-                    if art is None:
-                        raise RuntimeError(f"artifact {artifact_id} disappeared mid-export")
-                    if gguf_uri:
-                        art.gguf_uri = gguf_uri
-                    if safetensors_uri:
-                        art.safetensors_uri = safetensors_uri
-                    if ollama_tag:
-                        art.ollama_model_tag = ollama_tag
-                    art.export_error_message = None  # clear stale failure on retry
+                _persist_export_uris(
+                    artifact_uuid=artifact_uuid,
+                    artifact_id=artifact_id,
+                    gguf_uri=gguf_uri,
+                    safetensors_uri=safetensors_uri,
+                    ollama_tag=ollama_tag,
+                )
 
                 # ---- 8. Publish completion -----------------------------------
                 publish(
@@ -416,6 +362,203 @@ def _release_gpu_memory() -> None:
     except Exception:  # noqa: BLE001
         log.debug("torch cleanup skipped", exc_info=True)
     gc.collect()
+
+
+# ---- pure helpers (characterized by tests/unit/test_snapshot_node_7.py) ----
+#
+# These are split out so the refactor of ``export_model`` can call them in
+# place of equivalent inline code without changing observable behaviour.
+# Snapshot diff = 0 after refactor proves byte-stability.
+
+
+def _compute_ollama_tag(artifact_id: str) -> str:
+    """Build the Ollama model tag for a fine-tuned artifact.
+
+    Format: ``slm/<first-8-chars-of-uuid>`` — short enough to type, long
+    enough that real-world artifact collisions are vanishingly unlikely
+    on the dev box. Used by ``export_model`` to register the fine-tuned
+    GGUF with Ollama.
+    """
+    return f"slm/{artifact_id[:8]}"
+
+
+def _convert_hf_to_gguf_argv(stage_dir: str, f16_path: str) -> list[str]:
+    """Argv for the HF → GGUF f16 conversion step.
+
+    We drive the *original* llama.cpp ``convert_hf_to_gguf.py`` (not
+    Unsloth's patched copy, which calls a removed AutoTokenizer
+    signature and dies on transformers ≥4.51).
+    """
+    return [
+        "python",
+        "/app/llama.cpp/convert_hf_to_gguf.py",
+        "--outfile", f16_path,
+        "--outtype", "f16",
+        stage_dir,
+    ]
+
+
+def _quantize_gguf_argv(f16_path: str, gguf_path: str, quant: str) -> list[str]:
+    """Argv for the f16 → quantized GGUF step.
+
+    Uses our statically-linked ``llama-quantize`` binary baked into the
+    worker image at ``/app/llama.cpp/llama-quantize``.
+    """
+    return [
+        "/app/llama.cpp/llama-quantize",
+        f16_path, gguf_path, quant,
+    ]
+
+
+def _load_export_context(
+    *,
+    artifact_uuid: UUID,
+    artifact_id: str,
+) -> tuple[str, str, str | None]:
+    """Load ``ModelArtifact`` + parent ``TrainingJob`` and return the trio
+    ``(base_model, adapter_uri, artifact_name)`` the rest of ``export_model``
+    needs to drive the merge + GGUF pipeline.
+
+    Validates the two preconditions that determine whether export can even
+    start: the artifact row must exist, and it must have a
+    ``lora_adapter_uri`` (which is only written after training completes).
+    Either failure raises ``RuntimeError`` with a message suitable for
+    surfacing via the WebSocket ``JobFailed`` envelope.
+
+    Resolves ``base_model`` with a fallback ladder
+    ``artifact.base_model`` → ``training.base_model`` because old artifact
+    rows (pre Phase 11) didn't pin the base on the artifact itself. We
+    still read ``artifact_name`` for parity with the inline form; current
+    callers don't consume it, but extracting that side-effect-free read
+    keeps the helper's return shape stable if a future caller wants it.
+    """
+    with session_scope() as session:
+        artifact = session.get(ModelArtifact, artifact_uuid)
+        if artifact is None:
+            raise RuntimeError(f"ModelArtifact {artifact_id} not found")
+        if not artifact.lora_adapter_uri:
+            raise RuntimeError(
+                f"Artifact {artifact_id} has no lora_adapter_uri — "
+                "training likely never completed"
+            )
+        training = session.get(TrainingJob, artifact.training_job_id)
+        if training is None:
+            raise RuntimeError(
+                f"TrainingJob {artifact.training_job_id} missing for artifact {artifact_id}"
+            )
+        return (
+            artifact.base_model or training.base_model,
+            artifact.lora_adapter_uri,
+            artifact.name,
+        )
+
+
+def _persist_export_uris(
+    *,
+    artifact_uuid: UUID,
+    artifact_id: str,
+    gguf_uri: str | None,
+    safetensors_uri: str | None,
+    ollama_tag: str | None,
+) -> None:
+    """Write back the produced artifact URIs and clear any stale export error.
+
+    Each URI is written only if set, so this is safe to call for either
+    GGUF-only or SafeTensors-only exports. Clearing
+    ``export_error_message`` here ensures a retry that succeeds doesn't
+    leave the prior failure visible to the FE.
+
+    Raises ``RuntimeError`` if the artifact row vanished mid-export — this
+    is the same defensive check the inline code performed and signals a
+    concurrent delete (extremely rare; FE confirms artifact existence
+    before queuing).
+    """
+    with session_scope() as session:
+        art = session.get(ModelArtifact, artifact_uuid)
+        if art is None:
+            raise RuntimeError(f"artifact {artifact_id} disappeared mid-export")
+        if gguf_uri:
+            art.gguf_uri = gguf_uri
+        if safetensors_uri:
+            art.safetensors_uri = safetensors_uri
+        if ollama_tag:
+            art.ollama_model_tag = ollama_tag
+        art.export_error_message = None  # clear stale failure on retry
+
+
+def _quantize_merged_to_gguf(
+    *,
+    stage_dir: str,
+    workdir: str,
+    quant: str,
+    job_id: str,
+) -> str:
+    """Drive ``convert_hf_to_gguf.py`` + ``llama-quantize`` over a merged HF dir.
+
+    Takes a directory containing an Unsloth-merged HF model (``stage_dir``,
+    already written by ``model.save_pretrained_merged``), produces the
+    quantized GGUF at ``<workdir>/gguf/model.<quant>.gguf``, and returns
+    its path. Removes the intermediate f16 GGUF on success — it's only
+    needed as input to llama-quantize.
+
+    Side effects: creates ``<workdir>/gguf/`` (mkdir -p), may mutate
+    ``<stage_dir>/config.json`` in place to dodge the transformers 4.57.2
+    AutoTokenizer bug (see ``_bump_transformers_version_if_buggy``).
+    Raises ``CalledProcessError`` if either subprocess returns non-zero.
+
+    Extracted from ``export_model`` so the byte-stable refactor can be
+    snapshot-verified — the four pure helpers it calls
+    (``_bump_transformers_version_if_buggy``,
+    ``_convert_hf_to_gguf_argv``, ``_quantize_gguf_argv``) are
+    individually pinned by ``tests/unit/test_snapshot_node_7.py``.
+    """
+    # Workaround transformers 4.57.2 bug at
+    # tokenization_utils_base.py:2419 — when the saved config.json has
+    # transformers_version <= 4.57.2, _from_pretrained does
+    # `_config.model_type` on a dict (json.load returned a dict, not a
+    # PretrainedConfig). AttributeError. The check is gated on version,
+    # so bumping the field skips the buggy branch entirely.
+    cfg_path = os.path.join(stage_dir, "config.json")
+    with open(cfg_path, "r", encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    if _bump_transformers_version_if_buggy(cfg):
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2)
+
+    out_dir = os.path.join(workdir, "gguf")
+    os.makedirs(out_dir, exist_ok=True)
+    f16_path = os.path.join(out_dir, "model.f16.gguf")
+    log.info("export: job=%s converting HF→GGUF (f16)", job_id)
+    subprocess.run(
+        _convert_hf_to_gguf_argv(stage_dir=stage_dir, f16_path=f16_path),
+        check=True,
+    )
+
+    gguf_path = os.path.join(out_dir, f"model.{quant}.gguf")
+    log.info("export: job=%s quantizing GGUF → %s", job_id, quant)
+    subprocess.run(
+        _quantize_gguf_argv(f16_path=f16_path, gguf_path=gguf_path, quant=quant),
+        check=True,
+    )
+    os.remove(f16_path)
+    return gguf_path
+
+
+def _bump_transformers_version_if_buggy(cfg: dict[str, Any]) -> bool:
+    """Workaround transformers 4.57.2 ``model_type``-on-dict AttributeError.
+
+    The bug at ``tokenization_utils_base.py:2419`` only triggers when the
+    saved ``config.json`` has ``transformers_version <= 4.57.2``. Bumping
+    the field in-place skips the buggy branch entirely without affecting
+    inference behaviour (the field is purely informational at load time).
+
+    Mutates ``cfg`` in place. Returns True iff a bump happened — callers
+    use that to decide whether to re-serialize.
+    """
+    if cfg.get("transformers_version", "0") <= "4.57.2":
+        cfg["transformers_version"] = "4.58.0"
+        return True
+    return False
 
 
 __all__ = ["export_model"]
