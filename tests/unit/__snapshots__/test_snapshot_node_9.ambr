@@ -1,0 +1,165 @@
+# serializer version: 1
+# name: test_extract_labels_missing
+  dict({
+    'cls_config_empty': None,
+    'labels_not_list': None,
+    'metadata_is_none': None,
+    'no_cls_config': None,
+  })
+# ---
+# name: test_extract_labels_present
+  list([
+    'a',
+    'b',
+    'c',
+  ])
+# ---
+# name: test_extract_tool_definitions_none
+  dict({
+    'metadata_empty_list': None,
+    'metadata_is_none': None,
+    'metadata_without_key': None,
+  })
+# ---
+# name: test_extract_tool_definitions_present
+  list([
+    dict({
+      'description': 'set the speaker volume',
+      'name': 'set_volume',
+      'parameters': dict({
+        'level': dict({
+          'description': None,
+          'required': False,
+          'type': 'integer',
+        }),
+      }),
+    }),
+  ])
+# ---
+# name: test_postprocess_classification_leading_whitespace
+  'ปัญหาเทคนิค'
+# ---
+# name: test_postprocess_classification_multiline
+  'ปัญหาเทคนิค'
+# ---
+# name: test_postprocess_empty_classification
+  ''
+# ---
+# name: test_postprocess_qa_strips_whitespace
+  'คำตอบเต็มประโยค'
+# ---
+# name: test_postprocess_qa_unchanged
+  'กรุงเทพมหานคร'
+# ---
+# name: test_predict_rows_classification
+  dict({
+    'expected': list([
+      'ปัญหาเทคนิค',
+      'ปัญหาการเงิน',
+      'คำถามทั่วไป',
+    ]),
+    'predicted': list([
+      'ปัญหาเทคนิค',
+      'ปัญหาการเงิน',
+      'คำถามทั่วไป',
+    ]),
+    'questions': list([
+      'ลืมรหัสผ่าน',
+      'ค่าบริการผิด',
+      'ใช้งานยังไง',
+    ]),
+  })
+# ---
+# name: test_predict_rows_ollama_500_treated_as_empty
+  dict({
+    'expected': list([
+      'A',
+      'B',
+    ]),
+    'predicted': list([
+      '',
+      'B',
+    ]),
+    'questions': list([
+      'row1',
+      'row2',
+    ]),
+  })
+# ---
+# name: test_predict_rows_qa
+  dict({
+    'expected': list([
+      'กรุงเทพ',
+      '4',
+    ]),
+    'predicted': list([
+      'กรุงเทพมหานคร',
+      '4 ครับ',
+    ]),
+    'questions': list([
+      'เมืองหลวงไทย?',
+      '2+2=?',
+    ]),
+  })
+# ---
+# name: test_predict_rows_tool_calling
+  dict({
+    'expected': list([
+      '{"name": "set_volume", "parameters": {"level": 50}}',
+      '{"name": "play_music", "parameters": {"track": "song"}}',
+    ]),
+    'predicted': list([
+      '{"name": "set_volume", "parameters": {"level": 50}}',
+      '{"name": "play_music", "parameters": {"track": "song"}}',
+    ]),
+    'questions': list([
+      '''
+        Available tools:
+        [{"name": "set_volume", "description": "Test tool: set_volume", "parameters": {"level": {"type": "integer", "description": null, "required": false}}}, {"name": "play_music", "description": "Test tool: play_music", "parameters": {"track": {"type": "string", "description": null, "required": false}}}]
+        
+        User: ตั้งเสียง 50
+        
+        Respond with a single JSON object: {"name": "<tool>", "parameters": {...}}.
+      ''',
+      '''
+        Available tools:
+        [{"name": "set_volume", "description": "Test tool: set_volume", "parameters": {"level": {"type": "integer", "description": null, "required": false}}}, {"name": "play_music", "description": "Test tool: play_music", "parameters": {"track": {"type": "string", "description": null, "required": false}}}]
+        
+        User: เล่นเพลง
+        
+        Respond with a single JSON object: {"name": "<tool>", "parameters": {...}}.
+      ''',
+    ]),
+  })
+# ---
+# name: test_prompt_and_gold_classification
+  tuple(
+    'ลืมรหัสผ่าน',
+    'ปัญหาเทคนิค',
+  )
+# ---
+# name: test_prompt_and_gold_qa
+  tuple(
+    'เมืองหลวงของไทย?',
+    'กรุงเทพ',
+  )
+# ---
+# name: test_prompt_and_gold_tool_calling_no_definitions
+  tuple(
+    'เปิดเพลง',
+    '{"name": "play_music", "parameters": {}}',
+  )
+# ---
+# name: test_prompt_and_gold_tool_calling_with_definitions
+  tuple(
+    '''
+      Available tools:
+      [{"name": "set_volume", "description": "Test tool: set_volume", "parameters": {"level": {"type": "integer", "description": null, "required": false}}}, {"name": "play_music", "description": "Test tool: play_music", "parameters": {"track": {"type": "string", "description": null, "required": false}}}]
+      
+      User: เปิดเพลง
+      
+      Respond with a single JSON object: {"name": "<tool>", "parameters": {...}}.
+    ''',
+    '{"name": "play_music", "parameters": {"track": "default"}}',
+  )
+# ---

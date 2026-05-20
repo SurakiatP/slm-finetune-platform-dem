@@ -111,56 +111,24 @@ def run_evaluation(
             )
 
             # ---- 4. Per-task metrics ---------------------------------------
-            metrics: dict[str, Any]
-            if task_type is TaskType.CLASSIFICATION:
-                labels = classification_labels or sorted(set(expected))
-                metrics = metrics_classification.compute_metrics(
-                    predicted=predicted, expected=expected, labels=labels
-                )
-            elif task_type is TaskType.TOOL_CALLING:
-                metrics = metrics_tool_calling.compute_metrics(
-                    predicted=predicted, expected=expected
-                )
-            elif task_type is TaskType.QA:
-                metrics = metrics_qa.compute_metrics(
-                    predicted=predicted, expected=expected
-                )
-            else:  # pragma: no cover — schema gates this earlier
-                raise ValueError(f"unsupported task_type: {task_type}")
+            metrics = _compute_metrics_for_task(
+                task_type=task_type,
+                predicted=predicted,
+                expected=expected,
+                classification_labels=classification_labels,
+            )
 
             # ---- 5. Optional LLM judge -------------------------------------
-            # Judge applies to free-form outputs only (QA, tool-calling). For
-            # classification the closed-set rule-based metrics (accuracy /
-            # f1_macro / confusion_matrix) are the right tool — surface a note
-            # in metrics_json instead of returning a silent llm_judge_score=null,
-            # which used to confuse callers who passed use_llm_judge=true.
-            judge_score: float | None = None
-            judge_model_resolved: str | None = None
-            if use_llm_judge and task_type is TaskType.CLASSIFICATION:
-                metrics["llm_judge_notes"] = (
-                    "LLM judge does not apply to classification — "
-                    "use rule-based metrics (accuracy, f1_macro) instead."
-                )
-            elif use_llm_judge and task_type in (TaskType.QA, TaskType.TOOL_CALLING):
-                from ai_engine.data_gen.openrouter_client import OpenRouterClient
-                from ai_engine.evaluation.llm_judge import judge_rows
-
-                judge_model_resolved = judge_model or settings.llm_judge_model
-                client = OpenRouterClient(
-                    api_key=settings.openrouter_api_key,
-                    teacher_model=judge_model_resolved,
-                    http_referer=settings.openrouter_http_referer,
-                    app_title=settings.openrouter_app_title,
-                )
-                jb = judge_rows(
-                    client=client,
-                    judge_model=judge_model_resolved,
-                    questions=questions,
-                    expected=expected,
-                    predicted=predicted,
-                )
-                judge_score = jb.mean_score
-                metrics["llm_judge_skipped_rows"] = jb.skipped
+            judge_score, judge_model_resolved = _apply_llm_judge(
+                use_llm_judge=use_llm_judge,
+                task_type=task_type,
+                judge_model=judge_model,
+                settings=settings,
+                questions=questions,
+                expected=expected,
+                predicted=predicted,
+                metrics=metrics,
+            )
 
             # ---- 6. Persist + 7. Publish completion ------------------------
             with session_scope() as session:
@@ -219,6 +187,91 @@ def run_evaluation(
             except Exception:  # noqa: BLE001
                 log.warning("failed to publish JobFailed", exc_info=True)
             raise
+
+
+# ---- per-task metric dispatch + LLM judge -----------------------------------
+
+
+def _compute_metrics_for_task(
+    *,
+    task_type: TaskType,
+    predicted: list[str],
+    expected: list[str],
+    classification_labels: list[str] | None,
+) -> dict[str, Any]:
+    """Route to the right metric module based on task_type.
+
+    Pulled out of ``run_evaluation`` so the orchestrator stays thin and the
+    dispatch contract is easy to characterize in unit tests.
+    """
+    if task_type is TaskType.CLASSIFICATION:
+        labels = classification_labels or sorted(set(expected))
+        return metrics_classification.compute_metrics(
+            predicted=predicted, expected=expected, labels=labels
+        )
+    if task_type is TaskType.TOOL_CALLING:
+        return metrics_tool_calling.compute_metrics(
+            predicted=predicted, expected=expected
+        )
+    if task_type is TaskType.QA:
+        return metrics_qa.compute_metrics(
+            predicted=predicted, expected=expected
+        )
+    # pragma: no cover — schema gates this earlier
+    raise ValueError(f"unsupported task_type: {task_type}")
+
+
+def _apply_llm_judge(
+    *,
+    use_llm_judge: bool,
+    task_type: TaskType,
+    judge_model: str | None,
+    settings: Any,
+    questions: list[str],
+    expected: list[str],
+    predicted: list[str],
+    metrics: dict[str, Any],
+) -> tuple[float | None, str | None]:
+    """Run optional LLM-as-judge over (questions, expected, predicted).
+
+    Mutates ``metrics`` in-place to add either ``llm_judge_notes`` (for
+    classification, where the closed-set rule-based metrics are the right tool)
+    or ``llm_judge_skipped_rows`` (for QA/tool-calling actually judged).
+
+    Returns ``(score, model)`` — both ``None`` when judge wasn't applied.
+    """
+    if not use_llm_judge:
+        return None, None
+
+    if task_type is TaskType.CLASSIFICATION:
+        metrics["llm_judge_notes"] = (
+            "LLM judge does not apply to classification — "
+            "use rule-based metrics (accuracy, f1_macro) instead."
+        )
+        return None, None
+
+    if task_type not in (TaskType.QA, TaskType.TOOL_CALLING):
+        return None, None
+
+    from ai_engine.data_gen.openrouter_client import OpenRouterClient
+    from ai_engine.evaluation.llm_judge import judge_rows
+
+    judge_model_resolved = judge_model or settings.llm_judge_model
+    client = OpenRouterClient(
+        api_key=settings.openrouter_api_key,
+        teacher_model=judge_model_resolved,
+        http_referer=settings.openrouter_http_referer,
+        app_title=settings.openrouter_app_title,
+    )
+    jb = judge_rows(
+        client=client,
+        judge_model=judge_model_resolved,
+        questions=questions,
+        expected=expected,
+        predicted=predicted,
+    )
+    metrics["llm_judge_skipped_rows"] = jb.skipped
+    return jb.mean_score, judge_model_resolved
 
 
 # ---- prediction loop -------------------------------------------------------
