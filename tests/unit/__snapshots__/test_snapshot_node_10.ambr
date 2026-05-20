@@ -1,0 +1,149 @@
+# serializer version: 1
+# name: test_apply_llm_judge_all_rows_fail_returns_none_mean
+  dict({
+    'metrics_after': dict({
+      'exact_match': 0.0,
+      'llm_judge_skipped_rows': 2,
+    }),
+    'model': 'openrouter/auto-from-settings',
+    'openrouter_call_count': 2,
+    'score': None,
+  })
+# ---
+# name: test_apply_llm_judge_classification_autoskip
+  dict({
+    'metrics_after': dict({
+      'accuracy': 0.92,
+      'f1_macro': 0.91,
+      'llm_judge_notes': 'LLM judge does not apply to classification — use rule-based metrics (accuracy, f1_macro) instead.',
+    }),
+    'model': None,
+    'openrouter_calls': 0,
+    'score': None,
+  })
+# ---
+# name: test_apply_llm_judge_disabled_short_circuit
+  dict({
+    'metrics_after': dict({
+      'accuracy': 0.5,
+    }),
+    'model': None,
+    'openrouter_calls': 0,
+    'score': None,
+  })
+# ---
+# name: test_apply_llm_judge_openrouter_error_increments_skipped
+  dict({
+    'metrics_after': dict({
+      'exact_match': 0.0,
+      'llm_judge_skipped_rows': 1,
+    }),
+    'model': 'openrouter/auto-from-settings',
+    'openrouter_call_count': 3,
+    'score': 4.0,
+  })
+# ---
+# name: test_apply_llm_judge_qa_happy_path
+  dict({
+    'first_call_kwargs_keys': list([
+      'model',
+      'response_format',
+      'system',
+      'temperature',
+      'user',
+    ]),
+    'first_call_model': 'openrouter/auto-from-settings',
+    'first_call_response_format': dict({
+      'type': 'json_object',
+    }),
+    'first_call_temperature': 0.0,
+    'metrics_after': dict({
+      'exact_match': 0.0,
+      'llm_judge_skipped_rows': 0,
+      'rouge_l': 0.4,
+    }),
+    'model': 'openrouter/auto-from-settings',
+    'openrouter_call_count': 3,
+    'score': 4.0,
+  })
+# ---
+# name: test_apply_llm_judge_tool_calling_happy_path
+  dict({
+    'metrics_after': dict({
+      'llm_judge_skipped_rows': 0,
+      'tool_accuracy': 0.5,
+    }),
+    'model': 'anthropic/claude-judge',
+    'openrouter_call_count': 2,
+    'score': 4.0,
+  })
+# ---
+# name: test_judge_rows_aggregates_scores_and_skipped
+  dict({
+    'judge_model': 'stub-judge',
+    'mean_score': 3.6666666666666665,
+    'openrouter_call_count': 4,
+    'rows': list([
+      dict({
+        'reason': 'great',
+        'score': 5,
+      }),
+      dict({
+        'reason': 'weak',
+        'score': 2,
+      }),
+      dict({
+        'reason': 'good',
+        'score': 4,
+      }),
+    ]),
+    'skipped': 1,
+  })
+# ---
+# name: test_judge_rows_empty_raises
+  'ValueError: judge_rows: empty inputs'
+# ---
+# name: test_judge_rows_length_mismatch_raises
+  'ValueError: judge_rows: input lists must be equal length'
+# ---
+# name: test_parse_judge_response_invalid_cases_raise
+  dict({
+    'malformed_json': 'JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)',
+    'not_a_dict': 'ValueError: judge: not a JSON object',
+    'score_missing': 'ValueError: judge: bad/missing score=None',
+    'score_not_int': "ValueError: judge: bad/missing score='four'",
+    'score_out_of_range_high': 'ValueError: judge: bad/missing score=9',
+    'score_out_of_range_low': 'ValueError: judge: bad/missing score=0',
+  })
+# ---
+# name: test_parse_judge_response_markdown_fence_json
+  tuple(
+    5,
+    'perfect',
+  )
+# ---
+# name: test_parse_judge_response_markdown_fence_no_lang
+  tuple(
+    2,
+    'wrong-ish',
+  )
+# ---
+# name: test_parse_judge_response_plain_json
+  tuple(
+    4,
+    'mostly correct',
+  )
+# ---
+# name: test_parse_judge_response_reason_missing_defaults_empty
+  tuple(
+    3,
+    '',
+  )
+# ---
+# name: test_parse_judge_response_reason_truncated_to_500_chars
+  dict({
+    'reason_head': 'xxxxxxxx',
+    'reason_len': 500,
+    'score': 4,
+  })
+# ---

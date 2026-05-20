@@ -82,29 +82,73 @@ def judge_rows(
     skipped = 0
 
     for q, exp, pred in zip(questions, expected, predicted):
-        prompt = _JUDGE_USER_TEMPLATE.format(question=q, expected=exp, predicted=pred)
-        try:
-            chat = client.chat(
-                system=_JUDGE_SYSTEM,
-                user=prompt,
-                temperature=temperature,
-                model=judge_model,
-                response_format={"type": "json_object"},
-            )
-            score, reason = _parse_judge_response(chat.content)
-            rows.append(JudgeRowResult(score=score, reason=reason))
-        except Exception as exc:  # noqa: BLE001
-            log.warning("judge: row failed (%s); skipping", exc)
+        row = _judge_one_row(
+            client=client,
+            judge_model=judge_model,
+            question=q,
+            expected=exp,
+            predicted=pred,
+            temperature=temperature,
+        )
+        if row is None:
             skipped += 1
+        else:
+            rows.append(row)
 
-    successful = [r.score for r in rows]
-    mean: float | None = (sum(successful) / len(successful)) if successful else None
     return JudgeBatchResult(
         rows=rows,
-        mean_score=mean,
+        mean_score=_aggregate_mean(rows),
         judge_model=judge_model,
         skipped=skipped,
     )
+
+
+# ---- per-row + aggregation helpers ----------------------------------------
+
+
+def _build_judge_user_prompt(question: str, expected: str, predicted: str) -> str:
+    """Render the user-side prompt the judge model sees for one row."""
+    return _JUDGE_USER_TEMPLATE.format(
+        question=question, expected=expected, predicted=predicted
+    )
+
+
+def _judge_one_row(
+    *,
+    client: OpenRouterClient,
+    judge_model: str,
+    question: str,
+    expected: str,
+    predicted: str,
+    temperature: float,
+) -> JudgeRowResult | None:
+    """Judge a single row; ``None`` on any OpenRouter / parse failure."""
+    prompt = _build_judge_user_prompt(question, expected, predicted)
+    try:
+        chat = client.chat(
+            system=_JUDGE_SYSTEM,
+            user=prompt,
+            temperature=temperature,
+            model=judge_model,
+            response_format={"type": "json_object"},
+        )
+        score, reason = _parse_judge_response(chat.content)
+        return JudgeRowResult(score=score, reason=reason)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("judge: row failed (%s); skipping", exc)
+        return None
+
+
+def _aggregate_mean(rows: list[JudgeRowResult]) -> float | None:
+    """Mean of successful row scores; ``None`` when every row was skipped.
+
+    Returning ``None`` (not 0.0) is intentional: a zero would suggest "scored
+    1 across the board" which is qualitatively different from "no judge
+    signal at all".
+    """
+    if not rows:
+        return None
+    return sum(r.score for r in rows) / len(rows)
 
 
 # ---- parsing ---------------------------------------------------------------
