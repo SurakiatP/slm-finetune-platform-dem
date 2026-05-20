@@ -328,6 +328,38 @@ After B6 closed, exercising `POST /api/v1/models/{id}/export` against the new fl
 
 ---
 
+## Phase 14 — Per-node refactor with characterization harness (Session 27)
+
+> 6 refactor PRs opened, each with pre-refactor Tier 1+2 snapshots + Tier 3 vast.ai live verify.
+> Plan: [`~/.claude/plans/1-api-key-moonlit-moonbeam.md`](../../Users/parks/.claude/plans/1-api-key-moonlit-moonbeam.md).
+> Workflow: 5-step template (baseline capture → unit harness → refactor → vast.ai verify → PR).
+> Parallel agent dispatch for Nodes 7/10/3a/6/3b+4 reduced wall-clock from ~3-4 hr to ~18 min.
+
+| ID | Task | Status | Next Step |
+|----|------|--------|-----------|
+| RF.1 | Plan file + workflow template + node classification | ✅ | Plan at `~/.claude/plans/1-api-key-moonlit-moonbeam.md`. 6 refactor targets + 5 trivial skips agreed |
+| RF.2 | Node 9 (Eval rule-based) — workflow validation | ✅ | PR #5. 2 helpers extracted (`_compute_metrics_for_task`, `_apply_llm_judge`). 17 snapshots. Live vast.ai contract diff = 0 |
+| RF.3 | Parallel agent dispatch for Nodes 7/10/3a/6/3b+4 | ✅ | 5 isolated worktrees, ~18 min concurrent. All branches pushed |
+| RF.4 | Node 7 (Export GGUF) | ✅ | PR #6. 7 helpers (3 orch + 4 pure). 19 snapshots. Live re-export 106s |
+| RF.5 | Node 10 (LLM Judge) — stacked on Node 9 | ✅ | PR #7. 5 helpers. 15 snapshots. Live cls+judge auto-skip path verified |
+| RF.6 | Node 3a (Upload seed) | ✅ | PR #8. 8 helpers across 3 files. 39 snapshots. Live cls upload + format_detection skip path verified |
+| RF.7 | Node 6 (Training) | ✅ | PR #9. 5 helpers. 17 Tier 1 snapshots (Unsloth/torch not mocked per runbook §6). Live re-train 84s |
+| RF.8 | Node 3b+4 (SDG) — conservative scope | ✅ | PR #10. 2 helpers (file is 929 LOC monolith). 7 snapshots. Live SDG holdout parent↔child link verified |
+| RF.9 | Stop vast.ai + rotate OpenRouter key | ⏳ | parks to do — VM at `211.21.106.81:37843` still running ~$0.50/hr |
+| RF.10 | Merge 6 PRs into dev | ⏳ | Suggested order: #5 → #7 (rebase base after #5) → #6/#8/#9/#10 independent |
+| RF.11 | Prune `.claude/worktrees/agent-*` post-merge | ⏳ | 11 worktrees left after agent work |
+| RF.12 | (Optional) Tier 1 harness for 5 trivial nodes | ❌ | Skipped per plan. Could revisit if "11/11 demonstration" is wanted — pure local work, no VM needed |
+
+### Verification numbers (Phase 14)
+
+- Local suite per branch: 180 baseline → 191-220 passed (+11 to +40 per node based on harness size)
+- Live vast.ai integration: 5/5 sequential verifies PASS, 0 rollbacks needed
+- Setup phase (SDG cls 40+20 + train Llama-1B + export gguf + eval w/ judge): 7 min on RTX 3070
+- Total session cost: ~$1.00 (vs $5-8 estimated for sequential per-node)
+- Wall time: ~3 hr (vs ~6-8 hr estimated)
+
+---
+
 ## Out of Scope (do NOT build)
 
 - ❌ Authentication / user management
