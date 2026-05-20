@@ -461,27 +461,19 @@ class SyntheticDataGenerator:
             duplicates_total += outcome.duplicates_dropped
 
             # 5. Quota-respecting collection
-            added = 0
-            for row in outcome.unique:
-                if len(accepted) >= target:
-                    break
-                key = self._row_quota_key(request.task_type, row)
-                if quota:
-                    if collected_per_key.get(key, 0) >= quota.get(key, 0):
-                        continue
-                    collected_per_key[key] = collected_per_key.get(key, 0) + 1
-                accepted.append(row)
-                added += 1
+            added = _apply_collection_quota(
+                outcome.unique,
+                accepted=accepted,
+                collected_per_key=collected_per_key,
+                quota=quota,
+                target=target,
+                key_for_row=lambda r: self._row_quota_key(request.task_type, r),
+            )
 
             # 6. Adaptive multiplier (EMA-smoothed)
-            yield_per_req = added / max(1, len(batch_inputs))
-            if yield_per_req > 0.05:
-                new_mult = max(
-                    MIN_OVER_GEN_MULT, min(MAX_OVER_GEN_MULT, 1.0 / yield_per_req)
-                )
-                over_gen_mult = 0.5 * over_gen_mult + 0.5 * new_mult
-            else:
-                over_gen_mult = min(MAX_OVER_GEN_MULT, over_gen_mult * 1.5)
+            over_gen_mult = _update_over_gen_mult(
+                over_gen_mult, added=added, batch_size=len(batch_inputs)
+            )
 
             # 7. Failure counter
             if added == 0:
@@ -918,6 +910,61 @@ def _group_tool_examples(rows: list[dict[str, Any]]) -> dict[str, list[dict[str,
 def _seed_text_field(task_type: TaskType) -> str:
     """The row field used as MinHash input for dedup."""
     return "text" if task_type is TaskType.CLASSIFICATION else "question"
+
+
+def _apply_collection_quota(
+    rows: list[dict[str, Any]],
+    *,
+    accepted: list[dict[str, Any]],
+    collected_per_key: dict[str, int],
+    quota: dict[str, int],
+    target: int,
+    key_for_row: Callable[[dict[str, Any]], str],
+) -> int:
+    """Accept rows up to per-key quota; mutate ``accepted`` + ``collected_per_key``.
+
+    Mirrors the inline collection step of the SDG loop verbatim:
+
+      - Stop once ``len(accepted) >= target``.
+      - When ``quota`` is non-empty, drop rows whose bucket is already full
+        and increment the per-key counter on acceptance.
+      - When ``quota`` is empty (QA flow), accept until target hits.
+
+    Returns the number of rows actually added in this call. The orchestrator
+    uses this count to drive the adaptive over-gen multiplier and the
+    consecutive-failure counter.
+    """
+    added = 0
+    for row in rows:
+        if len(accepted) >= target:
+            break
+        key = key_for_row(row)
+        if quota:
+            if collected_per_key.get(key, 0) >= quota.get(key, 0):
+                continue
+            collected_per_key[key] = collected_per_key.get(key, 0) + 1
+        accepted.append(row)
+        added += 1
+    return added
+
+
+def _update_over_gen_mult(
+    over_gen_mult: float, *, added: int, batch_size: int
+) -> float:
+    """EMA-smoothed adaptive over-generation multiplier.
+
+    When yield per request is "OK" (>5%) we ease the multiplier toward
+    ``1/yield`` (clamped to [MIN, MAX]). When yield collapses, we crank the
+    multiplier 1.5x toward the ceiling so the next loop iteration over-asks
+    more aggressively. Pure math — no side effects.
+    """
+    yield_per_req = added / max(1, batch_size)
+    if yield_per_req > 0.05:
+        new_mult = max(
+            MIN_OVER_GEN_MULT, min(MAX_OVER_GEN_MULT, 1.0 / yield_per_req)
+        )
+        return 0.5 * over_gen_mult + 0.5 * new_mult
+    return min(MAX_OVER_GEN_MULT, over_gen_mult * 1.5)
 
 
 __all__ = [

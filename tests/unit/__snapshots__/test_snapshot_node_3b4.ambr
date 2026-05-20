@@ -1,0 +1,215 @@
+# serializer version: 1
+# name: test_emit_factory_records_progress_events
+  list([
+    dict({
+      'current_loop': None,
+      'dedup_rejected': None,
+      'duplicates_removed': 0,
+      'judge_parse_failures': None,
+      'judge_rejected': None,
+      'phase': 'meta_prompting',
+      'samples_generated': 0,
+      'samples_rejected': 0,
+      'samples_target': 10,
+      'samples_valid': 0,
+    }),
+    dict({
+      'current_loop': 0,
+      'dedup_rejected': None,
+      'duplicates_removed': 0,
+      'judge_parse_failures': None,
+      'judge_rejected': None,
+      'phase': 'generating',
+      'samples_generated': 0,
+      'samples_rejected': 1,
+      'samples_target': 10,
+      'samples_valid': 0,
+    }),
+    dict({
+      'current_loop': 0,
+      'dedup_rejected': None,
+      'duplicates_removed': 1,
+      'judge_parse_failures': 1,
+      'judge_rejected': 3,
+      'phase': 'judging',
+      'samples_generated': 0,
+      'samples_rejected': 2,
+      'samples_target': 10,
+      'samples_valid': 0,
+    }),
+    dict({
+      'current_loop': 1,
+      'dedup_rejected': 2,
+      'duplicates_removed': 1,
+      'judge_parse_failures': None,
+      'judge_rejected': None,
+      'phase': 'generating',
+      'samples_generated': 4,
+      'samples_rejected': 2,
+      'samples_target': 10,
+      'samples_valid': 4,
+    }),
+  ])
+# ---
+# name: test_sdg_classification_with_seed_full
+  dict({
+    'api_calls': 24,
+    'duplicate_count': 13,
+    'failed_attempts': list([
+    ]),
+    'judge_parse_failures': 0,
+    'judge_rejected_count': 0,
+    'rejected_count': 0,
+    'rows_sorted': list([
+      dict({
+        'label': 'unknown',
+        'text': 'ตัวอย่างคำถามผู้ใช้ที่ 00',
+      }),
+      dict({
+        'label': 'คำถามทั่วไป',
+        'text': 'ตัวอย่างคำถามผู้ใช้ที่ 09',
+      }),
+      dict({
+        'label': 'ปัญหาเทคนิค',
+        'text': 'ตัวอย่างคำถามผู้ใช้ที่ 10',
+      }),
+      dict({
+        'label': 'ปัญหาเทคนิค',
+        'text': 'ตัวอย่างคำถามผู้ใช้ที่ 14',
+      }),
+      dict({
+        'label': 'ปัญหาการเงิน',
+        'text': 'ตัวอย่างคำถามผู้ใช้ที่ 17',
+      }),
+      dict({
+        'label': 'ปัญหาการเงิน',
+        'text': 'ตัวอย่างคำถามผู้ใช้ที่ 18',
+      }),
+    ]),
+    'valid_row_count': 6,
+  })
+# ---
+# name: test_sdg_classification_with_seed_full.1
+  dict({
+    'holdout_count': 2,
+    'holdout_labels_sorted': list([
+      'ปัญหาการเงิน',
+      'ปัญหาเทคนิค',
+    ]),
+    'train_count': 4,
+    'train_labels_sorted': list([
+      'unknown',
+      'คำถามทั่วไป',
+      'ปัญหาการเงิน',
+      'ปัญหาเทคนิค',
+    ]),
+  })
+# ---
+# name: test_sdg_qa_description_only_full
+  dict({
+    'api_calls': 12,
+    'duplicate_count': 0,
+    'failed_attempts': list([
+    ]),
+    'judge_parse_failures': 0,
+    'judge_rejected_count': 0,
+    'rejected_count': 0,
+    'rows_sorted': list([
+      dict({
+        'answer': 'คำตอบที่ 00.',
+        'question': 'คำถามนโยบาย #00?',
+      }),
+      dict({
+        'answer': 'คำตอบที่ 01.',
+        'question': 'คำถามนโยบาย #01?',
+      }),
+      dict({
+        'answer': 'คำตอบที่ 02.',
+        'question': 'คำถามนโยบาย #02?',
+      }),
+      dict({
+        'answer': 'คำตอบที่ 03.',
+        'question': 'คำถามนโยบาย #03?',
+      }),
+      dict({
+        'answer': 'คำตอบที่ 04.',
+        'question': 'คำถามนโยบาย #04?',
+      }),
+      dict({
+        'answer': 'คำตอบที่ 05.',
+        'question': 'คำถามนโยบาย #05?',
+      }),
+    ]),
+    'valid_row_count': 6,
+  })
+# ---
+# name: test_sdg_qa_description_only_full.1
+  dict({
+    'holdout_count': 2,
+    'holdout_questions_sorted': list([
+      'คำถามนโยบาย #00?',
+      'คำถามนโยบาย #02?',
+    ]),
+    'train_count': 4,
+    'train_questions_sorted': list([
+      'คำถามนโยบาย #01?',
+      'คำถามนโยบาย #03?',
+      'คำถามนโยบาย #04?',
+      'คำถามนโยบาย #05?',
+    ]),
+  })
+# ---
+# name: test_sdg_tool_calling_with_seed_full
+  dict({
+    'api_calls': 24,
+    'duplicate_count': 12,
+    'failed_attempts': list([
+    ]),
+    'judge_parse_failures': 0,
+    'judge_rejected_count': 0,
+    'rejected_count': 0,
+    'rows_sorted': list([
+      dict({
+        'answer': '{"name": "light_on", "parameters": {"level": 25}}',
+        'question': 'คำสั่ง light_on ลำดับ #15',
+      }),
+      dict({
+        'answer': '{"name": "light_on", "parameters": {"level": 26}}',
+        'question': 'คำสั่ง light_on ลำดับ #16',
+      }),
+      dict({
+        'answer': '{"name": "no_tool_needed", "parameters": {}}',
+        'question': 'คำสั่ง no_tool_needed ลำดับ #05',
+      }),
+      dict({
+        'answer': '{"name": "play_music", "parameters": {"level": 10}}',
+        'question': 'คำสั่ง play_music ลำดับ #00',
+      }),
+      dict({
+        'answer': '{"name": "set_volume", "parameters": {"level": 20}}',
+        'question': 'คำสั่ง set_volume ลำดับ #10',
+      }),
+      dict({
+        'answer': '{"name": "set_volume", "parameters": {"level": 21}}',
+        'question': 'คำสั่ง set_volume ลำดับ #11',
+      }),
+    ]),
+    'valid_row_count': 6,
+  })
+# ---
+# name: test_sdg_tool_calling_with_seed_full.1
+  dict({
+    'holdout_count': 2,
+    'holdout_tools_sorted': list([
+      'light_on',
+      'set_volume',
+    ]),
+    'train_count': 4,
+    'train_tools_sorted': list([
+      'light_on',
+      'no_tool_needed',
+      'play_music',
+      'set_volume',
+    ]),
+  })
+# ---
