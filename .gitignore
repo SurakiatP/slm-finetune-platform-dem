@@ -56,6 +56,9 @@ postgres-data/
 redis-data/
 minio-data/
 ollama-data/
+# Host-specific compose override (e.g. pasaflow VM binds named volumes to ~/drive)
+docker-compose.override.yml
+docker-compose.override.yaml
 
 # Notebook
 .ipynb_checkpoints/
