@@ -14,7 +14,7 @@
 #     or apt operations (verified pre-installed on this host)
 #
 # Usage from wetty:
-#   curl -fsSL https://raw.githubusercontent.com/SurakiatP/slm-finetune-platform-dem/feature/pasaflow-bootstrap/scripts/deploy_pasaflow_vm.sh -o /tmp/slm-deploy.sh
+#   curl -fsSL https://raw.githubusercontent.com/SurakiatP/slm-finetune-platform-dem/dev/scripts/deploy_pasaflow_vm.sh -o /tmp/slm-deploy.sh
 #   bash /tmp/slm-deploy.sh
 #
 # Optional env overrides:
