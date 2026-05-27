@@ -59,10 +59,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The worker image base (pytorch:...-cuda12.1) is ~6 GB and the build
-      # writes several more GB; ubuntu-latest has only ~14 GB free on / by
-      # default and fails with "no space left on device". Reclaim ~25-30 GB
-      # first. Small for api/mlflow, so skip the (slow) cleanup there.
+      # The worker image base (pytorch:...-cuda12.1) is ~15 GB unpacked and the
+      # build writes several more GB; ubuntu-latest only has ~21 GB free on /.
+      # A first attempt with large-packages:false + cache mode=max ran the
+      # runner out of disk ("lost communication" at 47 min). Reclaim everything
+      # — incl. large apt packages, swap, and the pre-cached docker images —
+      # to free ~35-40 GB. The extra cleanup (~3-4 min) is worth it on worker.
       - name: Free disk space
         if: matrix.name == 'worker'
         uses: jlumbroso/free-disk-space@main
@@ -71,7 +73,13 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: false
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Disk free after cleanup
+        if: matrix.name == 'worker'
+        run: df -h /
 
       - uses: docker/setup-buildx-action@v3
 
@@ -96,7 +104,9 @@ jobs:
             ghcr.io/surakiatp/slm-${{ matrix.name }}:dev
             ghcr.io/surakiatp/slm-${{ matrix.name }}:sha-${{ github.sha }}
           # Registry cache (not gha cache — one worker build exceeds the 10 GB
-          # gha quota). Lets a source-only change rebuild in ~2 min instead of
-          # re-running the llama.cpp compile + torch install.
+          # gha quota). mode=min, NOT max: these Dockerfiles are single-stage so
+          # every layer worth caching is already in the final image, and mode=max
+          # would also stage every intermediate layer locally as cache blobs —
+          # ~2x disk, which is what ran the worker runner out of space.
           cache-from: type=registry,ref=ghcr.io/surakiatp/slm-${{ matrix.name }}:buildcache
-          cache-to: type=registry,ref=ghcr.io/surakiatp/slm-${{ matrix.name }}:buildcache,mode=max
+          cache-to: type=registry,ref=ghcr.io/surakiatp/slm-${{ matrix.name }}:buildcache,mode=min
