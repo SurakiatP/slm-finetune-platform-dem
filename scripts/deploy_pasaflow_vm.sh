@@ -254,11 +254,19 @@ fi
 
 # --------- Phase 7: Sanity --------------------------------------------------
 say "==== Phase 7: Sanity ===="
-HEALTH=$(curl -fs http://localhost:8000/health || echo "FAIL")
+# The host port the api publishes on comes from API_PORT in .env (compose maps
+# ${API_PORT:-8000}:8000). On this host 8000/8001 are taken by another service,
+# so .env sets API_PORT=8080 — read it back rather than hardcoding 8000, or the
+# health check false-fails while the stack is actually healthy.
+API_PORT=$(grep -E '^API_PORT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]')
+API_PORT="${API_PORT:-8000}"
+say "Checking API on host port $API_PORT"
+
+HEALTH=$(curl -fs "http://localhost:${API_PORT}/health" || echo "FAIL")
 [[ "$HEALTH" =~ ok ]] || fail "/health returned: $HEALTH"
 ok "/health -> $HEALTH"
 
-PROJ=$(curl -fs "http://localhost:8000/api/v1/projects?limit=5" || echo "FAIL")
+PROJ=$(curl -fs "http://localhost:${API_PORT}/api/v1/projects?limit=5" || echo "FAIL")
 echo "$PROJ" | grep -q '"items"' || fail "/projects returned unexpected: $PROJ"
 ok "/projects -> empty list as expected"
 
@@ -283,7 +291,7 @@ cat <<EOF | tee -a "$LOG"
   Ollama base: $OLLAMA_MODEL
 
   Endpoints (host-local — exposed externally only via Cloudflare):
-    API     -> http://localhost:8000
+    API     -> http://localhost:${API_PORT}
     MinIO   -> http://localhost:9001 (console)
     MLflow  -> http://localhost:5000
     Ollama  -> http://localhost:11434
