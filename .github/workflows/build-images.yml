@@ -59,12 +59,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The worker image base (pytorch:...-cuda12.1) is ~15 GB unpacked and the
-      # build writes several more GB; ubuntu-latest only has ~21 GB free on /.
-      # A first attempt with large-packages:false + cache mode=max ran the
-      # runner out of disk ("lost communication" at 47 min). Reclaim everything
-      # — incl. large apt packages, swap, and the pre-cached docker images —
-      # to free ~35-40 GB. The extra cleanup (~3-4 min) is worth it on worker.
+      # Reclaim disk headroom for the worker build (pytorch base is ~15 GB
+      # unpacked). Disk was NOT the failure cause — df showed 121 GB free and
+      # the build still OOM'd — so this is just headroom. CRITICAL: swap-storage
+      # stays false. jlumbroso defaults it to TRUE, which *removes* swap; with
+      # the build memory-bound, that made OOM more likely, not less. Keep swap.
       - name: Free disk space
         if: matrix.name == 'worker'
         uses: jlumbroso/free-disk-space@main
@@ -73,9 +72,8 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
+          large-packages: false
+          swap-storage: false
 
       - name: Disk free after cleanup
         if: matrix.name == 'worker'

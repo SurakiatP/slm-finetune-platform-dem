@@ -27,7 +27,13 @@ WORKDIR /app
 RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /app/llama.cpp \
     && cd /app/llama.cpp \
     && cmake -B build -DGGML_CUDA=OFF -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF \
-    && cmake --build build --config Release -j --target llama-quantize \
+    # `-j` with no number means `make -j` = UNLIMITED parallel jobs. llama.cpp's
+    # big translation units (llama.cpp, ggml) cost ~2-3 GB each to compile, so
+    # unbounded parallelism fork-bombs the compiler and exhausts RAM — it OOM's
+    # both the 15 GB pasaflow VM (the original "VM reboots on build") and the
+    # 16 GB CI runner ("runner lost communication / starved for memory"). Cap at
+    # 2: bounded peak memory, negligible time cost for this small target.
+    && cmake --build build --config Release -j 2 --target llama-quantize \
     && cp build/bin/llama-quantize /app/llama.cpp/llama-quantize \
     && (ldd /app/llama.cpp/llama-quantize 2>&1 | grep -q "not found" \
         && (echo "ERROR: llama-quantize has unresolved shared libs after static build:" \
