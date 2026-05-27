@@ -119,6 +119,11 @@ services:
     networks: [slm-net]
 
   mlflow:
+    # Pre-built in CI and pushed to GHCR (see .github/workflows/build-images.yml).
+    # On the VM, `docker compose pull` fetches this instead of building locally —
+    # the 15 GB pasaflow box reboots under a from-scratch build. `build:` is kept
+    # so local dev can still `docker compose build`.
+    image: ghcr.io/surakiatp/slm-mlflow:dev
     build:
       context: ./docker
       dockerfile: mlflow.Dockerfile
@@ -156,6 +161,7 @@ services:
     networks: [slm-net]
 
   api:
+    image: ghcr.io/surakiatp/slm-api:dev
     build:
       context: .
       dockerfile: docker/api.Dockerfile
@@ -191,6 +197,7 @@ services:
     networks: [slm-net]
 
   worker:
+    image: ghcr.io/surakiatp/slm-worker:dev
     build:
       context: .
       dockerfile: docker/worker.Dockerfile
