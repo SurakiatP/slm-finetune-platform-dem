@@ -1,0 +1,102 @@
+name: build-images
+
+# Build the three locally-built images (api, worker, mlflow) on GitHub's
+# runners and push them to GHCR, so the pasaflow VM never has to build from
+# scratch. The VM has only 15 GB RAM / 12 cores and reboots when the worker
+# image's `cmake -j` llama.cpp compile + torch/unsloth pip install spike memory.
+# On the VM the deploy script runs `docker compose pull` instead of `build`.
+
+on:
+  push:
+    branches: [dev]
+    # Only rebuild when something that lands in an image actually changes —
+    # doc-only commits don't trigger a 20-min worker build.
+    paths:
+      - docker/**
+      - pyproject.toml
+      - api/**
+      - ai_engine/**
+      - workers/**
+      - .github/workflows/build-images.yml
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Which image to rebuild
+        type: choice
+        default: all
+        options: [all, api, worker, mlflow]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # Emit the matrix of images to build. The `matrix` context is NOT available in
+  # a job-level `if`, so filtering by the manual `image` input has to happen here
+  # (not as a per-job condition) to rebuild just one image on demand.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.pick.outputs.images }}
+    steps:
+      - id: pick
+        env:
+          SEL: ${{ github.event_name == 'workflow_dispatch' && inputs.image || 'all' }}
+        run: |
+          if [ "$SEL" = "all" ]; then
+            echo 'images=["api","worker","mlflow"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "images=[\"$SEL\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        name: ${{ fromJSON(needs.prepare.outputs.images) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The worker image base (pytorch:...-cuda12.1) is ~6 GB and the build
+      # writes several more GB; ubuntu-latest has only ~14 GB free on / by
+      # default and fails with "no space left on device". Reclaim ~25-30 GB
+      # first. Small for api/mlflow, so skip the (slow) cleanup there.
+      - name: Free disk space
+        if: matrix.name == 'worker'
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          # api + worker build from repo root (they COPY pyproject.toml, api/, ...).
+          # mlflow's context is ./docker (its Dockerfile has no repo deps).
+          context: ${{ matrix.name == 'mlflow' && 'docker' || '.' }}
+          file: docker/${{ matrix.name }}.Dockerfile
+          platforms: linux/amd64
+          push: true
+          # :dev   -> mutable, what the deploy script pulls
+          # :sha-* -> immutable, for rollback / pinning
+          tags: |
+            ghcr.io/surakiatp/slm-${{ matrix.name }}:dev
+            ghcr.io/surakiatp/slm-${{ matrix.name }}:sha-${{ github.sha }}
+          # Registry cache (not gha cache — one worker build exceeds the 10 GB
+          # gha quota). Lets a source-only change rebuild in ~2 min instead of
+          # re-running the llama.cpp compile + torch install.
+          cache-from: type=registry,ref=ghcr.io/surakiatp/slm-${{ matrix.name }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/surakiatp/slm-${{ matrix.name }}:buildcache,mode=max

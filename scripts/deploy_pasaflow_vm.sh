@@ -207,12 +207,21 @@ else
   ok ".env populated (key hidden)"
 fi
 
-# --------- Phase 5: docker compose build + up -------------------------------
-say "==== Phase 5: Build + start stack ===="
-warn "Build expects ~20-30 min on this network (HF ~11 MB/s — measured)."
+# --------- Phase 5: docker compose pull + up --------------------------------
+# Images are pre-built in CI and pushed to GHCR (see
+# .github/workflows/build-images.yml). We PULL, never build: a from-scratch
+# `docker compose build` on this 15 GB / 12-core box spikes memory during the
+# worker image's `cmake -j` llama.cpp compile + torch/unsloth install and
+# reboots the VM (observed: 3 reboots in 34 min). Pulling is download-only —
+# no compile, no memory spike.
+say "==== Phase 5: Pull images + start stack ===="
+warn "First pull is ~6-10 GB over this network (HF ~11 MB/s) — expect ~15 min."
+warn "Subsequent pulls fetch only changed layers and are fast."
 warn "Safe to detach if running inside tmux/screen. Re-attach to monitor."
-docker compose build 2>&1 | tee -a "$LOG"
-ok "build complete"
+# Public GHCR packages — no `docker login` needed. postgres/redis/minio/ollama
+# pull from Docker Hub as before; api/worker/mlflow pull from GHCR.
+docker compose pull 2>&1 | tee -a "$LOG"
+ok "images pulled"
 
 docker compose up -d 2>&1 | tee -a "$LOG"
 
