@@ -27,7 +27,11 @@ class Settings(BaseSettings):
     # NoDecode disables pydantic-settings' default JSON decoding so the
     # field_validator below can handle plain comma-separated env values.
     api_cors_origins: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["http://localhost:3000", "http://localhost:5173"],
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "https://gentle-fine-tuner.lovable.app",
+        ],
     )
 
     @field_validator("api_cors_origins", mode="before")
