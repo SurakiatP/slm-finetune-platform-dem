@@ -4,17 +4,18 @@ import { useEffect, useRef } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { cancelTraining } from '@/api/endpoints/trainings'
-import { isTerminalStatus } from '@/api/types'
+import { isTerminalStatus, type MetricPoint } from '@/api/types'
 import { JsonViewer } from '@/components/data/JsonViewer'
 import { StatusBadge } from '@/components/data/StatusBadge'
 import { JobProgressPanel } from '@/components/jobs/JobProgressPanel'
+import { LossCurveChart } from '@/components/jobs/LossCurveChart'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
-import { Card, CardBody } from '@/components/ui/Card'
+import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { LoadingBlock } from '@/components/ui/Spinner'
 import { useToast } from '@/components/ui/toast-context'
-import { useMlflowUrl, useTraining, queryKeys } from '@/hooks/queries'
-import { useJobProgress, jobRefetchInterval } from '@/hooks/useJobProgress'
+import { useLossHistory, useMlflowUrl, useTraining, queryKeys } from '@/hooks/queries'
+import { useJobProgress, jobRefetchInterval, type LossPoint } from '@/hooks/useJobProgress'
 import { formatDuration, formatNumber } from '@/lib/format'
 
 export default function TrainingDetailPage() {
@@ -47,6 +48,17 @@ export default function TrainingDetailPage() {
   }, [progress.socketOpen])
 
   const { data: mlflow } = useMlflowUrl(trainingId!, !!training?.mlflow_run_id)
+
+  // The WS only streams while this page is open — backfill the curve from
+  // MLflow whenever the socket history is empty (revisits, finished runs).
+  const { data: storedLoss } = useLossHistory(
+    trainingId!,
+    !!training?.mlflow_run_id && progress.lossHistory.length === 0,
+  )
+  const lossHistory: LossPoint[] =
+    progress.lossHistory.length > 0
+      ? progress.lossHistory
+      : mergeLossHistory(storedLoss?.train_loss ?? [], storedLoss?.eval_loss ?? [])
 
   const cancelMutation = useMutation({
     mutationFn: () => cancelTraining(trainingId!),
@@ -155,10 +167,30 @@ export default function TrainingDetailPage() {
         }
       />
 
+      {!progress.training && !progress.hpo && lossHistory.length > 0 && (
+        <Card>
+          <CardHeader title="Loss curve" description="Replayed from MLflow metric history." />
+          <CardBody>
+            <LossCurveChart data={lossHistory} />
+          </CardBody>
+        </Card>
+      )}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <JsonViewer data={training.config_json} title="Training config" />
         {training.best_params_json && <JsonViewer data={training.best_params_json} title="Best params" defaultOpen />}
       </div>
     </div>
   )
+}
+
+function mergeLossHistory(train: MetricPoint[], evals: MetricPoint[]): LossPoint[] {
+  const byStep = new Map<number, LossPoint>()
+  for (const p of train) byStep.set(p.step, { step: p.step, train_loss: p.value, eval_loss: null })
+  for (const p of evals) {
+    const existing = byStep.get(p.step)
+    if (existing) existing.eval_loss = p.value
+    else byStep.set(p.step, { step: p.step, train_loss: null, eval_loss: p.value })
+  }
+  return [...byStep.values()].sort((a, b) => a.step - b.step)
 }

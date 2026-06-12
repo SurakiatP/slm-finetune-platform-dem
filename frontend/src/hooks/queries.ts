@@ -108,6 +108,16 @@ export function useMlflowUrl(id: string, enabled = true) {
   })
 }
 
+/** MLflow-backed loss series — backfills the chart since the WS has no replay. */
+export function useLossHistory(id: string, enabled = true) {
+  return useQuery({
+    queryKey: ['trainings', 'loss-history', id],
+    queryFn: () => trainings.getLossHistory(id),
+    enabled,
+    staleTime: 30_000,
+  })
+}
+
 // --- Models -------------------------------------------------------------------
 
 export function useModels(projectId?: string, page: { limit?: number; offset?: number } = {}) {

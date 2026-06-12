@@ -8,6 +8,7 @@ import type { Dataset } from '@/api/types'
 import { DataTable, type Column } from '@/components/data/DataTable'
 import { Pagination } from '@/components/data/Pagination'
 import { SourceBadge } from '@/components/data/SourceBadge'
+import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -39,7 +40,16 @@ export default function DatasetListPage() {
       header: 'Name',
       render: (d) => <span className="font-medium text-body">{d.name}</span>,
     },
-    { key: 'source', header: 'Source', render: (d) => <SourceBadge source={d.source} /> },
+    {
+      key: 'source',
+      header: 'Source',
+      render: (d) => (
+        <span className="flex gap-1">
+          <SourceBadge source={d.source} />
+          {d.parent_dataset_id && <Badge tone="violet">holdout</Badge>}
+        </span>
+      ),
+    },
     {
       key: 'samples',
       header: 'Rows',

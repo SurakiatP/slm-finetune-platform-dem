@@ -5,6 +5,7 @@ import type {
   Page,
   Training,
   TrainingJobAccepted,
+  TrainingLossHistory,
   TrainingRequest,
 } from '@/api/types'
 
@@ -30,4 +31,8 @@ export function cancelTraining(id: string): Promise<{ message: string }> {
 
 export function getMlflowUrl(id: string): Promise<MlflowUrlResponse> {
   return api.get(`${BASE}/${id}/mlflow-url`)
+}
+
+export function getLossHistory(id: string): Promise<TrainingLossHistory> {
+  return api.get(`${BASE}/${id}/loss-history`)
 }

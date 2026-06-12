@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Info } from 'lucide-react'
 import { useState } from 'react'
 
 import { generateDataset } from '@/api/endpoints/datasets'
@@ -7,10 +8,10 @@ import { Button } from '@/components/ui/Button'
 import { Field } from '@/components/ui/Field'
 import { Input, Textarea } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
+import { Select } from '@/components/ui/Select'
 import { useToast } from '@/components/ui/toast-context'
-import { queryKeys } from '@/hooks/queries'
+import { useDatasets, queryKeys } from '@/hooks/queries'
 import { cn } from '@/lib/cn'
-import { parseJsonlText } from '@/lib/jsonl'
 
 export interface SdgJobRef {
   jobId: string
@@ -24,8 +25,15 @@ interface GenerateDatasetModalProps {
   onJobStarted: (job: SdgJobRef) => void
 }
 
-const seedPlaceholder = `{"question": "What's your return window?", "answer": "Items can be returned within 30 days."}
-{"question": "Do I need a receipt?", "answer": "Yes — please keep your receipt."}`
+/**
+ * Models are fixed per Phase 9 decision Q6.1 — no per-request override.
+ * Mirror of ai_engine/data_gen/models.py; update together.
+ */
+const PIPELINE_MODELS = [
+  { role: 'Generator', model: 'qwen/qwen3-235b-a22b-2507' },
+  { role: 'Judge', model: 'openai/gpt-4o-mini' },
+  { role: 'Diversity rules', model: 'google/gemini-3.1-flash-lite-preview' },
+]
 
 const toolsPlaceholder = `[
   {
@@ -39,15 +47,18 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
   const [mode, setMode] = useState<'with_seed' | 'description_only'>('description_only')
   const [taskDescription, setTaskDescription] = useState(project.description ?? '')
   const [numSamples, setNumSamples] = useState('200')
+  const [holdoutSize, setHoldoutSize] = useState('0')
   const [temperature, setTemperature] = useState('0.9')
   const [datasetName, setDatasetName] = useState('')
-  const [teacherModel, setTeacherModel] = useState('')
-  const [seedText, setSeedText] = useState('')
+  const [seedDatasetId, setSeedDatasetId] = useState('')
   const [labelsText, setLabelsText] = useState('')
   const [toolsText, setToolsText] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const toast = useToast()
+
+  const { data: datasets } = useDatasets(project.id, { limit: 200 })
+  const seedDatasets = (datasets?.items ?? []).filter((d) => d.source === 'seed' && d.num_samples > 0)
 
   const mutation = useMutation({
     mutationFn: (body: SDGRequest) => generateDataset(body),
@@ -67,9 +78,9 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
       task_type: project.task_type,
       task_description: taskDescription.trim(),
       num_samples: Number(numSamples),
+      holdout_size: Number(holdoutSize) || 0,
       temperature: Number(temperature),
       dataset_name: datasetName.trim() || null,
-      teacher_model: teacherModel.trim() || null,
     }
 
     if (base.task_description.length < 10) {
@@ -80,20 +91,17 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
       setFormError('Samples must be between 1 and 10,000.')
       return null
     }
+    if (base.holdout_size < 0 || base.holdout_size > 2_000) {
+      setFormError('Holdout must be between 0 and 2,000.')
+      return null
+    }
 
     if (mode === 'with_seed') {
-      let seed: Record<string, unknown>[]
-      try {
-        seed = parseJsonlText(seedText)
-      } catch (err) {
-        setFormError(`Seed data: ${(err as Error).message}`)
+      if (!seedDatasetId) {
+        setFormError('Pick a seed dataset (upload one first if the list is empty).')
         return null
       }
-      if (seed.length < 5 || seed.length > 50) {
-        setFormError(`Seed data must have 5–50 rows (got ${seed.length}).`)
-        return null
-      }
-      return { ...base, sdg_mode: 'with_seed', seed_data: seed }
+      return { ...base, sdg_mode: 'with_seed', seed_dataset_id: seedDatasetId }
     }
 
     if (project.task_type === 'classification') {
@@ -126,7 +134,7 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
       open={open}
       onClose={onClose}
       title="Generate synthetic data"
-      description="A teacher model (via OpenRouter) writes training rows for this task."
+      description="Teacher models (via OpenRouter) write, judge, and dedup training rows for this task."
       widthClass="max-w-2xl"
     >
       <form
@@ -141,7 +149,7 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
           {(
             [
               { value: 'description_only', title: 'From description', desc: 'No examples needed — describe the task and let the teacher invent rows.' },
-              { value: 'with_seed', title: 'From seed examples', desc: 'Paste 5–50 rows; the teacher extrapolates in the same style.' },
+              { value: 'with_seed', title: 'From seed dataset', desc: 'Pick an uploaded seed dataset; the teacher extrapolates in the same style.' },
             ] as const
           ).map((opt) => (
             <label
@@ -178,16 +186,22 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
         </Field>
 
         {mode === 'with_seed' && (
-          <Field label="Seed rows (JSONL)" required hint="5–50 rows, one JSON object per line, matching the task format.">
+          <Field
+            label="Seed dataset"
+            required
+            hint={seedDatasets.length === 0 ? 'No seed datasets yet — use "Upload seed" first.' : undefined}
+          >
             {(id) => (
-              <Textarea
-                id={id}
-                value={seedText}
-                onChange={(e) => setSeedText(e.target.value)}
-                placeholder={seedPlaceholder}
-                className="min-h-36 font-mono text-xs"
-                required
-              />
+              <Select id={id} value={seedDatasetId} onChange={(e) => setSeedDatasetId(e.target.value)} required>
+                <option value="" disabled>
+                  {seedDatasets.length ? 'Select a seed dataset…' : 'No seed datasets available'}
+                </option>
+                {seedDatasets.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name} ({d.num_samples} rows)
+                  </option>
+                ))}
+              </Select>
             )}
           </Field>
         )}
@@ -221,7 +235,7 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
           </Field>
         )}
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-3">
           <Field label="Samples" required hint="1–10,000">
             {(id) => (
               <Input
@@ -232,6 +246,18 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
                 value={numSamples}
                 onChange={(e) => setNumSamples(e.target.value)}
                 required
+              />
+            )}
+          </Field>
+          <Field label="Holdout rows" hint="Extra rows for leak-free eval (0 = off)">
+            {(id) => (
+              <Input
+                id={id}
+                type="number"
+                min={0}
+                max={2000}
+                value={holdoutSize}
+                onChange={(e) => setHoldoutSize(e.target.value)}
               />
             )}
           </Field>
@@ -250,13 +276,23 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
           </Field>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Dataset name" hint="Defaults to project + timestamp.">
-            {(id) => <Input id={id} value={datasetName} onChange={(e) => setDatasetName(e.target.value)} />}
-          </Field>
-          <Field label="Teacher model" hint="Override default, e.g. openai/gpt-4o-mini">
-            {(id) => <Input id={id} value={teacherModel} onChange={(e) => setTeacherModel(e.target.value)} className="font-mono text-xs" />}
-          </Field>
+        <Field label="Dataset name" hint="Defaults to project + timestamp.">
+          {(id) => <Input id={id} value={datasetName} onChange={(e) => setDatasetName(e.target.value)} />}
+        </Field>
+
+        <div className="flex items-start gap-2 rounded-md border border-line/60 bg-bg p-3">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-info" aria-hidden />
+          <div className="text-xs text-body-muted">
+            <p className="font-medium text-body">Pipeline models (fixed by the platform)</p>
+            <dl className="mt-1 space-y-0.5 font-mono text-[11px]">
+              {PIPELINE_MODELS.map((m) => (
+                <div key={m.role} className="flex gap-2">
+                  <dt className="w-28 shrink-0">{m.role}:</dt>
+                  <dd className="text-body-muted/80">{m.model}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
         </div>
 
         {formError && (

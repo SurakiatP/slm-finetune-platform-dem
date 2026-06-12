@@ -68,6 +68,7 @@ export interface Dataset {
   storage_uri: string | null
   size_bytes: number | null
   generation_metadata: Record<string, unknown> | null
+  parent_dataset_id?: string | null
   created_at: string
   updated_at: string
 }
@@ -117,14 +118,16 @@ interface SDGRequestBase {
   task_type: TaskType
   task_description: string
   num_samples: number
-  teacher_model?: string | null
+  /** Extra rows persisted as a separate holdout child dataset; 0 disables. */
+  holdout_size?: number
   temperature?: number
   dataset_name?: string | null
 }
 
 export interface SDGRequestWithSeed extends SDGRequestBase {
   sdg_mode: 'with_seed'
-  seed_data: Record<string, unknown>[]
+  /** A previously-uploaded dataset with source='seed' and matching task_type. */
+  seed_dataset_id: string
 }
 
 export interface SDGRequestDescriptionOnly extends SDGRequestBase {
@@ -270,6 +273,20 @@ export interface Training {
   updated_at: string
 }
 
+export interface MetricPoint {
+  step: number
+  value: number
+  timestamp_ms: number
+}
+
+/** Body of GET /trainings/{id}/loss-history — chart backfill (WS has no replay). */
+export interface TrainingLossHistory {
+  training_id: string
+  mlflow_run_id: string | null
+  train_loss: MetricPoint[]
+  eval_loss: MetricPoint[]
+}
+
 export interface MlflowUrlResponse {
   training_id: string
   mlflow_run_id: string | null
@@ -289,6 +306,7 @@ export interface ModelArtifact {
   safetensors_uri: string | null
   size_mb: number | null
   ollama_model_tag: string | null
+  export_error_message?: string | null
   created_at: string
   updated_at: string
 }
@@ -430,7 +448,15 @@ export interface BaseModelInfo {
 
 // --- WebSocket progress messages (api/schemas/progress.py) -------------------
 
-export type SDGPhase = 'generating' | 'validating' | 'deduplicating' | 'persisting'
+export type SDGPhase =
+  | 'format_detection'
+  | 'meta_prompting'
+  | 'generating'
+  | 'validating'
+  | 'judging'
+  | 'dedup'
+  | 'deduplicating'
+  | 'persisting'
 
 interface WSMessageBase {
   job_id: string
@@ -445,6 +471,10 @@ export interface SDGProgressMsg extends WSMessageBase {
   samples_valid: number
   samples_rejected: number
   duplicates_removed: number
+  current_loop?: number | null
+  judge_rejected?: number | null
+  judge_parse_failures?: number | null
+  dedup_rejected?: number | null
 }
 
 export interface TrainingProgressMsg extends WSMessageBase {

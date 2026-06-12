@@ -45,7 +45,7 @@ const manualDefaults: ManualFormState = {
   learning_rate: '0.0002',
   num_train_epochs: '3',
   per_device_train_batch_size: '2',
-  gradient_accumulation_steps: '4',
+  gradient_accumulation_steps: '8',
   warmup_ratio: '0.03',
   weight_decay: '0.01',
   lr_scheduler_type: 'cosine',
@@ -165,7 +165,7 @@ export function NewTrainingModal({ project, open, onClose }: NewTrainingModalPro
   const [trainingName, setTrainingName] = useState('')
   const [manual, setManual] = useState<ManualFormState>(manualDefaults)
   const [spaceState, setSpaceState] = useState(initialSpaceState)
-  const [nTrials, setNTrials] = useState('8')
+  const [nTrials, setNTrials] = useState('6')
   const [objectiveMetric, setObjectiveMetric] = useState('eval_loss')
   const [direction, setDirection] = useState<'minimize' | 'maximize'>('minimize')
   const [sampler, setSampler] = useState<'tpe' | 'random'>('tpe')
@@ -215,8 +215,8 @@ export function NewTrainingModal({ project, open, onClose }: NewTrainingModalPro
       return
     }
     const trials = Number(nTrials)
-    if (!Number.isFinite(trials) || trials < 2 || trials > 100) {
-      setFormError('Trials must be between 2 and 100.')
+    if (!Number.isFinite(trials) || trials < 2 || trials > 20) {
+      setFormError('Trials must be between 2 and 20.')
       return
     }
     mutation.mutate({
@@ -331,9 +331,9 @@ export function NewTrainingModal({ project, open, onClose }: NewTrainingModalPro
               Search space
             </legend>
             <div className="grid gap-4 sm:grid-cols-5">
-              <Field label="Trials" hint="2–100">
+              <Field label="Trials" hint="2–20">
                 {(id) => (
-                  <Input id={id} type="number" min={2} max={100} value={nTrials} onChange={(e) => setNTrials(e.target.value)} />
+                  <Input id={id} type="number" min={2} max={20} value={nTrials} onChange={(e) => setNTrials(e.target.value)} />
                 )}
               </Field>
               <Field label="Objective">
