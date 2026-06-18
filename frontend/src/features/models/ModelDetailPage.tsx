@@ -10,7 +10,6 @@ import { JobProgressPanel } from '@/components/jobs/JobProgressPanel'
 import { Button } from '@/components/ui/Button'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { Field } from '@/components/ui/Field'
-import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { LoadingBlock } from '@/components/ui/Spinner'
 import { useToast } from '@/components/ui/toast-context'
@@ -18,6 +17,19 @@ import { FormatBadges } from '@/features/models/ModelListPage'
 import { useModel, queryKeys } from '@/hooks/queries'
 import { useJobProgress, jobRefetchInterval } from '@/hooks/useJobProgress'
 import { formatDateTime } from '@/lib/format'
+
+// GGUF quantization methods supported by llama-quantize, ordered by typical
+// usefulness. The backend passes the value straight to llama-quantize.
+const GGUF_QUANTIZATIONS: { value: string; label: string }[] = [
+  { value: 'q4_k_m', label: 'q4_k_m — recommended (balanced size/quality)' },
+  { value: 'q5_k_m', label: 'q5_k_m — higher quality, larger' },
+  { value: 'q6_k', label: 'q6_k — very high quality' },
+  { value: 'q8_0', label: 'q8_0 — near-lossless, largest' },
+  { value: 'q3_k_m', label: 'q3_k_m — smaller, lower quality' },
+  { value: 'q4_0', label: 'q4_0 — legacy 4-bit' },
+  { value: 'q5_0', label: 'q5_0 — legacy 5-bit' },
+  { value: 'f16', label: 'f16 — full half precision (no quantization)' },
+]
 
 export default function ModelDetailPage() {
   const { modelId } = useParams<{ modelId: string }>()
@@ -176,14 +188,20 @@ function ExportPanel({
             )}
           </Field>
           {format === 'gguf' && (
-            <Field label="Quantization" className="w-36" hint="e.g. q4_k_m, q8_0">
+            <Field label="Quantization" className="w-72" hint="Lower bits = smaller file, lower quality.">
               {(id) => (
-                <Input
+                <Select
                   id={id}
                   value={quantization}
                   onChange={(e) => setQuantization(e.target.value)}
                   className="font-mono text-xs"
-                />
+                >
+                  {GGUF_QUANTIZATIONS.map((q) => (
+                    <option key={q.value} value={q.value}>
+                      {q.label}
+                    </option>
+                  ))}
+                </Select>
               )}
             </Field>
           )}

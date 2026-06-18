@@ -57,8 +57,36 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
   const queryClient = useQueryClient()
   const toast = useToast()
 
+  // Pretty-print the tool definitions JSON. Tolerates the common copy-paste
+  // failure where line wrapping injects raw newlines/tabs inside string
+  // literals ("Bad control character") by collapsing control whitespace to a
+  // single space before parsing — then re-indents the result.
+  const formatToolsJson = () => {
+    if (!toolsText.trim()) return
+    const tryParse = (s: string) => JSON.parse(s) as unknown
+    let parsed: unknown
+    try {
+      parsed = tryParse(toolsText)
+    } catch {
+      try {
+        parsed = tryParse(toolsText.replace(/[\r\n\t]+/g, ' '))
+      } catch (err) {
+        setFormError(`Tool definitions: ${(err as Error).message}`)
+        return
+      }
+    }
+    setToolsText(JSON.stringify(parsed, null, 2))
+    setFormError(null)
+  }
+
   const { data: datasets } = useDatasets(project.id, { limit: 200 })
-  const seedDatasets = (datasets?.items ?? []).filter((d) => d.source === 'seed' && d.num_samples > 0)
+  // PDF seeds (QA) carry no rows (num_samples === 0) — their content is the PDF
+  // itself, extracted at SDG time — so they must still be selectable as seeds.
+  const isPdfSeed = (d: { generation_metadata: Record<string, unknown> | null }) =>
+    !!d.generation_metadata && 'pdf_uri' in d.generation_metadata
+  const seedDatasets = (datasets?.items ?? []).filter(
+    (d) => d.source === 'seed' && (d.num_samples > 0 || isPdfSeed(d)),
+  )
 
   const mutation = useMutation({
     mutationFn: (body: SDGRequest) => generateDataset(body),
@@ -198,7 +226,7 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
                 </option>
                 {seedDatasets.map((d) => (
                   <option key={d.id} value={d.id}>
-                    {d.name} ({d.num_samples} rows)
+                    {d.name} ({isPdfSeed(d) ? 'PDF' : `${d.num_samples} rows`})
                   </option>
                 ))}
               </Select>
@@ -221,16 +249,33 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
         )}
 
         {mode === 'description_only' && project.task_type === 'tool_calling' && (
-          <Field label="Tool definitions (JSON)" required hint="Array of tools the samples may invoke.">
+          <Field
+            label="Tool definitions (JSON)"
+            required
+            hint="Array of tools the samples may invoke. Use Format to tidy & validate."
+          >
             {(id) => (
-              <Textarea
-                id={id}
-                value={toolsText}
-                onChange={(e) => setToolsText(e.target.value)}
-                placeholder={toolsPlaceholder}
-                className="min-h-36 font-mono text-xs"
-                required
-              />
+              <div className="space-y-2">
+                <Textarea
+                  id={id}
+                  value={toolsText}
+                  onChange={(e) => setToolsText(e.target.value)}
+                  placeholder={toolsPlaceholder}
+                  className="min-h-36 font-mono text-xs"
+                  required
+                />
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={formatToolsJson}
+                    disabled={!toolsText.trim()}
+                  >
+                    Format JSON
+                  </Button>
+                </div>
+              </div>
             )}
           </Field>
         )}

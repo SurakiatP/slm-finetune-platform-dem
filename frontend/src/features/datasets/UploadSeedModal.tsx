@@ -20,6 +20,11 @@ interface UploadSeedModalProps {
   onClose: () => void
 }
 
+const MAX_JSON_BYTES = 10 * 1024 * 1024 // backend rejects > 10 MiB
+const MAX_PDF_BYTES = 25 * 1024 * 1024 // MAX_SEED_PDF_BYTES (QA only)
+
+const isPdf = (f: File) => /\.pdf$/i.test(f.name) || f.type === 'application/pdf'
+
 export function UploadSeedModal({ project, open, onClose }: UploadSeedModalProps) {
   const [file, setFile] = useState<File | null>(null)
   const [rows, setRows] = useState<Record<string, unknown>[] | null>(null)
@@ -27,6 +32,11 @@ export function UploadSeedModal({ project, open, onClose }: UploadSeedModalProps
   const [name, setName] = useState('')
   const queryClient = useQueryClient()
   const toast = useToast()
+
+  // PDF seeds are a QA-only feature — the backend extracts QA pairs from the PDF
+  // during SDG (with_seed mode) via a multimodal model.
+  const pdfAllowed = project.task_type === 'qa'
+  const fileIsPdf = file ? isPdf(file) : false
 
   const reset = () => {
     setFile(null)
@@ -40,6 +50,14 @@ export function UploadSeedModal({ project, open, onClose }: UploadSeedModalProps
     setRows(null)
     setParseError(null)
     if (!f) return
+    if (isPdf(f)) {
+      if (!pdfAllowed) {
+        setParseError('PDF seeds are only supported for QA projects.')
+      } else if (f.size > MAX_PDF_BYTES) {
+        setParseError('PDF exceeds the 25 MiB upload limit.')
+      }
+      return // PDFs are not row-parsed in the browser
+    }
     parseJsonlFile(f)
       .then(setRows)
       .catch((err: Error) => setParseError(err.message))
@@ -73,7 +91,11 @@ export function UploadSeedModal({ project, open, onClose }: UploadSeedModalProps
         onClose()
       }}
       title="Upload seed dataset"
-      description={`Rows must match the ${project.task_type} format.`}
+      description={
+        pdfAllowed
+          ? 'Upload .jsonl/.json rows in the QA format, or a .pdf to extract QA pairs from during SDG.'
+          : `Rows must match the ${project.task_type} format.`
+      }
       widthClass="max-w-2xl"
     >
       <form
@@ -87,9 +109,38 @@ export function UploadSeedModal({ project, open, onClose }: UploadSeedModalProps
           Task type: <TaskTypeBadge taskType={project.task_type} />
         </div>
 
-        <FileDropzone file={file} onFileChange={onFileChange} rowCount={rows?.length} error={parseError} />
+        <FileDropzone
+          file={file}
+          onFileChange={onFileChange}
+          rowCount={fileIsPdf ? null : rows?.length}
+          error={parseError}
+          accept={
+            pdfAllowed
+              ? '.jsonl,.json,application/json,.pdf,application/pdf'
+              : '.jsonl,.json,application/json'
+          }
+          maxSizeBytes={fileIsPdf ? MAX_PDF_BYTES : MAX_JSON_BYTES}
+          formatsHint={
+            pdfAllowed ? (
+              <>
+                Drop a <span className="font-mono">.pdf</span> or{' '}
+                <span className="font-mono">.jsonl</span> / <span className="font-mono">.json</span>{' '}
+                file or click to browse
+              </>
+            ) : undefined
+          }
+          sizeHint={pdfAllowed ? 'PDF ≤ 25 MiB · JSON/JSONL ≤ 10 MiB' : undefined}
+        />
 
-        {rows && rows.length > 0 && (
+        {fileIsPdf && !parseError && (
+          <p className="rounded-md border border-line/60 bg-surface p-3 text-xs text-body-muted">
+            PDF seeds have no row preview. The document is sent to a multimodal model during SDG
+            (<span className="font-mono">with_seed</span> mode) to generate QA pairs from its
+            content. Max 25 MiB / 100 pages.
+          </p>
+        )}
+
+        {!fileIsPdf && rows && rows.length > 0 && (
           <div>
             <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-body-muted">
               Preview ({Math.min(rows.length, 10)} of {rows.length} rows)
@@ -104,7 +155,7 @@ export function UploadSeedModal({ project, open, onClose }: UploadSeedModalProps
               id={id}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder={file?.name.replace(/\.(jsonl|json)$/i, '') ?? 'seed-v1'}
+              placeholder={file?.name.replace(/\.(jsonl|json|pdf)$/i, '') ?? 'seed-v1'}
             />
           )}
         </Field>

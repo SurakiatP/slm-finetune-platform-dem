@@ -54,7 +54,13 @@ export function EvaluationRow({ evaluationId, selected, onToggleSelect, onForget
   }
 
   const terminal = isTerminalStatus(evaluation.status)
-  const metrics = evaluation.metrics_json ? scalarMetrics(evaluation.metrics_json) : {}
+  const baseMetrics = evaluation.metrics_json ? scalarMetrics(evaluation.metrics_json) : {}
+  // The judge score lives on its own column (not in metrics_json); fold it into
+  // the bar list so every metric renders uniformly with its range.
+  const metrics =
+    evaluation.llm_judge_score !== null
+      ? { ...baseMetrics, llm_judge_score: evaluation.llm_judge_score }
+      : baseMetrics
   const confusion = evaluation.metrics_json ? extractConfusionMatrix(evaluation.metrics_json) : null
 
   return (
@@ -83,7 +89,7 @@ export function EvaluationRow({ evaluationId, selected, onToggleSelect, onForget
           <StatusBadge status={evaluation.status} />
           {evaluation.llm_judge_score !== null && (
             <span className="font-mono text-xs text-body-muted">
-              judge {formatNumber(evaluation.llm_judge_score, 2)}
+              judge {formatNumber(evaluation.llm_judge_score, 2)}/5
             </span>
           )}
           <span className="ml-auto hidden font-mono text-[11px] text-body-muted sm:inline">
@@ -111,7 +117,14 @@ export function EvaluationRow({ evaluationId, selected, onToggleSelect, onForget
           )}
 
           {Object.keys(metrics).length > 0 ? (
-            <MetricBars metrics={metrics} />
+            <div className="space-y-1.5">
+              <MetricBars metrics={metrics} />
+              <p className="text-[11px] text-body-muted">
+                Bars scale to each metric&apos;s range (rightmost column): ratios 0–1 and the LLM
+                judge 1–5 are higher-is-better; <span className="font-mono">count</span> values
+                (n, skipped/out-of-set rows) are totals, not proportions.
+              </p>
+            </div>
           ) : (
             !evaluation.error_message && (
               <p className="text-xs text-body-muted">

@@ -114,7 +114,9 @@ async def get_mlflow_url(db: AsyncSession, training_id: UUID) -> MlflowUrlRespon
     settings = get_settings()
     url: str | None = None
     if job.mlflow_run_id and job.mlflow_experiment_id:
-        base = str(settings.mlflow_tracking_uri).rstrip("/")
+        base = str(
+            settings.mlflow_public_url or settings.mlflow_tracking_uri
+        ).rstrip("/")
         url = f"{base}/#/experiments/{job.mlflow_experiment_id}/runs/{job.mlflow_run_id}"
     return MlflowUrlResponse(
         training_id=job.id,

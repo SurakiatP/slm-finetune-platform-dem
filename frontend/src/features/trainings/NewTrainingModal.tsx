@@ -7,6 +7,7 @@ import type {
   HPOSearchSpace,
   ManualTrainingConfig,
   Project,
+  TaskType,
   TrainingRequest,
 } from '@/api/types'
 import { Button } from '@/components/ui/Button'
@@ -107,18 +108,75 @@ interface SpaceRowState {
   choices: string
 }
 
-function initialSpaceState(): Record<SpaceKey, SpaceRowState> {
+// --- Task-specific HPO presets -----------------------------------------------
+// Recommended search-space defaults per task type, following common QLoRA
+// guidance (Unsloth / Lightning AI / QLoRA paper):
+//   • learning_rate is the highest-impact knob — always tuned (log scale).
+//   • classification is the simplest task → less LoRA capacity, fewer epochs,
+//     slightly wider LR; keeps trials cheap.
+//   • qa (free-form generation) needs more capacity → higher LoRA rank/alpha,
+//     a few more epochs.
+//   • tool_calling must emit exact JSON → higher rank/alpha for format fidelity,
+//     a lower/narrower LR for stability, and up to 5 epochs to lock the format.
+// Only the highest-impact params are enabled by default; users can toggle the
+// rest. Ranges stay within the backend bounds in api/schemas/training.py.
+interface PresetRow {
+  enabled?: boolean
+  low?: string
+  high?: string
+  log?: boolean
+  choices?: string
+}
+interface TaskHpoPreset {
+  nTrials: string
+  rows: Partial<Record<SpaceKey, PresetRow>>
+}
+
+const TASK_HPO_PRESETS: Record<TaskType, TaskHpoPreset> = {
+  classification: {
+    nTrials: '6',
+    rows: {
+      learning_rate: { enabled: true, low: '0.00005', high: '0.0005', log: true },
+      lora_r: { enabled: true, choices: '8, 16, 32' },
+      num_train_epochs: { enabled: true, low: '1', high: '3' },
+    },
+  },
+  qa: {
+    nTrials: '8',
+    rows: {
+      learning_rate: { enabled: true, low: '0.00003', high: '0.0003', log: true },
+      lora_r: { enabled: true, choices: '16, 32, 64' },
+      lora_alpha: { enabled: true, choices: '16, 32, 64' },
+      num_train_epochs: { enabled: true, low: '2', high: '4' },
+    },
+  },
+  tool_calling: {
+    nTrials: '8',
+    rows: {
+      learning_rate: { enabled: true, low: '0.00003', high: '0.0002', log: true },
+      lora_r: { enabled: true, choices: '16, 32, 64' },
+      lora_alpha: { enabled: true, choices: '32, 64, 128' },
+      num_train_epochs: { enabled: true, low: '2', high: '5' },
+    },
+  },
+}
+
+function initialSpaceState(taskType: TaskType): Record<SpaceKey, SpaceRowState> {
+  const preset = TASK_HPO_PRESETS[taskType]
   return Object.fromEntries(
-    spaceRows.map((row) => [
-      row.key,
-      {
-        enabled: row.key === 'learning_rate', // sensible default: tune LR
-        low: row.defaults.low ?? '',
-        high: row.defaults.high ?? '',
-        log: row.defaults.log ?? false,
-        choices: row.defaults.choices ?? '',
-      },
-    ]),
+    spaceRows.map((row) => {
+      const p = preset.rows[row.key]
+      return [
+        row.key,
+        {
+          enabled: p?.enabled ?? false,
+          low: p?.low ?? row.defaults.low ?? '',
+          high: p?.high ?? row.defaults.high ?? '',
+          log: p?.log ?? row.defaults.log ?? false,
+          choices: p?.choices ?? row.defaults.choices ?? '',
+        },
+      ]
+    }),
   ) as Record<SpaceKey, SpaceRowState>
 }
 
@@ -164,8 +222,8 @@ export function NewTrainingModal({ project, open, onClose }: NewTrainingModalPro
   const [baseModel, setBaseModel] = useState('')
   const [trainingName, setTrainingName] = useState('')
   const [manual, setManual] = useState<ManualFormState>(manualDefaults)
-  const [spaceState, setSpaceState] = useState(initialSpaceState)
-  const [nTrials, setNTrials] = useState('6')
+  const [spaceState, setSpaceState] = useState(() => initialSpaceState(project.task_type))
+  const [nTrials, setNTrials] = useState(TASK_HPO_PRESETS[project.task_type].nTrials)
   const [objectiveMetric, setObjectiveMetric] = useState('eval_loss')
   const [direction, setDirection] = useState<'minimize' | 'maximize'>('minimize')
   const [sampler, setSampler] = useState<'tpe' | 'random'>('tpe')

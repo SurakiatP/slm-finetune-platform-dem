@@ -3,12 +3,11 @@ import { ClipboardCheck, GitCompareArrows, Plus } from 'lucide-react'
 import { useState } from 'react'
 
 import { compareEvaluations, startEvaluation } from '@/api/endpoints/evaluations'
-import type { EvaluationCompareResponse, EvaluationCreate } from '@/api/types'
+import type { EvaluationCompareResponse, EvaluationCreate, TaskType } from '@/api/types'
 import { Button } from '@/components/ui/Button'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Field } from '@/components/ui/Field'
-import { Input } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
 import { useToast } from '@/components/ui/toast-context'
@@ -100,6 +99,7 @@ export default function EvaluationListPage() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         projectId={project.id}
+        taskType={project.task_type}
         onCreated={add}
       />
     </>
@@ -110,20 +110,26 @@ function CreateEvaluationModal({
   open,
   onClose,
   projectId,
+  taskType,
   onCreated,
 }: {
   open: boolean
   onClose: () => void
   projectId: string
+  taskType: TaskType
   onCreated: (evaluationId: string) => void
 }) {
   const [modelId, setModelId] = useState('')
   const [datasetId, setDatasetId] = useState('')
   const [useJudge, setUseJudge] = useState(false)
-  const [judgeModel, setJudgeModel] = useState('')
   const { data: models } = useModels(projectId, { limit: 200 })
   const { data: datasets } = useDatasets(projectId, { limit: 200 })
   const toast = useToast()
+
+  // The LLM judge only applies to free-form tasks (qa / tool_calling).
+  // Classification is scored with closed-set rule-based metrics, so the backend
+  // skips the judge — hide the toggle entirely to avoid confusion.
+  const judgeApplies = taskType !== 'classification'
 
   const usableDatasets = (datasets?.items ?? []).filter((d) => d.num_samples > 0)
 
@@ -153,20 +159,27 @@ function CreateEvaluationModal({
           mutation.mutate({
             model_artifact_id: modelId,
             dataset_id: datasetId,
-            use_llm_judge: useJudge,
-            judge_model: useJudge && judgeModel.trim() ? judgeModel.trim() : null,
+            use_llm_judge: judgeApplies && useJudge,
+            // Judge model is platform-controlled (see settings.llm_judge_model);
+            // never sent from the UI so the backend default always applies.
+            judge_model: null,
           })
         }}
       >
-        <Field label="Model artifact" required>
+        <Field
+          label="Model artifact"
+          required
+          hint="Only models exported to GGUF (registered with Ollama) can be evaluated."
+        >
           {(id) => (
             <Select id={id} value={modelId} onChange={(e) => setModelId(e.target.value)} required>
               <option value="" disabled>
                 {models?.items.length ? 'Select a model…' : 'No model artifacts in this project'}
               </option>
               {(models?.items ?? []).map((m) => (
-                <option key={m.id} value={m.id}>
+                <option key={m.id} value={m.id} disabled={!m.ollama_model_tag}>
                   {m.name}
+                  {m.ollama_model_tag ? '' : ' — export to GGUF first'}
                 </option>
               ))}
             </Select>
@@ -188,28 +201,30 @@ function CreateEvaluationModal({
           )}
         </Field>
 
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-body">
-          <input
-            type="checkbox"
-            checked={useJudge}
-            onChange={(e) => setUseJudge(e.target.checked)}
-            className="h-4 w-4 accent-[#22C55E]"
-          />
-          Score responses with an LLM judge
-        </label>
-
-        {useJudge && (
-          <Field label="Judge model" hint="Leave blank for the platform default.">
-            {(id) => (
-              <Input
-                id={id}
-                value={judgeModel}
-                onChange={(e) => setJudgeModel(e.target.value)}
-                placeholder="anthropic/claude-3.5-sonnet"
-                className="font-mono text-xs"
+        {judgeApplies ? (
+          <>
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-body">
+              <input
+                type="checkbox"
+                checked={useJudge}
+                onChange={(e) => setUseJudge(e.target.checked)}
+                className="h-4 w-4 accent-[#22C55E]"
               />
+              Score responses with an LLM judge
+            </label>
+
+            {useJudge && (
+              <p className="text-xs text-body-muted">
+                The judge model is set by the platform —{' '}
+                <span className="font-mono">qwen/qwen3-235b-a22b-2507</span>.
+              </p>
             )}
-          </Field>
+          </>
+        ) : (
+          <p className="text-xs text-body-muted">
+            Classification is scored with rule-based metrics (accuracy, macro-F1) —
+            the LLM judge does not apply.
+          </p>
         )}
 
         <div className="flex justify-end gap-2 pt-2">

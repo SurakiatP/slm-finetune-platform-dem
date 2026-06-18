@@ -10,6 +10,9 @@ x-app-env: &app-env
   CELERY_BROKER_URL: redis://redis:6379/1
   CELERY_RESULT_BACKEND: redis://redis:6379/2
   MLFLOW_TRACKING_URI: http://mlflow:5000
+  # Browser-facing MLflow URL for clickable run links (in-network hostname
+  # "mlflow" is not resolvable from a browser). Override per-deployment.
+  MLFLOW_PUBLIC_URL: ${MLFLOW_PUBLIC_URL:-http://localhost:5000}
   MLFLOW_S3_ENDPOINT_URL: http://minio:9000
   AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
   AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
