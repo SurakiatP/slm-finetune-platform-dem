@@ -5,7 +5,8 @@ platform. Users describe a task → the platform synthesizes training data with 
 fine-tunes a ≤3B-parameter model with **Unsloth + QLoRA**, tracks every run in **MLflow**,
 and serves the result via **Ollama** (OpenAI-compatible API).
 
-The frontend is built separately by a teammate; this repo exposes the OpenAPI contract only.
+A web UI (React + Vite + Tailwind) now ships in [`frontend/`](./frontend); the backend still
+exposes a clean OpenAPI contract as its public interface, so the API can be driven on its own.
 
 > **Source of truth for scope:** [`require.md`](./require.md)
 > **Locked tech stack:** [`docs/architecture/TECH_STACK.md`](./docs/architecture/TECH_STACK.md) (ADR-001)
@@ -34,7 +35,7 @@ The frontend is built separately by a teammate; this repo exposes the OpenAPI co
 | Models ≤3B parameters, must fit in QLoRA 4-bit | ADR-002 |
 | RTX 3060 12GB target hardware | `require.md` |
 | No authentication system | `require.md` |
-| No frontend code in this repo | `require.md` |
+| Web UI lives **only** in `frontend/` (never mixed into `api`/`workers`/`ai_engine`) | Session 10 scope change |
 | MLflow for experiment tracking (not W&B / TensorBoard) | ADR-001 |
 | OpenRouter for SDG (not direct OpenAI / Anthropic) | ADR-003 |
 | Celery for async jobs (never FastAPI BackgroundTasks) | ADR-004 |
@@ -46,8 +47,8 @@ The frontend is built separately by a teammate; this repo exposes the OpenAPI co
 
 ```
                 ┌────────────┐
-   frontend ───►│ FastAPI    │◄──── WebSocket  ◄──┐
-   (separate)   │ (api)      │                    │
+   Web UI   ───►│ FastAPI    │◄──── WebSocket  ◄──┐
+  (frontend/)   │ (api)      │                    │
                 └─────┬──────┘                    │
                       │ enqueue                   │ pub/sub
                       ▼                           │
@@ -127,15 +128,30 @@ docker compose down            # keeps volumes (data persists)
 docker compose down -v         # wipes postgres / minio / ollama data
 ```
 
+### Web UI (optional)
+
+The React UI in [`frontend/`](./frontend) talks to the API. In dev it runs via Vite and
+proxies `/api` + `/ws` to the API on port 8000 (see `frontend/vite.config.ts`):
+
+```bash
+cd frontend
+npm install
+npm run dev -- --port 8080
+# open http://localhost:8080
+```
+
+A single tunnel/port (8080) is enough — the Vite proxy forwards API + WebSocket calls.
+
 ---
 
 ## Service endpoints
 
 | Service | URL | Notes |
 |---------|-----|-------|
+| Web UI (Vite dev) | <http://localhost:8080> | React UI; proxies `/api` + `/ws` to :8000 |
 | API (FastAPI) | <http://localhost:8000> | `/docs`, `/redoc`, `/openapi.json` |
 | WebSocket | `ws://localhost:8000/ws/jobs/{job_id}` | Per-job progress stream |
-| MLflow UI | <http://localhost:5000> | Experiments, runs, registered models |
+| MLflow UI | <http://localhost:5000> | Experiments, runs, registered models. Clickable run links use `MLFLOW_PUBLIC_URL` (default `http://localhost:5000`) |
 | MinIO console | <http://localhost:9001> | Login: `minioadmin` / `minioadmin` |
 | MinIO S3 API | <http://localhost:9000> | Used by MLflow + the API |
 | PostgreSQL | `localhost:5432` | User: `slm`, DB: `slm` |
@@ -307,10 +323,15 @@ curl -X POST http://localhost:8000/api/v1/evaluations \
   -d '{
     "model_artifact_id": "<model_id>",
     "dataset_id": "<dataset_id>",
-    "use_llm_judge": true,
-    "judge_model": "anthropic/claude-3.5-sonnet"
+    "use_llm_judge": true
   }'
 ```
+
+`judge_model` is optional — omit it to use the platform default
+(`qwen/qwen3-235b-a22b-2507`, set via `LLM_JUDGE_MODEL`). The LLM judge applies to
+**qa** and **tool_calling** only; it is skipped for **classification** (closed-set
+rule-based metrics are the right tool there). For leak-free numbers, evaluate against
+the **holdout** dataset created at SDG time (`holdout_size > 0`).
 
 ### Python (httpx + websockets)
 
@@ -345,6 +366,7 @@ slm-platform/
 ├── workers/         # Celery worker app + task definitions
 ├── ai_engine/       # Pure domain logic — data_gen, training, hpo, evaluation
 │                    # (no FastAPI / Celery imports — keep hexagonal)
+├── frontend/        # Web UI (React + Vite + Tailwind) — proxies /api + /ws
 ├── tests/           # unit + integration
 ├── examples/        # Standalone client scripts (Phase 8)
 ├── docs/            # Architecture, ADRs, standards, prompt templates
@@ -428,6 +450,12 @@ Drop `per_device_train_batch_size`, raise `gradient_accumulation_steps`, or shor
 
 **OpenRouter returns 401**
 Double-check `OPENROUTER_API_KEY` in `.env`, then `docker compose restart api worker`.
+
+**"MLflow run" link is unreachable (e.g. `mlflow:5000` won't resolve in the browser)**
+The clickable link is built from `MLFLOW_PUBLIC_URL` (default `http://localhost:5000`), not
+the in-network tracking URI. Set it to whatever base your browser can reach (handy behind an
+SSH tunnel), then `docker compose restart api`. Note: on macOS port 5000 is taken by AirPlay
+Receiver — disable it or tunnel a different local port.
 
 ---
 
