@@ -43,7 +43,7 @@ htmlcov/
 # Project artifacts
 mlruns/
 mlartifacts/
-data/
+/data/
 checkpoints/
 models/local/
 *.gguf

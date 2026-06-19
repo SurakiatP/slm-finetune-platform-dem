@@ -64,6 +64,11 @@ class Settings(BaseSettings):
 
     # ---- MLflow ------------------------------------------------------------
     mlflow_tracking_uri: AnyUrl = Field(default=AnyUrl("http://mlflow:5000"))
+    # Browser-facing MLflow base URL used to build user-clickable run links.
+    # The tracking URI above uses the in-network hostname ("mlflow"), which a
+    # browser cannot resolve; set this to the externally reachable URL (e.g.
+    # http://localhost:5000 via SSH tunnel). Falls back to the tracking URI.
+    mlflow_public_url: str | None = None
     mlflow_s3_endpoint_url: AnyUrl = Field(default=AnyUrl("http://minio:9000"))
 
     # ---- OpenRouter (SDG + LLM judge) -------------------------------------
@@ -80,9 +85,10 @@ class Settings(BaseSettings):
     ollama_base_url: AnyUrl = Field(default=AnyUrl("http://ollama:11434"))
 
     # ---- LLM Judge ---------------------------------------------------------
-    # OpenRouter model id. Confirmed available 2026-05-10. The earlier default
-    # `anthropic/claude-3.5-sonnet` was retired by OpenRouter and 404s.
-    llm_judge_model: str = "google/gemini-3.1-flash-lite-preview"
+    # OpenRouter model id. The judge model is platform-controlled (not user
+    # selectable in the UI). Earlier defaults `anthropic/claude-3.5-sonnet`
+    # (retired) and `google/gemini-3.1-flash-lite-preview` were superseded.
+    llm_judge_model: str = "qwen/qwen3-235b-a22b-2507"
 
 
 @lru_cache(maxsize=1)
