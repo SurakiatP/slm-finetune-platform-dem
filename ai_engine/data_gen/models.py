@@ -19,7 +19,7 @@ PDF_QA = "google/gemini-2.5-flash-lite"
 DIVERSITY_RULES = "deepseek/deepseek-v4-flash"
 
 # Synthetic data Generator. Up to ~100 concurrent calls per loop iteration.
-GENERATOR = "qwen/qwen3-235b-a22b-2507"
+GENERATOR = "deepseek/deepseek-v4-flash"
 
 # LLM-as-Judge. Up to ~500 concurrent calls per loop iteration
 # (5 candidates per generator call × 100 calls).
