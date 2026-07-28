@@ -59,6 +59,7 @@ async def submit_sdg_job(
         name=name,
         task_type=request.task_type,
         source=DatasetSource.SDG,
+        status=JobStatus.PENDING,
         num_samples=0,
         generation_metadata={
             "sdg_mode": request.sdg_mode.value,

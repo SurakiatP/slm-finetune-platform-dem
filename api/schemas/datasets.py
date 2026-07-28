@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from api.schemas.enums import DatasetSource, TaskType
+from api.schemas.enums import DatasetSource, JobStatus, TaskType
 
 
 class DatasetResponse(BaseModel):
@@ -27,6 +27,18 @@ class DatasetResponse(BaseModel):
     name: str
     task_type: TaskType
     source: DatasetSource
+    status: JobStatus = Field(
+        ...,
+        description=(
+            "Lifecycle of dataset population: pending (SDG queued) / running "
+            "(SDG worker executing) / completed (rows persisted, ready to use) / "
+            "failed (see error_message) / cancelled."
+        ),
+    )
+    error_message: str | None = Field(
+        default=None,
+        description="Populated when status=failed — the SDG worker's exception message.",
+    )
     num_samples: int
     storage_uri: str | None
     size_bytes: int | None

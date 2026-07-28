@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from api.models.base import Base, TimestampMixin, pg_enum, uuid_pk
-from api.schemas.enums import DatasetSource, TaskType
+from api.schemas.enums import DatasetSource, JobStatus, TaskType
 
 if TYPE_CHECKING:
     from api.models.evaluation_run import EvaluationRun
@@ -36,6 +36,22 @@ class Dataset(Base, TimestampMixin):
     source: Mapped[DatasetSource] = mapped_column(
         pg_enum(DatasetSource, "dataset_source"),
         nullable=False,
+    )
+    status: Mapped[JobStatus] = mapped_column(
+        pg_enum(JobStatus, "job_status"),
+        nullable=False,
+        default=JobStatus.PENDING,
+        index=True,
+        doc=(
+            "Lifecycle of dataset population. Seed uploads are COMPLETED "
+            "immediately (synchronous). SDG-generated datasets start PENDING "
+            "and are flipped to RUNNING/COMPLETED/FAILED by the Celery worker."
+        ),
+    )
+    error_message: Mapped[str | None] = mapped_column(
+        String(4000),
+        nullable=True,
+        doc="Populated when status=FAILED (SDG worker exception message, truncated to 4000 chars).",
     )
     num_samples: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     storage_uri: Mapped[str | None] = mapped_column(
