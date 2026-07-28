@@ -114,6 +114,7 @@ app.include_router(inference.router, prefix=f"{API_V1}/inference", tags=["infere
 app.include_router(evaluations.router, prefix=f"{API_V1}/evaluations", tags=["evaluations"])
 app.include_router(tasks_meta.tasks_router, prefix=f"{API_V1}/tasks", tags=["metadata"])
 app.include_router(tasks_meta.base_models_router, prefix=f"{API_V1}/base-models", tags=["metadata"])
+app.include_router(tasks_meta.sdg_pipeline_router, prefix=f"{API_V1}/sdg-pipeline", tags=["metadata"])
 app.include_router(websocket.router)  # WS lives at /ws/jobs/{job_id}
 
 

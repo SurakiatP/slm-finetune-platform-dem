@@ -36,6 +36,7 @@ export const queryKeys = {
   inferenceModels: ['inference', 'models'] as const,
   taskTypes: ['meta', 'tasks'] as const,
   baseModels: ['meta', 'base-models'] as const,
+  sdgPipelineModels: ['meta', 'sdg-pipeline'] as const,
 }
 
 // --- Projects ---------------------------------------------------------------
@@ -172,6 +173,14 @@ export function useBaseModels() {
   return useQuery({
     queryKey: queryKeys.baseModels,
     queryFn: meta.listBaseModels,
+    staleTime: Infinity,
+  })
+}
+
+export function useSdgPipelineModels() {
+  return useQuery({
+    queryKey: queryKeys.sdgPipelineModels,
+    queryFn: meta.getSdgPipelineModels,
     staleTime: Infinity,
   })
 }

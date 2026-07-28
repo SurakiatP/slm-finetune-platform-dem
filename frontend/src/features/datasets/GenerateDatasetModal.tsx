@@ -10,7 +10,7 @@ import { Input, Textarea } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
 import { useToast } from '@/components/ui/toast-context'
-import { useDatasets, queryKeys } from '@/hooks/queries'
+import { useDatasets, queryKeys, useSdgPipelineModels } from '@/hooks/queries'
 import { cn } from '@/lib/cn'
 
 export interface SdgJobRef {
@@ -24,16 +24,6 @@ interface GenerateDatasetModalProps {
   onClose: () => void
   onJobStarted: (job: SdgJobRef) => void
 }
-
-/**
- * Models are fixed per Phase 9 decision Q6.1 — no per-request override.
- * Mirror of ai_engine/data_gen/models.py; update together.
- */
-const PIPELINE_MODELS = [
-  { role: 'Generator', model: 'qwen/qwen3-235b-a22b-2507' },
-  { role: 'Judge', model: 'deepseek/deepseek-v4-flash' },
-  { role: 'Diversity rules', model: 'deepseek/deepseek-v4-flash' },
-]
 
 const toolsPlaceholder = `[
   {
@@ -78,6 +68,14 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
     setToolsText(JSON.stringify(parsed, null, 2))
     setFormError(null)
   }
+
+  const { data: pipelineModels } = useSdgPipelineModels()
+  // Info-box only — the box is purely informational, so it never blocks the form.
+  const pipelineRows = [
+    { role: 'Generator', model: pipelineModels?.generator },
+    { role: 'Judge', model: pipelineModels?.judge },
+    { role: 'Diversity rules', model: pipelineModels?.diversity_rules },
+  ]
 
   const { data: datasets } = useDatasets(project.id, { limit: 200 })
   // PDF seeds (QA) carry no rows (num_samples === 0) — their content is the PDF
@@ -334,10 +332,10 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
           <div className="text-xs text-body-muted">
             <p className="font-medium text-body">Pipeline models (fixed by the platform)</p>
             <dl className="mt-1 space-y-0.5 font-mono text-[11px]">
-              {PIPELINE_MODELS.map((m) => (
+              {pipelineRows.map((m) => (
                 <div key={m.role} className="flex gap-2">
                   <dt className="w-28 shrink-0">{m.role}:</dt>
-                  <dd className="text-body-muted/80">{m.model}</dd>
+                  <dd className="text-body-muted/80">{m.model ?? '—'}</dd>
                 </div>
               ))}
             </dl>

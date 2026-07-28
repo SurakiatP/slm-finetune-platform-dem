@@ -476,6 +476,12 @@ export interface BaseModelInfo {
   notes: string | null
 }
 
+export interface SdgPipelineModels {
+  generator: string
+  judge: string
+  diversity_rules: string
+}
+
 // --- WebSocket progress messages (api/schemas/progress.py) -------------------
 
 export type SDGPhase =
