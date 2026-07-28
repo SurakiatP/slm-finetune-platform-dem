@@ -233,10 +233,13 @@ def test_qa_full_flow(client: httpx.Client) -> None:
         client,
         f"/api/v1/datasets/{sdg_dataset_id}",
         target={"completed", "failed"},
-        # 60s was too tight against a live OpenRouter round-trip (with_seed
-        # QA, num_samples=10, incl. judge-filter pass) — observed ~75-90s on
-        # a real run; 60s only ever passed against recorded/mocked latency.
-        timeout_seconds=180,
+        # 60s was too tight against a live OpenRouter round-trip. Each SDG
+        # job also generates a 100-row holdout set alongside the requested
+        # train samples (train_target=10, holdout=100, effective=110), and
+        # the worker is concurrency=1 (GPU tasks share the queue), so a
+        # single job can legitimately take ~250s end to end; 400s gives
+        # headroom without masking a genuinely stuck job.
+        timeout_seconds=400,
     )
     # If the test infra doesn't have the OPENROUTER_API_KEY set, SDG fails fast;
     # this assertion surfaces that as a clean test failure via error_message.
