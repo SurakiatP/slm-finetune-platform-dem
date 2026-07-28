@@ -74,9 +74,14 @@ export function UploadSeedModal({ project, open, onClose }: UploadSeedModalProps
     onSuccess: (res) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.datasets(project.id) })
       const skipped = res.invalid_rows.length
-      toast.success(
-        `Seed dataset uploaded — ${res.num_samples} rows${skipped > 0 ? `, ${skipped} invalid skipped` : ''}`,
-      )
+      const fd = res.format_detection
+      const renamed = Object.keys(fd.field_mapping).length
+      const parts = [`Seed dataset uploaded — ${res.num_samples} rows`]
+      if (skipped > 0) parts.push(`${skipped} invalid skipped`)
+      if (fd.ran && renamed > 0) parts.push(`${renamed} field${renamed > 1 ? 's' : ''} auto-mapped`)
+      if (fd.rows_dropped > 0) parts.push(`${fd.rows_dropped} dropped by format detection`)
+      if (res.pdf_uri) parts.push('PDF stored for SDG extraction')
+      toast.success(parts.join(' — '))
       reset()
       onClose()
     },

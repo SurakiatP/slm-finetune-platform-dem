@@ -147,6 +147,10 @@ export function GenerateDatasetModal({ project, open, onClose, onJobStarted }: G
         const parsed = JSON.parse(toolsText) as unknown
         if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('expected a non-empty array')
         tools = parsed as ToolDefinition[]
+        const names = tools.map((t) => t.name)
+        if (new Set(names).size !== names.length) {
+          throw new Error('tool names must be unique')
+        }
       } catch (err) {
         setFormError(`Tool definitions: ${(err as Error).message}`)
         return null

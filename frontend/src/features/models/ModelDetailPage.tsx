@@ -86,6 +86,12 @@ export default function ModelDetailPage() {
         </div>
       </div>
 
+      {model.export_error_message && (
+        <p role="alert" className="rounded-md border border-danger/40 bg-danger-muted p-3 text-xs text-body">
+          Last export failed: {model.export_error_message}
+        </p>
+      )}
+
       <Card>
         <CardBody>
           <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">

@@ -52,6 +52,11 @@ export interface Project {
   name: string
   description: string | null
   task_type: TaskType
+  /** Opaque ID from an external system (e.g. a Supabase project row) this
+   *  project is 1:1 mapped to. Always null for projects created from this
+   *  embedded frontend (it has no external system to map) — present so a
+   *  project created via the API with a non-null value still round-trips. */
+  external_project_id: string | null
   created_at: string
   updated_at: string
 }
@@ -147,11 +152,24 @@ export interface SDGJobAccepted {
   websocket_url: string
 }
 
+/** Audit trail of one Format Detection pass (api/schemas/upload.py). */
+export interface FormatDetectionReport {
+  ran: boolean
+  model_used: string | null
+  field_mapping: Record<string, string>
+  rows_total: number
+  rows_canonicalised: number
+  rows_dropped: number
+  notes: string | null
+}
+
 export interface SeedUploadResponse {
   dataset_id: string
   task_type: TaskType
   num_samples: number
   invalid_rows: number[]
+  format_detection: FormatDetectionReport
+  pdf_uri: string | null
 }
 
 // --- Training (api/schemas/training.py) --------------------------------------
@@ -165,6 +183,8 @@ export interface LoRAConfig {
 
 export type LrSchedulerType = 'linear' | 'cosine' | 'constant'
 
+export type OptimType = 'adamw_8bit' | 'paged_adamw_8bit' | 'adamw_torch'
+
 export interface ManualTrainingConfig {
   learning_rate?: number
   num_train_epochs?: number
@@ -175,6 +195,9 @@ export interface ManualTrainingConfig {
   lr_scheduler_type?: LrSchedulerType
   max_seq_length?: number
   seed?: number
+  optim?: OptimType
+  packing?: boolean
+  neftune_noise_alpha?: number | null
   lora?: LoRAConfig
 }
 
@@ -308,9 +331,14 @@ export interface ModelArtifact {
   safetensors_uri: string | null
   size_mb: number | null
   ollama_model_tag: string | null
-  export_error_message?: string | null
+  export_error_message: string | null
   created_at: string
   updated_at: string
+  /** Ollama-Hub equivalent of `base_model`, auto-pulled by the worker after
+   *  export so the playground can A/B compare fine-tuned vs base. Null when
+   *  this base has no known Ollama-Hub mapping — hide the "compare with
+   *  base" affordance in that case. Server-computed (not stored). */
+  base_ollama_tag: string | null
 }
 
 export interface ModelExportRequest {

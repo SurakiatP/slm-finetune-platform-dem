@@ -45,12 +45,16 @@ export default function PlaygroundPage() {
 
   const served = (models?.data ?? []) as ServedModel[]
 
-  // Map Ollama tag -> friendly artifact name. Ollama reports tags as
-  // "slm/<uuid8>:latest" while the artifact stores "slm/<uuid8>", so match on
-  // both the raw id and the id with a trailing ":latest" stripped.
+  // Map Ollama tag -> friendly artifact name / base counterpart. Ollama reports
+  // tags as "slm/<uuid8>:latest" while the artifact stores "slm/<uuid8>", so
+  // match on both the raw id and the id with a trailing ":latest" stripped.
   const tagToName = new Map<string, string>()
+  const tagToBase = new Map<string, string | null>()
   for (const a of artifacts?.items ?? []) {
-    if (a.ollama_model_tag) tagToName.set(a.ollama_model_tag, a.name)
+    if (a.ollama_model_tag) {
+      tagToName.set(a.ollama_model_tag, a.name)
+      tagToBase.set(a.ollama_model_tag, a.base_ollama_tag)
+    }
   }
   const isFineTuned = (id: string) =>
     tagToName.has(id) || tagToName.has(id.replace(/:latest$/, ''))
@@ -58,12 +62,21 @@ export default function PlaygroundPage() {
     const name = tagToName.get(id) ?? tagToName.get(id.replace(/:latest$/, ''))
     return name ? `${name} (${id})` : id
   }
+  const baseTagFor = (id: string) =>
+    tagToBase.get(id) ?? tagToBase.get(id.replace(/:latest$/, '')) ?? null
 
-  // Defaults steer the comparison toward "fine-tuned (left) vs base (right)".
+  // Defaults steer the comparison toward "fine-tuned (left) vs its actual
+  // Ollama-Hub base (right)" — the worker auto-pulls that exact base after
+  // export, so prefer it over an arbitrary served non-fine-tuned model
+  // (which could be a different family entirely if multiple bases are served).
   const firstFineTuned = served.find((m) => isFineTuned(m.id))?.id
-  const firstBase = served.find((m) => !isFineTuned(m.id))?.id
   const effectiveA = modelA || firstFineTuned || served[0]?.id || ''
-  const effectiveB = modelB || firstBase || served[1]?.id || served[0]?.id || ''
+  const expectedBaseTag = baseTagFor(effectiveA)
+  const matchedBase = expectedBaseTag
+    ? served.find((m) => m.id === expectedBaseTag || m.id.replace(/:latest$/, '') === expectedBaseTag)?.id
+    : undefined
+  const firstBase = served.find((m) => !isFineTuned(m.id))?.id
+  const effectiveB = modelB || matchedBase || firstBase || served[1]?.id || served[0]?.id || ''
 
   const buildPayload = (model: string, thread: ChatMessage[]) => ({
     model,

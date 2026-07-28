@@ -50,7 +50,16 @@ export default function ProjectLayout() {
             <TaskTypeBadge taskType={project.task_type} />
           </>
         }
-        description={project.description}
+        description={
+          <>
+            {project.description}
+            {project.external_project_id && (
+              <span className="ml-2 font-mono text-[11px] text-body-muted">
+                external id: {project.external_project_id}
+              </span>
+            )}
+          </>
+        }
         actions={
           <>
             <Button variant="secondary" size="sm" onClick={() => setEditOpen(true)}>
