@@ -55,7 +55,7 @@ from api.schemas.data_formats import (
     required_field_names,
 )
 from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse
-from api.schemas.enums import DatasetSource, TaskType
+from api.schemas.enums import DatasetSource, JobStatus, TaskType
 from api.schemas.responses import Page
 from api.schemas.sdg import SeedUploadResponse
 from api.schemas.upload import FormatDetectionReport
@@ -457,6 +457,7 @@ async def _persist_jsonl_dataset(
         name=dataset_name,
         task_type=task_type,
         source=DatasetSource.SEED,
+        status=JobStatus.COMPLETED,
         num_samples=len(valid_rows),
         generation_metadata={"format_detection": fd_report.model_dump()},
     )
@@ -671,6 +672,7 @@ async def _persist_pdf_dataset(
         name=dataset_name,
         task_type=task_type,
         source=DatasetSource.SEED,
+        status=JobStatus.COMPLETED,
         num_samples=0,
         generation_metadata={
             "format_detection": fd_report.model_dump(),
