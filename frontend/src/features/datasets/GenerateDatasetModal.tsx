@@ -31,8 +31,8 @@ interface GenerateDatasetModalProps {
  */
 const PIPELINE_MODELS = [
   { role: 'Generator', model: 'qwen/qwen3-235b-a22b-2507' },
-  { role: 'Judge', model: 'openai/gpt-4o-mini' },
-  { role: 'Diversity rules', model: 'google/gemini-3.1-flash-lite-preview' },
+  { role: 'Judge', model: 'deepseek/deepseek-v4-flash' },
+  { role: 'Diversity rules', model: 'deepseek/deepseek-v4-flash' },
 ]
 
 const toolsPlaceholder = `[
