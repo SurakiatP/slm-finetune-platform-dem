@@ -4,10 +4,11 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { deleteDataset } from '@/api/endpoints/datasets'
-import type { Dataset } from '@/api/types'
+import { isTerminalStatus, type Dataset } from '@/api/types'
 import { DataTable, type Column } from '@/components/data/DataTable'
 import { Pagination } from '@/components/data/Pagination'
 import { SourceBadge } from '@/components/data/SourceBadge'
+import { StatusBadge } from '@/components/data/StatusBadge'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
@@ -25,7 +26,11 @@ const PAGE_SIZE = 20
 export default function DatasetListPage() {
   const { project } = useProjectContext()
   const [offset, setOffset] = useState(0)
-  const { data, isLoading } = useDatasets(project.id, { limit: PAGE_SIZE, offset })
+  const { data, isLoading } = useDatasets(
+    project.id,
+    { limit: PAGE_SIZE, offset },
+    { refetchInterval: (query) => (query.state.data?.items.some((d) => !isTerminalStatus(d.status)) ? 5_000 : false) },
+  )
   const [uploadOpen, setUploadOpen] = useState(false)
   const [generateOpen, setGenerateOpen] = useState(false)
   const [activeJob, setActiveJob] = useState<SdgJobRef | null>(null)
@@ -49,6 +54,11 @@ export default function DatasetListPage() {
           {d.parent_dataset_id && <Badge tone="violet">holdout</Badge>}
         </span>
       ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (d) => <StatusBadge status={d.status} />,
     },
     {
       key: 'samples',

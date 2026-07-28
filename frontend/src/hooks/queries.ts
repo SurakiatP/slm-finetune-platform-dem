@@ -56,10 +56,15 @@ export function useProject(id: string) {
 
 // --- Datasets ---------------------------------------------------------------
 
-export function useDatasets(projectId?: string, page: { limit?: number; offset?: number } = {}) {
+export function useDatasets(
+  projectId?: string,
+  page: { limit?: number; offset?: number } = {},
+  opts: { refetchInterval?: RefetchInterval<Page<Dataset>> } = {},
+) {
   return useQuery({
     queryKey: [...queryKeys.datasets(projectId), page],
     queryFn: () => datasets.listDatasets({ project_id: projectId, ...page }),
+    refetchInterval: opts.refetchInterval,
   })
 }
 

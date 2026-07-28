@@ -1,10 +1,12 @@
 import { ChevronLeft, Download } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 
+import { isTerminalStatus } from '@/api/types'
 import { datasetDownloadUrl } from '@/api/endpoints/datasets'
 import { JsonlPreview } from '@/components/data/JsonlPreview'
 import { JsonViewer } from '@/components/data/JsonViewer'
 import { SourceBadge } from '@/components/data/SourceBadge'
+import { StatusBadge } from '@/components/data/StatusBadge'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { LoadingBlock } from '@/components/ui/Spinner'
 import { useDataset, useDatasetPreview } from '@/hooks/queries'
@@ -12,7 +14,9 @@ import { formatBytes, formatDateTime } from '@/lib/format'
 
 export default function DatasetDetailPage() {
   const { datasetId } = useParams<{ datasetId: string }>()
-  const { data: dataset, isLoading } = useDataset(datasetId!)
+  const { data: dataset, isLoading } = useDataset(datasetId!, {
+    refetchInterval: (query) => (query.state.data && isTerminalStatus(query.state.data.status) ? false : 3_000),
+  })
   const { data: preview } = useDatasetPreview(datasetId!, 20, !!dataset && dataset.num_samples > 0)
 
   if (isLoading || !dataset) return <LoadingBlock label="Loading dataset" />
@@ -32,6 +36,7 @@ export default function DatasetDetailPage() {
           <h2 className="flex items-center gap-2 text-lg font-semibold text-body">
             {dataset.name}
             <SourceBadge source={dataset.source} />
+            <StatusBadge status={dataset.status} />
           </h2>
         </div>
         <a
@@ -69,6 +74,14 @@ export default function DatasetDetailPage() {
         </CardBody>
       </Card>
 
+      {dataset.status === 'failed' && dataset.error_message && (
+        <Card>
+          <CardBody>
+            <p className="text-xs text-red-400">{dataset.error_message}</p>
+          </CardBody>
+        </Card>
+      )}
+
       {dataset.generation_metadata && (
         <JsonViewer data={dataset.generation_metadata} title="Generation metadata" />
       )}
@@ -83,7 +96,11 @@ export default function DatasetDetailPage() {
         <CardBody>
           {dataset.num_samples === 0 ? (
             <p className="py-6 text-center text-xs text-body-muted">
-              No rows yet — generation may still be running.
+              {dataset.status === 'failed'
+                ? 'Generation failed — no rows were produced.'
+                : dataset.status === 'pending' || dataset.status === 'running'
+                  ? 'No rows yet — generation is still running.'
+                  : 'No rows.'}
             </p>
           ) : preview ? (
             <JsonlPreview taskType={preview.task_type} samples={preview.samples} />

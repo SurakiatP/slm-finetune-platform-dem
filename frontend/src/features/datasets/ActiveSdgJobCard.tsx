@@ -20,18 +20,14 @@ export function ActiveSdgJobCard({ job, onDismiss }: { job: SdgJobRef; onDismiss
     },
   })
 
-  // SDG has no status column on the dataset row; infer from rows + WS terminal frames.
   const terminal = progress.completed !== null || progress.failed !== null
   const { data: dataset } = useDataset(job.datasetId, {
     refetchInterval: jobRefetchInterval(terminal, progress.socketOpen),
   })
-  const status = progress.failed
-    ? 'failed'
-    : progress.completed || (dataset && dataset.num_samples > 0)
-      ? 'completed'
-      : progress.sdg
-        ? 'running'
-        : 'pending'
+  // dataset.status is the authoritative source; fall back to the WS's own
+  // running/pending signal only for the brief window before the first
+  // dataset fetch resolves.
+  const status = dataset?.status ?? (progress.sdg ? 'running' : 'pending')
 
   return (
     <div className="relative">

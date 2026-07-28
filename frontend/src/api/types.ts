@@ -64,6 +64,8 @@ export interface Dataset {
   name: string
   task_type: TaskType
   source: DatasetSource
+  status: JobStatus
+  error_message: string | null
   num_samples: number
   storage_uri: string | null
   size_bytes: number | null
