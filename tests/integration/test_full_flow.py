@@ -233,7 +233,10 @@ def test_qa_full_flow(client: httpx.Client) -> None:
         client,
         f"/api/v1/datasets/{sdg_dataset_id}",
         target={"completed", "failed"},
-        timeout_seconds=60,
+        # 60s was too tight against a live OpenRouter round-trip (with_seed
+        # QA, num_samples=10, incl. judge-filter pass) — observed ~75-90s on
+        # a real run; 60s only ever passed against recorded/mocked latency.
+        timeout_seconds=180,
     )
     # If the test infra doesn't have the OPENROUTER_API_KEY set, SDG fails fast;
     # this assertion surfaces that as a clean test failure via error_message.
