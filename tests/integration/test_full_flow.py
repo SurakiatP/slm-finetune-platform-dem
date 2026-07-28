@@ -8,14 +8,24 @@ Run with the compose stack:
     docker compose up -d
     pytest -m integration tests/integration/test_full_flow.py -v
 
-The test does NOT actually run training (that needs a GPU). It walks the
-full lifecycle up to and including the SDG completion, then verifies the
-training-job submission path works (returns 202). Phase 8 polish keeps the
-GPU-bound steps inside an `if HAS_GPU:` skip-block.
+The test always walks: project creation -> seed upload -> SDG submission ->
+SDG completion (checked via both a WebSocket smoke check and authoritative
+REST polling). When `INTEGRATION_HAS_GPU=1` is set, it additionally walks
+the GPU-bound tail of the lifecycle: training -> loss-history readback ->
+model listing -> GGUF export -> inference -> evaluation. Without a GPU
+worker, the test stops right after the SDG stage (`pytest.skip`).
+
+Run with the compose stack:
+    docker compose up -d
+    pytest -m integration tests/integration/test_full_flow.py -v
+
+Run the full GPU-bound tail (on a box with a CUDA worker):
+    INTEGRATION_HAS_GPU=1 pytest -m integration tests/integration/test_full_flow.py -v
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -23,6 +33,7 @@ from typing import Any
 
 import httpx
 import pytest
+import websockets
 
 API_BASE = os.environ.get("INTEGRATION_API_URL", "http://localhost:8000")
 
@@ -96,6 +107,57 @@ def _wait_for_status(
     )
 
 
+def _wait_for_export(
+    client: httpx.Client,
+    model_id: str,
+    *,
+    timeout_seconds: int = 900,
+    poll_interval: float = 3.0,
+) -> dict[str, Any]:
+    """Poll `GET /models/{id}` until `gguf_uri` or `export_error_message` is set.
+
+    Unlike Dataset / TrainingJob / EvaluationRun, ModelArtifact doesn't carry
+    a generic `status` enum — export completion is inferred from these two
+    mutually-exclusive-on-success fields instead, so this can't reuse
+    `_wait_for_status`.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    last_payload: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        resp = client.get(f"/api/v1/models/{model_id}")
+        if resp.status_code == 200:
+            last_payload = resp.json()
+            if last_payload.get("gguf_uri") or last_payload.get("export_error_message"):
+                return last_payload
+        time.sleep(poll_interval)
+    raise AssertionError(
+        f"export timed out after {timeout_seconds}s; last payload={last_payload}"
+    )
+
+
+def _ws_smoke_check(job_id: str, *, timeout_seconds: float = 5.0) -> None:
+    """Confirm the job-progress WebSocket channel accepts a connection.
+
+    Not a substitute for the authoritative REST poll — just proves the
+    Redis pub/sub -> FastAPI -> client plumbing is alive. Receiving an
+    actual message is a bonus, not required: for tiny jobs the SDG task may
+    finish (and stop publishing) before we connect, so a timeout waiting for
+    a message is treated as fine. A failure to *connect* at all is not
+    swallowed — that's a real regression in the WS endpoint.
+    """
+    ws_base = API_BASE.replace("http://", "ws://").replace("https://", "wss://")
+
+    async def _go() -> None:
+        uri = f"{ws_base}/ws/jobs/{job_id}"
+        async with websockets.connect(uri, open_timeout=timeout_seconds) as ws:
+            try:
+                await asyncio.wait_for(ws.recv(), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                pass
+
+    asyncio.run(_go())
+
+
 # ---- Tests ----------------------------------------------------------------
 
 
@@ -163,15 +225,25 @@ def test_qa_full_flow(client: httpx.Client) -> None:
     sdg = r.json()
     sdg_dataset_id = sdg["dataset_id"]
 
-    # 5. Wait for SDG completion via dataset polling (proxy for the WS).
+    # 4b. WebSocket smoke check — confirm the job-progress channel is alive.
+    _ws_smoke_check(sdg["job_id"])
+
+    # 5. Wait for SDG completion via dataset status polling (proxy for the WS).
     final = _wait_for_status(
         client,
         f"/api/v1/datasets/{sdg_dataset_id}",
-        target={"completed"},  # never present — we poll storage_uri instead
-        timeout_seconds=60,
+        target={"completed", "failed"},
+        # 60s was too tight against a live OpenRouter round-trip. Each SDG
+        # job also generates a 100-row holdout set alongside the requested
+        # train samples (train_target=10, holdout=100, effective=110), and
+        # the worker is concurrency=1 (GPU tasks share the queue), so a
+        # single job can legitimately take ~250s end to end; 400s gives
+        # headroom without masking a genuinely stuck job.
+        timeout_seconds=400,
     )
     # If the test infra doesn't have the OPENROUTER_API_KEY set, SDG fails fast;
-    # the assertion below will surface that as a clean test failure.
+    # this assertion surfaces that as a clean test failure via error_message.
+    assert final.get("status") == "completed", final.get("error_message")
     assert final.get("storage_uri"), "SDG completed but storage_uri is empty"
     assert final.get("num_samples", 0) > 0
 
@@ -203,6 +275,66 @@ def test_qa_full_flow(client: httpx.Client) -> None:
         timeout_seconds=600,
     )
     assert final["status"] == "completed", final.get("error_message")
+
+    # 7. Loss-history readback — always available once a run has an mlflow_run_id.
+    r = client.get(f"/api/v1/trainings/{training_id}/loss-history")
+    assert r.status_code == 200, r.text
+    loss_body = r.json()
+    assert loss_body["training_id"] == training_id
+    assert isinstance(loss_body["train_loss"], list)
+    assert isinstance(loss_body["eval_loss"], list)
+
+    # 8. A ModelArtifact should now exist for this training job.
+    r = client.get("/api/v1/models", params={"training_job_id": training_id})
+    assert r.status_code == 200, r.text
+    models_page = r.json()
+    assert models_page["total"] >= 1, "expected a ModelArtifact for the completed training"
+    model_id = models_page["items"][0]["id"]
+
+    # 9. Export to GGUF, then poll until gguf_uri or export_error_message appears.
+    r = client.post(
+        f"/api/v1/models/{model_id}/export",
+        json={"format": "gguf", "quantization": "q4_k_m"},
+    )
+    assert r.status_code == 202, r.text
+
+    artifact = _wait_for_export(client, model_id, timeout_seconds=900)
+    assert artifact.get("gguf_uri"), artifact.get("export_error_message")
+    assert artifact.get("ollama_model_tag"), "expected export to register an Ollama tag"
+
+    # 10. Inference against the freshly exported model (OpenAI-compatible).
+    r = client.post(
+        "/api/v1/inference/chat/completions",
+        json={
+            "model": model_id,
+            "messages": [{"role": "user", "content": "What's your return window?"}],
+            "temperature": 0.0,
+        },
+    )
+    assert r.status_code == 200, r.text
+    chat = r.json()
+    assert chat["choices"][0]["message"]["content"]
+
+    # 11. Evaluate the exported model against the SDG-generated (train) dataset.
+    r = client.post(
+        "/api/v1/evaluations",
+        json={
+            "model_artifact_id": model_id,
+            "dataset_id": sdg_dataset_id,
+            "use_llm_judge": False,
+        },
+    )
+    assert r.status_code == 202, r.text
+    eval_id = r.json()["evaluation_id"]
+
+    eval_final = _wait_for_status(
+        client,
+        f"/api/v1/evaluations/{eval_id}",
+        target={"completed", "failed"},
+        timeout_seconds=300,
+    )
+    assert eval_final["status"] == "completed", eval_final.get("error_message")
+    assert eval_final.get("metrics"), "expected a non-empty metrics dict"
 
 
 def test_classification_create_only(client: httpx.Client) -> None:

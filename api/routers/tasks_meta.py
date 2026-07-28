@@ -17,8 +17,9 @@ from api.schemas.data_formats import (
     ToolCallingSample,
 )
 from api.schemas.enums import TaskType
-from api.schemas.tasks_meta import BaseModelInfo, TaskTypeInfo
+from api.schemas.tasks_meta import BaseModelInfo, SdgPipelineModels, TaskTypeInfo
 from api.services.base_model_catalog import get_ollama_base_tag
+from ai_engine.data_gen import models as llm_models
 
 # ---- Tasks ----------------------------------------------------------------
 
@@ -216,4 +217,27 @@ async def list_base_models() -> list[BaseModelInfo]:
     return SUPPORTED_BASE_MODELS
 
 
-__all__ = ["tasks_router", "base_models_router", "SUPPORTED_BASE_MODELS"]
+# ---- SDG pipeline models --------------------------------------------------
+
+sdg_pipeline_router = APIRouter()
+
+
+@sdg_pipeline_router.get(
+    "",
+    response_model=SdgPipelineModels,
+    summary="Get the fixed SDG pipeline model config",
+)
+async def get_sdg_pipeline_models() -> SdgPipelineModels:
+    return SdgPipelineModels(
+        generator=llm_models.GENERATOR,
+        judge=llm_models.JUDGE,
+        diversity_rules=llm_models.DIVERSITY_RULES,
+    )
+
+
+__all__ = [
+    "tasks_router",
+    "base_models_router",
+    "sdg_pipeline_router",
+    "SUPPORTED_BASE_MODELS",
+]

@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000, ge=1, le=65535)
     # NoDecode disables pydantic-settings' default JSON decoding so the
     # field_validator below can handle plain comma-separated env values.
+    # NOTE: setting API_CORS_ORIGINS in the environment/.env REPLACES this
+    # entire list — it does not append to it. If you add an origin here for
+    # a real deployment (e.g. a demo frontend), make sure .env.example's
+    # documented API_CORS_ORIGINS value includes it too, otherwise anyone
+    # who does `cp .env.example .env` (the documented Quickstart step)
+    # silently loses CORS access for that origin with no error at startup —
+    # only a CORS failure in the browser console, later, that's hard to trace.
     api_cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "http://localhost:3000",

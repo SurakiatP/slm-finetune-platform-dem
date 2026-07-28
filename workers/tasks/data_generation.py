@@ -28,7 +28,7 @@ from ai_engine.data_gen.openrouter_client import (
 )
 from api.core.config import get_settings
 from api.models.dataset import Dataset
-from api.schemas.enums import DatasetSource
+from api.schemas.enums import DatasetSource, JobStatus
 from api.schemas.progress import JobCompleted, JobFailed, SDGProgress
 from api.schemas.sdg import (
     SDGRequest,
@@ -63,6 +63,11 @@ def generate_synthetic_data(
     parent_uuid = UUID(dataset_id)
     holdout_size = request.holdout_size
     effective_target = request.num_samples + holdout_size
+
+    with session_scope() as session:
+        ds = session.get(Dataset, parent_uuid)
+        if ds is not None:
+            ds.status = JobStatus.RUNNING
 
     with sync_redis_scope() as redis:
 
@@ -161,6 +166,7 @@ def generate_synthetic_data(
                 parent.num_samples = len(train_rows)
                 parent.storage_uri = train_uri
                 parent.size_bytes = train_size
+                parent.status = JobStatus.COMPLETED
                 parent_meta = dict(parent.generation_metadata or {})
                 parent_meta.update(
                     {
@@ -191,6 +197,7 @@ def generate_synthetic_data(
                         storage_uri=holdout_uri,
                         size_bytes=holdout_size_bytes,
                         parent_dataset_id=parent.id,
+                        status=JobStatus.COMPLETED,
                         generation_metadata={
                             "role": "holdout",
                             "parent_dataset_id": str(parent.id),
@@ -255,6 +262,16 @@ def generate_synthetic_data(
 
         except Exception as exc:
             log.exception("SDG task failed (job=%s)", job_id)
+            try:
+                with session_scope() as session:
+                    ds = session.get(Dataset, parent_uuid)
+                    if ds is not None:
+                        ds.status = JobStatus.FAILED
+                        ds.error_message = (str(exc) or repr(exc))[:4000]
+            except Exception:  # noqa: BLE001 — never mask the original SDG failure
+                log.warning(
+                    "could not persist FAILED status for dataset %s", dataset_id, exc_info=True
+                )
             try:
                 publish_ws_message(
                     redis,

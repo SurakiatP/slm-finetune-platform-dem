@@ -80,8 +80,18 @@ scripts/session*_runbook_driver.py
 *.png
 !docs/**/*.png
 
-# Private documentation — kept local, not published to GitHub
-docs/
+# Private documentation — kept local, not published to GitHub.
+# EXCEPTION: docs/ holds the published backend handoff bundle — the files
+# negated below ARE tracked/pushed (for the frontend/integration team).
+# Uses `docs/*` (not `docs/`) so specific files can be re-included; anything
+# in docs/ not listed here stays private by default.
+docs/*
+!docs/README.md
+!docs/01-architecture.md
+!docs/02-api-reference.md
+!docs/03-realtime-websocket.md
+!docs/04-frontend-integration-smart-model-tune.md
+!docs/openapi.json
 CLAUDE.md
 API_GUIDE.md
 PHASE9_SDG_HARDENING_SPEC.md

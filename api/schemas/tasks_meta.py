@@ -56,4 +56,27 @@ class BaseModelInfo(BaseModel):
     )
 
 
-__all__ = ["TaskTypeInfo", "BaseModelInfo"]
+class SdgPipelineModels(BaseModel):
+    """The fixed LLM model ids the SDG pipeline uses, exposed live.
+
+    Mirrors the module constants in `ai_engine/data_gen/models.py` so the
+    frontend can fetch them instead of hard-coding a copy that goes stale.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    generator: str = Field(
+        ...,
+        description="Model id used to generate synthetic training rows (the Generator).",
+    )
+    judge: str = Field(
+        ...,
+        description="Model id used as LLM-as-Judge to score generated candidates.",
+    )
+    diversity_rules: str = Field(
+        ...,
+        description="Model id used to meta-prompt the diversity rules for a job.",
+    )
+
+
+__all__ = ["TaskTypeInfo", "BaseModelInfo", "SdgPipelineModels"]

@@ -82,6 +82,12 @@ dev = [
     "moto[s3]>=5.0.0",
     "fakeredis>=2.20.0",
     "dirty-equals>=0.7.0",
+    # In-memory async SQLite engine for ORM/service-level unit tests
+    # (avoids requiring a real Postgres for tests/unit/test_dataset_status.py).
+    # `greenlet` is SQLAlchemy async's sync-to-async bridge — required
+    # whenever an AsyncEngine/AsyncSession is exercised, regardless of DBAPI.
+    "aiosqlite>=0.20.0",
+    "greenlet>=3.0.0",
     # Eval libs needed by pytest (ai_engine.evaluation has deferred imports of
     # these inside metric functions). The runtime worker installs `[eval]`
     # separately for full coverage; pytest in the api container needs at least

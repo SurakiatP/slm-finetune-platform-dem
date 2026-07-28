@@ -38,8 +38,11 @@ async def list_projects(
     db: Annotated[AsyncSession, Depends(get_db)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
+    external_project_id: Annotated[str | None, Query()] = None,
 ) -> Page[ProjectResponse]:
-    return await projects_service.list_projects(db, limit=limit, offset=offset)
+    return await projects_service.list_projects(
+        db, limit=limit, offset=offset, external_project_id=external_project_id
+    )
 
 
 @router.get(

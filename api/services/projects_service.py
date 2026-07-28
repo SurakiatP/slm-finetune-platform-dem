@@ -14,10 +14,28 @@ from api.schemas.responses import Page
 
 
 async def create_project(db: AsyncSession, body: ProjectCreate) -> ProjectResponse:
+    if body.external_project_id is not None:
+        existing = (
+            await db.execute(
+                select(Project).where(
+                    Project.external_project_id == body.external_project_id
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"external_project_id '{body.external_project_id}' is already "
+                    f"mapped to project {existing.id}"
+                ),
+            )
+
     project = Project(
         name=body.name,
         description=body.description,
         task_type=body.task_type,
+        external_project_id=body.external_project_id,
     )
     db.add(project)
     await db.commit()
@@ -26,12 +44,20 @@ async def create_project(db: AsyncSession, body: ProjectCreate) -> ProjectRespon
 
 
 async def list_projects(
-    db: AsyncSession, *, limit: int, offset: int
+    db: AsyncSession,
+    *,
+    limit: int,
+    offset: int,
+    external_project_id: str | None = None,
 ) -> Page[ProjectResponse]:
-    total = (await db.execute(select(func.count()).select_from(Project))).scalar_one()
-    stmt = (
-        select(Project).order_by(Project.created_at.desc()).limit(limit).offset(offset)
-    )
+    total_stmt = select(func.count()).select_from(Project)
+    stmt = select(Project).order_by(Project.created_at.desc()).limit(limit).offset(offset)
+    if external_project_id is not None:
+        total_stmt = total_stmt.where(
+            Project.external_project_id == external_project_id
+        )
+        stmt = stmt.where(Project.external_project_id == external_project_id)
+    total = (await db.execute(total_stmt)).scalar_one()
     rows = (await db.execute(stmt)).scalars().all()
     return Page[ProjectResponse](
         items=[ProjectResponse.model_validate(r) for r in rows],

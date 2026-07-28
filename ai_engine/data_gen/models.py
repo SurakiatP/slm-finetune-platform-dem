@@ -16,14 +16,14 @@ FORMAT_DETECTION = "google/gemini-2.5-flash-lite"
 PDF_QA = "google/gemini-2.5-flash-lite"
 
 # Diversity-rule generator (meta-prompting). One call per SDG job.
-DIVERSITY_RULES = "google/gemini-3.1-flash-lite-preview"
+DIVERSITY_RULES = "deepseek/deepseek-v4-flash"
 
 # Synthetic data Generator. Up to ~100 concurrent calls per loop iteration.
-GENERATOR = "qwen/qwen3-235b-a22b-2507"
+GENERATOR = "deepseek/deepseek-v4-flash"
 
 # LLM-as-Judge. Up to ~500 concurrent calls per loop iteration
 # (5 candidates per generator call × 100 calls).
-JUDGE = "openai/gpt-4o-mini"
+JUDGE = "deepseek/deepseek-v4-flash"
 
 
 __all__ = [
