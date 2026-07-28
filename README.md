@@ -170,6 +170,32 @@ Two ready-to-run walkthroughs ship in [`examples/`](./examples):
 - `examples/python_client.py` — async + WebSocket progress streaming
 - `examples/quickstart_curl.sh` — pure-curl version (needs `jq`)
 
+### OpenAPI spec (for the frontend team)
+
+The complete HTTP contract is committed as **[`openapi.json`](./openapi.json)**
+(OpenAPI 3.1) — feed it to a codegen tool (`openapi-typescript`, `orval`,
+`openapi-generator`, …) for a typed client, or import it into Postman/Insomnia.
+All REST routes are under the `/api/v1` prefix. When the API is running the same
+document is served live at `GET /openapi.json`, with **Swagger UI at `/docs`**
+and ReDoc at `/redoc`.
+
+Regenerate the committed file whenever the contract changes (don't hand-edit it):
+
+```bash
+DATABASE_URL=postgresql+asyncpg://x:x@localhost/x python scripts/export_openapi.py
+```
+
+**WebSocket is not in OpenAPI** (the spec covers HTTP only). The live
+job-progress channel is `GET /ws/jobs/{job_id}` (WebSocket) — `job_id` is
+returned when you submit an SDG/training/export/evaluation job, and is also
+recoverable from `GET /api/v1/datasets/{id}` as
+`generation_metadata.celery_task_id`. It has **no replay** (a client only sees
+frames published after it connects), so always pair it with REST polling of the
+resource's `status` field as a backfill. The frame payload models —
+`SDGProgress`, `TrainingProgress`, `HPOProgress`, `JobCompleted`, `JobFailed` —
+are defined in [`api/schemas/progress.py`](./api/schemas/progress.py) (they are
+not in `openapi.json` because no HTTP route references them).
+
 ### Curl snippets
 
 #### 1. Create a project
