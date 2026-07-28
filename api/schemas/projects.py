@@ -37,6 +37,17 @@ class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
     task_type: TaskType
+    external_project_id: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Optional opaque ID from an external system (e.g. a Supabase "
+            "project row) to map this Project to 1:1. Omit if not needed. "
+            "Must be globally unique across all projects — creating a "
+            "second project with an already-used external_project_id "
+            "returns 409."
+        ),
+    )
 
 
 class ProjectUpdate(BaseModel):
@@ -54,6 +65,7 @@ class ProjectResponse(BaseModel):
     name: str
     description: str | None
     task_type: TaskType
+    external_project_id: str | None
     created_at: datetime
     updated_at: datetime
 

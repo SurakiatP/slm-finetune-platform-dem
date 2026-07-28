@@ -46,6 +46,7 @@ def test_cors_origins_default_when_unset() -> None:
     assert s.api_cors_origins == [
         "http://localhost:3000",
         "http://localhost:5173",
+        "https://gentle-fine-tuner.lovable.app",
     ]
 
 

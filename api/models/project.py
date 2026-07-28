@@ -27,6 +27,19 @@ class Project(Base, TimestampMixin):
         nullable=False,
         index=True,
     )
+    external_project_id: Mapped[str | None] = mapped_column(
+        String(200),
+        nullable=True,
+        unique=True,
+        index=True,
+        doc=(
+            "Opaque ID from an external system (e.g. a Supabase project row) "
+            "that this Project maps to 1:1. Lets a frontend look up its "
+            "backend Project without maintaining its own separate mapping "
+            "table (which is otherwise only kept client-side and gets lost "
+            "on browser/storage changes)."
+        ),
+    )
 
     datasets: Mapped[list["Dataset"]] = relationship(
         back_populates="project",
