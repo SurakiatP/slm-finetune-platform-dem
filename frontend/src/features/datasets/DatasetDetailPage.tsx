@@ -9,6 +9,7 @@ import { SourceBadge } from '@/components/data/SourceBadge'
 import { StatusBadge } from '@/components/data/StatusBadge'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { LoadingBlock } from '@/components/ui/Spinner'
+import { DatasetLiveProgress } from '@/features/datasets/DatasetLiveProgress'
 import { useDataset, useDatasetPreview } from '@/hooks/queries'
 import { formatBytes, formatDateTime } from '@/lib/format'
 
@@ -20,6 +21,15 @@ export default function DatasetDetailPage() {
   const { data: preview } = useDatasetPreview(datasetId!, 20, !!dataset && dataset.num_samples > 0)
 
   if (isLoading || !dataset) return <LoadingBlock label="Loading dataset" />
+
+  // WS channel key for the SDG job == the Celery task id, persisted on the row.
+  // Only meaningful while generation is in flight (the WS has no replay).
+  const sdgJobId =
+    dataset.source === 'sdg' &&
+    !isTerminalStatus(dataset.status) &&
+    typeof dataset.generation_metadata?.celery_task_id === 'string'
+      ? dataset.generation_metadata.celery_task_id
+      : null
 
   return (
     <div className="space-y-4">
@@ -73,6 +83,8 @@ export default function DatasetDetailPage() {
           </dl>
         </CardBody>
       </Card>
+
+      {sdgJobId && <DatasetLiveProgress dataset={dataset} jobId={sdgJobId} />}
 
       {dataset.status === 'failed' && dataset.error_message && (
         <Card>
