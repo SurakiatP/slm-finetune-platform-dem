@@ -28,6 +28,7 @@ frontend/integration team consuming its API.
 | [`02-api-reference.md`](./02-api-reference.md) | Every REST endpoint (28 paths / 35 ops) grouped by domain — params, request/response shapes, status codes, gotchas — the human companion to `openapi.json` | You're wiring a frontend call or need endpoint detail |
 | [`03-realtime-websocket.md`](./03-realtime-websocket.md) | The live job-progress channel (`/ws/jobs/{job_id}`) — Celery→Redis pub/sub→WebSocket, the `job_id`, no-replay behavior, frame payload models, per-job-type coverage. **Not in `openapi.json`** | You're building any live-progress dashboard |
 | [`04-frontend-integration-smart-model-tune.md`](./04-frontend-integration-smart-model-tune.md) | Maps each backend endpoint to the `smart-model-tune` screen/function that should call it; marks what's already correct vs mismatched; priority fix list; correct end-to-end call sequence | You're integrating (or fixing) `smart-model-tune` |
+| [`05-models-catalog.md`](./05-models-catalog.md) | Every model in the backend: the cloud LLM used at each pipeline stage (SDG generate/judge/diversity, seed/PDF, evaluation judge) and the 10 supported SLM base models (`/api/v1/base-models`) with params/context/Ollama tags/licenses | You're building the model picker or need to know which model runs where |
 | [`openapi.json`](./openapi.json) | Machine-readable OpenAPI 3.1 spec (local copy; canonical published copy is at the repo root) | Codegen a typed client / import to Postman |
 
 **60-second orientation.** FastAPI + Celery + SQLAlchemy backend for an

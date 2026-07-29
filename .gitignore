@@ -91,6 +91,7 @@ docs/*
 !docs/02-api-reference.md
 !docs/03-realtime-websocket.md
 !docs/04-frontend-integration-smart-model-tune.md
+!docs/05-models-catalog.md
 !docs/openapi.json
 CLAUDE.md
 API_GUIDE.md
