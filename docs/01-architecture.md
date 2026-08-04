@@ -16,7 +16,11 @@ anyone integrating a frontend against it. For the HTTP contract itself see
 for the live-progress channel (not in OpenAPI) see
 [realtime WebSocket](./03-realtime-websocket.md); for frontend-specific
 integration notes see
-[frontend integration](./04-frontend-integration-smart-model-tune.md).
+[frontend integration](./04-frontend-integration-smart-model-tune.md); for
+the recorded decisions behind specific constraints or design changes see
+[`docs/adr/`](./adr/README.md) (currently [ADR-006](./adr/ADR-006-defer-authentication.md)
+and [ADR-007](./adr/ADR-007-ws-progress-snapshot.md); ADR-001–005 are
+recorded only as the constraint table in §5 below).
 
 ---
 
@@ -140,37 +144,50 @@ job, not a long-running service — README's "7 services" count
 ## 5. Hard constraints / ADRs
 
 From the constraints table in `README.md:33-42` (this repo does not currently
-contain the `docs/adr/`, `require.md`, `CLAUDE.md`, or
-`docs/architecture/TECH_STACK.md` files that `README.md` cross-references at
-lines 11-13 and 493-497 — those apparently now live only at the workspace
-level, outside this repo; see the note at the end of this section):
+contain the `require.md`, `CLAUDE.md`, or `docs/architecture/TECH_STACK.md`
+files that `README.md` cross-references at lines 11-13 and 493-497 — those
+apparently live only at the workspace level, outside this repo. `docs/adr/`
+is the one exception: it now exists in this repo, see below):
 
 | Constraint | Source (as cited by README) |
 |---|---|
 | Models ≤3B params, must fit in QLoRA 4-bit | ADR-002 |
 | RTX 3060 12GB target hardware | `require.md` |
-| No authentication system | `require.md` |
+| No authentication system | [ADR-006](./adr/ADR-006-defer-authentication.md) |
 | Web UI lives only in `frontend/` (never mixed into `api`/`workers`/`ai_engine`) | Session 10 scope change |
 | MLflow for experiment tracking (not W&B / TensorBoard) | ADR-001 |
 | OpenRouter for SDG (not direct OpenAI / Anthropic) | ADR-003 |
 | Celery for async jobs (never FastAPI BackgroundTasks) | ADR-004 |
 | Only 3 task types: classification, tool_calling, qa | ADR-005 |
 
+The "No authentication system" row used to cite `require.md`, a file that no
+longer exists in this repo (see the discrepancy note below). It now cites
+[ADR-006](./adr/ADR-006-defer-authentication.md), which re-verifies the
+constraint against current code, records it as a deliberate deferral rather
+than an unsourced assumption, and lays out the migration path (Supabase JWT
+verification, `owner_id` on `Project`) for when auth is scheduled.
+
 Verified in code:
 - 3 task types enforced by `api/schemas/enums.py:13-18` (`TaskType`: `classification`, `tool_calling`, `qa`), also referenced from `ai_engine/data_gen/generator.py:44`.
 - Celery-only async: no `BackgroundTasks` import anywhere under `api/`; all long-running work is a `@celery_app.task` in `workers/tasks/*.py`.
-- No auth: no auth middleware/dependency in `api/main.py`; CORS is wide open on methods/headers with `allow_credentials=False` (`api/main.py:92-99`).
+- No auth: no auth middleware/dependency in `api/main.py`; CORS is wide open on methods/headers with `allow_credentials=False` (`api/main.py:92-99`). This is deliberate and deferred, not an oversight — see [ADR-006](./adr/ADR-006-defer-authentication.md) for the full accepted-risk writeup and intended future shape.
 - MLflow: every training run opens an `mlflow_run_scope` (`ai_engine/training/mlflow_logger.py`, used from `workers/tasks/training.py` and `workers/tasks/hpo_training.py:128-138`).
 - OpenRouter-only SDG: `ai_engine/data_gen/openrouter_client.py` is the only LLM client used by `ai_engine/data_gen/*`.
 
 **Discrepancy note for reconciliation**: `README.md` (lines 11-13, 493-497)
 points to `require.md`, `docs/adr/`, `CLAUDE.md`, and
-`docs/architecture/TECH_STACK.md` as living inside this repo, but none of
-those paths exist here (`find . -iname "*ADR*" -o -iname "require*"` returns
-nothing outside `.venv`). This matches the workspace-level `CLAUDE.md`'s
-statement that hub docs were consolidated up one directory — but the
-in-repo `README.md` hasn't been updated to reflect that, so a reader
-following its links from inside this repo alone will hit dead references.
+`docs/architecture/TECH_STACK.md` as living inside this repo. That's now
+only partially stale: `require.md`, `CLAUDE.md`, and
+`docs/architecture/TECH_STACK.md` still don't exist here — they apparently
+live only at the workspace level, outside this repo, per the workspace-level
+`CLAUDE.md`'s "hub docs consolidated up one directory" note. `docs/adr/`,
+however, **does now exist in this repo** (`docs/adr/README.md`,
+`docs/adr/ADR-006-defer-authentication.md`,
+`docs/adr/ADR-007-ws-progress-snapshot.md`) — added alongside the realtime
+job-control work this branch ships. The in-repo `README.md` hasn't been
+updated to reflect that `docs/adr/` is real now, so a reader following its
+links from inside this repo alone will still hit dead references for the
+other three paths, but not for `docs/adr/` anymore.
 
 ---
 

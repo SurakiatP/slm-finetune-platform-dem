@@ -12,7 +12,7 @@ changing a router.
 This is the human companion to [`openapi.json`](./openapi.json); regenerate
 that with `scripts/export_openapi.py` when the contract changes. All routes
 are mounted under `/api/v1` except `GET /health` (root-level). The spec
-currently has **28 paths / 35 operations**; this doc covers all of them.
+currently has **33 paths / 40 operations**; this doc covers all of them.
 
 **A note on error codes**: FastAPI's auto-generated OpenAPI only documents
 the success response and a generic `422` (Pydantic validation failure) for
@@ -24,7 +24,9 @@ service call chain, not from the spec.
 Cross-references: [`01-architecture.md`](./01-architecture.md) (data model /
 status lifecycle), [`03-realtime-websocket.md`](./03-realtime-websocket.md)
 (job progress over `/ws/jobs/{job_id}` — every `202 Accepted` response below
-includes a `websocket_url` field for this), and
+includes a `websocket_url` field for this; see also
+[Job Progress](#job-progress) below for the REST snapshot of the same
+frames), and
 [`04-frontend-integration-smart-model-tune.md`](./04-frontend-integration-smart-model-tune.md)
 (which UI screen consumes what).
 
@@ -270,8 +272,13 @@ Get a dataset. **Errors**: `404`.
   `storage_uri` (null until rows are persisted), `generation_metadata`
   (free-form dict — holds `format_detection`, `seed_dataset_id`,
   `celery_task_id`, `pdf_uri`, etc depending on how the dataset was made),
-  `parent_dataset_id` (set on holdout children — use the parent for
-  training, the child for eval).
+  `celery_task_id` (top-level field, added alongside the new job-control
+  endpoints — the SDG job id for datasets generated via `POST
+  /datasets/generate`, `null` for plain seed uploads; use this to reconnect
+  to `/ws/jobs/{id}` or `GET /jobs/{id}/progress` after a page reload
+  instead of digging into `generation_metadata`, which still mirrors the
+  same value for backward compatibility), `parent_dataset_id` (set on
+  holdout children — use the parent for training, the child for eval).
 
 ### GET /api/v1/datasets/{dataset_id}/preview
 
@@ -292,6 +299,31 @@ Delete a dataset. **Success**: `204`. **Errors**: `404` not found; `409`
 if any `TrainingJob` or `EvaluationRun` still references it (both FKs are
 `ondelete=RESTRICT`) — delete those first, or delete the parent project to
 cascade (`api/services/datasets_service.py:200-233`).
+
+### POST /api/v1/datasets/{dataset_id}/cancel
+
+Cancel a running SDG generation job. Revokes the underlying Celery task
+(`celery_task_id`, falling back to `generation_metadata.celery_task_id` for
+rows that predate the dedicated column) and flips `status=cancelled`.
+`api/services/datasets_service.py:259-287`.
+
+- **Success**: `200` — `{"dataset_id": "...", "status": "cancelled"}`.
+- **Errors**: `404` if the dataset doesn't exist.
+- **Idempotent**: cancelling a dataset that's already terminal
+  (`completed`/`failed`/`cancelled`) returns `200` with the *existing*
+  status, performs no revoke, and mutates nothing. This also covers plain
+  seed uploads — they're persisted with `status=completed` synchronously,
+  so cancelling one is a no-op report, not an error.
+- **Gotcha**: a broker failure during the revoke call is logged and
+  swallowed — the status still flips to `cancelled` either way. No
+  WebSocket terminal frame is published by this endpoint; the SDG task's
+  own handler publishes `JobFailed` when it notices the revoke, and a
+  second terminal frame from here would double-deliver.
+
+```json
+// 200 response
+{ "dataset_id": "11111111-...-0000000000aa", "status": "cancelled" }
+```
 
 ### GET /api/v1/sdg-pipeline
 
@@ -412,6 +444,26 @@ existing status rather than erroring
 (`api/services/trainings_service.py:71-104`). **Errors**: `404` not found.
 Response body: `{"training_id": "...", "status": "cancelled"}`.
 
+### POST /api/v1/trainings/{training_id}/cancel
+
+**Alias for `DELETE /api/v1/trainings/{training_id}` above** — delegates
+to the exact same service function (`trainings_service.cancel_training`),
+so the two verbs can never disagree on behaviour. Added for clients that
+prefer a `POST .../cancel` shape consistent with the new dataset/
+export/evaluation cancel endpoints, without deprecating the existing
+`DELETE`. **Note the status code differs from its siblings**: `200`, not
+`202` — unlike `DELETE`, which returns `202` because historically it was
+documented as "a request to the broker, not a synchronous guarantee."
+Both verbs perform the identical revoke-then-flip-status work; only the
+documented status code differs, since `DELETE` predates this alias and
+its `202` contract is left unchanged. Same idempotency semantics as
+`DELETE`. **Errors**: `404` not found.
+
+```json
+// 200 response
+{ "training_id": "22222222-...-0000000000bb", "status": "cancelled" }
+```
+
 ### GET /api/v1/trainings/{training_id}/mlflow-url
 
 Resolve the MLflow run URL. **Errors**: `404` training not found. Success:
@@ -463,11 +515,22 @@ Get one artifact. **Errors**: `404`. Response includes `lora_adapter_uri`
 (set once training completes), `gguf_uri`/`safetensors_uri` (set only
 after a successful export of that format), `ollama_model_tag` (set once
 GGUF export registers with Ollama — required for inference and for
-evaluations with an LLM judge), `export_error_message`.
-**Gotcha**: `ModelArtifact` has **no generic `status` field** (unlike
-Dataset/TrainingJob/EvaluationRun) — export completion/failure is inferred
-from whether `gguf_uri`/`safetensors_uri` got set vs
-`export_error_message`.
+evaluations with an LLM judge), `export_error_message`, `export_status`
+(`JobStatus | None` — `null` means no export was ever requested for this
+artifact, distinct from `pending`/`running`/`failed`/`cancelled`; added
+alongside the export-cancel endpoint below), `export_celery_task_id`
+(the export job id — reconnect to `/ws/jobs/{id}` or `GET
+/jobs/{id}/progress` with it).
+**Gotcha**: `ModelArtifact` still has **no generic `status` field**
+covering the whole row (unlike Dataset/TrainingJob/EvaluationRun) —
+`export_status` only covers the export sub-lifecycle, added *purely
+additively* alongside the URI/error-message fields
+(`workers/tasks/model_export.py:542-561`), which remain the completion
+contract callers already relied on before this field existed. In
+practice `export_status=completed` and `gguf_uri`/`safetensors_uri` being
+set are written in the same transaction, so either signal works — but
+don't drop the URI check if you're supporting clients built before
+`export_status` existed.
 
 ### POST /api/v1/models/{model_id}/export
 
@@ -503,6 +566,42 @@ Enqueue a GGUF or SafeTensors export. `api/routers/models.py:66-77`.
   "job_id": "celery-task-id",
   "status": "pending",
   "websocket_url": "/ws/jobs/celery-task-id"
+}
+```
+
+### POST /api/v1/models/{model_id}/export/cancel
+
+Cancel an in-progress export. Revokes `export_celery_task_id` and flips
+`export_status=cancelled`. `api/services/model_service.py:132-162`.
+
+- **Success**: `200` — `{"artifact_id": "...", "status": "cancelled"}`.
+- **Errors**:
+  - `404` model artifact not found.
+  - **`409 Conflict`** when `export_status is None` — no export was ever
+    requested for this artifact. This is the one cancel endpoint in this
+    group that can 409: unlike datasets/trainings/evaluations (which
+    always have *something* to be terminal about), a freshly-trained
+    artifact with no export request yet has nothing to cancel, and
+    reporting a fake `cancelled` transition for a job that was never
+    enqueued would be actively misleading. Call `POST
+    /models/{id}/export` first.
+- **Idempotent** once `export_status` is already terminal
+  (`completed`/`failed`/`cancelled`): returns `200` with the current
+  status, no revoke performed. The `409` case above is distinct from this
+  — it's "nothing to cancel, ever," not "already cancelled."
+- **Gotcha**: same broker-failure-swallowed and no-terminal-WS-frame
+  behavior as the other cancel endpoints — see the dataset-cancel gotcha
+  above.
+
+```json
+// 200 response
+{ "artifact_id": "33333333-...-0000000000cc", "status": "cancelled" }
+
+// 409 response (no export ever requested)
+{
+  "detail": "Model 33333333-...-0000000000cc has no export in progress — POST /api/v1/models/33333333-...-0000000000cc/export first.",
+  "code": "conflict",
+  "extra": null
 }
 ```
 
@@ -578,6 +677,26 @@ Get one run. **Errors**: `404`. `EvaluationResponse` includes
 `metrics_json` (task-specific metrics, null until complete),
 `llm_judge_score`/`llm_judge_model`, `error_message`.
 
+### POST /api/v1/evaluations/{evaluation_id}/cancel
+
+Cancel a running evaluation. Revokes `celery_task_id`, flips
+`status=cancelled`, and stamps `ended_at`. `api/services/
+evaluation_service.py:151-171`.
+
+- **Success**: `200` — `{"evaluation_id": "...", "status": "cancelled"}`.
+- **Errors**: `404` if the evaluation run doesn't exist.
+- **Idempotent**: cancelling an already-terminal run
+  (`completed`/`failed`/`cancelled`) returns `200` with the existing
+  status and does nothing else.
+- **Gotcha**: same broker-failure-swallowed and no-terminal-WS-frame
+  behavior as the other cancel endpoints — see the dataset-cancel gotcha
+  under [Datasets & SDG](#datasets--sdg).
+
+```json
+// 200 response
+{ "evaluation_id": "55555555-...-0000000000ee", "status": "cancelled" }
+```
+
 ### POST /api/v1/evaluations/compare
 
 Pivot metrics across multiple runs into a chart-ready grid.
@@ -604,6 +723,61 @@ Pivot metrics across multiple runs into a chart-ready grid.
   "metrics": { "accuracy": { "55555555-...-ee": 0.91, "66666666-...-ff": 0.88 } },
   "judge_scores": { "55555555-...-ee": 4.2, "66666666-...-ff": null }
 }
+```
+
+---
+
+## Job Progress
+
+REST snapshot of the last WebSocket frame published for any job (SDG,
+training, HPO, export, evaluation) — for clients that don't want to hold a
+socket open, or a WS client's own first paint. Source:
+`api/routers/jobs.py`. See
+[`03-realtime-websocket.md`](./03-realtime-websocket.md) for the full
+`WSMessage` payload shapes and the snapshot mechanism (ADR-007).
+
+### GET /api/v1/jobs/{job_id}/progress
+
+Return the last-published progress frame for a job, validated against the
+`WSMessage` discriminated union (`sdg_progress` / `training_progress` /
+`hpo_progress` / `export_progress` / `evaluation_progress` / `completed` /
+`failed`). `api/routers/jobs.py:26-51`.
+
+- **Success**: `200` — one `WSMessage` variant, keyed by its `type`
+  discriminator. Same JSON shape a WebSocket client would receive over
+  `/ws/jobs/{job_id}`.
+- **Errors**: `404` + the standard `ErrorResponse` (`{"detail": "..."}`)
+  when no frame exists for `job_id` — either the job never published one,
+  or the snapshot's 24h Redis TTL expired. **A corrupt or legacy stored
+  payload that fails `WSMessage` validation is also reported as `404`,
+  never `500`** — a snapshot that can't be parsed is treated as
+  equivalent to no snapshot (`api/routers/jobs.py:44-51`).
+- **Gotcha**: the snapshot is a UX accelerator, not a source of truth —
+  it lives in Redis with a 24h TTL and is lost on a Redis flush.
+  Authoritative job state remains each resource's own `status` column
+  (`Dataset.status` / `TrainingJob.status` / `EvaluationRun.status` /
+  `ModelArtifact.export_status`); fall back to the relevant `GET` on a
+  `404` here rather than treating it as "job doesn't exist."
+
+```json
+// 200 response (training_progress example)
+{
+  "type": "training_progress",
+  "job_id": "celery-task-id",
+  "timestamp": "2026-08-04T10:00:00Z",
+  "epoch": 1.5,
+  "epochs_total": 3,
+  "step": 120,
+  "steps_total": 240,
+  "train_loss": 0.42,
+  "eval_loss": 0.51,
+  "learning_rate": 0.0002,
+  "samples_per_second": 3.1,
+  "gpu_memory_mb": 8192
+}
+
+// 404 response — standard ErrorResponse shape (api/core/exceptions.py)
+{ "detail": "No progress frame for job celery-task-id", "code": "not_found", "extra": null }
 ```
 
 ---
@@ -732,10 +906,14 @@ healthchecks, not as a readiness check for DB/Redis/MinIO/MLflow.
 
 ## Verification notes
 
-All 28 paths / 35 operations in `openapi.json` are covered above — the
+All 33 paths / 40 operations in `openapi.json` are covered above — the
 enumeration was cross-checked against `python3 -c "import json;
-json.load(open('docs/openapi.json'))['paths']"` before writing this file
-(28 paths, 35 GET/POST/PATCH/DELETE operations).
+json.load(open('openapi.json'))['paths']"` before writing this file
+(33 paths, 40 GET/POST/PATCH/DELETE operations). This count includes the
+5 job-control endpoints added alongside ADR-006/ADR-007 (`GET
+/jobs/{job_id}/progress`, and one `POST .../cancel` each for datasets,
+model export, evaluations, and trainings — the last being an alias for
+the pre-existing `DELETE /trainings/{id}`).
 
 Discrepancies found while writing this doc (not code changes — flagged for
 awareness):

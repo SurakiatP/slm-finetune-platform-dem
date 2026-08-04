@@ -93,6 +93,13 @@ docs/*
 !docs/04-frontend-integration-smart-model-tune.md
 !docs/05-models-catalog.md
 !docs/openapi.json
+# Directories need the dir itself un-ignored before its contents — `docs/*`
+# matches `docs/adr` and git won't descend into an excluded directory, so
+# `!docs/adr/**` alone would silently keep every ADR out of the repo.
+!docs/adr/
+!docs/adr/**
+!docs/runbooks/
+!docs/runbooks/**
 CLAUDE.md
 API_GUIDE.md
 PHASE9_SDG_HARDENING_SPEC.md
