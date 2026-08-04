@@ -102,6 +102,31 @@ class HPOProgress(_WSMessageBase):
     inner_progress: TrainingProgress | None = None
 
 
+class ExportProgress(_WSMessageBase):
+    type: Literal[WSMessageType.EXPORT_PROGRESS] = WSMessageType.EXPORT_PROGRESS
+    stage: Literal[
+        "downloading",
+        "merging",
+        "converting",
+        "quantizing",
+        "uploading",
+        "registering",
+    ] = Field(..., description="Current step of the GGUF/SafeTensors export pipeline.")
+    detail: str | None = Field(
+        default=None,
+        description="Free-text sub-status (e.g. the quantization level); for display only.",
+    )
+
+
+class EvaluationProgress(_WSMessageBase):
+    type: Literal[WSMessageType.EVALUATION_PROGRESS] = WSMessageType.EVALUATION_PROGRESS
+    phase: Literal["predicting", "scoring", "judging"] = Field(
+        ..., description="Current step of the evaluation pipeline."
+    )
+    rows_done: int = Field(..., ge=0, description="Rows processed so far in the current phase.")
+    rows_total: int = Field(..., ge=0, description="Total rows to process in the current phase.")
+
+
 class JobCompleted(_WSMessageBase):
     type: Literal[WSMessageType.COMPLETED] = WSMessageType.COMPLETED
     # Task-shaped result payload — kept loose because SDG / training / eval differ.
@@ -125,7 +150,13 @@ class JobFailed(_WSMessageBase):
 
 
 WSMessage = Annotated[
-    SDGProgress | TrainingProgress | HPOProgress | JobCompleted | JobFailed,
+    SDGProgress
+    | TrainingProgress
+    | HPOProgress
+    | ExportProgress
+    | EvaluationProgress
+    | JobCompleted
+    | JobFailed,
     Field(discriminator="type"),
 ]
 """Anything published to `job:{job_id}` must validate against this union."""
@@ -135,6 +166,8 @@ __all__ = [
     "SDGProgress",
     "TrainingProgress",
     "HPOProgress",
+    "ExportProgress",
+    "EvaluationProgress",
     "JobCompleted",
     "JobFailed",
     "WSMessage",

@@ -6,8 +6,19 @@ on connect and forwards messages verbatim until either:
   • the client disconnects, or
   • the Pub/Sub stream errors out.
 
-No replay: clients only receive messages published *after* they connect.
-For backfill on reconnect, query the DB for the job's current state.
+Snapshot-on-connect: once `subscribe()` succeeds, the endpoint reads the
+last-published frame for this job from `job:{job_id}:last` (written by
+`workers/progress.py::publish_ws_message`, TTL 24h) and sends it immediately,
+before any live frames. So a freshly opened or reloaded connection sees the
+job's most recent known state right away instead of waiting on the next
+publish — the same snapshot is also available over REST via
+`GET /api/v1/jobs/{job_id}/progress`.
+
+Accepted race: a frame published between `subscribe()` and the snapshot
+`GET` is delivered twice (once via the snapshot read, once via the live
+relay). This is harmless — every frame is a full state snapshot, not a
+delta, and consumers keep only the latest one they've seen, so duplicates
+are simply redundant, not incorrect.
 """
 
 from __future__ import annotations
@@ -19,7 +30,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from redis.exceptions import RedisError
 from starlette.websockets import WebSocketState
 
-from api.core.redis_client import get_redis_client, job_channel
+from api.core.redis_client import get_redis_client, job_channel, job_snapshot_key
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -63,6 +74,15 @@ async def job_progress(ws: WebSocket, job_id: str) -> None:
         await pubsub.aclose()
         await redis.aclose()
         return
+
+    try:
+        snapshot = await redis.get(job_snapshot_key(job_id))
+        if snapshot and ws.client_state == WebSocketState.CONNECTED:
+            if isinstance(snapshot, bytes):  # decode_responses=True should give str, but be defensive
+                snapshot = snapshot.decode("utf-8", errors="replace")
+            await ws.send_text(snapshot)
+    except RedisError:
+        log.warning("redis snapshot read failed for %s", channel)
 
     relay_task = asyncio.create_task(_relay_redis_to_ws(), name=f"ws-relay-{job_id}")
     watch_task = asyncio.create_task(_watch_client_close(), name=f"ws-watch-{job_id}")

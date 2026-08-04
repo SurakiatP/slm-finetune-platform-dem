@@ -20,6 +20,7 @@ from api.routers import (
     datasets,
     evaluations,
     inference,
+    jobs,
     models,
     projects,
     tasks_meta,
@@ -69,6 +70,7 @@ _OPENAPI_TAGS = [
     {"name": "models", "description": "Trained model artifacts; export to GGUF / SafeTensors."},
     {"name": "inference", "description": "OpenAI-compatible inference (proxied to Ollama)."},
     {"name": "evaluations", "description": "Per-task metrics and LLM-as-judge scoring."},
+    {"name": "jobs", "description": "Job progress snapshots (last WS frame per job, via Redis)."},
     {"name": "metadata", "description": "Static catalogs powering frontend dynamic forms."},
     {"name": "system", "description": "Health, readiness, and infrastructure probes."},
 ]
@@ -115,6 +117,7 @@ app.include_router(evaluations.router, prefix=f"{API_V1}/evaluations", tags=["ev
 app.include_router(tasks_meta.tasks_router, prefix=f"{API_V1}/tasks", tags=["metadata"])
 app.include_router(tasks_meta.base_models_router, prefix=f"{API_V1}/base-models", tags=["metadata"])
 app.include_router(tasks_meta.sdg_pipeline_router, prefix=f"{API_V1}/sdg-pipeline", tags=["metadata"])
+app.include_router(jobs.router, prefix=f"{API_V1}/jobs", tags=["jobs"])
 app.include_router(websocket.router)  # WS lives at /ws/jobs/{job_id}
 
 
