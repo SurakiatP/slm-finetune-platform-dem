@@ -64,6 +64,8 @@ class WSMessageType(str, Enum):
     SDG_PROGRESS = "sdg_progress"
     TRAINING_PROGRESS = "training_progress"
     HPO_PROGRESS = "hpo_progress"
+    EXPORT_PROGRESS = "export_progress"
+    EVALUATION_PROGRESS = "evaluation_progress"
     COMPLETED = "completed"
     FAILED = "failed"
 
