@@ -27,6 +27,7 @@ from api.schemas.artifacts import (
 )
 from api.schemas.enums import ArtifactFormat, JobStatus
 from api.schemas.responses import Page
+from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 from workers.storage import get_minio_client, parse_s3_uri
 
 
@@ -112,6 +113,13 @@ async def submit_export_job(
     )
     job_id: str = async_result.id
 
+    # Persist job-control state so an in-flight export can be recovered or
+    # cancelled by job id after a reload (mirrors sdg_service.submit_sdg_job's
+    # enqueue -> persist -> commit -> return ordering).
+    artifact.export_celery_task_id = job_id
+    artifact.export_status = JobStatus.PENDING
+    await db.commit()
+
     return ModelExportResponse(
         artifact_id=artifact.id,
         format=request.format,
@@ -119,6 +127,39 @@ async def submit_export_job(
         status=JobStatus.PENDING,
         websocket_url=f"/ws/jobs/{job_id}",
     )
+
+
+async def cancel_export(db: AsyncSession, model_id: UUID) -> dict[str, str]:
+    """Revoke the underlying export Celery task + flip export_status to CANCELLED.
+
+    404 if the artifact doesn't exist. 409 if no export was ever requested
+    for this artifact (``export_status is None``) — there is nothing to
+    cancel, and pretending otherwise would report a fake CANCELLED transition
+    for a job that was never enqueued. Idempotent once export_status is
+    already terminal: returns 200 with the current status, no revoke.
+    """
+    artifact = await db.get(ModelArtifact, model_id)
+    if artifact is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model {model_id} not found",
+        )
+    if artifact.export_status is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Model {model_id} has no export in progress — "
+                f"POST /api/v1/models/{model_id}/export first."
+            ),
+        )
+    if artifact.export_status in TERMINAL_JOB_STATUSES:
+        return {"artifact_id": str(artifact.id), "status": artifact.export_status.value}
+
+    revoke_celery_task(artifact.export_celery_task_id, context=f"model export {model_id}")
+
+    artifact.export_status = JobStatus.CANCELLED
+    await db.commit()
+    return {"artifact_id": str(artifact.id), "status": JobStatus.CANCELLED.value}
 
 
 # ---- download -------------------------------------------------------------
@@ -238,5 +279,6 @@ __all__ = [
     "list_models",
     "get_model",
     "submit_export_job",
+    "cancel_export",
     "download_artifact",
 ]

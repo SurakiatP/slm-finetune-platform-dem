@@ -28,6 +28,7 @@ from api.schemas.trainings import (
     TrainingResponse,
 )
 from api.services import mlflow_metrics
+from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 
 log = logging.getLogger(__name__)
 
@@ -80,23 +81,10 @@ async def cancel_training(db: AsyncSession, training_id: UUID) -> dict[str, str]
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Training {training_id} not found",
         )
-    if job.status in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}:
+    if job.status in TERMINAL_JOB_STATUSES:
         return {"training_id": str(job.id), "status": job.status.value}
 
-    if job.celery_task_id:
-        try:
-            # Local import — Celery is in base deps but this keeps test-only
-            # imports tidy.
-            from workers.celery_app import celery_app
-
-            celery_app.control.revoke(job.celery_task_id, terminate=True, signal="SIGTERM")
-        except Exception:  # noqa: BLE001 — proceed to flip status even on broker hiccup
-            log.warning(
-                "could not revoke celery task %s for training %s",
-                job.celery_task_id,
-                training_id,
-                exc_info=True,
-            )
+    revoke_celery_task(job.celery_task_id, context=f"training {training_id}")
 
     job.status = JobStatus.CANCELLED
     job.ended_at = datetime.now(timezone.utc)

@@ -133,3 +133,15 @@ async def delete_dataset(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
     await datasets_service.delete_dataset(db, dataset_id)
+
+
+@router.post(
+    "/{dataset_id}/cancel",
+    response_model=dict[str, str],
+    summary="Cancel a running SDG generation job (idempotent)",
+)
+async def cancel_dataset(
+    dataset_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str]:
+    return await datasets_service.cancel_dataset(db, dataset_id)

@@ -43,6 +43,15 @@ class DatasetResponse(BaseModel):
     storage_uri: str | None
     size_bytes: int | None
     generation_metadata: dict[str, Any] | None
+    celery_task_id: str | None = Field(
+        default=None,
+        description=(
+            "Celery task id for SDG-generated datasets — the WebSocket job id "
+            "used to reconnect to `/ws/jobs/{id}` and `GET /jobs/{id}/progress` "
+            "after a page reload. Also mirrored at "
+            "generation_metadata.celery_task_id for backward compatibility."
+        ),
+    )
     created_at: datetime
     updated_at: datetime
 

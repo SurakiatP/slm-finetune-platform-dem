@@ -21,6 +21,7 @@ from api.schemas.artifacts import (
 )
 from api.schemas.responses import Page
 from api.services.model_service import (
+    cancel_export as _cancel_export,
     download_artifact,
     get_model as _get_model,
     list_models as _list_models,
@@ -75,6 +76,23 @@ async def export_model(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ModelExportResponse:
     return await submit_export_job(db, model_id=model_id, request=body)
+
+
+@router.post(
+    "/{model_id}/export/cancel",
+    response_model=dict[str, str],
+    summary="Cancel an in-progress model export (idempotent)",
+)
+async def cancel_export(
+    model_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str]:
+    # Declared right after POST /{model_id}/export (a distinct 2-segment
+    # path) and before GET /{model_id}/download — Starlette matches routes
+    # by exact segment shape, so this 3-segment path is never shadowed by
+    # either neighbour regardless of order, but keeping it here groups the
+    # export lifecycle together for readers.
+    return await _cancel_export(db, model_id)
 
 
 @router.get(
