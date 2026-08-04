@@ -94,6 +94,23 @@ async def cancel_training(
     return await trainings_service.cancel_training(db, training_id)
 
 
+@router.post(
+    "/{training_id}/cancel",
+    response_model=dict[str, str],
+    summary="Cancel a running / pending training job (POST alias for DELETE)",
+)
+async def cancel_training_post(
+    training_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str]:
+    """Same idempotent cancel semantics as `DELETE /{training_id}`.
+
+    Delegates to the exact same service function — no duplicated logic —
+    so both verbs always agree on behaviour.
+    """
+    return await trainings_service.cancel_training(db, training_id)
+
+
 @router.get(
     "/{training_id}/mlflow-url",
     response_model=MlflowUrlResponse,

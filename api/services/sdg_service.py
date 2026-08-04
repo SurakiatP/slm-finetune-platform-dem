@@ -86,10 +86,13 @@ async def submit_sdg_job(
     )
     job_id: str = async_result.id
 
-    # 5. Persist celery_task_id in metadata + commit
+    # 5. Persist celery_task_id as a first-class column + commit. The JSONB
+    # metadata key is kept in sync too (not replaced) — docs/03 §2 documents
+    # that path and existing clients may still read it from there.
     metadata = dict(dataset.generation_metadata or {})
     metadata["celery_task_id"] = job_id
     dataset.generation_metadata = metadata
+    dataset.celery_task_id = job_id
     await db.commit()
 
     return SDGJobAcceptedResponse(

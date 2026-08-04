@@ -23,6 +23,7 @@ from api.schemas.evaluations import (
     EvaluationResponse,
 )
 from api.schemas.responses import Page
+from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 
 
 async def submit_evaluation_job(
@@ -147,6 +148,29 @@ async def get_evaluation(
     return EvaluationResponse.model_validate(ev)
 
 
+async def cancel_evaluation(db: AsyncSession, evaluation_id: UUID) -> dict[str, str]:
+    """Revoke the underlying Celery task + flip status to CANCELLED.
+
+    Idempotent: cancelling an already-terminal evaluation run returns 200
+    with the existing status. Cancelling a non-existent run returns 404.
+    """
+    ev = await db.get(EvaluationRun, evaluation_id)
+    if ev is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evaluation {evaluation_id} not found",
+        )
+    if ev.status in TERMINAL_JOB_STATUSES:
+        return {"evaluation_id": str(ev.id), "status": ev.status.value}
+
+    revoke_celery_task(ev.celery_task_id, context=f"evaluation {evaluation_id}")
+
+    ev.status = JobStatus.CANCELLED
+    ev.ended_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"evaluation_id": str(ev.id), "status": JobStatus.CANCELLED.value}
+
+
 async def compare_evaluations(
     db: AsyncSession,
     request: EvaluationCompareRequest,
@@ -202,5 +226,6 @@ __all__ = [
     "submit_evaluation_job",
     "list_evaluations",
     "get_evaluation",
+    "cancel_evaluation",
     "compare_evaluations",
 ]

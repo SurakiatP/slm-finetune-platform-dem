@@ -72,6 +72,18 @@ async def get_evaluation(
 
 
 @router.post(
+    "/{evaluation_id}/cancel",
+    response_model=dict[str, str],
+    summary="Cancel a running evaluation (idempotent)",
+)
+async def cancel_evaluation(
+    evaluation_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str]:
+    return await evaluation_service.cancel_evaluation(db, evaluation_id)
+
+
+@router.post(
     "/compare",
     response_model=EvaluationCompareResponse,
     summary="Compare metrics across multiple evaluation runs",
