@@ -44,6 +44,7 @@ from ai_engine.data_gen.pdf_loader import (
     probe as pdf_probe,
 )
 from ai_engine.data_gen.constants import MAX_SEED_PDF_BYTES
+from api.core.auth import CurrentUser
 from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
@@ -59,6 +60,7 @@ from api.schemas.enums import DatasetSource, JobStatus, TaskType
 from api.schemas.responses import Page
 from api.schemas.sdg import SeedUploadResponse
 from api.schemas.upload import FormatDetectionReport
+from api.services import ownership
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 from workers.storage import (
     get_minio_client,
@@ -84,12 +86,15 @@ async def list_datasets(
     project_id: UUID | None,
     limit: int,
     offset: int,
+    user: CurrentUser | None = None,
 ) -> Page[DatasetResponse]:
     base = select(Dataset).order_by(Dataset.created_at.desc())
     count = select(func.count()).select_from(Dataset)
     if project_id is not None:
         base = base.where(Dataset.project_id == project_id)
         count = count.where(Dataset.project_id == project_id)
+    base = ownership.scope_datasets_to_owner(base, user)
+    count = ownership.scope_datasets_to_owner(count, user)
     total = (await db.execute(count)).scalar_one()
     rows = (await db.execute(base.limit(limit).offset(offset))).scalars().all()
     return Page[DatasetResponse](
@@ -100,13 +105,10 @@ async def list_datasets(
     )
 
 
-async def get_dataset(db: AsyncSession, dataset_id: UUID) -> DatasetResponse:
-    ds = await db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {dataset_id} not found",
-        )
+async def get_dataset(
+    db: AsyncSession, dataset_id: UUID, user: CurrentUser | None = None
+) -> DatasetResponse:
+    ds = await ownership.assert_dataset_access(db, dataset_id, user)
     return DatasetResponse.model_validate(ds)
 
 
@@ -114,13 +116,9 @@ async def preview_dataset(
     db: AsyncSession,
     dataset_id: UUID,
     limit: int,
+    user: CurrentUser | None = None,
 ) -> DatasetPreviewResponse:
-    ds = await db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {dataset_id} not found",
-        )
+    ds = await ownership.assert_dataset_access(db, dataset_id, user)
     if not ds.storage_uri:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -165,13 +163,10 @@ async def preview_dataset(
     )
 
 
-async def download_dataset(db: AsyncSession, dataset_id: UUID) -> StreamingResponse:
-    ds = await db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {dataset_id} not found",
-        )
+async def download_dataset(
+    db: AsyncSession, dataset_id: UUID, user: CurrentUser | None = None
+) -> StreamingResponse:
+    ds = await ownership.assert_dataset_access(db, dataset_id, user)
     if not ds.storage_uri:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -198,13 +193,10 @@ async def download_dataset(db: AsyncSession, dataset_id: UUID) -> StreamingRespo
     )
 
 
-async def delete_dataset(db: AsyncSession, dataset_id: UUID) -> None:
-    ds = await db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {dataset_id} not found",
-        )
+async def delete_dataset(
+    db: AsyncSession, dataset_id: UUID, user: CurrentUser | None = None
+) -> None:
+    ds = await ownership.assert_dataset_access(db, dataset_id, user)
 
     # Both `training_jobs.dataset_id` and `evaluation_runs.dataset_id` are
     # NOT NULL with `ondelete=RESTRICT` — we must refuse the delete here
@@ -256,7 +248,9 @@ async def delete_dataset(db: AsyncSession, dataset_id: UUID) -> None:
     await db.commit()
 
 
-async def cancel_dataset(db: AsyncSession, dataset_id: UUID) -> dict[str, str]:
+async def cancel_dataset(
+    db: AsyncSession, dataset_id: UUID, user: CurrentUser | None = None
+) -> dict[str, str]:
     """Revoke the underlying SDG Celery task + flip status to CANCELLED.
 
     Idempotent: cancelling an already-terminal dataset returns 200 with the
@@ -265,14 +259,9 @@ async def cancel_dataset(db: AsyncSession, dataset_id: UUID) -> dict[str, str]:
     (see `_persist_jsonl_dataset` / `_persist_pdf_dataset` above), so they
     always hit the terminal-status branch and are reported as already-done
     rather than treated as a cancellable job. Cancelling a non-existent
-    dataset returns 404.
+    dataset, or one belonging to another user, returns 404.
     """
-    ds = await db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {dataset_id} not found",
-        )
+    ds = await ownership.assert_dataset_access(db, dataset_id, user)
     if ds.status in TERMINAL_JOB_STATUSES:
         return {"dataset_id": str(ds.id), "status": ds.status.value}
 
@@ -297,6 +286,7 @@ async def upload_seed_dataset(
     task_type: TaskType,
     name: str | None,
     file: UploadFile,
+    user: CurrentUser | None = None,
 ) -> SeedUploadResponse:
     """Upload + persist a JSONL/JSON or PDF (QA-only) seed file.
 
@@ -306,14 +296,13 @@ async def upload_seed_dataset(
       else  → parse JSON or JSONL; if rows aren't canonical, run Format
               Detection (LLM); persist canonicalised JSONL; record the
               FormatDetectionReport in metadata.
+
+    Parent-check: this is a create against `project_id`, so ownership is
+    asserted on the *project* (the attack that matters is seeding data into
+    someone else's project) before anything is read from `file`.
     """
     settings = get_settings()
-    project = await db.get(Project, project_id)
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project {project_id} not found",
-        )
+    project = await ownership.assert_project_access(db, project_id, user)
     if project.task_type != task_type:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -10,9 +10,10 @@ import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.core.auth import require_user
 from api.core.config import get_settings
 from api.core.database import engine
 from api.core.exceptions import install_handlers
@@ -108,12 +109,36 @@ install_handlers(app)
 
 API_V1 = "/api/v1"
 
-app.include_router(projects.router, prefix=f"{API_V1}/projects", tags=["projects"])
-app.include_router(datasets.router, prefix=f"{API_V1}/datasets", tags=["datasets"])
-app.include_router(trainings.router, prefix=f"{API_V1}/trainings", tags=["trainings"])
-app.include_router(models.router, prefix=f"{API_V1}/models", tags=["models"])
-app.include_router(inference.router, prefix=f"{API_V1}/inference", tags=["inference"])
-app.include_router(evaluations.router, prefix=f"{API_V1}/evaluations", tags=["evaluations"])
+_AUTH = [Depends(require_user)]
+
+# Router-level (not per-route) so a new route added to any of these six
+# resources is protected by default — nobody has to remember to add the
+# dependency on the next endpoint. tasks_meta (3 static-catalog routers),
+# `/`, `/health`, `/docs`, `/redoc`, `/openapi.json` stay public: no DB,
+# nothing user-scoped. `jobs`/`websocket` job-stream authorization is a
+# separate, job_id-keyed concern (celery_task_id -> owner resolution) owned
+# elsewhere, not this router-level `Depends`.
+app.include_router(
+    projects.router, prefix=f"{API_V1}/projects", tags=["projects"], dependencies=_AUTH
+)
+app.include_router(
+    datasets.router, prefix=f"{API_V1}/datasets", tags=["datasets"], dependencies=_AUTH
+)
+app.include_router(
+    trainings.router, prefix=f"{API_V1}/trainings", tags=["trainings"], dependencies=_AUTH
+)
+app.include_router(
+    models.router, prefix=f"{API_V1}/models", tags=["models"], dependencies=_AUTH
+)
+app.include_router(
+    inference.router, prefix=f"{API_V1}/inference", tags=["inference"], dependencies=_AUTH
+)
+app.include_router(
+    evaluations.router,
+    prefix=f"{API_V1}/evaluations",
+    tags=["evaluations"],
+    dependencies=_AUTH,
+)
 app.include_router(tasks_meta.tasks_router, prefix=f"{API_V1}/tasks", tags=["metadata"])
 app.include_router(tasks_meta.base_models_router, prefix=f"{API_V1}/base-models", tags=["metadata"])
 app.include_router(tasks_meta.sdg_pipeline_router, prefix=f"{API_V1}/sdg-pipeline", tags=["metadata"])

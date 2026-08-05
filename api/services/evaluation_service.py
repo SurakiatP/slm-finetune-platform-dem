@@ -9,9 +9,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core.auth import CurrentUser
 from api.models.evaluation_run import EvaluationRun
-from api.models.model_artifact import ModelArtifact
-from api.models.dataset import Dataset
 from api.models.project import Project
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
@@ -23,20 +22,24 @@ from api.schemas.evaluations import (
     EvaluationResponse,
 )
 from api.schemas.responses import Page
+from api.services import ownership
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 
 
 async def submit_evaluation_job(
     db: AsyncSession,
     request: EvaluationCreate,
+    user: CurrentUser | None = None,
 ) -> EvaluationAcceptedResponse:
-    """Validate, persist `EvaluationRun` row, enqueue worker."""
-    artifact = await db.get(ModelArtifact, request.model_artifact_id)
-    if artifact is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model {request.model_artifact_id} not found",
-        )
+    """Validate, persist `EvaluationRun` row, enqueue worker.
+
+    Both `model_artifact_id` and `dataset_id` are ownership-checked here —
+    the parent check on *both* FKs, since "evaluating someone else's model"
+    and "evaluating with someone else's dataset" are each independently the
+    interesting attack (a caller could own neither, or own one but not the
+    other).
+    """
+    artifact = await ownership.assert_model_access(db, request.model_artifact_id, user)
     if not artifact.ollama_model_tag:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -46,12 +49,7 @@ async def submit_evaluation_job(
             ),
         )
 
-    dataset = await db.get(Dataset, request.dataset_id)
-    if dataset is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {request.dataset_id} not found",
-        )
+    dataset = await ownership.assert_dataset_access(db, request.dataset_id, user)
     if not dataset.storage_uri or dataset.num_samples == 0:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -112,6 +110,7 @@ async def list_evaluations(
     status_filter: JobStatus | None,
     limit: int,
     offset: int,
+    user: CurrentUser | None = None,
 ) -> Page[EvaluationResponse]:
     """List evaluation runs, optionally filtered by artifact / dataset / status."""
     base = select(EvaluationRun).order_by(EvaluationRun.created_at.desc())
@@ -125,6 +124,8 @@ async def list_evaluations(
     if status_filter is not None:
         base = base.where(EvaluationRun.status == status_filter)
         count = count.where(EvaluationRun.status == status_filter)
+    base = ownership.scope_evaluations_to_owner(base, user)
+    count = ownership.scope_evaluations_to_owner(count, user)
     total = (await db.execute(count)).scalar_one()
     rows = (await db.execute(base.limit(limit).offset(offset))).scalars().all()
     return Page[EvaluationResponse](
@@ -138,28 +139,22 @@ async def list_evaluations(
 async def get_evaluation(
     db: AsyncSession,
     evaluation_id: UUID,
+    user: CurrentUser | None = None,
 ) -> EvaluationResponse:
-    ev = await db.get(EvaluationRun, evaluation_id)
-    if ev is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Evaluation {evaluation_id} not found",
-        )
+    ev = await ownership.assert_evaluation_access(db, evaluation_id, user)
     return EvaluationResponse.model_validate(ev)
 
 
-async def cancel_evaluation(db: AsyncSession, evaluation_id: UUID) -> dict[str, str]:
+async def cancel_evaluation(
+    db: AsyncSession, evaluation_id: UUID, user: CurrentUser | None = None
+) -> dict[str, str]:
     """Revoke the underlying Celery task + flip status to CANCELLED.
 
     Idempotent: cancelling an already-terminal evaluation run returns 200
-    with the existing status. Cancelling a non-existent run returns 404.
+    with the existing status. Cancelling a non-existent run, or one
+    belonging to another user, returns 404.
     """
-    ev = await db.get(EvaluationRun, evaluation_id)
-    if ev is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Evaluation {evaluation_id} not found",
-        )
+    ev = await ownership.assert_evaluation_access(db, evaluation_id, user)
     if ev.status in TERMINAL_JOB_STATUSES:
         return {"evaluation_id": str(ev.id), "status": ev.status.value}
 
@@ -174,17 +169,24 @@ async def cancel_evaluation(db: AsyncSession, evaluation_id: UUID) -> dict[str, 
 async def compare_evaluations(
     db: AsyncSession,
     request: EvaluationCompareRequest,
+    user: CurrentUser | None = None,
 ) -> EvaluationCompareResponse:
     """Pivot metrics across N evaluation runs into a `metric → {eval_id → value}` map.
 
     Missing metrics on any given run are emitted as `None` rather than dropped
     so the frontend can render a complete grid.
+
+    Ownership: the id list is scoped to `user`'s own evaluations the same
+    way `list_evaluations` is (`scope_evaluations_to_owner`), so a run
+    belonging to another user simply doesn't come back from the query and
+    falls into the existing "not found" branch below — no separate 403
+    path needed, and no way to distinguish "not yours" from "doesn't exist".
     """
-    rows = (
-        await db.execute(
-            select(EvaluationRun).where(EvaluationRun.id.in_(list(request.evaluation_ids)))
-        )
-    ).scalars().all()
+    stmt = ownership.scope_evaluations_to_owner(
+        select(EvaluationRun).where(EvaluationRun.id.in_(list(request.evaluation_ids))),
+        user,
+    )
+    rows = (await db.execute(stmt)).scalars().all()
     by_id: dict[UUID, EvaluationRun] = {r.id: r for r in rows}
 
     missing = [str(eid) for eid in request.evaluation_ids if eid not in by_id]

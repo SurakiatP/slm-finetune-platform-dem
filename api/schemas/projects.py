@@ -66,6 +66,16 @@ class ProjectResponse(BaseModel):
     description: str | None
     task_type: TaskType
     external_project_id: str | None
+    # owner_id is intentionally absent from ProjectCreate/ProjectUpdate above:
+    # ownership is derived server-side from the caller's auth token, never
+    # accepted as client input. That's a security property, not an oversight.
+    #
+    # Defaulted to None like the additive fields migration 0006 introduced
+    # (DatasetResponse.celery_task_id, ModelArtifactResponse.export_status):
+    # without a default Pydantic makes it *required*, which breaks every
+    # existing caller that builds this model from a dict rather than from an
+    # ORM row. Additive means additive.
+    owner_id: str | None = None
     created_at: datetime
     updated_at: datetime
 

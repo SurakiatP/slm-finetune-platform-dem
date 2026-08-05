@@ -97,6 +97,27 @@ class Settings(BaseSettings):
     # (retired) and `google/gemini-3.1-flash-lite-preview` were superseded.
     llm_judge_model: str = "qwen/qwen3-235b-a22b-2507"
 
+    # ---- Auth (Supabase JWT, see api/core/auth.py) -------------------------
+    # Project URL, e.g. https://<ref>.supabase.co — the JWKS used to verify
+    # tokens lives at f"{supabase_url}/auth/v1/.well-known/jwks.json", and
+    # that URL doubles as the expected `iss` claim.
+    supabase_url: str = ""
+    # Expected `aud` claim. Supabase's default audience for authenticated
+    # end users is the literal string "authenticated".
+    supabase_jwt_audience: str = "authenticated"
+    # Optional HS256 fallback shared secret, used only for Supabase projects
+    # still on legacy symmetric signing keys. Leave unset when the project
+    # is on the newer asymmetric (JWKS) keys — which is the production path
+    # for this app, since the frontend uses the new publishable-key format.
+    supabase_jwt_secret: str = ""
+    # Phase-1 compatibility switch (see api/core/auth.py). False (default):
+    # tokens are verified when present, but a request with no Authorization
+    # header is still allowed through as anonymous — required because the
+    # current smart-model-tune frontend does not send the header yet. Flip
+    # to True once the frontend ships the header, to actually reject
+    # unauthenticated requests.
+    auth_required: bool = False
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

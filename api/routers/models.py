@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core.auth import CurrentUser, require_user
 from api.core.database import get_db
 from api.schemas.artifacts import (
     ModelArtifactResponse,
@@ -38,6 +39,7 @@ router = APIRouter()
 )
 async def list_models(
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
     project_id: Annotated[UUID | None, Query()] = None,
     training_job_id: Annotated[UUID | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
@@ -49,6 +51,7 @@ async def list_models(
         training_job_id=training_job_id,
         limit=limit,
         offset=offset,
+        user=user,
     )
 
 
@@ -60,8 +63,9 @@ async def list_models(
 async def get_model(
     model_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> ModelArtifactResponse:
-    return await _get_model(db, model_id)
+    return await _get_model(db, model_id, user)
 
 
 @router.post(
@@ -74,8 +78,9 @@ async def export_model(
     model_id: UUID,
     body: ModelExportRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> ModelExportResponse:
-    return await submit_export_job(db, model_id=model_id, request=body)
+    return await submit_export_job(db, model_id=model_id, request=body, user=user)
 
 
 @router.post(
@@ -86,13 +91,14 @@ async def export_model(
 async def cancel_export(
     model_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> dict[str, str]:
     # Declared right after POST /{model_id}/export (a distinct 2-segment
     # path) and before GET /{model_id}/download — Starlette matches routes
     # by exact segment shape, so this 3-segment path is never shadowed by
     # either neighbour regardless of order, but keeping it here groups the
     # export lifecycle together for readers.
-    return await _cancel_export(db, model_id)
+    return await _cancel_export(db, model_id, user)
 
 
 @router.get(
@@ -103,6 +109,7 @@ async def cancel_export(
 async def download_model(
     model_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
     fmt: Annotated[str, Query(alias="format")] = "gguf",
 ) -> StreamingResponse:
-    return await download_artifact(db, model_id=model_id, fmt=fmt)
+    return await download_artifact(db, model_id=model_id, fmt=fmt, user=user)

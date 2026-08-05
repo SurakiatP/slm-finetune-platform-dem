@@ -6,6 +6,26 @@ ModelArtifact UUID instead of an Ollama tag, and return Ollama's response.
 
 We deliberately do NOT support streaming (`stream=true`) in this PoC — adding
 SSE proxying is straightforward but out of scope per Phase 7 requirements.
+
+**Ownership decision (feat/be-auth001, W3)**: `chat_completions` /
+`text_completions` ownership-check `body.model` whenever it's a
+ModelArtifact UUID (`_resolve_model_tag` -> `ownership.assert_model_access`)
+— running inference against someone else's private fine-tune is the same
+class of attack as reading or exporting it. `list_models` (`GET
+/inference/models`) is left UNFILTERED: it lists every tag the shared
+Ollama daemon knows about, not per-caller. Reasoning: (1) Ollama's tag
+namespace has no user-scoping concept at all — it's one daemon shared by
+every project, per `require.md`'s single-GPU-box assumption; (2) a tag
+*could* be reverse-mapped through `ModelArtifact.ollama_model_tag ->
+TrainingJob -> Project.owner_id`, but silently dropping tags that don't
+resolve that way (base models pulled directly into Ollama, never exported
+through our pipeline) would make the listing inconsistent in a way that's
+arguably more confusing than informative; (3) the acceptance criterion this
+branch targets is DB-resource ownership (project/dataset/training/artifact/
+evaluation/job-stream) — a bare tag string is a capability from Ollama's
+own namespace, not one of ours. If per-user model listing becomes a real
+product requirement later, it needs the reverse-map query, and should
+probably also decide what a *base* model interception even means to hide.
 """
 
 from __future__ import annotations
@@ -17,8 +37,8 @@ import httpx
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core.auth import CurrentUser
 from api.core.config import get_settings
-from api.models.model_artifact import ModelArtifact
 from api.schemas.inference import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -27,6 +47,7 @@ from api.schemas.inference import (
     ModelDescriptor,
     ModelDescriptorList,
 )
+from api.services import ownership
 
 log = logging.getLogger(__name__)
 
@@ -37,13 +58,14 @@ _OLLAMA_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=10.0)
 async def chat_completions(
     db: AsyncSession,
     body: ChatCompletionRequest,
+    user: CurrentUser | None = None,
 ) -> ChatCompletionResponse:
     if body.stream:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="streaming is not supported on /api/v1/inference (set stream=false)",
         )
-    tag = await _resolve_model_tag(db, body.model)
+    tag = await _resolve_model_tag(db, body.model, user)
     payload = body.model_dump(exclude_none=True)
     payload["model"] = tag
 
@@ -54,13 +76,14 @@ async def chat_completions(
 async def text_completions(
     db: AsyncSession,
     body: CompletionRequest,
+    user: CurrentUser | None = None,
 ) -> CompletionResponse:
     if body.stream:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="streaming is not supported on /api/v1/inference (set stream=false)",
         )
-    tag = await _resolve_model_tag(db, body.model)
+    tag = await _resolve_model_tag(db, body.model, user)
     payload = body.model_dump(exclude_none=True)
     payload["model"] = tag
 
@@ -69,7 +92,12 @@ async def text_completions(
 
 
 async def list_models() -> ModelDescriptorList:
-    """List models known to the local Ollama daemon (OpenAI shape)."""
+    """List models known to the local Ollama daemon (OpenAI shape).
+
+    Deliberately NOT ownership-filtered — see module docstring's "inference
+    decision" note. Every literal Ollama tag the shared daemon knows about
+    is visible to any authenticated caller.
+    """
     raw = await _get_json("/v1/models")
     items = []
     for entry in raw.get("data") or []:
@@ -87,24 +115,25 @@ async def list_models() -> ModelDescriptorList:
 # ---- helpers ---------------------------------------------------------------
 
 
-async def _resolve_model_tag(db: AsyncSession, identifier: str) -> str:
+async def _resolve_model_tag(
+    db: AsyncSession, identifier: str, user: CurrentUser | None = None
+) -> str:
     """Accept either a UUID (ModelArtifact id) or a literal Ollama tag.
 
-    UUID → look up ollama_model_tag on the artifact (must be exported first).
-    Otherwise pass through verbatim (allows callers to use base models the
-    daemon already has, like `llama3.2:3b`).
+    UUID → look up ollama_model_tag on the artifact (must be exported first),
+    ownership-checked exactly like `GET /models/{id}` — running (free)
+    inference against someone else's private fine-tune is the same class of
+    attack as reading or exporting it. Otherwise pass through verbatim
+    (allows callers to use base models the daemon already has, like
+    `llama3.2:3b`) — a literal tag carries no ownership information to
+    check against.
     """
     try:
         artifact_id = UUID(identifier)
     except (ValueError, TypeError):
         return identifier
 
-    artifact = await db.get(ModelArtifact, artifact_id)
-    if artifact is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model {artifact_id} not found",
-        )
+    artifact = await ownership.assert_model_access(db, artifact_id, user)
     if not artifact.ollama_model_tag:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

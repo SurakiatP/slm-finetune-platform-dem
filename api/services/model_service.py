@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core.auth import CurrentUser
 from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
 from api.schemas.artifacts import (
@@ -27,6 +28,7 @@ from api.schemas.artifacts import (
 )
 from api.schemas.enums import ArtifactFormat, JobStatus
 from api.schemas.responses import Page
+from api.services import ownership
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 from workers.storage import get_minio_client, parse_s3_uri
 
@@ -41,20 +43,25 @@ async def list_models(
     training_job_id: UUID | None,
     limit: int,
     offset: int,
+    user: CurrentUser | None = None,
 ) -> Page[ModelArtifactResponse]:
     """List artifacts, optionally filtered by parent project or training job."""
     base = select(ModelArtifact).order_by(ModelArtifact.created_at.desc())
     count = select(func.count()).select_from(ModelArtifact)
     if project_id is not None:
-        base = base.join(TrainingJob, ModelArtifact.training_job_id == TrainingJob.id).where(
-            TrainingJob.project_id == project_id
-        )
-        count = count.join(TrainingJob, ModelArtifact.training_job_id == TrainingJob.id).where(
-            TrainingJob.project_id == project_id
-        )
+        # A `.in_(subquery)` rather than a `.join(TrainingJob, ...)` here so
+        # this filter can never collide with the join
+        # `ownership.scope_models_to_owner` adds below when `user` is set —
+        # joining the same target table twice on the same statement is a
+        # SQL error, not a silent merge.
+        owning_jobs = select(TrainingJob.id).where(TrainingJob.project_id == project_id)
+        base = base.where(ModelArtifact.training_job_id.in_(owning_jobs))
+        count = count.where(ModelArtifact.training_job_id.in_(owning_jobs))
     if training_job_id is not None:
         base = base.where(ModelArtifact.training_job_id == training_job_id)
         count = count.where(ModelArtifact.training_job_id == training_job_id)
+    base = ownership.scope_models_to_owner(base, user)
+    count = ownership.scope_models_to_owner(count, user)
 
     total = (await db.execute(count)).scalar_one()
     rows = (await db.execute(base.limit(limit).offset(offset))).scalars().all()
@@ -66,13 +73,10 @@ async def list_models(
     )
 
 
-async def get_model(db: AsyncSession, model_id: UUID) -> ModelArtifactResponse:
-    artifact = await db.get(ModelArtifact, model_id)
-    if artifact is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model {model_id} not found",
-        )
+async def get_model(
+    db: AsyncSession, model_id: UUID, user: CurrentUser | None = None
+) -> ModelArtifactResponse:
+    artifact = await ownership.assert_model_access(db, model_id, user)
     return ModelArtifactResponse.model_validate(artifact)
 
 
@@ -84,14 +88,15 @@ async def submit_export_job(
     *,
     model_id: UUID,
     request: ModelExportRequest,
+    user: CurrentUser | None = None,
 ) -> ModelExportResponse:
-    """Validate and enqueue a `model.export` Celery task."""
-    artifact = await db.get(ModelArtifact, model_id)
-    if artifact is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model {model_id} not found",
-        )
+    """Validate and enqueue a `model.export` Celery task.
+
+    Ownership check first: exporting someone else's artifact (spending GPU
+    time on their weights, or getting back a download link to them) is the
+    attack that matters here, more than reading the artifact metadata is.
+    """
+    artifact = await ownership.assert_model_access(db, model_id, user)
     if not artifact.lora_adapter_uri:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -129,21 +134,19 @@ async def submit_export_job(
     )
 
 
-async def cancel_export(db: AsyncSession, model_id: UUID) -> dict[str, str]:
+async def cancel_export(
+    db: AsyncSession, model_id: UUID, user: CurrentUser | None = None
+) -> dict[str, str]:
     """Revoke the underlying export Celery task + flip export_status to CANCELLED.
 
-    404 if the artifact doesn't exist. 409 if no export was ever requested
-    for this artifact (``export_status is None``) — there is nothing to
-    cancel, and pretending otherwise would report a fake CANCELLED transition
-    for a job that was never enqueued. Idempotent once export_status is
-    already terminal: returns 200 with the current status, no revoke.
+    404 if the artifact doesn't exist or belongs to another user. 409 if no
+    export was ever requested for this artifact (``export_status is None``)
+    — there is nothing to cancel, and pretending otherwise would report a
+    fake CANCELLED transition for a job that was never enqueued. Idempotent
+    once export_status is already terminal: returns 200 with the current
+    status, no revoke.
     """
-    artifact = await db.get(ModelArtifact, model_id)
-    if artifact is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model {model_id} not found",
-        )
+    artifact = await ownership.assert_model_access(db, model_id, user)
     if artifact.export_status is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -170,6 +173,7 @@ async def download_artifact(
     *,
     model_id: UUID,
     fmt: str,
+    user: CurrentUser | None = None,
 ) -> StreamingResponse:
     """Stream a previously-exported artifact file out of MinIO.
 
@@ -178,12 +182,7 @@ async def download_artifact(
     we expose the raw object listing path. Callers can download individual
     files via MinIO directly using the URI on the artifact record.
     """
-    artifact = await db.get(ModelArtifact, model_id)
-    if artifact is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model {model_id} not found",
-        )
+    artifact = await ownership.assert_model_access(db, model_id, user)
 
     fmt_lower = fmt.lower()
     if fmt_lower == ArtifactFormat.GGUF.value:
