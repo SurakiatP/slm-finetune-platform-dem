@@ -32,6 +32,80 @@ frames), and
 
 ---
 
+## Authentication
+
+Every route below **except the `Metadata` section** requires a Supabase JWT once
+`AUTH_REQUIRED=true`. See [ADR-009](./adr/ADR-009-supabase-jwt-auth.md).
+
+```
+Authorization: Bearer <supabase access token>
+```
+
+Get the token client-side from `supabase.auth.getSession()`. The backend verifies
+it against the project's JWKS (`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`),
+checking signature, `exp`, `aud` (`authenticated`) and `iss`. There is no separate
+API key and no backend login endpoint — Supabase is the only identity source.
+
+### Two-phase rollout — what you get today
+
+`AUTH_REQUIRED` defaults to **`false`**, and until it is flipped:
+
+| Request | Phase 1 (`false`) | Phase 2 (`true`) |
+|---|---|---|
+| No `Authorization` header | **served anonymously**, no ownership filtering | `401` |
+| Valid token | served, scoped to that user | served, scoped to that user |
+| Invalid / expired / forged token | **`401`** | `401` |
+
+The third row is the one to internalise: *absent* is tolerated in phase 1,
+*invalid* never is. Sending a broken token is worse than sending none.
+
+### Public routes
+
+`/api/v1/tasks`, `/api/v1/tasks/{task_type}/example`, `/api/v1/base-models` and
+`/api/v1/sdg-pipeline` are static catalogs with no DB access and no user data —
+readable without a token in both phases, so a login screen can populate its
+pickers. `/health`, `/docs`, `/redoc` and `/openapi.json` are also open.
+
+### Ownership
+
+`Project.owner_id` holds the token's `sub`. Every other resource inherits its
+owner by foreign key (`Dataset`/`TrainingJob` → project; `ModelArtifact` →
+training → project; `EvaluationRun` → artifact → training → project). You never
+send `owner_id` — it is set server-side on create and rejected as input.
+
+Two responses that will look wrong until you know why:
+
+- **Another user's existing resource returns `404`, not `403`.** A `403` would
+  confirm the resource exists; the message is byte-identical to a genuine
+  not-found so the two cannot be told apart.
+- **Resources created before authentication existed (`owner_id IS NULL`) are
+  invisible to everyone** once you send a token. They fail closed. If you had
+  test data before the cutover, it needs an owner assigned or it disappears.
+
+### WebSocket
+
+`/ws/jobs/{job_id}` cannot use a header — browsers do not allow them on
+`new WebSocket()`. Pass the token as a subprotocol instead:
+
+```js
+new WebSocket(url, ["bearer", accessToken]);
+```
+
+The server echoes `bearer` back as the selected subprotocol. Close codes:
+
+| Code | Meaning |
+|---|---|
+| `4401` | no credential while auth is required, **or** a credential was offered that failed verification or wasn't the two-value `["bearer", token]` shape |
+| `4403` | authenticated, but the job is unknown **or** belongs to another user — deliberately the same code and reason for both, so the endpoint can't be probed for which job ids exist |
+
+Unlike the HTTP header, a *malformed* subprotocol is rejected rather than treated
+as anonymous: a header can be mangled by proxies, a subprotocol is only ever set
+by your own code.
+
+`GET /api/v1/jobs/{job_id}/progress` carries the same ownership rule as the
+socket, and collapses every failure — no frame yet, TTL expired, corrupt payload,
+unknown job, someone else's job — into one identical `404`.
+
 ## Projects
 
 Top-level grouping entity — one `task_type` per project, immutable after

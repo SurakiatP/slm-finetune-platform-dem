@@ -1,7 +1,12 @@
 # ADR-006 — Defer API authentication; run unauthenticated behind a private network
 
-- **Status**: Accepted
+- **Status**: **Superseded by [ADR-009](./ADR-009-supabase-jwt-auth.md)** (2026-08-05)
 - **Date**: 2026-08-04
+- **Why superseded**: this record accepted "no auth" *on the condition* that the
+  platform sits behind a private network. That condition was never available —
+  `smart-model-tune` calls this API directly from the user's browser
+  (`src/lib/engineApi.ts:2`), so the Engine is public by construction. The body
+  below is left unedited as the record of what was decided and on what premise.
 - **Supersedes**: the "No authentication system" row in the constraint table of
   [`../01-architecture.md`](../01-architecture.md) — that row stays true in
   practice, but its stated source no longer exists (see Context).

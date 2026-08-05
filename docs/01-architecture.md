@@ -153,7 +153,7 @@ is the one exception: it now exists in this repo, see below):
 |---|---|
 | Models ≤3B params, must fit in QLoRA 4-bit | ADR-002 |
 | RTX 3060 12GB target hardware | `require.md` |
-| No authentication system | [ADR-006](./adr/ADR-006-defer-authentication.md) |
+| ~~No authentication system~~ — **superseded**: Supabase JWT + per-user ownership | [ADR-009](./adr/ADR-009-supabase-jwt-auth.md) |
 | Web UI lives only in `frontend/` (never mixed into `api`/`workers`/`ai_engine`) | Session 10 scope change |
 | MLflow for experiment tracking (not W&B / TensorBoard) | ADR-001 |
 | OpenRouter for SDG (not direct OpenAI / Anthropic) | ADR-003 |
@@ -170,7 +170,7 @@ verification, `owner_id` on `Project`) for when auth is scheduled.
 Verified in code:
 - 3 task types enforced by `api/schemas/enums.py:13-18` (`TaskType`: `classification`, `tool_calling`, `qa`), also referenced from `ai_engine/data_gen/generator.py:44`.
 - Celery-only async: no `BackgroundTasks` import anywhere under `api/`; all long-running work is a `@celery_app.task` in `workers/tasks/*.py`.
-- No auth: no auth middleware/dependency in `api/main.py`; CORS is wide open on methods/headers with `allow_credentials=False` (`api/main.py:92-99`). This is deliberate and deferred, not an oversight — see [ADR-006](./adr/ADR-006-defer-authentication.md) for the full accepted-risk writeup and intended future shape.
+- Auth: Supabase JWTs are verified by `api/core/auth.py` and ownership is enforced per `Project.owner_id` (`api/services/ownership.py`, `api/services/job_ownership.py`). Ships behind `AUTH_REQUIRED`, which defaults to `false` — tokens are verified when present, but anonymous requests are still served until the frontend starts sending the header. See [ADR-009](./adr/ADR-009-supabase-jwt-auth.md); [ADR-006](./adr/ADR-006-defer-authentication.md) is the superseded record of why it was deferred first.
 - MLflow: every training run opens an `mlflow_run_scope` (`ai_engine/training/mlflow_logger.py`, used from `workers/tasks/training.py` and `workers/tasks/hpo_training.py:128-138`).
 - OpenRouter-only SDG: `ai_engine/data_gen/openrouter_client.py` is the only LLM client used by `ai_engine/data_gen/*`.
 

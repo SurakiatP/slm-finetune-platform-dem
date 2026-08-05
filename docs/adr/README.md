@@ -11,6 +11,7 @@ with a new one rather than editing a decided record in place.
 | 001–005, 007 | See below — historical, no separate files | Accepted |
 | [006](./ADR-006-defer-authentication.md) | Defer API authentication; keep the platform unauthenticated behind a private network for now | **Superseded by 009** |
 | [008](./ADR-008-ws-progress-snapshot.md) | Add a Redis last-frame snapshot to the WebSocket progress transport, and two new `WSMessageType` values | Accepted |
+| [009](./ADR-009-supabase-jwt-auth.md) | Verify Supabase JWTs and enforce per-user ownership; two-phase rollout behind `AUTH_REQUIRED` | Accepted |
 
 **Take the next free number from this table, and grep the codebase first** —
 `ADR-008` above began life as `ADR-007` and had to be renumbered across 24

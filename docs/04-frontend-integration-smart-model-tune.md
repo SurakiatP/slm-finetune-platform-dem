@@ -109,6 +109,85 @@ calls it).
 
 34 REST endpoints + 1 WebSocket channel from `docs/openapi.json` are covered above.
 
+## ⚠️ Required Frontend Change — send the Supabase token (branch `feat/be-auth001`)
+
+**This is the first backend branch that is not zero-frontend-change.** Everything
+before it was designed so `smart-model-tune` needed no edits. Authentication
+cannot be, because the credential has to come from the client.
+
+It ships behind `AUTH_REQUIRED`, defaulting to **`false`**, precisely so the two
+sides can land independently: deploying the backend changes nothing until the
+flag is flipped, and the flag should only be flipped once the two changes below
+are live. Full rationale in [ADR-009](./adr/ADR-009-supabase-jwt-auth.md).
+
+### 1. `apiFetch` — attach the header
+
+`src/lib/engineApi.ts:147-152` currently sends only `Content-Type` and
+`ngrok-skip-browser-warning`. The token is already in the app — `AuthContext.tsx:52`
+holds the session from `supabase.auth.getSession()`.
+
+```ts
+// engineApi.ts — inside apiFetch, before the fetch
+const { data: { session } } = await supabase.auth.getSession();
+const authHeader = session?.access_token
+  ? { Authorization: `Bearer ${session.access_token}` }
+  : {};
+
+const res = await fetch(`${ENGINE_HOST}/api/v1${path}`, {
+  ...init,
+  headers: { "Content-Type": "application/json", ...NGROK_HEADER, ...authHeader, ...init?.headers },
+});
+```
+
+Do the same for the three calls that bypass `apiFetch` and build their own
+`fetch` — the seed upload (`:200`) and the two inference calls (`:322`, `:328`).
+
+**Send no header rather than a stale one.** An expired token is a `401`; an absent
+one is served anonymously while the flag is off. Supabase refreshes tokens
+automatically (`autoRefreshToken: true` in `integrations/supabase/client.ts`), so
+reading the session per request — not once at module load — is what keeps it fresh.
+
+### 2. `useTrainingWebSocket` — pass the token as a subprotocol
+
+Browsers do not allow headers on `new WebSocket()`. `useTrainingWebSocket.ts:63`
+opens the socket with a URL only; it needs the token as the second argument:
+
+```ts
+const ws = new WebSocket(buildWsUrl(jobId), ["bearer", accessToken]);
+```
+
+The server selects and echoes `bearer`. Close codes worth handling distinctly:
+`4401` means the credential was missing or bad — refresh the session and retry;
+`4403` means the job isn't yours (or doesn't exist) — **stop reconnecting**, the
+existing backoff loop would otherwise hammer a socket that can never open.
+
+### 3. `VITE_ENGINE_HOST` — leave it empty
+
+The agreed topology is a single nginx serving the frontend and proxying
+`/api/v1` and `/ws` to the Engine. `useTrainingWebSocket.ts:59` already documents
+that an empty `VITE_ENGINE_HOST` falls back to same-origin, which is the intended
+production setting. Same-origin also removes CORS from the picture entirely.
+
+### What breaks if only one side ships
+
+| | Backend flag `false` (today) | Backend flag `true` |
+|---|---|---|
+| Frontend without the token | works, anonymous, **no per-user isolation** | every call `401` — total outage |
+| Frontend with the token | works, scoped per user | works, scoped per user |
+
+So: ship the frontend changes first, confirm tokens are arriving, then flip.
+Reversing that order takes the product down.
+
+### Also note
+
+- `owner_id` appears on project responses. Never send it — it is set from your
+  token and rejected as input.
+- Another user's resource returns **`404`, not `403`**, with a message identical
+  to a genuine not-found. Don't build UI that distinguishes them; it can't.
+- Anything created before the cutover has `owner_id = null` and becomes
+  **invisible to everyone** once a token is sent. Existing demo projects need an
+  owner assigned or they vanish.
+
 ## Priority Fix List
 
 **Re-verified against `smart-model-tune`'s current source on 2026-08-04.**
