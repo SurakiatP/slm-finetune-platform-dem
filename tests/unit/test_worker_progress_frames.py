@@ -27,6 +27,7 @@ from pydantic import ValidationError
 
 from api.schemas.enums import TaskType, WSMessageType
 from api.schemas.progress import EvaluationProgress, ExportProgress
+from workers.tasks import data_generation as sdg_task
 from workers.tasks import evaluation as eval_task
 from workers.tasks import model_export as export_task
 
@@ -40,6 +41,13 @@ _EXPORT_STAGES = (
 )
 
 _EXPORT_SOURCE = Path(export_task.__file__).read_text(encoding="utf-8")
+
+# All three Celery task bodies must survive a SIGTERM-driven cancel identically.
+_CANCELLABLE_TASKS = {
+    "data_generation": Path(sdg_task.__file__).read_text(encoding="utf-8"),
+    "evaluation": Path(eval_task.__file__).read_text(encoding="utf-8"),
+    "model_export": _EXPORT_SOURCE,
+}
 
 
 # =============================================================================
@@ -212,3 +220,50 @@ class TestExportProgressWiring:
 
     def test_gpu_memory_is_still_released(self) -> None:
         assert "_release_gpu_memory()" in _EXPORT_SOURCE
+
+
+# =============================================================================
+# 4. Cancellation contract — shared by all three cancellable tasks
+# =============================================================================
+
+
+class TestCancellationSurvivesSigterm:
+    """REGRESSION GUARDS for a defect only a live worker can expose.
+
+    `revoke(terminate=True, signal="SIGTERM")` reaches the worker child as a
+    `SystemExit` (billiard runs `sys.exit(-(256 - 15))`; a cancelled export was
+    observed reporting `error_message == "-241"`). `SystemExit` is a
+    `BaseException`, so `except Exception` misses it entirely — the task skips
+    all cleanup, never publishes a terminal frame, and leaves its row's status
+    stranded.
+
+    This shipped correct for `model_export` but was missed in the other two
+    until a GPU-box run caught it: cancelling an export produced a `failed`
+    frame within 0.5s, while cancelling SDG produced none at all.
+    """
+
+    @pytest.mark.parametrize("task", sorted(_CANCELLABLE_TASKS))
+    def test_catches_baseexception(self, task: str) -> None:
+        src = _CANCELLABLE_TASKS[task]
+        assert "except BaseException as exc:" in src, (
+            f"{task}: narrowing this back to `except Exception` silently stops "
+            f"terminal frames on cancel — SystemExit is not an Exception"
+        )
+
+    @pytest.mark.parametrize("task", sorted(_CANCELLABLE_TASKS))
+    def test_does_not_clobber_cancelled_with_failed(self, task: str) -> None:
+        """The API sets CANCELLED *before* revoking; the worker must respect it.
+        Widening the handler without this guard turns every cancel into FAILED."""
+        assert "!= JobStatus.CANCELLED" in _CANCELLABLE_TASKS[task], (
+            f"{task}: missing the CANCELLED guard next to the FAILED write"
+        )
+
+    @pytest.mark.parametrize("task", sorted(_CANCELLABLE_TASKS))
+    def test_still_publishes_a_terminal_frame(self, task: str) -> None:
+        assert "JobFailed(" in _CANCELLABLE_TASKS[task]
+
+    @pytest.mark.parametrize("task", sorted(_CANCELLABLE_TASKS))
+    def test_reraises_so_celery_records_the_failure(self, task: str) -> None:
+        """Swallowing it would make Celery mark a killed task as succeeded."""
+        tail = _CANCELLABLE_TASKS[task].split("except BaseException as exc:")[1]
+        assert "\n            raise\n" in tail, f"{task}: missing the trailing bare re-raise"
