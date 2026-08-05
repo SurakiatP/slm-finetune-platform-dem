@@ -734,7 +734,7 @@ training, HPO, export, evaluation) — for clients that don't want to hold a
 socket open, or a WS client's own first paint. Source:
 `api/routers/jobs.py`. See
 [`03-realtime-websocket.md`](./03-realtime-websocket.md) for the full
-`WSMessage` payload shapes and the snapshot mechanism (ADR-007).
+`WSMessage` payload shapes and the snapshot mechanism (ADR-008).
 
 ### GET /api/v1/jobs/{job_id}/progress
 
@@ -910,7 +910,7 @@ All 33 paths / 40 operations in `openapi.json` are covered above — the
 enumeration was cross-checked against `python3 -c "import json;
 json.load(open('openapi.json'))['paths']"` before writing this file
 (33 paths, 40 GET/POST/PATCH/DELETE operations). This count includes the
-5 job-control endpoints added alongside ADR-006/ADR-007 (`GET
+5 job-control endpoints added alongside ADR-006/ADR-008 (`GET
 /jobs/{job_id}/progress`, and one `POST .../cancel` each for datasets,
 model export, evaluations, and trainings — the last being an alias for
 the pre-existing `DELETE /trainings/{id}`).

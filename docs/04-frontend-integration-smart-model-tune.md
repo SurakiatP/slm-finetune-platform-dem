@@ -256,7 +256,7 @@ at each step:
 
 `GET /ws/jobs/{job_id}` now sends the **last published progress frame
 immediately on connect**, before any live frame (Redis `job:{id}:last`, 24h
-TTL — see [ADR-007](./adr/ADR-007-ws-progress-snapshot.md)).
+TTL — see [ADR-008](./adr/ADR-008-ws-progress-snapshot.md)).
 
 `useTrainingWebSocket.ts` stores only `latestProgress` / `latestSdgProgress`
 (singular, not arrays), so it renders that first frame the moment it arrives.

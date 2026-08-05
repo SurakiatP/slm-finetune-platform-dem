@@ -19,7 +19,7 @@ integration notes see
 [frontend integration](./04-frontend-integration-smart-model-tune.md); for
 the recorded decisions behind specific constraints or design changes see
 [`docs/adr/`](./adr/README.md) (currently [ADR-006](./adr/ADR-006-defer-authentication.md)
-and [ADR-007](./adr/ADR-007-ws-progress-snapshot.md); ADR-001–005 are
+and [ADR-008](./adr/ADR-008-ws-progress-snapshot.md); ADR-001–005 are
 recorded only as the constraint table in §5 below).
 
 ---
@@ -183,7 +183,7 @@ live only at the workspace level, outside this repo, per the workspace-level
 `CLAUDE.md`'s "hub docs consolidated up one directory" note. `docs/adr/`,
 however, **does now exist in this repo** (`docs/adr/README.md`,
 `docs/adr/ADR-006-defer-authentication.md`,
-`docs/adr/ADR-007-ws-progress-snapshot.md`) — added alongside the realtime
+`docs/adr/ADR-008-ws-progress-snapshot.md`) — added alongside the realtime
 job-control work this branch ships. The in-repo `README.md` hasn't been
 updated to reflect that `docs/adr/` is real now, so a reader following its
 links from inside this repo alone will still hit dead references for the

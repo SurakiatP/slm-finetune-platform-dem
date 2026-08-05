@@ -64,5 +64,5 @@ docker compose exec api pytest tests/unit -q
 - **WS connects but no first frame** → check Redis actually has the key:
   `docker compose exec redis redis-cli get "job:$JOB:last"`. Empty means the
   worker's `publish_ws_message` isn't writing it (or the 24h TTL lapsed).
-- **Frames arrive twice on connect** → expected and harmless; see ADR-007's
+- **Frames arrive twice on connect** → expected and harmless; see ADR-008's
   accepted race. Do not "fix" it.
