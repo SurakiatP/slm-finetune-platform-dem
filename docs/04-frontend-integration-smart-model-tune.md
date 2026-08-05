@@ -111,222 +111,90 @@ calls it).
 
 ## Priority Fix List
 
-Ordered most-impactful first.
+**Re-verified against `smart-model-tune`'s current source on 2026-08-04.**
+Four of the six original items have since been fixed frontend-side. They are
+kept below, struck through with the evidence, rather than deleted — a handoff
+doc that silently drops items invites them being re-reported.
 
-### 1. SDG generate sends inline `seed_data` instead of `seed_dataset_id` — every real launch 422s
+| # | Item | Status |
+|---|------|--------|
+| 1 | SDG sends inline `seed_data` instead of `seed_dataset_id` | ✅ **Resolved** — `engineApi.ts:229` sends `seed_dataset_id` |
+| 2 | `base_model="phi-3-mini"` rejected by the backend | 🟡 **Partly resolved** — blocked before launch, but still reachable via a template |
+| 3 | Playground chat fails silently into canned replies | 🟡 **Resolved for production** — mock is now dev-only |
+| 4 | `external_project_id` not sent on project create | ✅ **Resolved** — `engineApi.ts:171`, lookup at `:181` |
+| 5 | `TrainingMonitor.tsx` renders mock pipeline/log/loss-curve | ✅ **Resolved** — real WS + MLflow loss history |
+| 6 | HPO and Evaluation tabs are 100% client-simulated | 🔴 **Still open** — no backend call exists anywhere in `src/` |
 
-`engineGenerateDataset` (`src/lib/engineApi.ts:158-176`):
+### ~~1. SDG generate sends inline `seed_data` instead of `seed_dataset_id`~~ — RESOLVED
 
-```ts
-// BEFORE — current code, engineApi.ts:158-176
-export async function engineGenerateDataset(
-  projectId: string,
-  taskType: EngineTaskType,
-  taskDescription: string,
-  seedData: Record<string, unknown>[],
-  numSamples = 200,
-): Promise<EngineSdgResponse> {
-  return apiFetch<EngineSdgResponse>("/datasets/generate", {
-    method: "POST",
-    body: JSON.stringify({
-      sdg_mode: "with_seed",
-      project_id: projectId,
-      task_type: taskType,
-      task_description: taskDescription,
-      seed_data: seedData,       // ← rejected; this field doesn't exist on SDGRequestWithSeed
-      num_samples: numSamples,
-    }),
-  });
-}
-```
+Fixed frontend-side in the 2026-07-30 pass. `engineGenerateDataset`
+(`src/lib/engineApi.ts:222-233`) now posts `sdg_mode: "with_seed"` with a
+`seed_dataset_id` obtained from `POST /datasets/upload-seed`
+(`engineApi.ts:200`), which is exactly the contract the backend enforces.
 
-The backend's `SDGRequestWithSeed` (`api/schemas/sdg.py:104`) requires
-`seed_dataset_id: UUID` (the id returned by the seed-upload call that
-already runs immediately before this) and has no `seed_data` field at
-all. Fix:
+Nothing to do. Do not re-report.
 
-```ts
-// AFTER
-export async function engineGenerateDataset(
-  projectId: string,
-  taskType: EngineTaskType,
-  taskDescription: string,
-  seedDatasetId: string,        // ← the dataset_id from engineUploadSeed's response
-  numSamples = 200,
-  holdoutSize = 100,
-): Promise<EngineSdgResponse> {
-  return apiFetch<EngineSdgResponse>("/datasets/generate", {
-    method: "POST",
-    body: JSON.stringify({
-      sdg_mode: "with_seed",
-      project_id: projectId,
-      task_type: taskType,
-      task_description: taskDescription,
-      seed_dataset_id: seedDatasetId,
-      num_samples: numSamples,
-      holdout_size: holdoutSize,
-    }),
-  });
-}
-```
+### 2. `base_model="phi-3-mini"` — blocked before launch, but a template still selects it
 
-Caller fix at `NewProject.tsx:102-107` — pass `seedResult.dataset_id`
-(already captured at line 98, currently only used for `patchEngineMeta`)
-instead of the raw `seedRows` array:
+Partly fixed. `BASE_MODEL_TO_ENGINE` (`src/lib/engineMappings.ts:19-20`) maps
+`"phi-3-mini" → null` with the comment *"Phi-3 is retained in historic/demo
+data, but the engine does not allow it"*, and the model picker no longer
+offers it — so it can no longer reach the backend and 422.
 
-```ts
-// AFTER — NewProject.tsx runEngineFlow
-const sdgResult = await engineGenerateDataset(
-  engineProjectId,
-  engineTaskType,
-  taskDescription,
-  seedResult.dataset_id,   // was: seedRows
-);
-```
+**What remains**: `phi-3-mini` is still a member of the `BaseModel` union
+(`src/types/index.ts:3`) and is still the `baseModel` of a template in
+`src/components/new-project/TemplateLibrary.tsx:40`. A user who picks that
+template gets a project whose model maps to `null` and is blocked at launch —
+no longer a confusing 422, but still a dead end reached through a
+supported-looking path.
 
-This also means `readSeedRows` (`NewProject.tsx:49-69`) is no longer
-needed to build the SDG request body — it can stay only if the raw rows
-are still needed for local pre-flight validation (row-count check), or
-be removed if that validation moves server-side.
+Fix: point that template at a model the engine accepts. `GET /api/v1/base-models`
+is the authoritative list (ADR-002: ≤3B params, must fit QLoRA 4-bit).
 
-### 2. `base_model="phi-3-mini"` is not in the backend's supported list — training 422s for that one model
+### 3. Playground chat — real errors in production, mock retained for dev
 
-`BASE_MODEL_TO_ENGINE` (`src/lib/engineMappings.ts:15-22`):
+Fixed for the case that mattered. `ChatPanel.tsx:68-70` now sets a real error
+(*"The inference request failed. Check that the model is exported and the
+engine is online."*) and returns early unless `import.meta.env.DEV`, so a
+production user sees the failure instead of a canned reply.
 
-```ts
-"phi-3-mini": "unsloth/Phi-3-mini-4k-instruct-bnb-4bit",
-```
+**What remains** is a deliberate dev affordance, not a bug: the
+`mockResponses` fallback below that guard still runs in dev builds. Worth
+knowing when testing locally — a green-looking chat in `npm run dev` proves
+nothing about the engine.
 
-Cross-checked against `SUPPORTED_BASE_MODELS`
-(`api/routers/tasks_meta.py:101-208`, backing `GET /api/v1/base-models`)
-— that exact string is **not** in the 10-entry catalog (which has, among
-others, `unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit`,
-`unsloth/Qwen3-0.6B-unsloth-bnb-4bit`,
-`unsloth/Qwen3-1.7B-unsloth-bnb-4bit`,
-`unsloth/tinyllama-chat-bnb-4bit`, and the 5 others that do match the
-frontend's list). The training service enforces this as an allowlist:
+### ~~4. `external_project_id` not sent on project create~~ — RESOLVED
 
-```python
-# api/services/training_service.py:119-128
-base_model = request.base_model or settings.default_base_model
-if base_model not in _SUPPORTED_MODEL_IDS:
-    raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        detail=(
-            f"base_model '{base_model}' is not in the supported list. "
-            f"Use GET /api/v1/base-models to see allowed values."
-        ),
-    )
-```
+Fixed frontend-side. `engineCreateProject` sends `external_project_id`
+(`src/lib/engineApi.ts:171`) and `engineFindProjectByExternalId` reads it back
+(`:181`), which is what `useTrainingSimulator.ts:60-68` now uses to recover a
+project's Engine ids after a reload instead of trusting `localStorage` alone.
 
-So any user who picks **"Phi-3 Mini"** in `ModelSelectionStep.tsx` gets a
-422 at `POST /api/v1/trainings` after already having paid the seed-upload
-+ SDG-generation cost. Two fixes, do both:
-- Immediate: remove the `phi-3-mini` card from `ModelSelectionStep.tsx`
-  (or repoint it at a real supported ID — there is no Phi-3 model in the
-  current catalog at all, so removal is the honest fix).
-- Structural: replace the hardcoded 6-entry list with
-  `GET /api/v1/base-models`, exactly as recommended in the mapping table
-  above, so this class of drift can't recur silently.
+### ~~5. `TrainingMonitor.tsx` renders mock pipeline/log/loss-curve/eval data~~ — RESOLVED
 
-### 3. Playground chat is disconnected from real trained models and fails silently
+Fixed frontend-side. `TrainingMonitor.tsx` now takes progress from
+`useTrainingWebSocket` (`:47`) and the loss chart from
+`engineGetTrainingLossHistory` (`:63`), i.e. real MLflow data via
+`GET /api/v1/trainings/{id}/loss-history`. `grep -rn "mockPipelineSteps|mockTrainingLog|mockLossCurve" src`
+now matches **only** the definitions in `src/data/trainingMockData.ts` — no
+consumers remain. Those exports are dead code and can be deleted.
 
-Three compounding issues, same root cause (`GET /api/v1/models` never
-called — see mapping table):
+### 6. HPO and Evaluation tabs are 100% client-simulated — STILL OPEN
 
-1. `Playground.tsx:11,15` sources its model list from Supabase
-   `trained_models` (`useModels()`), which is never populated by a real
-   completed training (`useTrainingSimulator.ts:29-33` only patches
-   `localStorage`).
-2. Even if it were populated, `ChatPanel.tsx:50-55` sends
-   `model: modelName` where `modelName` is
-   `models.find(...).name` — an arbitrary Supabase display string — but
-   the backend's `ChatCompletionRequest.model` field
-   (`api/schemas/inference.py:36`) must be a real **Ollama model tag**
-   (e.g. `"slm-platform/cls-1234:latest"`, per the field's own
-   description), which only exists on `ModelArtifactResponse
-   .ollama_model_tag` / `.base_ollama_tag` (`api/schemas/artifacts.py:16`).
-3. Every failure from (1)+(2) is invisible: `ChatPanel.tsx:66-80` catches
-   *any* error from `engineChatCompletion` and substitutes one of 3
-   hardcoded `mockResponses` (`ChatPanel.tsx:15-19`), so the Playground
-   looks fully functional in a demo while never once calling a real
-   fine-tuned model.
+Unchanged, and now the largest remaining gap. `src/lib/tuningGenerator.ts` and
+`src/lib/qualityCalculator.ts` contain **no `fetch` and no engine import** —
+their output is computed in the browser. Nothing anywhere in `src/` calls
+`/api/v1/evaluations` or submits a training with `mode="hpo"`.
 
-Fix, in order:
-- Wire `GET /api/v1/models` (optionally `GET /api/v1/inference/models`
-  to cross-check what Ollama actually has loaded) into `useModels()` or
-  a new `useEngineModels()` hook, keyed off `project_id`/
-  `training_job_id` from `engineStore.ts`.
-- Pass `ollama_model_tag` (fall back to `base_ollama_tag` for a base-model
-  A/B comparison) as `model`, not the Supabase display name.
-- Remove or clearly label the mock fallback in `ChatPanel.tsx:66-80` —
-  at minimum, show a distinct "Engine unreachable, showing a sample
-  response" banner instead of a silent swap, so real failures during
-  testing/demos are visible (this was already flagged in
-  `TASK_TRACKER.md`'s contract-mismatch table).
+The backend implements both today. Wiring needed:
+- Tuning tab → `POST /api/v1/trainings` with `mode="hpo"`, then the
+  `hpo_progress` WS frames and `GET /api/v1/trainings/{id}/metrics`.
+- Evaluation surfaces → `POST /api/v1/evaluations`, then
+  `GET /api/v1/evaluations/{id}`. As of this branch these also emit
+  `evaluation_progress` WS frames (see below), so a real progress bar is
+  available rather than a spinner.
 
-### 4. `external_project_id` not sent on project create
-
-Backend has supported this since `backend-required-changes.md` item 4
-landed (confirmed live in `ProjectCreate`/`ProjectResponse` schemas).
-One-line fix at both ends:
-
-```ts
-// BEFORE — engineApi.ts:114-123
-export async function engineCreateProject(
-  name: string,
-  description: string,
-  task_type: EngineTaskType,
-): Promise<EngineProject> {
-  return apiFetch<EngineProject>("/projects", {
-    method: "POST",
-    body: JSON.stringify({ name, description, task_type }),
-  });
-}
-
-// AFTER
-export async function engineCreateProject(
-  name: string,
-  description: string,
-  task_type: EngineTaskType,
-  externalProjectId: string,
-): Promise<EngineProject> {
-  return apiFetch<EngineProject>("/projects", {
-    method: "POST",
-    body: JSON.stringify({ name, description, task_type, external_project_id: externalProjectId }),
-  });
-}
-```
-
-Call site `NewProject.tsx:193-197` already has `created.id` (the
-Supabase project id) in scope at that point — pass it through. This
-makes the id mapping durable server-side instead of `localStorage`-only
-(`engineStore.ts`), which is lost on browser/profile change today.
-
-### 5. `TrainingMonitor.tsx` renders mock pipeline/log/loss-curve/eval data next to a real WS connection
-
-`TrainingMonitor.tsx` genuinely connects to the real training WebSocket
-(`useTrainingWebSocket`, line 30-32) and reads real
-`latestProgress.train_loss`/`eval_loss` for the two headline numbers
-(lines 36-39) — but then renders `mockPipelineSteps` (line 129),
-`mockLossCurve` for the actual chart (lines 14, 35, 146),
-`mockTrainingLog` (line 160), and `mockComparisonResults` for the
-evaluation tab (line 166), all imported from
-`src/data/trainingMockData.ts`. This is the most visually convincing
-fake surface in the app because the headline stat cards *are* real,
-which makes the mocked chart/log/pipeline next to them look real too.
-Fix order: wire `GET /trainings/{id}/loss-history` first (row above,
-removes the biggest visual mock), then the pipeline-step list can likely
-be derived from WS event history instead of a separate mock array.
-
-### 6. HPO and Evaluation tabs are 100% client-simulated
-
-No code changes shown here (this is a build task, not a one-liner) —
-noted as priority because it's the largest scope gap. `ProjectDetail.tsx`
-tuning tab and both evaluation surfaces need `POST /trainings`
-(`mode=hpo`) and `POST /evaluations` wired end-to-end respectively; both
-depend on `GET /api/v1/models` (Priority Fix #3) being wired first since
-they need a real `model_artifact_id`.
+Both need a real `model_artifact_id` from `GET /api/v1/models`.
 
 ## Correct End-to-End Sequence
 
@@ -381,6 +249,81 @@ at each step:
   reads response body text on non-2xx before throwing, which is what
   makes the 422s from Priority Fixes #1/#2 debuggable at all once you
   stop catching-and-hiding them client-side.
+
+## New Backend Capabilities (branch `feat/be-fe-gap001`)
+
+### What you get with no frontend changes at all
+
+`GET /ws/jobs/{job_id}` now sends the **last published progress frame
+immediately on connect**, before any live frame (Redis `job:{id}:last`, 24h
+TTL — see [ADR-007](./adr/ADR-007-ws-progress-snapshot.md)).
+
+`useTrainingWebSocket.ts` stores only `latestProgress` / `latestSdgProgress`
+(singular, not arrays), so it renders that first frame the moment it arrives.
+The practical effect: hard-refreshing mid-SDG now paints `80/200` instantly
+instead of showing nothing until the next publish — which, mid-loop, can be
+tens of seconds away. **No client change is required for this.**
+
+The 10-second REST poll added in the 2026-07-30 pass is still worth keeping as
+a fallback: the snapshot is a Redis-backed UX accelerator, not durable state,
+and it 404s once the 24h TTL lapses.
+
+### What needs a small frontend change
+
+- **`EngineDataset` (`src/lib/engineApi.ts:121-128`) doesn't declare
+  `celery_task_id`.** `DatasetResponse` now exposes it as a first-class field
+  (it previously existed only inside `generation_metadata`). Without it, an
+  in-flight **SDG** job can't be reconnected to after a reload from a fresh
+  browser — training already recovers this way via `training.celery_task_id`
+  (`useTrainingSimulator.ts:88`). Adding the field to the interface and
+  reusing the same recovery path closes the gap.
+- **`GET /api/v1/jobs/{job_id}/progress`** is a REST snapshot of the same
+  frame, for surfaces that don't hold a socket open. `404` means "no frame
+  yet" — fall back to the resource's own `status`, don't treat it as an error.
+- **New `WSMessageType` values**: `export_progress`
+  (`stage: downloading|merging|converting|quantizing|uploading|registering`,
+  plus `detail`) and `evaluation_progress`
+  (`phase: predicting|scoring|judging`, `rows_done`, `rows_total`). Export and
+  evaluation used to be silent for their whole run. Existing `switch (type)`
+  handling ignores unknown values safely, so nothing breaks by not adopting
+  them — but a real export progress bar is now possible.
+- **Cancel endpoints**: `POST` on `/datasets/{id}/cancel`,
+  `/models/{id}/export/cancel`, `/evaluations/{id}/cancel`, and
+  `/trainings/{id}/cancel`. All are idempotent (cancelling an
+  already-finished job returns `200` with its existing status) and `404` on a
+  missing row. Export-cancel returns `409` when no export was ever requested.
+  **`DELETE /api/v1/trainings/{id}` is unchanged** — the call at
+  `engineApi.ts:286` keeps working; the `POST` alias exists only for
+  consistency. Cancelling SDG is the one worth wiring first: it is the job
+  that actually spends OpenRouter credit.
+- **`ModelArtifactResponse`** gains `export_status` and
+  `export_celery_task_id`. `null` `export_status` means no export was ever
+  requested. `gguf_uri` / `export_error_message` are unchanged and remain the
+  completion signal you read today.
+
+## Known Gaps — Frontend Screens With No Backend Counterpart
+
+Recorded because they are invisible in the API surface: these screens look
+finished and are wired to nothing on the Engine side. Building them is **out
+of scope** for the current backend branch and needs a product decision.
+
+- **Deployment.** `src/lib/deploymentsApi.ts` reads `deployed_endpoints`
+  straight from Supabase. `requestsPerMin`, `avgLatencyMs`, `errorRate`,
+  `uptime`, `rateLimitPerMin` and `burstLimit` are columns that **nothing
+  writes** — no backend produces those numbers. The Engine has exactly one
+  shared inference route, `POST /api/v1/inference/chat/completions`, proxied
+  to Ollama: no per-model endpoint, no rate limiting, no usage metering.
+- **API Keys.** `src/lib/apiKeysApi.ts:43-44` mints a key prefix/suffix with
+  `Math.random()` and stores it in Supabase. The backend never sees these
+  keys and does not authenticate anything — the platform has **no
+  authentication at all**, deliberately, see
+  [ADR-006](./adr/ADR-006-defer-authentication.md). Per-key auth and per-key
+  quotas both block on that decision.
+- **Analytics.** `api_call_events` has no producer for the same reason —
+  nothing counts Engine calls.
+
+If this product needs real deployment/metering, it is a backend workstream
+that has to be scheduled after ADR-006, not a wiring task.
 
 ## See Also
 

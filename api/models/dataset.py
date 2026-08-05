@@ -74,6 +74,19 @@ class Dataset(Base, TimestampMixin):
             "generation). `generation_metadata.role` carries 'train'|'holdout'."
         ),
     )
+    celery_task_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+        doc=(
+            "Used as the public `job_id` and the WebSocket channel suffix for "
+            "SDG-generated datasets. Unlike TrainingJob.celery_task_id this is "
+            "NOT unique: it is backfilled from pre-existing "
+            "generation_metadata['celery_task_id'] JSONB values, whose "
+            "uniqueness cannot be guaranteed, so do not add a unique "
+            "constraint here."
+        ),
+    )
 
     project: Mapped["Project"] = relationship(back_populates="datasets")
     training_jobs: Mapped[list["TrainingJob"]] = relationship(back_populates="dataset")

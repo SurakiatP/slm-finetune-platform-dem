@@ -27,6 +27,8 @@ class ModelArtifactResponse(BaseModel):
     size_mb: float | None
     ollama_model_tag: str | None
     export_error_message: str | None
+    export_status: JobStatus | None = None
+    export_celery_task_id: str | None = None
     created_at: datetime
     updated_at: datetime
 

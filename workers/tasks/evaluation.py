@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -32,13 +34,19 @@ from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
 from api.schemas.enums import JobStatus, TaskType
-from api.schemas.progress import JobCompleted, JobFailed
+from api.schemas.progress import EvaluationProgress, JobCompleted, JobFailed
 from workers.celery_app import celery_app
 from workers.progress import publish_ws_message, sync_redis_scope
 from workers.storage import get_jsonl, get_minio_client, parse_s3_uri
 from workers.sync_db import session_scope
 
 log = get_task_logger(__name__)
+
+# Minimum seconds between `EvaluationProgress(phase="predicting")` frames.
+# Publishing once per row would flood the WS the same way `hpo_training.py:184-186`
+# suppresses per-step inner training progress across trials ("the WS firehose
+# would be too chatty"). The final row always publishes regardless of this gap.
+_PREDICT_PROGRESS_THROTTLE_SECONDS: float = 2.0
 
 
 @celery_app.task(bind=True, name="evaluation.run", max_retries=0)
@@ -102,15 +110,44 @@ def run_evaluation(
 
             # ---- 3. Predict via Ollama -------------------------------------
             ollama_base = str(settings.ollama_base_url).rstrip("/")
+            last_publish_ts = 0.0
+
+            def on_predict_progress(rows_done: int, rows_total: int) -> None:
+                nonlocal last_publish_ts
+                now = time.monotonic()
+                is_last = rows_done >= rows_total
+                if not is_last and (now - last_publish_ts) < _PREDICT_PROGRESS_THROTTLE_SECONDS:
+                    return
+                last_publish_ts = now
+                try:
+                    publish(
+                        EvaluationProgress(
+                            job_id=job_id,
+                            phase="predicting",
+                            rows_done=rows_done,
+                            rows_total=rows_total,
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "eval: job=%s failed to publish predicting progress",
+                        job_id,
+                        exc_info=True,
+                    )
+
             predicted, expected, questions = _predict_rows(
                 rows=rows,
                 task_type=task_type,
                 tool_definitions=tool_definitions,
                 ollama_base_url=ollama_base,
                 ollama_tag=ollama_tag,
+                progress_cb=on_predict_progress,
             )
 
             # ---- 4. Per-task metrics ---------------------------------------
+            # (No intermediate "scoring" frame: `_compute_metrics_for_task` is a
+            # pure in-memory sklearn/string computation over already-collected
+            # predictions — no I/O, not a meaningful progress checkpoint.)
             metrics = _compute_metrics_for_task(
                 task_type=task_type,
                 predicted=predicted,
@@ -119,6 +156,23 @@ def run_evaluation(
             )
 
             # ---- 5. Optional LLM judge -------------------------------------
+            if use_llm_judge and task_type in (TaskType.QA, TaskType.TOOL_CALLING):
+                try:
+                    publish(
+                        EvaluationProgress(
+                            job_id=job_id,
+                            phase="judging",
+                            rows_done=0,
+                            rows_total=len(questions),
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "eval: job=%s failed to publish judging progress",
+                        job_id,
+                        exc_info=True,
+                    )
+
             judge_score, judge_model_resolved = _apply_llm_judge(
                 use_llm_judge=use_llm_judge,
                 task_type=task_type,
@@ -165,13 +219,23 @@ def run_evaluation(
                 "llm_judge_score": judge_score,
             }
 
-        except Exception as exc:
+        except BaseException as exc:
+            # BaseException, not Exception — same reasoning as
+            # `workers/tasks/data_generation.py` and
+            # `workers/tasks/model_export.py`: `POST /evaluations/{id}/cancel`
+            # revokes with SIGTERM, which billiard turns into a `SystemExit`
+            # inside this task body. `except Exception` misses it, so cleanup
+            # was skipped and no terminal `JobFailed` frame was ever published
+            # for a cancelled evaluation.
             log.exception("evaluation task failed (job=%s)", job_id)
             try:
                 with session_scope() as session:
                     row = session.get(EvaluationRun, eval_uuid)
                     if row is not None:
-                        row.status = JobStatus.FAILED
+                        # The cancel endpoint already set CANCELLED before
+                        # revoking; don't overwrite it with FAILED.
+                        if row.status != JobStatus.CANCELLED:
+                            row.status = JobStatus.FAILED
                         row.ended_at = datetime.now(timezone.utc)
                         row.error_message = (str(exc) or repr(exc))[:4000]
             except Exception:  # noqa: BLE001
@@ -300,20 +364,26 @@ def _predict_rows(
     tool_definitions: list | None,
     ollama_base_url: str,
     ollama_tag: str,
+    progress_cb: Callable[[int, int], None] | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Run inference once per row. Returns parallel `(predicted, expected, questions)`.
 
     For classification the `question` is the input `text`. For tool_calling /
     qa the row's `question` field is used directly. The expected answer is
     taken from the row's gold-label field.
+
+    ``progress_cb``, if given, is invoked as ``(rows_done, rows_total)`` after
+    each row completes. It's optional and keyword-only so existing callers
+    (and tests) that don't pass it keep working unchanged.
     """
     predicted: list[str] = []
     expected: list[str] = []
     questions: list[str] = []
+    rows_total = len(rows)
     timeout = httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=10.0)
 
     with httpx.Client(timeout=timeout) as client:
-        for row in rows:
+        for idx, row in enumerate(rows):
             user_prompt, gold = _prompt_and_gold(row, task_type, tool_definitions)
             try:
                 resp = client.post(
@@ -336,6 +406,9 @@ def _predict_rows(
             predicted.append(_postprocess(content, task_type))
             expected.append(gold)
             questions.append(user_prompt)
+
+            if progress_cb is not None:
+                progress_cb(idx + 1, rows_total)
 
     return predicted, expected, questions
 

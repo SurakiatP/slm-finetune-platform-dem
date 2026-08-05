@@ -59,6 +59,7 @@ from api.schemas.enums import DatasetSource, JobStatus, TaskType
 from api.schemas.responses import Page
 from api.schemas.sdg import SeedUploadResponse
 from api.schemas.upload import FormatDetectionReport
+from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 from workers.storage import (
     get_minio_client,
     parse_s3_uri,
@@ -253,6 +254,37 @@ async def delete_dataset(db: AsyncSession, dataset_id: UUID) -> None:
 
     await db.delete(ds)
     await db.commit()
+
+
+async def cancel_dataset(db: AsyncSession, dataset_id: UUID) -> dict[str, str]:
+    """Revoke the underlying SDG Celery task + flip status to CANCELLED.
+
+    Idempotent: cancelling an already-terminal dataset returns 200 with the
+    existing status and does nothing else. This covers every plain SEED
+    upload too — those are persisted with `status=COMPLETED` synchronously
+    (see `_persist_jsonl_dataset` / `_persist_pdf_dataset` above), so they
+    always hit the terminal-status branch and are reported as already-done
+    rather than treated as a cancellable job. Cancelling a non-existent
+    dataset returns 404.
+    """
+    ds = await db.get(Dataset, dataset_id)
+    if ds is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Dataset {dataset_id} not found",
+        )
+    if ds.status in TERMINAL_JOB_STATUSES:
+        return {"dataset_id": str(ds.id), "status": ds.status.value}
+
+    # Prefer the dedicated column; fall back to the JSONB mirror for rows
+    # that predate the celery_task_id backfill (older SDG datasets whose
+    # task id only ever landed in generation_metadata).
+    task_id = ds.celery_task_id or (ds.generation_metadata or {}).get("celery_task_id")
+    revoke_celery_task(task_id, context=f"dataset {dataset_id}")
+
+    ds.status = JobStatus.CANCELLED
+    await db.commit()
+    return {"dataset_id": str(ds.id), "status": JobStatus.CANCELLED.value}
 
 
 # ---- upload-seed ----------------------------------------------------------
@@ -737,5 +769,6 @@ __all__ = [
     "preview_dataset",
     "download_dataset",
     "delete_dataset",
+    "cancel_dataset",
     "upload_seed_dataset",
 ]

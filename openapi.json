@@ -583,6 +583,53 @@
         }
       }
     },
+    "/api/v1/datasets/{dataset_id}/cancel": {
+      "post": {
+        "tags": [
+          "datasets"
+        ],
+        "summary": "Cancel a running SDG generation job (idempotent)",
+        "operationId": "cancel_dataset_api_v1_datasets__dataset_id__cancel_post",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Dataset Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Cancel Dataset Api V1 Datasets  Dataset Id  Cancel Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/trainings": {
       "post": {
         "tags": [
@@ -797,6 +844,54 @@
                     "type": "string"
                   },
                   "title": "Response Cancel Training Api V1 Trainings  Training Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/trainings/{training_id}/cancel": {
+      "post": {
+        "tags": [
+          "trainings"
+        ],
+        "summary": "Cancel a running / pending training job (POST alias for DELETE)",
+        "description": "Same idempotent cancel semantics as `DELETE /{training_id}`.\n\nDelegates to the exact same service function — no duplicated logic —\nso both verbs always agree on behaviour.",
+        "operationId": "cancel_training_post_api_v1_trainings__training_id__cancel_post",
+        "parameters": [
+          {
+            "name": "training_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Training Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Cancel Training Post Api V1 Trainings  Training Id  Cancel Post"
                 }
               }
             }
@@ -1112,6 +1207,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ModelExportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/models/{model_id}/export/cancel": {
+      "post": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Cancel an in-progress model export (idempotent)",
+        "operationId": "cancel_export_api_v1_models__model_id__export_cancel_post",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Cancel Export Api V1 Models  Model Id  Export Cancel Post"
                 }
               }
             }
@@ -1466,6 +1608,53 @@
         }
       }
     },
+    "/api/v1/evaluations/{evaluation_id}/cancel": {
+      "post": {
+        "tags": [
+          "evaluations"
+        ],
+        "summary": "Cancel a running evaluation (idempotent)",
+        "operationId": "cancel_evaluation_api_v1_evaluations__evaluation_id__cancel_post",
+        "parameters": [
+          {
+            "name": "evaluation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Evaluation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Cancel Evaluation Api V1 Evaluations  Evaluation Id  Cancel Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/evaluations/compare": {
       "post": {
         "tags": [
@@ -1614,6 +1803,83 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SdgPipelineModels"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{job_id}/progress": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Latest progress frame for a job (snapshot)",
+        "operationId": "get_job_progress_api_v1_jobs__job_id__progress_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/SDGProgress"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TrainingProgress"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HPOProgress"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ExportProgress"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EvaluationProgress"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JobCompleted"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JobFailed"
+                    }
+                  ],
+                  "discriminator": {
+                    "propertyName": "type",
+                    "mapping": {
+                      "sdg_progress": "#/components/schemas/SDGProgress",
+                      "training_progress": "#/components/schemas/TrainingProgress",
+                      "hpo_progress": "#/components/schemas/HPOProgress",
+                      "export_progress": "#/components/schemas/ExportProgress",
+                      "evaluation_progress": "#/components/schemas/EvaluationProgress",
+                      "completed": "#/components/schemas/JobCompleted",
+                      "failed": "#/components/schemas/JobFailed"
+                    }
+                  },
+                  "title": "Response Get Job Progress Api V1 Jobs  Job Id  Progress Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -2298,6 +2564,18 @@
             ],
             "title": "Generation Metadata"
           },
+          "celery_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Celery Task Id",
+            "description": "Celery task id for SDG-generated datasets — the WebSocket job id used to reconnect to `/ws/jobs/{id}` and `GET /jobs/{id}/progress` after a page reload. Also mirrored at generation_metadata.celery_task_id for backward compatibility."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -2486,6 +2764,58 @@
           }
         ]
       },
+      "EvaluationProgress": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id",
+            "description": "Celery task id; matches the channel suffix."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp",
+            "description": "UTC time the worker emitted this message."
+          },
+          "type": {
+            "type": "string",
+            "const": "evaluation_progress",
+            "title": "Type",
+            "default": "evaluation_progress"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "predicting",
+              "scoring",
+              "judging"
+            ],
+            "title": "Phase",
+            "description": "Current step of the evaluation pipeline."
+          },
+          "rows_done": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Rows Done",
+            "description": "Rows processed so far in the current phase."
+          },
+          "rows_total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Rows Total",
+            "description": "Total rows to process in the current phase."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id",
+          "phase",
+          "rows_done",
+          "rows_total"
+        ],
+        "title": "EvaluationProgress"
+      },
       "EvaluationResponse": {
         "properties": {
           "id": {
@@ -2615,6 +2945,59 @@
           "updated_at"
         ],
         "title": "EvaluationResponse"
+      },
+      "ExportProgress": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id",
+            "description": "Celery task id; matches the channel suffix."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp",
+            "description": "UTC time the worker emitted this message."
+          },
+          "type": {
+            "type": "string",
+            "const": "export_progress",
+            "title": "Type",
+            "default": "export_progress"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "downloading",
+              "merging",
+              "converting",
+              "quantizing",
+              "uploading",
+              "registering"
+            ],
+            "title": "Stage",
+            "description": "Current step of the GGUF/SafeTensors export pipeline."
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail",
+            "description": "Free-text sub-status (e.g. the quantization level); for display only."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id",
+          "stage"
+        ],
+        "title": "ExportProgress"
       },
       "FormatDetectionReport": {
         "properties": {
@@ -2862,6 +3245,137 @@
         ],
         "title": "HPOIntRange",
         "description": "Integer range, mirrors `optuna.Trial.suggest_int`."
+      },
+      "HPOProgress": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id",
+            "description": "Celery task id; matches the channel suffix."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp",
+            "description": "UTC time the worker emitted this message."
+          },
+          "type": {
+            "type": "string",
+            "const": "hpo_progress",
+            "title": "Type",
+            "default": "hpo_progress"
+          },
+          "trial_number": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Trial Number",
+            "description": "0-indexed Optuna trial number."
+          },
+          "trials_total": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Trials Total"
+          },
+          "current_params": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Params"
+          },
+          "best_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Value"
+          },
+          "best_params": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Params"
+          },
+          "last_trial_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Trial Value"
+          },
+          "last_trial_pruned": {
+            "type": "boolean",
+            "title": "Last Trial Pruned",
+            "default": false
+          },
+          "inner_progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrainingProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id",
+          "trial_number",
+          "trials_total"
+        ],
+        "title": "HPOProgress"
       },
       "HPOSearchSpace": {
         "properties": {
@@ -3131,6 +3645,131 @@
         ],
         "title": "HpoChildSummary",
         "description": "Compact view of one HPO trial run (no full series — just final + params)."
+      },
+      "JobCompleted": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id",
+            "description": "Celery task id; matches the channel suffix."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp",
+            "description": "UTC time the worker emitted this message."
+          },
+          "type": {
+            "type": "string",
+            "const": "completed",
+            "title": "Type",
+            "default": "completed"
+          },
+          "result": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Result"
+          },
+          "mlflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mlflow Run Id"
+          },
+          "dataset_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Id"
+          },
+          "model_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Artifact Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id"
+        ],
+        "title": "JobCompleted"
+      },
+      "JobFailed": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id",
+            "description": "Celery task id; matches the channel suffix."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp",
+            "description": "UTC time the worker emitted this message."
+          },
+          "type": {
+            "type": "string",
+            "const": "failed",
+            "title": "Type",
+            "default": "failed"
+          },
+          "error": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Error",
+            "description": "Human-readable error message."
+          },
+          "error_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Type",
+            "description": "Exception class name (e.g. 'OutOfMemoryError')."
+          },
+          "traceback": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traceback",
+            "description": "Full traceback; emit only when LOG_LEVEL=DEBUG."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id",
+          "error"
+        ],
+        "title": "JobFailed"
       },
       "JobStatus": {
         "type": "string",
@@ -3533,6 +4172,27 @@
               }
             ],
             "title": "Export Error Message"
+          },
+          "export_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "export_celery_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Export Celery Task Id"
           },
           "created_at": {
             "type": "string",
@@ -4077,6 +4737,130 @@
         ],
         "title": "SDGJobAcceptedResponse",
         "description": "202 Accepted body — the dataset row exists but has 0 rows until completion."
+      },
+      "SDGProgress": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id",
+            "description": "Celery task id; matches the channel suffix."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp",
+            "description": "UTC time the worker emitted this message."
+          },
+          "type": {
+            "type": "string",
+            "const": "sdg_progress",
+            "title": "Type",
+            "default": "sdg_progress"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "generating",
+              "validating",
+              "deduplicating",
+              "persisting",
+              "format_detection",
+              "meta_prompting",
+              "judging",
+              "dedup"
+            ],
+            "title": "Phase",
+            "default": "generating"
+          },
+          "samples_generated": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Samples Generated",
+            "default": 0
+          },
+          "samples_target": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Samples Target"
+          },
+          "samples_valid": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Samples Valid",
+            "default": 0
+          },
+          "samples_rejected": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Samples Rejected",
+            "default": 0
+          },
+          "duplicates_removed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Duplicates Removed",
+            "default": 0
+          },
+          "current_loop": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Loop",
+            "description": "0-indexed SDG loop iteration; None outside the loop body."
+          },
+          "judge_rejected": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Rejected",
+            "description": "Rows discarded because the LLM judge scored them below threshold."
+          },
+          "judge_parse_failures": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Parse Failures",
+            "description": "Judge responses that did not parse into the JudgeScore schema."
+          },
+          "dedup_rejected": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dedup Rejected",
+            "description": "Rows discarded by the MinHash LSH near-duplicate filter."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id",
+          "samples_target"
+        ],
+        "title": "SDGProgress"
       },
       "SDGRequestDescriptionOnly": {
         "properties": {
@@ -4687,6 +5471,114 @@
         "title": "TrainingMode",
         "description": "How a training job picks hyperparameters."
       },
+      "TrainingProgress": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id",
+            "description": "Celery task id; matches the channel suffix."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp",
+            "description": "UTC time the worker emitted this message."
+          },
+          "type": {
+            "type": "string",
+            "const": "training_progress",
+            "title": "Type",
+            "default": "training_progress"
+          },
+          "epoch": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Epoch",
+            "description": "Fractional epoch (e.g. 1.5)."
+          },
+          "epochs_total": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Epochs Total"
+          },
+          "step": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Step"
+          },
+          "steps_total": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Steps Total"
+          },
+          "train_loss": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Train Loss"
+          },
+          "eval_loss": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eval Loss"
+          },
+          "learning_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Learning Rate"
+          },
+          "samples_per_second": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Samples Per Second"
+          },
+          "gpu_memory_mb": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Memory Mb"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id",
+          "epoch",
+          "epochs_total",
+          "step",
+          "steps_total"
+        ],
+        "title": "TrainingProgress"
+      },
       "TrainingResponse": {
         "properties": {
           "id": {
@@ -4922,6 +5814,10 @@
     {
       "name": "evaluations",
       "description": "Per-task metrics and LLM-as-judge scoring."
+    },
+    {
+      "name": "jobs",
+      "description": "Job progress snapshots (last WS frame per job, via Redis)."
     },
     {
       "name": "metadata",
