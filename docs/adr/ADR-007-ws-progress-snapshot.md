@@ -94,6 +94,25 @@ migration.)
   `type` and ignore unrecognised values, but it is the reason this counts as a
   contract change at all.
 
+**Correction after live verification (2026-08-05):**
+
+The cancel endpoints publish no terminal frame themselves, on the grounds that
+the revoked task's own handler already does. Running this against a real Celery
+worker showed that reasoning was only true for model export. `revoke(terminate=
+True, signal="SIGTERM")` reaches the worker child as a **`SystemExit`** (billiard
+turns the signal into `sys.exit(-(256 - 15))`, observable as
+`error_message == "-241"`), and `SystemExit` is a `BaseException` — so the
+`except Exception` handlers in `data_generation.py` and `evaluation.py` never
+ran, and cancelling SDG or an evaluation emitted **no terminal frame at all**.
+A WebSocket-only client waited forever.
+
+All three task bodies now catch `BaseException`, each with a
+`!= JobStatus.CANCELLED` guard so the worker's cleanup cannot overwrite the
+status the API already set — without that guard, widening the handler turns
+every cancel into `failed`. Unit tests cannot cover this: it only appears when
+a real signal reaches a real worker child, so it is pinned by source-level
+regression assertions plus the GPU-box runbook check (G3).
+
 **Rejected alternatives:**
 
 - *Redis Streams with replay* — see above; solves a problem no consumer has.

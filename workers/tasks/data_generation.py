@@ -260,13 +260,29 @@ def generate_synthetic_data(
                 "holdout_storage_uri": holdout_uri,
             }
 
-        except Exception as exc:
+        except BaseException as exc:
+            # BaseException, not Exception: `POST /datasets/{id}/cancel` revokes
+            # this task with `celery_app.control.revoke(terminate=True,
+            # signal="SIGTERM")`. Billiard's worker-child signal handler turns
+            # that SIGTERM into `sys.exit(...)` — a `SystemExit` raised inside
+            # this task body, which `except Exception` does NOT catch. Verified
+            # on real hardware: an export cancelled that way surfaces
+            # `error_message == "-241"`, i.e. `sys.exit(-(256-15))`.
+            # Before this was widened, cancelling SDG skipped this whole block,
+            # so no `JobFailed` frame was ever published and a WebSocket-only
+            # client waited forever for a terminal frame that never came.
+            # `workers/tasks/model_export.py` carries the same treatment.
             log.exception("SDG task failed (job=%s)", job_id)
             try:
                 with session_scope() as session:
                     ds = session.get(Dataset, parent_uuid)
                     if ds is not None:
-                        ds.status = JobStatus.FAILED
+                        # The cancel endpoint sets status=CANCELLED *before*
+                        # revoking. Don't clobber it back to FAILED — CANCELLED
+                        # is the accurate terminal state for that run. The
+                        # error message is still recorded either way.
+                        if ds.status != JobStatus.CANCELLED:
+                            ds.status = JobStatus.FAILED
                         ds.error_message = (str(exc) or repr(exc))[:4000]
             except Exception:  # noqa: BLE001 — never mask the original SDG failure
                 log.warning(

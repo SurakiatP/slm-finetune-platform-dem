@@ -37,12 +37,24 @@ def revoke_celery_task(task_id: str | None, *, context: str) -> None:
 
     Deliberately does NOT publish a WebSocket terminal frame here.
     ``revoke(terminate=True, signal="SIGTERM")`` kills the worker task via
-    signal while it's mid-run; that raises inside the task body, and the
-    task's own ``except`` block already publishes a ``JobFailed`` frame for
-    that job id (SDG generation, model export, evaluation all follow this
-    pattern). Publishing a second terminal frame from here would race that
-    one and deliver two frames to anyone connected on ``/ws/jobs/{id}`` — do
-    not "fix" this by adding a publish call in this function.
+    signal while it's mid-run; billiard's child-side handler turns that into a
+    ``SystemExit`` raised inside the task body, and the task's own handler
+    publishes a ``JobFailed`` frame for that job id. Publishing a second
+    terminal frame from here would race that one and deliver two frames to
+    anyone connected on ``/ws/jobs/{id}`` — do not "fix" this by adding a
+    publish call in this function.
+
+    **That guarantee only holds because all three task bodies catch
+    ``BaseException``, not ``Exception``.** ``SystemExit`` derives from
+    ``BaseException``, so a task that narrows its handler silently stops
+    emitting a terminal frame on cancel *and* leaves its row's status
+    wherever it was. This was measured, not assumed: on a live worker a
+    cancelled export reports ``error_message == "-241"``
+    (``sys.exit(-(256 - 15))``). Before the widening, cancelling SDG or an
+    evaluation produced no terminal frame at all. If you touch the ``except``
+    clause in ``workers/tasks/{data_generation,evaluation,model_export}.py``,
+    keep it at ``BaseException`` and keep the ``!= JobStatus.CANCELLED`` guard
+    — without the guard, widening turns every cancel into ``failed``.
     """
     if not task_id:
         return

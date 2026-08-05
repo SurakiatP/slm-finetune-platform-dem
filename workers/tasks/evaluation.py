@@ -219,13 +219,23 @@ def run_evaluation(
                 "llm_judge_score": judge_score,
             }
 
-        except Exception as exc:
+        except BaseException as exc:
+            # BaseException, not Exception — same reasoning as
+            # `workers/tasks/data_generation.py` and
+            # `workers/tasks/model_export.py`: `POST /evaluations/{id}/cancel`
+            # revokes with SIGTERM, which billiard turns into a `SystemExit`
+            # inside this task body. `except Exception` misses it, so cleanup
+            # was skipped and no terminal `JobFailed` frame was ever published
+            # for a cancelled evaluation.
             log.exception("evaluation task failed (job=%s)", job_id)
             try:
                 with session_scope() as session:
                     row = session.get(EvaluationRun, eval_uuid)
                     if row is not None:
-                        row.status = JobStatus.FAILED
+                        # The cancel endpoint already set CANCELLED before
+                        # revoking; don't overwrite it with FAILED.
+                        if row.status != JobStatus.CANCELLED:
+                            row.status = JobStatus.FAILED
                         row.ended_at = datetime.now(timezone.utc)
                         row.error_message = (str(exc) or repr(exc))[:4000]
             except Exception:  # noqa: BLE001
