@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import request_context
 from api.models.dataset import Dataset
 from api.models.project import Project
 from api.schemas.enums import DatasetSource, JobStatus, TaskType
@@ -25,6 +26,7 @@ from api.schemas.sdg import (
     SDGRequestDescriptionOnly,
     SDGRequestWithSeed,
 )
+from api.services import audit_service
 
 
 async def submit_sdg_job(
@@ -93,6 +95,23 @@ async def submit_sdg_job(
     metadata["celery_task_id"] = job_id
     dataset.generation_metadata = metadata
     dataset.celery_task_id = job_id
+    # Same transaction as the task id: if the audit row cannot be written the
+    # submission is not recorded as having happened either.
+    audit_service.record(
+        db,
+        action="sdg.submit",
+        resource_type="dataset",
+        resource_id=str(dataset.id),
+        project_id=request.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={
+            "job_id": job_id,
+            "sdg_mode": request.sdg_mode.value,
+            "num_samples": request.num_samples,
+            "task_type": request.task_type.value,
+        },
+    )
     await db.commit()
 
     return SDGJobAcceptedResponse(

@@ -8,11 +8,19 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import request_context
 from api.core.auth import CurrentUser
 from api.models.project import Project
 from api.schemas.projects import ProjectCreate, ProjectResponse, ProjectUpdate
 from api.schemas.responses import Page
-from api.services import ownership
+from api.services import audit_service, ownership
+
+
+def _actor() -> tuple[str | None, str | None]:
+    """Who is acting, and under which request — read off the request-scoped
+    context rather than threaded through every signature, so adding an audit
+    call never forces a router change."""
+    return request_context.current_user_id(), request_context.current_request_id()
 
 
 async def create_project(
@@ -43,6 +51,18 @@ async def create_project(
         owner_id=ownership.owner_id_for(user),
     )
     db.add(project)
+    await db.flush()  # assigns project.id so the audit row can name it
+    actor_id, request_id = _actor()
+    audit_service.record(
+        db,
+        action="project.create",
+        resource_type="project",
+        resource_id=str(project.id),
+        project_id=project.id,
+        actor_id=actor_id,
+        request_id=request_id,
+        metadata={"name": project.name, "task_type": project.task_type.value},
+    )
     await db.commit()
     await db.refresh(project)
     return ProjectResponse.model_validate(project)
@@ -90,6 +110,16 @@ async def update_project(
         project.name = body.name
     if body.description is not None:
         project.description = body.description
+    actor_id, request_id = _actor()
+    audit_service.record(
+        db,
+        action="project.update",
+        resource_type="project",
+        resource_id=str(project.id),
+        project_id=project.id,
+        actor_id=actor_id,
+        request_id=request_id,
+    )
     await db.commit()
     await db.refresh(project)
     return ProjectResponse.model_validate(project)
@@ -99,6 +129,20 @@ async def delete_project(
     db: AsyncSession, project_id: UUID, user: CurrentUser | None = None
 ) -> None:
     project = await ownership.assert_project_access(db, project_id, user)
+    actor_id, request_id = _actor()
+    # Recorded before the delete, and deliberately keeps `resource_id` as a
+    # plain string: `project_id` is ON DELETE SET NULL, so the FK drops away
+    # but the trail of who deleted what survives the deletion it records.
+    audit_service.record(
+        db,
+        action="project.delete",
+        resource_type="project",
+        resource_id=str(project.id),
+        project_id=project.id,
+        actor_id=actor_id,
+        request_id=request_id,
+        metadata={"name": project.name},
+    )
     await db.delete(project)
     await db.commit()
 

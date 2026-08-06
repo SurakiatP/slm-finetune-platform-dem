@@ -60,7 +60,8 @@ from api.schemas.enums import DatasetSource, JobStatus, TaskType
 from api.schemas.responses import Page
 from api.schemas.sdg import SeedUploadResponse
 from api.schemas.upload import FormatDetectionReport
-from api.services import ownership
+from api.core import request_context
+from api.services import audit_service, ownership
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 from workers.storage import (
     get_minio_client,
@@ -176,6 +177,24 @@ async def download_dataset(
     bucket, key = parse_s3_uri(ds.storage_uri)
     filename = f"{ds.name}.jsonl"
 
+    # Data leaving the system is worth recording even though nothing else
+    # here mutates — this is the one read path where "who took a copy of
+    # what, and when" is the question an audit log exists to answer. Needs
+    # its own commit precisely because there is no mutation to ride along
+    # with, and it happens before the stream opens so a client that
+    # disconnects mid-download is still recorded as having started it.
+    audit_service.record(
+        db,
+        action="dataset.download",
+        resource_type="dataset",
+        resource_id=str(ds.id),
+        project_id=ds.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"num_samples": ds.num_samples, "size_bytes": ds.size_bytes},
+    )
+    await db.commit()
+
     async def _iter() -> AsyncIterator[bytes]:
         minio = get_minio_client()
         response = minio.get_object(bucket_name=bucket, object_name=key)
@@ -244,6 +263,16 @@ async def delete_dataset(
                 "failed to remove pdf object for %s", dataset_id, exc_info=True
             )
 
+    audit_service.record(
+        db,
+        action="dataset.delete",
+        resource_type="dataset",
+        resource_id=str(ds.id),
+        project_id=ds.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"name": ds.name, "source": ds.source.value},
+    )
     await db.delete(ds)
     await db.commit()
 
@@ -272,6 +301,16 @@ async def cancel_dataset(
     revoke_celery_task(task_id, context=f"dataset {dataset_id}")
 
     ds.status = JobStatus.CANCELLED
+    audit_service.record(
+        db,
+        action="dataset.cancel",
+        resource_type="dataset",
+        resource_id=str(ds.id),
+        project_id=ds.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": task_id},
+    )
     await db.commit()
     return {"dataset_id": str(ds.id), "status": JobStatus.CANCELLED.value}
 
@@ -491,6 +530,16 @@ async def _persist_jsonl_dataset(
     size_bytes = put_jsonl(minio, bucket, key, valid_rows)
     dataset.storage_uri = s3_uri(bucket, key)
     dataset.size_bytes = size_bytes
+    audit_service.record(
+        db,
+        action="dataset.seed_upload",
+        resource_type="dataset",
+        resource_id=str(dataset.id),
+        project_id=dataset.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"format": "jsonl", "num_samples": dataset.num_samples},
+    )
     await db.commit()
     await db.refresh(dataset)
     return dataset
@@ -718,6 +767,16 @@ async def _persist_pdf_dataset(
     meta = dict(dataset.generation_metadata or {})
     meta["pdf_uri"] = pdf_uri
     dataset.generation_metadata = meta
+    audit_service.record(
+        db,
+        action="dataset.seed_upload",
+        resource_type="dataset",
+        resource_id=str(dataset.id),
+        project_id=dataset.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"format": "pdf", "size_bytes": dataset.size_bytes},
+    )
     await db.commit()
     await db.refresh(dataset)
     return dataset, pdf_uri

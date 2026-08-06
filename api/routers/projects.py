@@ -10,9 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.auth import CurrentUser, require_user
 from api.core.database import get_db
+from api.schemas.audit import AuditEventResponse
 from api.schemas.projects import ProjectCreate, ProjectResponse, ProjectUpdate
 from api.schemas.responses import Page
-from api.services import projects_service
+from api.services import audit_service, projects_service
 
 router = APIRouter()
 
@@ -90,3 +91,30 @@ async def delete_project(
     user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> None:
     await projects_service.delete_project(db, project_id, user)
+
+
+@router.get(
+    "/{project_id}/activity",
+    response_model=Page[AuditEventResponse],
+    summary="Audit trail for one project (newest first)",
+)
+async def list_project_activity(
+    project_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Page[AuditEventResponse]:
+    """Every state-changing action recorded against this project.
+
+    Ownership is enforced inside `list_activity`, so this 404s for someone
+    else's project exactly like `GET /projects/{id}` does.
+
+    Events whose project was later deleted are not reachable here: the FK is
+    `ON DELETE SET NULL`, so the rows survive (deliberately — an audit log
+    that a delete can erase is not an audit log) but no longer belong to a
+    project anyone can query by id.
+    """
+    return await audit_service.list_activity(
+        db, project_id, limit=limit, offset=offset, user=user
+    )
