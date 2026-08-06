@@ -10,18 +10,28 @@ one helper serve both call sites without an async/sync split.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from api.core.auth import CurrentUser
 from api.models.audit_event import AuditEvent
 from api.schemas.audit import AuditEventResponse
 from api.schemas.responses import Page
-from api.services import ownership
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from api.core.auth import CurrentUser
+
+# `api.core.auth` (and `api.services.ownership`, which imports it) pulls in
+# PyJWT at import time. The Celery workers import this module for `record()`
+# alone — the write path, which has no notion of a request or a token — and
+# the GPU worker image does not ship PyJWT. Importing either eagerly turns a
+# type annotation into a hard `ModuleNotFoundError: No module named 'jwt'`
+# that crash-loops every worker on boot (observed on the vast.ai box). The
+# read path below imports `ownership` at call time instead, so the auth stack
+# is only loaded in the process that actually serves HTTP.
 
 
 def record(
@@ -74,6 +84,8 @@ async def list_activity(
     directly, rather than an empty (and therefore existence-revealing)
     page.
     """
+    from api.services import ownership  # deferred — see the module header
+
     await ownership.assert_project_access(db, project_id, user)
 
     base = (
