@@ -330,12 +330,15 @@ no per-request override):
 |---|---|---|
 | `FORMAT_DETECTION` (`:11`) | `google/gemini-2.5-flash-lite` | One-off key-rename pass on seed upload |
 | `PDF_QA` (`:16`) | `google/gemini-2.5-flash-lite` | First-iteration PDF → Q&A extraction (multimodal) |
-| `DIVERSITY_RULES` (`:19`) | `deepseek/deepseek-v4-flash` | Meta-prompting call (once per job) |
-| `GENERATOR` (`:22`) | `deepseek/deepseek-v4-flash` | Main synthetic-row generation, up to ~100 concurrent calls/loop |
-| `JUDGE` (`:26`) | `deepseek/deepseek-v4-flash` | LLM-as-judge scoring, up to ~500 concurrent calls/loop (5 candidates × 100 calls) |
+| `DIVERSITY_RULES` (`:24`) | `deepseek/deepseek-v4-flash-0731` | Meta-prompting call (once per job) |
+| `GENERATOR` (`:27`) | `deepseek/deepseek-v4-flash-0731` | Main synthetic-row generation, up to ~100 concurrent calls/loop |
+| `JUDGE` (`:31`) | `deepseek/deepseek-v4-flash-0731` | LLM-as-judge scoring, up to ~500 concurrent calls/loop (5 candidates × 100 calls) |
 
 Note all three generation-time roles (`DIVERSITY_RULES`/`GENERATOR`/`JUDGE`)
-now point at the same `deepseek/deepseek-v4-flash` SKU; only the
+now point at the same `deepseek/deepseek-v4-flash-0731` SKU; only the
 upload-time/PDF helpers (`FORMAT_DETECTION`/`PDF_QA`) use a different,
-cheaper multimodal model. See [realtime WebSocket](./03-realtime-websocket.md)
+cheaper multimodal model. The dated `-0731` snapshot is pinned deliberately
+in place of the rolling `deepseek/deepseek-v4-flash` alias — SDG output is
+training data, so an upstream model swap under a stable alias would silently
+change what every subsequent fine-tune learns. See [realtime WebSocket](./03-realtime-websocket.md)
 for how this loop's progress is streamed live.
