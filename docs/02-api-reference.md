@@ -996,8 +996,22 @@ Body (`CompletionRequest`): `model`, `prompt` (string or list of strings),
 ### GET /api/v1/inference/models
 
 List models the local Ollama daemon currently has loaded (OpenAI `/models`
-shape). No params, no auth. Success: `200` `ModelDescriptorList` —
+shape). No params. Success: `200` `ModelDescriptorList` —
 `{object: "list", data: [{id, object, created, owned_by, metadata}]}`.
+
+**Owner-scoped.** Entries in our own namespace (`slm/…`, one per exported
+fine-tune) are filtered to the caller's own artifacts. Base models the
+daemon has pulled in (`llama3.2:1b`, …) carry no ownership information and
+stay listed for everyone — hiding them would only make a model picker lie
+about what the daemon can serve. An anonymous caller (no `Authorization`
+header, phase 1) gets the unfiltered list, identical to pre-auth behaviour.
+
+**Tag shape.** `id` for our models is the canonical `slm/<first-8-of-uuid>`,
+not the `slm/<8hex>:latest` the daemon reports — Ollama appends an implicit
+version on create that the DB never stores. The id in this response is
+exactly the string `model` accepts on `/chat/completions` and
+`/completions`, so a picker's value round-trips. The suffixed form is also
+accepted on those endpoints for callers that copied it out of `ollama list`.
 
 ---
 

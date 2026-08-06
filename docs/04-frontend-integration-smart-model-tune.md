@@ -289,7 +289,7 @@ at each step:
 7. `GET /api/v1/trainings/{training_id}/loss-history` for the persisted chart series (call once on load, not only via WS, so a page refresh still shows the curve).
 8. `GET /api/v1/models/{model_artifact_id}` (or `GET /api/v1/models?training_job_id=...`) → `ModelArtifactResponse` — this is the row containing `ollama_model_tag`, needed for both inference and export.
 9. Optional: `POST /api/v1/models/{model_artifact_id}/export` (`format="gguf"|"safetensors"`) → another `job_id`/`websocket_url` on the same `/ws/jobs/{id}` channel.
-10. `GET /api/v1/inference/models` to confirm the Ollama tag is actually served, then `POST /api/v1/inference/chat/completions` (`model=ollama_model_tag`) for the Playground.
+10. `GET /api/v1/inference/models` to confirm the Ollama tag is actually served, then `POST /api/v1/inference/chat/completions` (`model=ollama_model_tag`) for the Playground. The listing is owner-scoped — `slm/…` entries are only the caller's own fine-tunes, base models stay visible to everyone — and its `id` is the canonical `slm/<8hex>` form, i.e. exactly what `model` accepts, so a dropdown can pass the listed value straight through. (Anonymous phase-1 callers get the unfiltered list.)
 11. `POST /api/v1/evaluations` (`model_artifact_id`, `dataset_id` — use a holdout child dataset via `DatasetResponse.parent_dataset_id` for a leak-free score) → evaluation run; `POST /api/v1/evaluations/compare` across 2-10 runs for the A/B / tuning-comparison views.
 
 ## What's Already Correct — Don't Touch
