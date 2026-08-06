@@ -11,10 +11,11 @@ from fastapi import (
     File,
     Form,
     Query,
+    Request,
     UploadFile,
     status,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.auth import CurrentUser, require_user
@@ -29,7 +30,7 @@ from api.schemas.sdg import (
     SDGRequestWithSeed,
     SeedUploadResponse,
 )
-from api.services import datasets_service, ownership
+from api.services import datasets_service, idempotency, ownership
 from api.services.sdg_service import submit_sdg_job
 
 router = APIRouter()
@@ -67,10 +68,14 @@ async def upload_seed_dataset(
 )
 async def generate_dataset(
     body: SDGRequest,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[CurrentUser | None, Depends(require_user)],
-) -> SDGJobAcceptedResponse:
+) -> SDGJobAcceptedResponse | JSONResponse:
     assert isinstance(body, (SDGRequestWithSeed, SDGRequestDescriptionOnly))
+    body_json = body.model_dump(mode="json")
+    if (replayed := await idempotency.replay(request, user, body_json)) is not None:
+        return replayed
     # Parent-check here rather than inside sdg_service.submit_sdg_job: that
     # module is owned by another workstream on this branch and out of scope
     # for this change. submit_sdg_job's own validation already rejects a
@@ -80,7 +85,9 @@ async def generate_dataset(
     # at someone else's seed without also naming that someone else's
     # project, which this call already blocks.
     await ownership.assert_project_access(db, body.project_id, user)
-    return await submit_sdg_job(db, body)
+    resp = await submit_sdg_job(db, body)
+    await idempotency.remember(request, user, body_json, resp.model_dump(mode="json"))
+    return resp
 
 
 @router.get(

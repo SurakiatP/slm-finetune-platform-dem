@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.auth import CurrentUser, require_user
@@ -19,7 +20,7 @@ from api.schemas.evaluations import (
     EvaluationResponse,
 )
 from api.schemas.responses import Page
-from api.services import evaluation_service
+from api.services import evaluation_service, idempotency
 
 router = APIRouter()
 
@@ -32,10 +33,18 @@ router = APIRouter()
 )
 async def start_evaluation(
     body: EvaluationCreate,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[CurrentUser | None, Depends(require_user)],
-) -> EvaluationAcceptedResponse:
-    return await evaluation_service.submit_evaluation_job(db, body, user)
+) -> EvaluationAcceptedResponse | JSONResponse:
+    # Replay first: a repeat within the dedupe window costs no DB work, and
+    # ownership was already enforced on the original call that populated it.
+    body_json = body.model_dump(mode="json")
+    if (replayed := await idempotency.replay(request, user, body_json)) is not None:
+        return replayed
+    resp = await evaluation_service.submit_evaluation_job(db, body, user)
+    await idempotency.remember(request, user, body_json, resp.model_dump(mode="json"))
+    return resp
 
 
 @router.get(

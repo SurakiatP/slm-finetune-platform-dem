@@ -106,6 +106,23 @@ async def submit_export_job(
             ),
         )
 
+    # One artifact, one export at a time. Without this guard a second POST
+    # while an export is in flight overwrote `export_celery_task_id` below,
+    # which orphaned the first Celery task: nothing held its id any more, so
+    # `POST /export/cancel` could never revoke it and the progress frames it
+    # kept publishing to `job:{old_id}` went to a channel no client was on.
+    # A terminal `export_status` (completed/failed/cancelled) is deliberately
+    # NOT blocked — re-exporting a finished artifact is a normal thing to do.
+    if artifact.export_status in (JobStatus.PENDING, JobStatus.RUNNING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Model {model_id} already has an export in flight "
+                f"(job {artifact.export_celery_task_id}); "
+                f"POST /api/v1/models/{model_id}/export/cancel first."
+            ),
+        )
+
     # Local import keeps the API process from eagerly loading worker-only deps.
     from workers.tasks.model_export import export_model
 

@@ -43,6 +43,7 @@ from fastapi import Depends, Header, HTTPException, status
 from jwt import PyJWKClient
 from jwt.exceptions import InvalidTokenError, PyJWKClientError
 
+from api.core import request_context
 from api.core.config import Settings, get_settings
 
 log = logging.getLogger("api.auth")
@@ -227,7 +228,15 @@ async def current_user_optional(
     # calling it inline would stall the whole event loop for a network
     # round-trip. Same convention `ai_engine/data_gen/openrouter_client.py`
     # documents for its sync client.
-    return await asyncio.to_thread(verify_supabase_jwt, token)
+    user = await asyncio.to_thread(verify_supabase_jwt, token)
+    # Bind the identified caller onto the request-scoped context so every
+    # subsequent log line (including ones emitted by the request-context
+    # middleware and downstream services) carries `user_id`. Anonymous
+    # callers (token is None, above) leave this unset — never stamped as
+    # null — matching how `request_context.bound`/`snapshot` already treat
+    # unset keys elsewhere.
+    request_context.set_user_id(user.id)
+    return user
 
 
 async def require_user(

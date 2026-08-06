@@ -7,16 +7,20 @@ The actual business logic lives behind 501 stubs until later phases.
 from __future__ import annotations
 
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.core import request_context
 from api.core.auth import require_user
 from api.core.config import get_settings
 from api.core.database import engine
 from api.core.exceptions import install_handlers
+from api.core.logging_config import configure_logging
 from api.routers import (
     datasets,
     evaluations,
@@ -31,10 +35,7 @@ from api.routers import (
 
 settings = get_settings()
 
-logging.basicConfig(
-    level=settings.log_level.upper(),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+configure_logging(settings.log_level)
 log = logging.getLogger("api")
 
 
@@ -100,6 +101,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Registered after CORSMiddleware so it ends up outermost in the middleware
+# stack (Starlette wraps middleware in reverse registration order) — the
+# request id is minted/bound before CORS or anything downstream runs, and
+# the X-Request-ID response header survives every layer beneath it.
+@app.middleware("http")
+async def _request_context_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    request.state.request_id = request_id
+    start = time.perf_counter()
+    status_code = 500
+    with request_context.bound(request_id=request_id):
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            duration_ms = round((time.perf_counter() - start) * 1000, 2)
+            log.info(
+                "%s %s %s",
+                request.method,
+                request.url.path,
+                status_code,
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": status_code,
+                    "duration_ms": duration_ms,
+                },
+            )
+
 
 # Uniform ErrorResponse for HTTPException, validation errors, and unhandled exceptions.
 install_handlers(app)

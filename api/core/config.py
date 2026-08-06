@@ -97,6 +97,14 @@ class Settings(BaseSettings):
     # (retired) and `google/gemini-3.1-flash-lite-preview` were superseded.
     llm_judge_model: str = "qwen/qwen3-235b-a22b-2507"
 
+    # ---- Job reconciliation (orphan sweep, see api/services/job_reconcile.py)
+    # Minutes of silence (no fresh `job:{task_id}:last` snapshot, and no DB
+    # row update as a fallback) before a `pending`/`running` job whose task id
+    # is absent from Celery's active set is flipped to `failed`. Must stay
+    # comfortably above normal progress-publish cadence to avoid false
+    # positives on a healthy but slow-to-report job.
+    job_orphan_grace_minutes: int = Field(default=15, ge=1)
+
     # ---- Auth (Supabase JWT, see api/core/auth.py) -------------------------
     # Project URL, e.g. https://<ref>.supabase.co — the JWKS used to verify
     # tokens lives at f"{supabase_url}/auth/v1/.well-known/jwks.json", and

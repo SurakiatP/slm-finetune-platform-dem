@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.auth import CurrentUser, require_user
@@ -24,7 +25,7 @@ from api.schemas.trainings import (
     TrainingMetricsResponse,
     TrainingResponse,
 )
-from api.services import ownership, trainings_service
+from api.services import idempotency, ownership, trainings_service
 from api.services.training_service import (
     submit_hpo_training_job,
     submit_manual_training_job,
@@ -41,9 +42,13 @@ router = APIRouter()
 )
 async def start_training(
     body: TrainingRequest,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[CurrentUser | None, Depends(require_user)],
-) -> TrainingJobAcceptedResponse:
+) -> TrainingJobAcceptedResponse | JSONResponse:
+    body_json = body.model_dump(mode="json")
+    if (replayed := await idempotency.replay(request, user, body_json)) is not None:
+        return replayed
     # Parent-check here rather than inside training_service.submit_*_job:
     # that module is owned by another workstream on this branch and out of
     # scope for this change. Both submit functions already 400 when
@@ -54,9 +59,12 @@ async def start_training(
     await ownership.assert_project_access(db, body.project_id, user)
     if body.mode is TrainingMode.MANUAL:
         assert isinstance(body, ManualTrainingRequest)
-        return await submit_manual_training_job(db, body)
-    assert isinstance(body, HPOTrainingRequest)
-    return await submit_hpo_training_job(db, body)
+        resp = await submit_manual_training_job(db, body)
+    else:
+        assert isinstance(body, HPOTrainingRequest)
+        resp = await submit_hpo_training_job(db, body)
+    await idempotency.remember(request, user, body_json, resp.model_dump(mode="json"))
+    return resp
 
 
 @router.get(
