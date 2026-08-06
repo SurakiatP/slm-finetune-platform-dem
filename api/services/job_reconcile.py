@@ -99,6 +99,18 @@ _TERMINAL = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
 
 _ERROR_TYPE = "OrphanedJob"
 
+# How long to wait for workers to answer an `inspect()` broadcast.
+_INSPECT_TIMEOUT_SECONDS = 2.0
+
+# How long `run_forever` waits before its first sweep. Not zero: on a cold
+# boot the worker fleet may not have registered with the broker yet, and a
+# sweep that runs before they do would see an empty active set. The
+# abort-on-unreachable guard covers the total-outage case, but this covers
+# the narrower "workers are coming up right now" race, and it keeps a
+# short-lived process (a test client, a `--reload` cycle) from paying for a
+# broker round-trip it will never use.
+_INITIAL_DELAY_SECONDS = 15
+
 
 @dataclass(frozen=True, slots=True)
 class _Target:
@@ -156,6 +168,11 @@ def _active_task_ids(inspector: Any) -> set[str] | None:
     answers, all three probes return None, and treating that as "nothing is
     running" would fail every job on the box on the next pass. The caller
     aborts on None; this function never guesses.
+
+    Synchronous and blocking: each probe is a broadcast that waits for the
+    workers to reply, and waits out its full timeout when the broker is
+    unreachable. Callers must run this off the event loop — see
+    `reconcile_once`.
     """
     try:
         active = inspector.active()
@@ -269,9 +286,16 @@ async def reconcile_once(
     if inspector is None:
         from workers.celery_app import celery_app
 
-        inspector = celery_app.control.inspect()
+        # Bounded: an unbounded broadcast against a dead broker blocks the
+        # worker thread for the default timeout on every pass.
+        inspector = celery_app.control.inspect(timeout=_INSPECT_TIMEOUT_SECONDS)
 
-    active_ids = _active_task_ids(inspector)
+    # Offloaded to a worker thread: `inspect()`'s three probes are synchronous
+    # broadcasts that block until the workers reply — or, when the broker is
+    # unreachable, until their timeout expires. Calling them inline would
+    # stall the event loop for every other request. Same convention
+    # `api/core/auth.py` documents for the blocking JWKS fetch.
+    active_ids = await asyncio.to_thread(_active_task_ids, inspector)
     if active_ids is None:
         report.aborted = True
         report.abort_reason = "celery inspect() returned nothing — broker or workers unreachable"
@@ -366,22 +390,39 @@ async def reconcile_once(
     return report
 
 
-async def run_forever(interval_seconds: int = 300) -> None:
-    """Sweep every `interval_seconds` until cancelled.
+async def run_forever(
+    interval_seconds: int = 300, initial_delay_seconds: int = _INITIAL_DELAY_SECONDS
+) -> None:
+    """Sweep shortly after start, then every `interval_seconds`, until cancelled.
+
+    An early first pass matters: a restart is the likeliest moment for
+    orphans to exist, because whatever killed the worker often took the API
+    with it. `initial_delay_seconds` keeps that from firing before the worker
+    fleet has registered with the broker.
+
+    This runs as a task rather than inline in the lifespan because
+    `reconcile_once` broadcasts to the workers and waits for replies. Awaiting
+    that during startup would delay readiness on every boot and make the API's
+    startup depend on the broker's health — precisely the coupling this module
+    exists to survive.
 
     One pass failing must never kill the loop — a broker outage would
     otherwise silently disable reconciliation until the next deploy.
     """
-    while True:
-        try:
+    try:
+        await asyncio.sleep(initial_delay_seconds)
+        while True:
+            try:
+                async with AsyncSessionLocal() as session:
+                    report = await reconcile_once(session)
+                if report.count:
+                    log.info("reconcile: %d orphan(s) recovered", report.count)
+            except Exception:  # noqa: BLE001 — one bad pass must not end the loop
+                log.exception("job reconcile pass failed; continuing")
             await asyncio.sleep(interval_seconds)
-            async with AsyncSessionLocal() as session:
-                await reconcile_once(session)
-        except asyncio.CancelledError:
-            log.info("job reconcile loop cancelled")
-            raise
-        except Exception:  # noqa: BLE001
-            log.exception("job reconcile pass failed; continuing")
+    except asyncio.CancelledError:
+        log.info("job reconcile loop cancelled")
+        raise
 
 
 __all__ = ["ReconcileReport", "reconcile_once", "run_forever"]

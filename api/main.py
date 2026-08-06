@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.core import request_context
 from api.core.auth import require_user
 from api.core.config import get_settings
-from api.core.database import AsyncSessionLocal, engine
+from api.core.database import engine
 from api.core.exceptions import install_handlers
 from api.core.logging_config import configure_logging
 from api.services import job_reconcile
@@ -51,26 +51,17 @@ _RECONCILE_INTERVAL_SECONDS = 300
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("api starting (db=%s, redis=%s)", _redact(settings.database_url), settings.redis_url)
 
-    # Sweep once immediately: a restart is the single most likely moment for
-    # orphans to exist, because whatever killed the worker often took the API
-    # with it. Wrapped in try/except because a broker outage must not block
-    # startup — the periodic loop below will catch up once it recovers.
-    try:
-        async with AsyncSessionLocal() as session:
-            report = await job_reconcile.reconcile_once(session)
-        log.info(
-            "startup reconcile: %d orphan(s) of %d checked%s",
-            report.count,
-            report.checked,
-            f" (aborted: {report.abort_reason})" if report.aborted else "",
-        )
-    except Exception:  # noqa: BLE001 — never let reconciliation stop the API booting
-        log.exception("startup reconcile failed; continuing without it")
-
-    # Then keep sweeping. This lives in the API process rather than a Celery
-    # beat container on purpose: the thing being detected is "no worker is
-    # running this", so the detector must not itself depend on a healthy
-    # worker fleet to run.
+    # Recover jobs whose worker died. `run_forever` sweeps once immediately
+    # and then on an interval; it is started as a task rather than awaited
+    # here because its first act is a Celery `inspect()` broadcast, which
+    # blocks for its full timeout when the broker is unreachable. Awaiting
+    # that would delay readiness on every boot and make the API's startup
+    # depend on the broker's health — exactly the coupling this feature
+    # exists to survive.
+    #
+    # It lives in the API process rather than a Celery beat container for the
+    # same reason: what it detects is "no worker is running this", so the
+    # detector must not need a healthy worker fleet to run at all.
     app.state.reconcile_task = asyncio.create_task(
         job_reconcile.run_forever(interval_seconds=_RECONCILE_INTERVAL_SECONDS),
         name="job-reconcile-loop",

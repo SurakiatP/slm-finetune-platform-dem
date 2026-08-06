@@ -331,6 +331,49 @@ class TestIdempotent:
 # =============================================================================
 
 
+class TestLoopDoesNotBlockStartup:
+    """`inspect()` is a synchronous broadcast that waits out its timeout when
+    the broker is unreachable. Two things follow, and both were measured
+    rather than assumed — wiring this inline cost the test suite 114s per run
+    instead of 6s, which is the same stall a real request would have paid.
+    """
+
+    async def test_inspect_runs_off_the_event_loop(self) -> None:
+        src = (__import__("pathlib").Path(job_reconcile.__file__)).read_text(
+            encoding="utf-8"
+        )
+        assert "await asyncio.to_thread(_active_task_ids" in src, (
+            "inspect() blocks; calling it inline stalls the loop for every "
+            "other request — same defect the JWKS fetch had"
+        )
+
+    async def test_inspect_timeout_is_bounded(self) -> None:
+        src = (__import__("pathlib").Path(job_reconcile.__file__)).read_text(
+            encoding="utf-8"
+        )
+        assert "control.inspect(timeout=" in src
+
+    async def test_first_sweep_waits_for_the_initial_delay(self, monkeypatch) -> None:
+        """A short-lived process must not pay for a broker round-trip it will
+        never use, and a cold boot must not sweep before the workers have
+        registered."""
+        called = False
+
+        async def _never(*a, **kw):
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(job_reconcile, "reconcile_once", _never)
+        task = __import__("asyncio").create_task(
+            job_reconcile.run_forever(interval_seconds=1, initial_delay_seconds=30)
+        )
+        await __import__("asyncio").sleep(0.05)
+        task.cancel()
+        with pytest.raises(__import__("asyncio").CancelledError):
+            await task
+        assert called is False
+
+
 def test_uses_the_async_redis_client_not_the_worker_publisher() -> None:
     """`workers/progress.py`'s publisher is sync and belongs to the worker
     process; importing it here would block the API's event loop."""
