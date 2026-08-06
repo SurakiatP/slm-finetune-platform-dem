@@ -251,3 +251,105 @@ def test_module_docstring_documents_the_current_behaviour() -> None:
     doc = inference_service.__doc__ or ""
     assert "left UNFILTERED" not in doc
     assert "filters `slm/` tags to the caller's own artifacts" in doc
+
+
+# =============================================================================
+# 5. The daemon's `:latest` suffix — what the fake above was hiding
+# =============================================================================
+
+
+@pytest.fixture
+def real_ollama(monkeypatch):
+    """What the daemon ACTUALLY reports.
+
+    `ollama create slm/aaaaaaaa` is stored and listed back as
+    `slm/aaaaaaaa:latest` — the implicit version is appended on create. The
+    `fake_ollama` fixture above returns bare tags, which is why every test in
+    this file passed while the owner's own model was being filtered out of
+    their listing on the real box. Base models keep their tag: `llama3.2:3b`'s
+    suffix is a parameter size, not a version.
+    """
+
+    async def _get_json(path: str):
+        return {
+            "data": [
+                {"id": f"{TAG_A}:latest", "created": 1, "owned_by": "slm-platform"},
+                {"id": f"{TAG_B}:latest", "created": 2, "owned_by": "slm-platform"},
+                {"id": TAG_BASE, "created": 3, "owned_by": "library"},
+            ]
+        }
+
+    monkeypatch.setattr(inference_service, "_get_json", _get_json)
+
+
+class TestCanonicalTag:
+    @pytest.mark.parametrize(
+        ("given", "expected"),
+        [
+            ("slm/aaaaaaaa:latest", "slm/aaaaaaaa"),
+            ("slm/aaaaaaaa", "slm/aaaaaaaa"),
+            ("llama3.2:3b", "llama3.2:3b"),
+            ("llama3.2:1b", "llama3.2:1b"),
+            ("qwen2.5:0.5b-instruct", "qwen2.5:0.5b-instruct"),
+        ],
+    )
+    def test_only_our_namespace_is_normalised(self, given: str, expected: str) -> None:
+        """Stripping the suffix outside `slm/` would conflate `llama3.2:1b`
+        with `llama3.2:3b` — two different models."""
+        assert inference_service.canonical_our_tag(given) == expected
+
+
+class TestOwnerCanActuallyUseTheirOwnModel:
+    """The tenancy filter is only correct if the owner still gets through it.
+
+    Filtering B out while also filtering A out is not "secure", it is broken:
+    `GET /inference/models` is the endpoint the frontend integration doc
+    points at for populating its model picker.
+    """
+
+    async def test_owner_sees_their_own_fine_tune_in_the_listing(
+        self, db, seeded, real_ollama
+    ) -> None:
+        ids = {m.id for m in (await inference_service.list_models(db, USER_A)).data}
+        assert TAG_A in ids, f"the owner's own model vanished from their listing: {ids}"
+
+    async def test_the_listing_publishes_the_form_the_call_path_accepts(
+        self, db, seeded, real_ollama
+    ) -> None:
+        """A picker's value has to round-trip. Publishing `slm/x:latest` while
+        the resolver only matches `slm/x` would 404 the owner on their own
+        model, one click after the listing showed it to them."""
+        listed = [m.id for m in (await inference_service.list_models(db, USER_A)).data]
+        ours = next(t for t in listed if t.startswith("slm/"))
+        assert await inference_service._resolve_model_tag(db, ours, USER_A) == TAG_A
+
+    async def test_suffixed_tag_resolves_for_the_owner(self, db, seeded) -> None:
+        """A caller that copied the id out of `ollama list` carries `:latest`."""
+        resolved = await inference_service._resolve_model_tag(
+            db, f"{TAG_A}:latest", USER_A
+        )
+        assert resolved == TAG_A
+
+    async def test_suffix_is_not_a_way_around_the_ownership_check(
+        self, db, seeded
+    ) -> None:
+        """Normalisation must not become a bypass: B appending `:latest` to
+        A's tag is the same refusal as before."""
+        with pytest.raises(HTTPException) as exc:
+            await inference_service._resolve_model_tag(db, f"{TAG_A}:latest", USER_B)
+        assert exc.value.status_code == 404
+        assert str(seeded["a"].id) not in str(exc.value.detail)
+
+    async def test_b_still_does_not_see_a_in_the_suffixed_listing(
+        self, db, seeded, real_ollama
+    ) -> None:
+        ids = {m.id for m in (await inference_service.list_models(db, USER_B)).data}
+        assert TAG_B in ids
+        assert TAG_A not in ids
+        assert f"{TAG_A}:latest" not in ids
+
+    async def test_base_model_survives_normalisation(
+        self, db, seeded, real_ollama
+    ) -> None:
+        ids = {m.id for m in (await inference_service.list_models(db, USER_A)).data}
+        assert TAG_BASE in ids

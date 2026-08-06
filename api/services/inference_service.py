@@ -83,6 +83,27 @@ _OLLAMA_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=10.0)
 OUR_TAG_PREFIX = "slm/"
 
 
+def canonical_our_tag(tag: str) -> str:
+    """Strip Ollama's version suffix from a tag in our own namespace.
+
+    `workers/tasks/model_export.py` creates models as `slm/<first-8-of-uuid>`
+    and stores exactly that in `ModelArtifact.ollama_model_tag`. The daemon,
+    however, reports the same model back as `slm/<8hex>:latest` — it appends
+    the implicit version to every untagged create. Comparing the two forms
+    directly is a silent mismatch that only shows up against a real daemon:
+    the owner's own fine-tune gets filtered out of `GET /inference/models` as
+    "not yours", and if the id were listed verbatim, posting it back would
+    404 on the reverse-map. Both were observed on the vast.ai box.
+
+    Base-model tags (`llama3.2:1b`) are returned untouched — there the part
+    after the colon is a real parameter-size variant, not a version, and
+    dropping it would conflate `llama3.2:1b` with `llama3.2:3b`.
+    """
+    if not tag.startswith(OUR_TAG_PREFIX):
+        return tag
+    return tag.split(":", 1)[0]
+
+
 async def chat_completions(
     db: AsyncSession,
     body: ChatCompletionRequest,
@@ -172,7 +193,10 @@ async def list_models(
 
     items = []
     for entry in entries:
-        tag = entry["id"]
+        # The daemon reports our models as `slm/<8hex>:latest`; the DB holds
+        # `slm/<8hex>`. Compare — and publish — the canonical form, so the id
+        # in this listing is the same string the call path accepts.
+        tag = canonical_our_tag(entry["id"])
         if visible is not None and tag.startswith(OUR_TAG_PREFIX) and tag not in visible:
             continue
         items.append(
@@ -201,9 +225,14 @@ async def _audit_call(
     artifact_id = None
     project_id = None
     if tag.startswith(OUR_TAG_PREFIX):
+        # Canonical form, because an anonymous caller's tag is passed through
+        # un-normalised — without this the row would lose its artifact link
+        # for exactly the callers phase 1 still allows.
         artifact = (
             await db.execute(
-                select(ModelArtifact).where(ModelArtifact.ollama_model_tag == tag)
+                select(ModelArtifact).where(
+                    ModelArtifact.ollama_model_tag == canonical_our_tag(tag)
+                )
             )
         ).scalar_one_or_none()
         if artifact is not None:
@@ -255,6 +284,11 @@ async def _resolve_model_tag(
     except (ValueError, TypeError):
         if user is None or not identifier.startswith(OUR_TAG_PREFIX):
             return identifier
+        # A caller that copied the id straight out of `GET /inference/models`
+        # (or out of `ollama list`) may carry the daemon's `:latest` suffix.
+        # Reverse-map on the canonical form, or the owner 404s on their own
+        # model — the DB never stores the suffix.
+        identifier = canonical_our_tag(identifier)
         stmt = select(ModelArtifact).where(ModelArtifact.ollama_model_tag == identifier)
         artifact = (await db.execute(stmt)).scalar_one_or_none()
         # One response for both "no such tag" and "not yours", phrased with the
