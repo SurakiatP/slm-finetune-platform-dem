@@ -54,9 +54,9 @@ values — this is ADR-005, a hard constraint, not a current gap:
 `ranking`. Its own mapping table,
 `TASK_TYPE_TO_ENGINE` (`src/lib/engineMappings.ts:5-12`), already encodes
 this correctly — `ner`/`extraction`/`ranking` map to `null` and
-`NewProject.tsx:161-169` blocks launch with a toast when the mapping is
+`NewProject.tsx:170-179` blocks launch with a toast when the mapping is
 `null`. **This guard is correct and should not be changed.** The
-remaining gap is cosmetic/UX only: `TaskSelectionStep.tsx:6-45` still
+remaining gap is cosmetic/UX only: `TaskSelectionStep.tsx:6-49` still
 *presents* all 6 task types as selectable cards (with fabricated
 examples for the 3 unsupported ones) before the launch-time guard
 rejects them. Recommended fix: either hide the 3 unsupported cards, or
@@ -72,40 +72,40 @@ calls it).
 
 | Backend endpoint | `smart-model-tune` screen/function | Status | What to change |
 |---|---|---|---|
-| `POST /api/v1/projects` | `engineCreateProject` (`src/lib/engineApi.ts:114-123`), called from `NewProject.tsx:193-197` | ⚠️ | Request shape (`name`, `description`, `task_type`) is correct, but `external_project_id` is never sent even though `ProjectCreate` (`api/schemas/projects.py:13`) accepts it and `ProjectResponse` returns it. Pass the Supabase project's own `id` (the `created.id` already computed at `NewProject.tsx:180-188`) as `external_project_id` so the mapping is durable server-side instead of living only in `localStorage`. |
-| `GET /api/v1/projects/{id}` | `engineGetProject` (`engineApi.ts:125-127`) | ❌ | Defined, never called anywhere in `src/`. Nothing currently detects drift between the Supabase `projects` row and the Engine project (e.g. if the Engine project was deleted server-side). Not urgent, but worth a periodic reconciliation check on `ProjectDetail.tsx` if `external_project_id` round-tripping (row above) is adopted. |
+| `POST /api/v1/projects` | `engineCreateProject` (`src/lib/engineApi.ts:163-173`), called from `NewProject.tsx:203-208` | ✅ **Resolved** | `external_project_id` is now sent — see Priority Fix #4 below. Request shape (`name`, `description`, `task_type`, `external_project_id`) matches `ProjectCreate` (`api/schemas/projects.py:13`) exactly. |
+| `GET /api/v1/projects/{id}` | `engineGetProject` (`engineApi.ts:175-177`) | ❌ | Defined, never called anywhere in `src/`. Nothing currently detects drift between the Supabase `projects` row and the Engine project (e.g. if the Engine project was deleted server-side). Not urgent, but worth a periodic reconciliation check on `ProjectDetail.tsx` now that `external_project_id` round-tripping (row above) is adopted. |
 | `PATCH /api/v1/projects/{id}` | — | ❌ | Not called. `smart-model-tune` only ever mutates the Supabase `projects` row (`updateProject` in `src/lib/projectsApi.ts`); the Engine-side project name/description can drift silently. Low priority. |
 | `DELETE /api/v1/projects/{id}` | — | ❌ | Not called. Deleting a project in Supabase does not delete the corresponding Engine project/datasets/trainings (cascade only happens on the Engine side if this endpoint is hit). Worth wiring into whatever "delete project" UI action exists so Engine storage doesn't orphan. |
-| `POST /api/v1/datasets/upload-seed` | `engineUploadSeed` (`engineApi.ts:131-154`), called `NewProject.tsx:98` | ✅ request / ⚠️ response | The multipart request (`file`, `project_id`, `task_type`, `name`) is correct. The response is under-consumed: `EngineSeedUploadResponse` (`engineApi.ts:19-24`) only types `dataset_id`/`task_type`/`num_samples`/`invalid_rows`, and `NewProject.tsx:98-99` reads only `.dataset_id`. Backend's `SeedUploadResponse` (`api/schemas/*` seed response, Phase 9) also returns `format_detection` (schema-remap audit trail) and `pdf_uri` (QA+PDF uploads) — neither is typed nor surfaced. `invalid_rows` is typed but never read either. Add the two missing fields to the TS type and surface a toast/banner for dropped rows / remapped columns / PDF confirmation. |
-| `POST /api/v1/datasets/generate` (`sdg_mode="with_seed"`) | `engineGenerateDataset` (`engineApi.ts:158-176`), called `NewProject.tsx:102-107` | ❌ **broken** | See Priority Fix #1 below — sends inline `seed_data` instead of `seed_dataset_id`. Every real launch 422s. |
+| `POST /api/v1/datasets/upload-seed` | `engineUploadSeed` (`engineApi.ts:188-211`), called `NewProject.tsx:107` | ✅ request / ⚠️ response | The multipart request (`file`, `project_id`, `task_type`, `name`) is correct. The response is under-consumed: `EngineSeedUploadResponse` (`engineApi.ts:20-25`) only types `dataset_id`/`task_type`/`num_samples`/`invalid_rows`, and `NewProject.tsx:108` reads only `.dataset_id`. Backend's `SeedUploadResponse` (`api/schemas/*` seed response, Phase 9) also returns `format_detection` (schema-remap audit trail) and `pdf_uri` (QA+PDF uploads) — neither is typed nor surfaced. `invalid_rows` is typed but never read either. Add the two missing fields to the TS type and surface a toast/banner for dropped rows / remapped columns / PDF confirmation. |
+| `POST /api/v1/datasets/generate` (`sdg_mode="with_seed"`) | `engineGenerateDataset` (`engineApi.ts:215-233`), called from `runEngineFlow` (`NewProject.tsx:111-116`) | ✅ **Resolved** | See Priority Fix #1 below — posts `sdg_mode: "with_seed"` with a real `seed_dataset_id`, matching what the backend enforces. |
 | `POST /api/v1/datasets/generate` (`sdg_mode="description_only"`) | — | ❌ | Not wired at all — no UI path generates from a task description alone (no seed upload), even though `SDGRequestDescriptionOnly` (`api/schemas/sdg.py`) supports it with `classification_config`/`tool_calling_config` schemas (label lists / tool definitions). This is `backend-required-changes.md` item 3, still open on the frontend side. Would let users skip the seed-file step entirely for classification/tool_calling. |
-| `GET /api/v1/datasets/{id}` | `engineGetDataset` (`engineApi.ts:180-182`), polled by `pollDatasetReady` (`NewProject.tsx:71-78`) | ⚠️ | Polling logic only checks `storage_uri && num_samples > 0` to decide "ready," and the return type (`engineApi.ts:180`) doesn't even declare `status`/`error_message`. A **failed** SDG job (bad seed data, OpenRouter error, etc.) has `storage_uri = null` forever, so the poll silently spins for the full `maxAttempts=60 × 5s = 5 minutes` before throwing a generic "Dataset generation timed out" instead of surfacing the real `error_message` immediately. Add `status`/`error_message` to the return type and short-circuit the poll loop on `status === "failed"`. |
+| `GET /api/v1/datasets/{id}` | `engineGetDataset` (`engineApi.ts:237-239`), polled by `pollDatasetReady` (`NewProject.tsx:76-86`) | ⚠️ | Polling logic checks `storage_uri && num_samples > 0` to decide "ready" (`NewProject.tsx:79`), and does short-circuit on `status === "failed" \| "cancelled"` (`:80-82`) — this part is *not* broken, contrary to what an earlier pass of this doc claimed. The remaining gap: `EngineDataset` (`engineApi.ts:121-128`) already declares `status`/`error_message`, but the poll's failure path throws `ds.error_message \|\| \`Dataset generation ${ds.status}.\`` rather than distinguishing "failed" (show the real reason now) from "cancelled" (a normal user action, not an error) — both currently surface through the same generic-error toast path in `NewProject.tsx:237-244`. |
 | `DELETE /api/v1/datasets/{id}` | — | ❌ | Not called; no dataset-delete UI action found. |
 | `GET /api/v1/datasets/{id}/download`, `GET /api/v1/datasets/{id}/preview` | — | ❌ | Not called; no dataset preview/download UI in `smart-model-tune`. |
 | `GET /api/v1/datasets` | — | ❌ | Not called; dataset listing (if any) is Supabase-only (`src/lib/datasetsApi.ts`), disconnected from real Engine dataset rows. |
-| `POST /api/v1/trainings` (`mode="manual"`) | `engineStartTraining` (`engineApi.ts:200-218`), called `runEngineFlow` (`NewProject.tsx:114-122`) | ✅ shape / ⚠️ base_model | Request shape (`project_id`, `dataset_id`, `base_model`, `training_name`, `manual_config`) matches `ManualTrainingRequest` (`api/schemas/training.py:222`). But see Priority Fix #2 — one of the 6 `BASE_MODEL_TO_ENGINE` entries maps to a model ID the backend rejects. |
-| `POST /api/v1/trainings` (`mode="hpo"`) | Auto-Tuning tab, `ProjectDetail.tsx:298-320` (`TuningReport`/`TuningHistory`/`getLatestTuningRun`) | ❌ | Zero backend calls — confirmed no reference to `hpo`/`HPOConfig`/`hpo_config` anywhere in `src/`. The entire tuning report and tuning history are generated client-side (`src/lib/tuningGenerator.ts`). `HPOTrainingRequest` (`api/schemas/training.py:263`, needs `hpo_config`: `n_trials`, `search_space`, `sampler`, `pruner`, `objective_metric`) is a real, working endpoint. This demos as if HPO ran; it didn't. |
-| `GET /api/v1/trainings/{id}` | `engineGetTraining` (`engineApi.ts:220-222`) | ❌ | Defined, never called. There's no fallback to the canonical training resource when the WebSocket gives up (`useTrainingWebSocket.ts:67`, `MAX_ATTEMPTS = 8`) — if reconnection is exhausted, the UI has no way to learn the training's final status/`error_message`. Poll this endpoint once the WS hook's `connected` flips permanently false without a `completed`/`failed` event. |
-| `DELETE /api/v1/trainings/{id}` | `engineCancelTraining` (`engineApi.ts:224-226`) | ❌ | Defined, never called. No "cancel training" UI action exists anywhere in `smart-model-tune`. |
-| `GET /api/v1/trainings/{id}/loss-history` | — | ❌ | **Not called at all.** `TrainingMonitor.tsx:14,35,146` renders `mockLossCurve` with the in-code comment *"The API does not yet expose historical loss points; only live WebSocket values are real"* (`TrainingMonitor.tsx:34`) — this comment is stale/incorrect; the endpoint has existed since before this integration was built (`backend-required-changes.md` item 2: "✅ Already existed"). `TrainingLossHistoryResponse` (`api/schemas/trainings.py:86`) returns `train_loss`/`eval_loss` point arrays plus `mlflow_run_id`. Fetch this on mount (and on WS `completed`) and use it as the initial series, appending live WS points as they arrive — this also fixes the "loss curve resets to nothing on page reload" gap. |
+| `POST /api/v1/trainings` (`mode="manual"`) | `engineStartTraining` (`engineApi.ts:257-275`), called from `runEngineFlow` (`NewProject.tsx:125-131`) | ✅ shape / ⚠️ base_model | Request shape (`project_id`, `dataset_id`, `base_model`, `training_name`, `manual_config`) matches `ManualTrainingRequest` (`api/schemas/training.py:222`). But see Priority Fix #2 — one of the 6 `BASE_MODEL_TO_ENGINE` entries maps to a model ID the backend rejects. |
+| `POST /api/v1/trainings` (`mode="hpo"`) | Auto-Tuning tab, `ProjectDetail.tsx:298-321` (`TuningReport`/`TuningHistory`/`getLatestTuningRun`) | ❌ | Zero backend calls — confirmed no reference to `hpo`/`HPOConfig`/`hpo_config` anywhere in `src/`. The entire tuning report and tuning history are generated client-side (`src/lib/tuningGenerator.ts`). `HPOTrainingRequest` (`api/schemas/training.py:263`, needs `hpo_config`: `n_trials`, `search_space`, `sampler`, `pruner`, `objective_metric`) is a real, working endpoint. This demos as if HPO ran; it didn't. |
+| `GET /api/v1/trainings/{id}` | `engineGetTraining` (`engineApi.ts:277-279`) | ❌ | Defined, never called. There's no fallback to the canonical training resource when the WebSocket gives up (`useTrainingWebSocket.ts:86`, `MAX_ATTEMPTS = 8`) — if reconnection is exhausted, the UI has no way to learn the training's final status/`error_message`. Poll this endpoint once the WS hook's `connected` flips permanently false without a `completed`/`failed` event. (`useTrainingSimulator.ts:173-233` already polls `engineGetTraining` as a WS fallback for the *status* transition — this row is about the terminal-state edge case specifically, not a from-scratch gap.) |
+| `DELETE /api/v1/trainings/{id}` | `engineCancelTraining` (`engineApi.ts:285-287`) | ❌ | Defined, never called. No "cancel training" UI action exists anywhere in `smart-model-tune`. |
+| `GET /api/v1/trainings/{id}/loss-history` | `engineGetTrainingLossHistory` (`engineApi.ts:281-283`), called from `TrainingMonitor.tsx:63` | ✅ **Resolved** | See Priority Fix #5 below — this is now the real loss chart, fetched on mount and on a 10s poll while training runs. |
 | `GET /api/v1/trainings/{id}/metrics` | — | ❌ | Not called. Full metric history + HPO child-trial summary; only relevant once the HPO row above is wired. |
-| `GET /api/v1/trainings/{id}/mlflow-url` | — | ❌ | Not called directly, but `mlflow_run_id`/`mlflow_url` already arrive inline on `EngineTrainingAccepted` (`engineApi.ts:33-40`) from the `POST /trainings` response and are stored nowhere, rendered nowhere. Add an "Open in MLflow" link using the value already in hand — no extra call needed for the common case. |
-| `WS /ws/jobs/{job_id}` (training progress) | `useTrainingWebSocket` (`src/hooks/useTrainingWebSocket.ts`), consumed by `useTrainingSimulator.ts` and `TrainingMonitor.tsx:30-32` | ✅ | **Correctly wired** — URL construction (`buildWsUrl`, `useTrainingWebSocket.ts:46-52`) matches `SDGJobAcceptedResponse`/`TrainingJobAcceptedResponse.websocket_url`'s `/ws/jobs/{job_id}` path, the `training_progress`/`completed`/`failed` event shapes match the backend WS contract, and the exponential-backoff reconnect (`MAX_ATTEMPTS=8`, capped at 30s) is a reasonable client. Do not change. See `docs/03-realtime-websocket.md` for the full message contract this depends on. |
-| `WS /ws/jobs/{job_id}` (SDG progress) | — | ❌ | `SDGJobAcceptedResponse.websocket_url` (`engineApi.ts:26-31`, `EngineSdgResponse.websocket_url`) is returned and typed but never connected to — `NewProject.tsx`'s `runEngineFlow` only polls `GET /datasets/{id}` (see row above) instead of subscribing to the SDG job's own WS channel for live progress. Same hook (`useTrainingWebSocket`, generically named enough to reuse) could drive an SDG progress indicator during the "generating dataset" step instead of a blind 5s poll loop. |
-| `GET /api/v1/models` | `engineGetModelArtifacts` (`engineApi.ts:230-232`) | ❌ **not wired — high impact** | Defined, **never called anywhere**. `Models.tsx:9,13` and `ModelDetail.tsx:10,78` read exclusively from the Supabase `trained_models` table via `src/lib/modelsApi.ts`, which nothing in the app ever populates from a real completed training — `useTrainingSimulator.ts:29-33` only writes `modelArtifactId` into `localStorage` (`engineStore.ts`) on WS `completed`, it never inserts a Supabase `trained_models` row or calls this endpoint. Net effect: the Models list / Model Detail / Playground model picker show **nothing for real Engine-trained models** unless someone manually seeds the Supabase table. See Priority Fix below. |
+| `GET /api/v1/trainings/{id}/mlflow-url` | — | ❌ | Not called directly, but `mlflow_run_id`/`mlflow_url` already arrive inline on `EngineTrainingAccepted` (`engineApi.ts:34-41`) from the `POST /trainings` response and are stored nowhere, rendered nowhere. Add an "Open in MLflow" link using the value already in hand — no extra call needed for the common case. |
+| `WS /ws/jobs/{job_id}` (training progress) | `useTrainingWebSocket` (`src/hooks/useTrainingWebSocket.ts`), consumed by `useTrainingSimulator.ts` and `TrainingMonitor.tsx:47` | ✅ URL/events / ⚠️ auth | URL construction (`buildWsUrl`, `useTrainingWebSocket.ts:58-64`) matches `SDGJobAcceptedResponse`/`TrainingJobAcceptedResponse.websocket_url`'s `/ws/jobs/{job_id}` path, the `training_progress`/`completed`/`failed` event shapes match the backend WS contract, and the exponential-backoff reconnect (`MAX_ATTEMPTS=8`, capped at 30s) is a reasonable client. **Do not change any of that.** What does need to change is the missing `Authorization` subprotocol — see "Required Frontend Change" §2 below; that section (not this row) is now the authoritative version. See `docs/03-realtime-websocket.md` for the full message contract this depends on. |
+| `WS /ws/jobs/{job_id}` (SDG progress) | — | ❌ | `SDGJobAcceptedResponse.websocket_url` (`engineApi.ts:27-32`, `EngineSdgResponse.websocket_url`) is returned and typed but never connected to — `NewProject.tsx`'s `runEngineFlow` only polls `GET /datasets/{id}` (see row above) instead of subscribing to the SDG job's own WS channel for live progress. Same hook (`useTrainingWebSocket`, generically named enough to reuse) could drive an SDG progress indicator during the "generating dataset" step instead of a blind 5s poll loop. |
+| `GET /api/v1/models` | `engineGetModelArtifacts` / `engineListModelArtifacts` / `engineGetModelArtifact` (`engineApi.ts:297-310`) | ❌ **not wired — high impact, still true** | Defined, **never called anywhere**. `Models.tsx:9,13` and `ModelDetail.tsx:10,78` still read exclusively from the Supabase `trained_models` table via `src/lib/modelsApi.ts`, and nothing in the app populates that table from a real completed training. `useTrainingSimulator.ts` (the `syncTrainingStatus` effect, `:194-210`, and the WS-`completed` effect, `:272-284`) writes `modelArtifactId` into `localStorage` (`engineStore.ts`) — real progress, confirmed working — but never into Supabase. Net effect, unchanged from the previous pass of this doc: the Models list and Model Detail pages show **nothing for real Engine-trained models** unless someone manually seeds the Supabase table. (The Playground's own model picker is a separate story now — see Priority Fix #7 below; it stopped depending on this endpoint entirely.) |
 | `GET /api/v1/models/{id}` | — | ❌ | Not called; same root cause as above. |
-| `POST /api/v1/models/{id}/export` | `ModelDetail.tsx` "Export" tab, `exportFormats` array (`ModelDetail.tsx:13-17`) | ❌ **and factually wrong** | Not called — the export tab is a static list with hardcoded fake sizes and non-functional `Download` buttons (no `onClick`, `ModelDetail.tsx:220-223`). Worse: it lists **`ONNX`** as an export option (`ModelDetail.tsx:16`), which the backend does not support — `ArtifactFormat` (`api/schemas/enums.py:53`) is `lora \| gguf \| safetensors` only. Remove the ONNX row entirely (don't just leave it unwired — it's actively misleading), and wire the GGUF/SafeTensors rows to `POST /models/{id}/export` (`ModelExportRequest`: `format`, optional `quantization`), which returns a `job_id`/`websocket_url` for the same `/ws/jobs/{id}` progress channel used for training. |
+| `POST /api/v1/models/{id}/export` | `engineExportModel` (`engineApi.ts:312-317`) is called automatically by `useTrainingSimulator.ts` right after training completes (`:194-203`, `:236-251`) — but the UI surface for it, `ModelDetail.tsx` "Export" tab, `exportFormats` array (`ModelDetail.tsx:13-17`), is separate and still fake | ⚠️ **half-wired, and the visible half is factually wrong** | The export call itself is real and already fires automatically (see left column) — this row was previously marked "not called" for the whole endpoint, which was wrong; it undersold what `useTrainingSimulator.ts` does. What's still true: `ModelDetail.tsx`'s manual "Export" tab is a static list with hardcoded fake sizes and non-functional `Download` buttons (no `onClick`, `ModelDetail.tsx:220-222`), and it lists **`ONNX`** as an export option (`ModelDetail.tsx:16`), which the backend does not support — `ArtifactFormat` (`api/schemas/enums.py:53`) is `lora \| gguf \| safetensors` only. Remove the ONNX row (actively misleading, not just unwired), and wire the GGUF/SafeTensors rows to the same `engineExportModel` the auto-export already uses, for a manual re-export path (e.g. a different quantization). |
 | `GET /api/v1/models/{id}/download` | — | ❌ | Not called; see above — the Download buttons have no handler at all. |
-| `GET /api/v1/inference/models` | `engineListInferenceModels` (`engineApi.ts:236-240`) | ❌ | Defined, never called. This is the correct source for "which Ollama-served models exist right now" (OpenAI-compatible `/v1/models` listing) — `Playground.tsx:11,15` instead sources its model dropdown from `useModels()` (Supabase `trained_models`), which has the same disconnect as the `GET /api/v1/models` row above. |
-| `POST /api/v1/inference/chat/completions` | `engineChatCompletion` (`engineApi.ts:242-253`), called `ChatPanel.tsx:50-55` | ⚠️ **mismatched — high impact** | See Priority Fix below — `model` is sent as the Supabase display name, not a real Ollama tag, and failures are invisibly masked by a mock fallback. |
+| `GET /api/v1/inference/models` | `engineListInferenceModels` (`engineApi.ts:321-325`), called from `Playground.tsx:24` | ✅ **Resolved** | See Priority Fix #7 below — this is now the real source of the model picker. |
+| `POST /api/v1/inference/chat/completions` | `engineChatCompletion` (`engineApi.ts:327-338`), called from `ChatPanel.tsx:52-57` | ✅ model / ⚠️ dev-mode mock | See Priority Fix #7 — `model` is now a real Ollama tag from the listing above, not a Supabase display name. Priority Fix #3 covers the remaining item: production failures surface a real error, but the `mockResponses` fallback (`ChatPanel.tsx:70-84`) still runs when `import.meta.env.DEV`, by design — worth knowing when testing locally. |
 | `POST /api/v1/inference/completions` | — | ❌ | Legacy text-completion endpoint; not used, no gap (chat completions is the correct one for this UI). |
-| `POST /api/v1/evaluations` | `ProjectDetail.tsx` "evaluation" tab (deterministic seeded fake metrics, `ProjectDetail.tsx:76-86`) and `TrainingMonitor.tsx` "evaluation" tab (`mockComparisonResults`, `TrainingMonitor.tsx:14,166`) | ❌ | Zero backend calls — confirmed no reference to `/evaluations` anywhere in `src/`. Both eval surfaces are entirely client-fabricated (`Math.random`/seeded-hash metrics), not backend results. `EvaluationCreate` (`api/schemas/evaluations.py:14`, needs `model_artifact_id` + `dataset_id`, optional `use_llm_judge`/`judge_model`) is a real, working endpoint but depends on `GET /api/v1/models` being wired first (needs a real `model_artifact_id`). |
+| `POST /api/v1/evaluations` | `ProjectDetail.tsx` "evaluation" tab (deterministic seeded fake metrics, `ProjectDetail.tsx:76-86`) and `TrainingMonitor.tsx` "evaluation" tab (`TrainingMonitor.tsx:259-265`) | ❌ | Zero backend calls — confirmed no reference to `/evaluations` anywhere in `src/`. Both eval surfaces are entirely client-fabricated (`Math.random`/seeded-hash metrics on the `ProjectDetail` side; a static "not started" placeholder on the `TrainingMonitor` side, no longer `mockComparisonResults` — that mock was removed along with the rest of the Priority Fix #5 cleanup), not backend results. `EvaluationCreate` (`api/schemas/evaluations.py:14`, needs `model_artifact_id` + `dataset_id`, optional `use_llm_judge`/`judge_model`) is a real, working endpoint but depends on `GET /api/v1/models` being wired first (needs a real `model_artifact_id`). |
 | `GET /api/v1/evaluations`, `GET /api/v1/evaluations/{id}` | — | ❌ | Not called. |
 | `POST /api/v1/evaluations/compare` | — | ❌ | Not called. `EvaluationCompareRequest` (`api/schemas/evaluations.py:58`, 2-10 `evaluation_ids`) would be the correct backend call for the A/B compare feature already present in `Playground.tsx` (`abMode`) — currently that toggle only runs two independent chat panels side by side, it does not compare structured eval metrics. |
-| `GET /api/v1/tasks`, `GET /api/v1/tasks/{task_type}/example` | — | ❌ | Not called. `TaskSelectionStep.tsx:6-45` hardcodes all 6 task types (3 unsupported) with fabricated example strings instead of asking the backend which 3 are real. Low priority but removes a staleness source. |
-| `GET /api/v1/base-models` | — | ❌ **and factually wrong** | Not called. `ModelSelectionStep.tsx` hardcodes 6 base models; see Priority Fix below — one of the 6 (`phi-3-mini`) doesn't exist in the backend's supported list at all. Switching to `GET /api/v1/base-models` (`BaseModelInfo[]`, backed by `SUPPORTED_BASE_MODELS` in `api/routers/tasks_meta.py:101-208`) removes this whole class of drift permanently — the backend added this exact live-config pattern for `GET /api/v1/sdg-pipeline` after the same staleness bug recurred 3 times on the embedded `frontend/` (see the backend repo's own `WORKING_LOG.md`, 2026-07-29 entry). |
+| `GET /api/v1/tasks`, `GET /api/v1/tasks/{task_type}/example` | — | ❌ | Not called. `TaskSelectionStep.tsx:6-49` hardcodes all 6 task types (3 unsupported) with fabricated example strings instead of asking the backend which 3 are real. Low priority but removes a staleness source. |
+| `GET /api/v1/base-models` | — | ❌ **and factually wrong** | Not called. `ModelSelectionStep.tsx` hardcodes 6 base models; see Priority Fix #2 below — one of the 6 (`phi-3-mini`) doesn't exist in the backend's supported list at all. Switching to `GET /api/v1/base-models` (`BaseModelInfo[]`, backed by `SUPPORTED_BASE_MODELS` in `api/routers/tasks_meta.py:101-208`) removes this whole class of drift permanently — the backend added this exact live-config pattern for `GET /api/v1/sdg-pipeline` after the same staleness bug recurred 3 times on the embedded `frontend/` (see the backend repo's own `WORKING_LOG.md`, 2026-07-29 entry). |
 | `GET /api/v1/sdg-pipeline` | — | ❌ | Not called; `smart-model-tune` doesn't display which LLM the SDG pipeline uses (generator/judge/diversity-rules). Cosmetic only — nice-to-have, not required. |
-| `GET /health` | `engineHealthCheck` (`engineApi.ts:257-264`) | ❌ | Defined, never called anywhere in `src/`. No "Engine unreachable" banner exists — the only failure signal a user gets today is `ChatPanel`'s silent mock fallback (see Priority Fix below) or a generic launch-toast error in `NewProject.tsx`. |
+| `GET /health` | `engineHealthCheck` (`engineApi.ts:342-349`) | ❌ | Defined, never called anywhere in `src/`. No "Engine unreachable" banner exists — the only failure signal a user gets today is `ChatPanel`'s real error message in production (Priority Fix #3) or a generic launch-toast error in `NewProject.tsx`. |
 
 35 REST endpoints + 1 WebSocket channel from [`../openapi.json`](../openapi.json) are covered above.
 
@@ -122,11 +122,19 @@ are live. Full rationale in [ADR-009](./adr/ADR-009-supabase-jwt-auth.md).
 
 ### 1. `apiFetch` — attach the header
 
-`src/lib/engineApi.ts:147-152` currently sends only `Content-Type` and
+`src/lib/engineApi.ts:149-158` currently sends only `Content-Type` and
 `ngrok-skip-browser-warning`. The token is already in the app — `AuthContext.tsx:52`
 holds the session from `supabase.auth.getSession()`.
 
+**`engineApi.ts` does not import `supabase` today** — check with
+`grep -n supabase src/lib/engineApi.ts` before starting; it currently matches
+nothing. The patch below is two changes, not one: add the import, then attach
+the header.
+
 ```ts
+// engineApi.ts — new import at the top of the file
+import { supabase } from "@/integrations/supabase/client";
+
 // engineApi.ts — inside apiFetch, before the fetch
 const { data: { session } } = await supabase.auth.getSession();
 const authHeader = session?.access_token
@@ -140,7 +148,8 @@ const res = await fetch(`${ENGINE_HOST}/api/v1${path}`, {
 ```
 
 Do the same for the three calls that bypass `apiFetch` and build their own
-`fetch` — the seed upload (`:200`) and the two inference calls (`:322`, `:328`).
+`fetch` — the seed upload (`engineApi.ts:200`) and the two inference calls
+(`engineApi.ts:322`, `:328`).
 
 **Send no header rather than a stale one.** An expired token is a `401`; an absent
 one is served anonymously while the flag is off. Supabase refreshes tokens
@@ -149,22 +158,72 @@ reading the session per request — not once at module load — is what keeps it
 
 ### 2. `useTrainingWebSocket` — pass the token as a subprotocol
 
-Browsers do not allow headers on `new WebSocket()`. `useTrainingWebSocket.ts:63`
-opens the socket with a URL only; it needs the token as the second argument:
+Browsers do not allow headers on `new WebSocket()`. `useTrainingWebSocket.ts:92`
+(not `:63` — an earlier pass of this doc cited the pre-refactor line; the file has
+since grown by ~29 lines) opens the socket with a URL only:
 
 ```ts
-const ws = new WebSocket(buildWsUrl(jobId), ["bearer", accessToken]);
+const ws = new WebSocket(buildWsUrl(jobId));
 ```
 
-The server selects and echoes `bearer`. Close codes worth handling distinctly:
-`4401` means the credential was missing or bad — refresh the session and retry;
-`4403` means the job isn't yours (or doesn't exist) — **stop reconnecting**, the
-existing backoff loop would otherwise hammer a socket that can never open.
+**The obvious patch — `new WebSocket(buildWsUrl(jobId), ["bearer", accessToken])`
+— does not compile.** `useTrainingWebSocket(jobId)` takes one argument
+(`useTrainingWebSocket.ts:66`); there is no `accessToken` in scope inside
+`connect()`. Two ways to get one there, and the second is the one to use:
+
+- *Thread it through as a second hook parameter.* Works, but every call site —
+  `TrainingMonitor.tsx:47`, and the three separate `useTrainingWebSocket` calls
+  inside `useTrainingSimulator.ts:125-131` — has to be updated to source and
+  pass a token, and keep passing a *fresh* one across re-renders.
+- **Read `supabase.auth.getSession()` inside `connect()` itself, the same way
+  patch #1 reads it inside `apiFetch`.** No signature change, and — this is
+  the part that matters — a fresh read on every reconnect attempt. The backoff
+  loop below can run for minutes before giving up (`1000 * 2^attempts`, capped
+  at 30s, across up to `MAX_ATTEMPTS = 8` tries); a token captured once when the
+  hook first mounted could easily be stale by the last attempt. `connect()`
+  already runs inside a `useEffect`, so making it `async` is a small change:
+
+```ts
+// useTrainingWebSocket.ts — connect() becomes async; everything else in the
+// effect (destroyed/attempts/reconnectTimer, the effect's own cleanup) is unchanged
+async function connect() {
+  if (destroyed || attempts >= MAX_ATTEMPTS) return;
+  attempts++;
+
+  const { data: { session } } = await supabase.auth.getSession();
+  if (destroyed) return; // unmounted while the await was in flight
+
+  const token = session?.access_token;
+  const ws = token
+    ? new WebSocket(buildWsUrl(jobId), ["bearer", token])
+    : new WebSocket(buildWsUrl(jobId));
+  wsRef.current = ws;
+  // ...rest of connect() (onopen/onmessage/onerror/onclose) unchanged
+}
+```
+
+The server selects and echoes `bearer` — nothing else in the hook needs to change
+for that.
+
+**On close-code handling: don't build the 4401-vs-4403 branch.** An earlier pass
+of this doc recommended treating them distinctly (bad credential → refresh and
+retry; wrong job → stop reconnecting). That branch cannot fire. `ws.close()`
+called on a socket that was never `accept()`-ed — which is what both 4401 and
+4403 are — is not a WebSocket close frame at all; it is an HTTP 403 handshake
+failure, and every browser reports a rejected handshake to `onclose` as code
+`1006` with no reason string, indistinguishable from a network failure. This is
+a backend-side gap (`api/routers/websocket.py`'s own docstring and
+[ADR-009](./adr/ADR-009-supabase-jwt-auth.md) currently describe the same
+unreachable branch — tracked separately in the workspace `TASK_TRACKER.md`, not
+something to work around from this side). Until that lands, the existing
+backoff loop's behavior on any handshake rejection — retry up to `MAX_ATTEMPTS`,
+then give up silently — is the correct client behavior, because there is no
+signal available yet to do anything smarter with.
 
 ### 3. `VITE_ENGINE_HOST` — leave it empty
 
 The agreed topology is a single nginx serving the frontend and proxying
-`/api/v1` and `/ws` to the Engine. `useTrainingWebSocket.ts:59` already documents
+`/api/v1` and `/ws` to the Engine. `useTrainingWebSocket.ts:60` already documents
 that an empty `VITE_ENGINE_HOST` falls back to same-origin, which is the intended
 production setting. Same-origin also removes CORS from the picture entirely.
 
@@ -190,9 +249,12 @@ Reversing that order takes the product down.
 
 ## Priority Fix List
 
-**Re-verified against `smart-model-tune`'s current source on 2026-08-04.**
-Four of the six original items have since been fixed frontend-side. They are
-kept below, struck through with the evidence, rather than deleted — a handoff
+**Re-verified against `smart-model-tune`'s current source on 2026-08-06.**
+Six of the seven items below have since been fixed frontend-side — two more
+than the previous pass found, because `Playground.tsx`/`ChatPanel.tsx` had
+moved on to a real fix (item 7) that this doc hadn't caught up to; the table
+above still marked the endpoint "not wired" while the code already called it.
+Kept below, struck through with the evidence, rather than deleted — a handoff
 doc that silently drops items invites them being re-reported.
 
 | # | Item | Status |
@@ -200,14 +262,15 @@ doc that silently drops items invites them being re-reported.
 | 1 | SDG sends inline `seed_data` instead of `seed_dataset_id` | ✅ **Resolved** — `engineApi.ts:229` sends `seed_dataset_id` |
 | 2 | `base_model="phi-3-mini"` rejected by the backend | 🟡 **Partly resolved** — blocked before launch, but still reachable via a template |
 | 3 | Playground chat fails silently into canned replies | 🟡 **Resolved for production** — mock is now dev-only |
-| 4 | `external_project_id` not sent on project create | ✅ **Resolved** — `engineApi.ts:171`, lookup at `:181` |
+| 4 | `external_project_id` not sent on project create | ✅ **Resolved** — `engineApi.ts:171`, lookup at `:180-183` |
 | 5 | `TrainingMonitor.tsx` renders mock pipeline/log/loss-curve | ✅ **Resolved** — real WS + MLflow loss history |
 | 6 | HPO and Evaluation tabs are 100% client-simulated | 🔴 **Still open** — no backend call exists anywhere in `src/` |
+| 7 | Playground sources its model list from Supabase `trained_models`, not real Ollama tags | ✅ **Resolved** — `Playground.tsx` now calls `engineListInferenceModels` directly |
 
 ### ~~1. SDG generate sends inline `seed_data` instead of `seed_dataset_id`~~ — RESOLVED
 
 Fixed frontend-side in the 2026-07-30 pass. `engineGenerateDataset`
-(`src/lib/engineApi.ts:222-233`) now posts `sdg_mode: "with_seed"` with a
+(`src/lib/engineApi.ts:215-233`) now posts `sdg_mode: "with_seed"` with a
 `seed_dataset_id` obtained from `POST /datasets/upload-seed`
 (`engineApi.ts:200`), which is exactly the contract the backend enforces.
 
@@ -275,6 +338,23 @@ The backend implements both today. Wiring needed:
 
 Both need a real `model_artifact_id` from `GET /api/v1/models`.
 
+### ~~7. Playground sourced its model list from Supabase, not real Ollama tags~~ — RESOLVED
+
+Fixed frontend-side since the previous pass of this doc, which had not caught
+up to it — the endpoint table above still said `GET /api/v1/inference/models`
+was "defined, never called" until this revision. `Playground.tsx:12,24`
+now imports and calls `engineListInferenceModels` directly on mount, and the
+model picker (`Playground.tsx:69-99`) renders `EngineInferenceModel.id` —
+`grep -n "useModels\|trained_models\|modelsApi" src/pages/Playground.tsx
+src/components/playground/ChatPanel.tsx` matches nothing. `getModelName`
+(`Playground.tsx:42`) now passes that same `id` straight through to
+`ChatPanel`, which sends it as `model` on `POST /inference/chat/completions`
+(`ChatPanel.tsx:52-57`) — a real Ollama/`slm/<8hex>` tag, not a Supabase
+display name.
+
+Nothing to do. Do not re-report. (Item 6 above is now the last unwired
+high-value surface — HPO and Evaluation are both still 100% client-simulated.)
+
 ## Correct End-to-End Sequence
 
 The canonical call order a correct integration follows, backend endpoint
@@ -299,35 +379,36 @@ at each step:
   `task_type` fields are right).
 - **`POST /api/v1/datasets/upload-seed`** — multipart construction,
   field names, and the "no Content-Type header" comment
-  (`engineApi.ts:147`) are all correct; browser-set boundary is required
+  (`engineApi.ts:204`) are all correct; browser-set boundary is required
   here.
 - **`TASK_TYPE_TO_ENGINE` mapping and its launch-time guard**
-  (`engineMappings.ts:5-12`, `NewProject.tsx:161-169`) — correctly maps
+  (`engineMappings.ts:5-12`, `NewProject.tsx:170-179`) — correctly maps
   3 of 6 UI task types and blocks launch on the other 3 rather than
   sending an invalid value.
 - **5 of the 6 `BASE_MODEL_TO_ENGINE` entries** — everything except
   `phi-3-mini` (Priority Fix #2) resolves to a real, currently-supported
   Ollama/Unsloth base model id.
-- **`buildManualConfig`** (`engineMappings.ts:24-38`) — produces a valid
+- **`buildManualConfig`** (`engineMappings.ts:25-39`) — produces a valid
   `ManualTrainingConfig` (LoRA `r`/`alpha`/`dropout`/`target_modules`,
   batch size, grad accumulation) that matches
   `api/schemas/training.py:44`'s field names and defaults exactly.
 - **The training WebSocket integration** — URL construction
-  (`useTrainingWebSocket.ts:46-52`), event-type discrimination
+  (`useTrainingWebSocket.ts:58-64`), event-type discrimination
   (`training_progress`/`completed`/`failed`), and the exponential
   backoff reconnect loop are all correctly built against the real `/ws/
   jobs/{job_id}` contract. `useTrainingSimulator.ts` correctly prefers
   this real WS path over any client-side simulation when a `jobId` is
-  present in `engineStore`.
-- **`POST /api/v1/inference/chat/completions` request envelope** (minus
-  the `model` value itself — see Priority Fix #3) — `messages`,
-  `temperature`, `max_tokens`, and forcing `stream: false`
-  (`engineApi.ts:246`, matching the backend's non-streaming-only
+  present in `engineStore`. (The one open item is auth — see "Required
+  Frontend Change" §2 above, not a defect in this integration itself.)
+- **`POST /api/v1/inference/chat/completions` request envelope** — since
+  Priority Fix #7, this now includes the `model` value itself too;
+  `messages`, `temperature`, `max_tokens`, and forcing `stream: false`
+  (`engineApi.ts:331`, matching the backend's non-streaming-only
   contract) are all correct.
-- **`apiFetch` error handling** (`engineApi.ts:100-110`) — correctly
+- **`apiFetch` error handling** (`engineApi.ts:149-159`) — correctly
   reads response body text on non-2xx before throwing, which is what
-  makes the 422s from Priority Fixes #1/#2 debuggable at all once you
-  stop catching-and-hiding them client-side.
+  makes 422s debuggable at all once you stop catching-and-hiding them
+  client-side.
 
 ## New Backend Capabilities (branch `feat/be-fe-gap001`)
 
@@ -354,7 +435,7 @@ and it 404s once the 24h TTL lapses.
   (it previously existed only inside `generation_metadata`). Without it, an
   in-flight **SDG** job can't be reconnected to after a reload from a fresh
   browser — training already recovers this way via `training.celery_task_id`
-  (`useTrainingSimulator.ts:88`). Adding the field to the interface and
+  (`useTrainingSimulator.ts:91`). Adding the field to the interface and
   reusing the same recovery path closes the gap.
 - **`GET /api/v1/jobs/{job_id}/progress`** is a REST snapshot of the same
   frame, for surfaces that don't hold a socket open. `404` means "no frame
