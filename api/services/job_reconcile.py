@@ -160,13 +160,47 @@ class ReconcileReport:
         return len(self.reconciled)
 
 
-def _active_task_ids(inspector: Any) -> set[str] | None:
+def _broker_reachable(app: Any) -> bool:
+    """Can we talk to the broker at all?
+
+    This is what separates "no worker is online" from "we cannot see
+    anything" — `inspect()` returns None for both, and they call for opposite
+    responses. A live broker with zero workers answering is a *fact*: no
+    process can be executing the task, so a job silent past the grace period
+    is genuinely orphaned. A dead broker is ignorance: workers may be running
+    fine on the other side of it, and failing their jobs would be the
+    destructive guess this module exists to avoid.
+    """
+    try:
+        conn = app.connection()
+        try:
+            conn.ensure_connection(max_retries=0, timeout=_INSPECT_TIMEOUT_SECONDS)
+        finally:
+            conn.release()
+        return True
+    except Exception:  # noqa: BLE001 — any failure here means "cannot confirm"
+        log.warning("broker unreachable; reconcile cannot distinguish orphans", exc_info=True)
+        return False
+
+
+def _active_task_ids(inspector: Any, app: Any = None) -> set[str] | None:
     """Every task id Celery currently knows about, or None if it can't say.
 
-    None is NOT an empty set. If the broker is unreachable or no worker
-    answers, all three probes return None, and treating that as "nothing is
-    running" would fail every job on the box on the next pass. The caller
-    aborts on None; this function never guesses.
+    None is NOT an empty set. Treating "cannot say" as "nothing is running"
+    would fail every job on the box on the next pass, so the caller aborts on
+    None and this function never guesses.
+
+    But silence from `inspect()` has two causes, and only one of them is
+    ignorance. **Zero workers online** is the single most likely reason a job
+    is orphaned in the first place — this deployment runs one worker container
+    at `--concurrency=1`, so "the worker died" and "nobody answers inspect()"
+    are the same event. Aborting on it made the feature refuse to act in
+    exactly the scenario it was built for (observed on the vast.ai box: the
+    row sat in `running` while the sweep logged "broker or workers
+    unreachable" every 5 minutes). So when all three probes come back empty we
+    ask the broker directly: reachable means "no workers, and that is a fact"
+    → empty set, and the grace period does the rest; unreachable means
+    ignorance → None.
 
     Synchronous and blocking: each probe is a broadcast that waits for the
     workers to reply, and waits out its full timeout when the broker is
@@ -182,6 +216,9 @@ def _active_task_ids(inspector: Any) -> set[str] | None:
         return None
 
     if active is None and reserved is None and scheduled is None:
+        if app is not None and _broker_reachable(app):
+            log.info("no celery workers are online; treating the fleet as empty")
+            return set()
         return None
 
     ids: set[str] = set()
@@ -271,12 +308,12 @@ async def _publish_orphan_frame(redis: Any, task_id: str, error: str) -> None:
 
 
 async def reconcile_once(
-    db: AsyncSession, *, redis: Any = None, inspector: Any = None
+    db: AsyncSession, *, redis: Any = None, inspector: Any = None, app: Any = None
 ) -> ReconcileReport:
     """Sweep every job-bearing table once.
 
-    `redis` and `inspector` are injectable so tests need neither a broker nor
-    a live Redis; production callers pass neither.
+    `redis`, `inspector` and `app` are injectable so tests need neither a
+    broker nor a live Redis; production callers pass none of them.
     """
     settings = get_settings()
     grace = timedelta(minutes=settings.job_orphan_grace_minutes)
@@ -285,19 +322,24 @@ async def reconcile_once(
     if inspector is None:
         from workers.celery_app import celery_app
 
+        app = app or celery_app
         # Bounded: an unbounded broadcast against a dead broker blocks the
         # worker thread for the default timeout on every pass.
         inspector = celery_app.control.inspect(timeout=_INSPECT_TIMEOUT_SECONDS)
+    # An injected inspector with no injected app leaves `app` None, which
+    # `_active_task_ids` reads as "cannot probe the broker" and answers
+    # conservatively. That keeps tests hermetic — a test that wants the
+    # "workers are gone but the broker is fine" branch has to say so.
 
     # Offloaded to a worker thread: `inspect()`'s three probes are synchronous
     # broadcasts that block until the workers reply — or, when the broker is
     # unreachable, until their timeout expires. Calling them inline would
     # stall the event loop for every other request. Same convention
     # `api/core/auth.py` documents for the blocking JWKS fetch.
-    active_ids = await asyncio.to_thread(_active_task_ids, inspector)
+    active_ids = await asyncio.to_thread(_active_task_ids, inspector, app)
     if active_ids is None:
         report.aborted = True
-        report.abort_reason = "celery inspect() returned nothing — broker or workers unreachable"
+        report.abort_reason = "celery inspect() returned nothing and the broker is unreachable"
         log.warning("reconcile aborted: %s", report.abort_reason)
         return report
 

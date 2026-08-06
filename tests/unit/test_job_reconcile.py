@@ -388,3 +388,130 @@ def test_snapshot_is_written_before_publish() -> None:
     src = (__import__("pathlib").Path(job_reconcile.__file__)).read_text(encoding="utf-8")
     body = src.split("async def _publish_orphan_frame")[1]
     assert body.index("redis.set(") < body.index("redis.publish(")
+
+
+# =============================================================================
+# 5. Zero workers online is a FACT, not ignorance
+# =============================================================================
+
+
+class _App:
+    """Stands in for the Celery app, for the broker-reachability probe only."""
+
+    def __init__(self, *, reachable: bool):
+        self._reachable = reachable
+        self.released = 0
+
+    def connection(self):
+        return _Connection(self)
+
+
+class _Connection:
+    def __init__(self, app: _App):
+        self._app = app
+
+    def ensure_connection(self, **kwargs):
+        if not self._app._reachable:
+            raise OSError("broker unreachable")
+
+    def release(self):
+        self._app.released += 1
+
+
+class TestNoWorkersOnlineIsNotIgnorance:
+    """`inspect()` answers None both when the broker is down and when simply
+    nobody is listening. Those call for opposite responses, and conflating
+    them made the feature refuse to act in the exact case it exists for.
+
+    This deployment runs ONE worker container at `--concurrency=1`, so "the
+    worker died" and "nobody answers inspect()" are the same event. Observed
+    on the vast.ai box: a SIGKILLed worker left the row in `running` while the
+    sweep logged "broker or workers unreachable" every five minutes, forever.
+    """
+
+    async def test_orphan_is_reconciled_when_the_broker_is_up_but_empty(
+        self, db, redis
+    ) -> None:
+        p = await _project(db)
+        ds = await _dataset(db, p, task_id=STALE_JOB, status=JobStatus.RUNNING)
+        await _snapshot(redis, STALE_JOB, age=timedelta(hours=2))
+
+        report = await job_reconcile.reconcile_once(
+            db,
+            redis=redis,
+            inspector=_Inspector(blind=True),
+            app=_App(reachable=True),
+        )
+
+        assert report.aborted is False
+        assert report.reconciled == [STALE_JOB]
+        await db.refresh(ds)
+        assert ds.status is JobStatus.FAILED
+
+    async def test_unreachable_broker_still_aborts(self, db, redis) -> None:
+        """The conservative branch must survive: if we cannot reach the
+        broker we know nothing, and workers may be running fine behind it."""
+        p = await _project(db)
+        ds = await _dataset(db, p, task_id=STALE_JOB, status=JobStatus.RUNNING)
+        await _snapshot(redis, STALE_JOB, age=timedelta(hours=9))
+
+        report = await job_reconcile.reconcile_once(
+            db,
+            redis=redis,
+            inspector=_Inspector(blind=True),
+            app=_App(reachable=False),
+        )
+
+        assert report.aborted is True
+        assert report.reconciled == []
+        await db.refresh(ds)
+        assert ds.status is JobStatus.RUNNING
+
+    async def test_grace_period_still_protects_a_fresh_job_with_no_workers(
+        self, db, redis
+    ) -> None:
+        """An empty fleet is not a licence to fail everything. A job that
+        published a frame moments ago is inside the grace window and must
+        survive — this is the case that would turn a worker restart into mass
+        job failure."""
+        p = await _project(db)
+        ds = await _dataset(db, p, task_id=LIVE_JOB, status=JobStatus.RUNNING)
+        await _snapshot(redis, LIVE_JOB, age=timedelta(seconds=5))
+
+        report = await job_reconcile.reconcile_once(
+            db,
+            redis=redis,
+            inspector=_Inspector(blind=True),
+            app=_App(reachable=True),
+        )
+
+        assert report.reconciled == []
+        await db.refresh(ds)
+        assert ds.status is JobStatus.RUNNING
+
+    async def test_the_connection_is_always_released(self, db, redis) -> None:
+        """The probe runs on every pass of a loop that never ends; leaking a
+        broker connection each time would be a slow resource leak."""
+        app = _App(reachable=True)
+        await job_reconcile.reconcile_once(
+            db, redis=redis, inspector=_Inspector(blind=True), app=app
+        )
+        assert app.released == 1
+
+    async def test_an_injected_inspector_alone_stays_conservative(
+        self, db, redis
+    ) -> None:
+        """No app injected means no way to probe the broker, so the sweep must
+        not assume the fleet is empty. This is what keeps every other test in
+        this file hermetic."""
+        p = await _project(db)
+        ds = await _dataset(db, p, task_id=STALE_JOB, status=JobStatus.RUNNING)
+        await _snapshot(redis, STALE_JOB, age=timedelta(hours=9))
+
+        report = await job_reconcile.reconcile_once(
+            db, redis=redis, inspector=_Inspector(blind=True)
+        )
+
+        assert report.aborted is True
+        await db.refresh(ds)
+        assert ds.status is JobStatus.RUNNING
