@@ -175,6 +175,7 @@ def generate_synthetic_data(
                     resource_type="dataset",
                     resource_id=str(parent.id),
                     project_id=parent.project_id,
+                    actor_id=request_context.current_user_id(),
                     request_id=request_context.current_request_id(),
                     metadata={"job_id": job_id, "num_samples": parent.num_samples},
                 )
@@ -306,6 +307,7 @@ def generate_synthetic_data(
                             resource_id=str(ds.id),
                             project_id=ds.project_id,
                             outcome="failure",
+                            actor_id=request_context.current_user_id(),
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )

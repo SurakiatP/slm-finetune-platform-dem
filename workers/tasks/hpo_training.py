@@ -300,6 +300,7 @@ def train_hpo(
                     resource_type="training",
                     resource_id=str(row.id),
                     project_id=row.project_id,
+                    actor_id=request_context.current_user_id(),
                     request_id=request_context.current_request_id(),
                     metadata={
                         "job_id": job_id,
@@ -362,6 +363,7 @@ def train_hpo(
                             resource_id=str(row.id),
                             project_id=row.project_id,
                             outcome="failure",
+                            actor_id=request_context.current_user_id(),
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )

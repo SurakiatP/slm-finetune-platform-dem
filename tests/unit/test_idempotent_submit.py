@@ -288,3 +288,39 @@ class TestRouterLevelDedupe:
         client.post("/api/v1/datasets/generate", json=self._body(), headers=headers)
         client.post("/api/v1/datasets/generate", json=self._body(), headers=headers)
         assert len(submitted) == 2, "distinct projects must not be deduped together"
+
+
+# =============================================================================
+# 6. Regressions found by the verification pass
+# =============================================================================
+
+
+class TestIdempotencyKeyDoesNotCrossEndpoints:
+    """An `Idempotency-Key` replaces the BODY HASH, not the path.
+
+    Dropping the path when the header is present let one client-generated key
+    match across endpoints: a client reusing `Idempotency-Key: <uuid>` for its
+    training submit and then its evaluation submit was handed the training's
+    202 back, and the evaluation was never enqueued. A silently swallowed job
+    is far worse than the duplicate this feature exists to prevent.
+    """
+
+    async def test_same_header_on_a_different_endpoint_does_not_replay(self, redis) -> None:
+        header = {idempotency.IDEMPOTENCY_KEY_HEADER: "client-uuid-1"}
+        training = _request("/api/v1/trainings", headers=header)
+        evaluation = _request("/api/v1/evaluations", headers=header)
+
+        await idempotency.remember(training, USER_A, BODY, {"job_id": "TRAINING-JOB"})
+
+        assert await idempotency.replay(evaluation, USER_A, {"unrelated": True}) is None
+
+    async def test_same_header_same_endpoint_still_replays(self, redis) -> None:
+        """The header must still do its job: dedupe a retry of the same call
+        even when the body differs."""
+        header = {idempotency.IDEMPOTENCY_KEY_HEADER: "client-uuid-1"}
+        req = _request("/api/v1/trainings", headers=header)
+
+        await idempotency.remember(req, USER_A, BODY, {"job_id": "TRAINING-JOB"})
+        replayed = await idempotency.replay(req, USER_A, {"totally": "different"})
+
+        assert replayed is not None

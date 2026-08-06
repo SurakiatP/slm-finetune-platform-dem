@@ -134,7 +134,15 @@ app.add_middleware(
 # the X-Request-ID response header survives every layer beneath it.
 @app.middleware("http")
 async def _request_context_middleware(request: Request, call_next):
-    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    # Truncated to the width of `audit_events.request_id` (String(64)).
+    # Without this cap an inbound header is stored verbatim, and since the
+    # audit INSERT deliberately rides the caller's transaction with no
+    # try/except, one oversized header would make Postgres raise
+    # StringDataRightTruncation and take the *mutation* down with it — a
+    # single request header turning off project create, job submit and every
+    # cancel. sqlite does not enforce VARCHAR width, so no test would have
+    # caught it.
+    request_id = (request.headers.get("X-Request-ID") or "").strip()[:64] or uuid.uuid4().hex[:12]
     request.state.request_id = request_id
     start = time.perf_counter()
     status_code = 500

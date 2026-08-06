@@ -252,6 +252,7 @@ def train_manual(
                             resource_id=str(job_row.id),
                             project_id=job_row.project_id,
                             outcome="failure",
+                            actor_id=request_context.current_user_id(),
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )
@@ -381,6 +382,7 @@ def _persist_artifact(
             resource_type="training",
             resource_id=str(job_row.id),
             project_id=job_row.project_id,
+            actor_id=request_context.current_user_id(),
             request_id=request_context.current_request_id(),
             metadata={
                 "job_id": job_row.celery_task_id,

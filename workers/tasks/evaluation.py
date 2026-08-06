@@ -219,6 +219,7 @@ def run_evaluation(
                     resource_type="evaluation",
                     resource_id=str(row.id),
                     project_id=_project_id_for_run(session, row),
+                    actor_id=request_context.current_user_id(),
                     request_id=request_context.current_request_id(),
                     metadata={"job_id": job_id, "llm_judge_score": judge_score},
                 )
@@ -277,6 +278,7 @@ def run_evaluation(
                             resource_id=str(row.id),
                             project_id=_project_id_for_run(session, row),
                             outcome="failure",
+                            actor_id=request_context.current_user_id(),
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )

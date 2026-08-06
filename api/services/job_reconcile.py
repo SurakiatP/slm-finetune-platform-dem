@@ -81,7 +81,6 @@ from api.core.redis_client import (
 from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
-from api.models.project import Project
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
 from api.schemas.progress import JobFailed

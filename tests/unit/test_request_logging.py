@@ -178,3 +178,46 @@ def test_the_500_correlation_id_is_the_request_id() -> None:
     src = pathlib.Path(api.core.exceptions.__file__).read_text(encoding="utf-8")
     assert "request_context.current_request_id()" in src
     assert 'getattr(request.state, "request_id", None)' in src
+
+
+# =============================================================================
+# 4. Regression found by the verification pass
+# =============================================================================
+
+
+class TestInboundRequestIdIsBounded:
+    """An inbound `X-Request-ID` is stored in `audit_events.request_id`, which
+    is `String(64)`. Unbounded, an oversized header would make Postgres raise
+    StringDataRightTruncation on the audit INSERT — and because that INSERT
+    deliberately rides the caller's transaction with no try/except, the
+    *mutation* would fail with it. One request header would have turned off
+    project create, job submit and every cancel.
+
+    sqlite does not enforce VARCHAR width, so the suite could never have
+    caught this; the cap is asserted directly instead.
+    """
+
+    def test_oversized_header_is_truncated_to_the_column_width(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from api.main import app
+        from api.models.audit_event import AuditEvent
+
+        column_width = AuditEvent.__table__.columns["request_id"].type.length
+        assert column_width == 64
+
+        with TestClient(app) as client:
+            response = client.get("/health", headers={"X-Request-ID": "A" * 5000})
+
+        echoed = response.headers["X-Request-ID"]
+        assert len(echoed) <= column_width
+
+    def test_blank_header_falls_back_to_a_generated_id(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from api.main import app
+
+        with TestClient(app) as client:
+            response = client.get("/health", headers={"X-Request-ID": "   "})
+
+        assert response.headers["X-Request-ID"].strip() != ""

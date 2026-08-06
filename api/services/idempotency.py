@@ -88,10 +88,21 @@ def actor_for(request: Request, user: CurrentUser | None) -> str:
 def build_key(*, actor: str, path: str, body: Any, header_key: str | None) -> str:
     """Build the Redis key identifying one logical submission.
 
-    An explicit `Idempotency-Key` header always wins over the body hash —
-    that's the entire point of supporting it.
+    An explicit `Idempotency-Key` header replaces the *body hash* — that is
+    the point of supporting it: the client, not the payload, decides what
+    counts as the same submission.
+
+    `path` stays in the key either way. Dropping it when the header is
+    present would let one client-generated key match across endpoints, so a
+    client that reuses `Idempotency-Key: <uuid>` for its training submit and
+    then its evaluation submit would be handed the *training's* 202 back and
+    the evaluation would never be enqueued — a silently swallowed job, which
+    is far worse than the duplicate this feature exists to prevent.
     """
-    return f"idem:{actor}:{header_key or hashlib.sha256((path + canonical_json(body)).encode('utf-8')).hexdigest()}"
+    discriminator = header_key or hashlib.sha256(
+        canonical_json(body).encode("utf-8")
+    ).hexdigest()
+    return f"idem:{actor}:{path}:{discriminator}"
 
 
 async def replay(

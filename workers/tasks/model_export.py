@@ -349,6 +349,7 @@ def export_model(
                             resource_id=str(row.id),
                             project_id=_project_id_for_artifact(fail_session, row),
                             outcome="failure",
+                            actor_id=request_context.current_user_id(),
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )
@@ -594,6 +595,7 @@ def _persist_export_uris(
             resource_type="model",
             resource_id=str(art.id),
             project_id=_project_id_for_artifact(session, art),
+            actor_id=request_context.current_user_id(),
             request_id=request_context.current_request_id(),
             metadata={"gguf_uri": gguf_uri, "ollama_model_tag": ollama_tag},
         )
