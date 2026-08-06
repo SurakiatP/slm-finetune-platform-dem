@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import request_context
 from api.core.auth import CurrentUser
 from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
@@ -28,7 +29,7 @@ from api.schemas.artifacts import (
 )
 from api.schemas.enums import ArtifactFormat, JobStatus
 from api.schemas.responses import Page
-from api.services import ownership
+from api.services import audit_service, ownership
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 from workers.storage import get_minio_client, parse_s3_uri
 
@@ -140,6 +141,16 @@ async def submit_export_job(
     # enqueue -> persist -> commit -> return ordering).
     artifact.export_celery_task_id = job_id
     artifact.export_status = JobStatus.PENDING
+    audit_service.record(
+        db,
+        action="export.submit",
+        resource_type="model",
+        resource_id=str(artifact.id),
+        project_id=await _project_id_for_artifact(db, artifact),
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": job_id, "format": request.format.value, "quantization": request.quantization},
+    )
     await db.commit()
 
     return ModelExportResponse(
@@ -178,8 +189,31 @@ async def cancel_export(
     revoke_celery_task(artifact.export_celery_task_id, context=f"model export {model_id}")
 
     artifact.export_status = JobStatus.CANCELLED
+    audit_service.record(
+        db,
+        action="export.cancel",
+        resource_type="model",
+        resource_id=str(artifact.id),
+        project_id=await _project_id_for_artifact(db, artifact),
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": artifact.export_celery_task_id},
+    )
     await db.commit()
     return {"artifact_id": str(artifact.id), "status": JobStatus.CANCELLED.value}
+
+
+
+async def _project_id_for_artifact(db: AsyncSession, artifact: ModelArtifact):
+    """Walk ModelArtifact -> TrainingJob -> Project (2 hops).
+
+    Mirrors the depth `api/services/job_ownership.py` documents. Returns None
+    if the link is missing rather than raising — an audit row with a null
+    project is still worth keeping, and every caller has already passed its
+    own ownership check by this point.
+    """
+    training_job = await db.get(TrainingJob, artifact.training_job_id)
+    return training_job.project_id if training_job is not None else None
 
 
 # ---- download -------------------------------------------------------------
@@ -222,6 +256,22 @@ async def download_artifact(
                 f"POST /api/v1/models/{model_id}/export first."
             ),
         )
+
+    # Model weights leaving the system. Same reasoning as the dataset
+    # download: nothing here mutates, but "who took a copy of which model,
+    # and when" is precisely what an audit log is for — so it gets its own
+    # commit, before the stream opens.
+    audit_service.record(
+        db,
+        action="model.download",
+        resource_type="model",
+        resource_id=str(artifact.id),
+        project_id=await _project_id_for_artifact(db, artifact),
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"format": fmt_lower, "uri": uri},
+    )
+    await db.commit()
 
     bucket, prefix = parse_s3_uri(uri)
     if fmt_lower == ArtifactFormat.GGUF.value:

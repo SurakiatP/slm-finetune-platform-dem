@@ -46,9 +46,25 @@ _ACTIVE = [JobStatus.PENDING, JobStatus.RUNNING]
 
 
 def _db(row: object | None) -> MagicMock:
+    """A session that answers `get()` with `row` — but only for `row`'s own
+    model.
+
+    The type check matters: the cancel services now walk one or two hops to
+    resolve the owning project for their audit row (ModelArtifact ->
+    TrainingJob -> Project). A fake that returned `row` for *every* `get()`
+    handed that walk a ModelArtifact where a TrainingJob belonged, which is
+    not a shape production can produce. Returning None for other models keeps
+    the fake honest; the audit row's `project_id` is nullable, so these
+    cancel tests simply record it as unresolved.
+    """
     db = MagicMock()
-    db.get = AsyncMock(return_value=row)
+
+    async def _get(model, ident, *a, **kw):  # noqa: ANN001, ANN002, ANN003
+        return row if row is not None and isinstance(row, model) else None
+
+    db.get = AsyncMock(side_effect=_get)
     db.commit = AsyncMock()
+    db.add = MagicMock()
     return db
 
 

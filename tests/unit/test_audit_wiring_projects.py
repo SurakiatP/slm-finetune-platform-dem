@@ -223,6 +223,11 @@ _AUDITED_SERVICES = (
     "projects_service",
     "datasets_service",
     "sdg_service",
+    "training_service",
+    "trainings_service",
+    "evaluation_service",
+    "model_service",
+    "inference_service",
     "job_reconcile",
 )
 

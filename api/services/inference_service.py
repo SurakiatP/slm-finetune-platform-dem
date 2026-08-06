@@ -54,9 +54,11 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import request_context
 from api.core.auth import CurrentUser
 from api.core.config import get_settings
 from api.models.model_artifact import ModelArtifact
+from api.models.training_job import TrainingJob
 from api.schemas.inference import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -65,7 +67,7 @@ from api.schemas.inference import (
     ModelDescriptor,
     ModelDescriptorList,
 )
-from api.services import ownership
+from api.services import audit_service, ownership
 
 log = logging.getLogger(__name__)
 
@@ -95,7 +97,20 @@ async def chat_completions(
     payload = body.model_dump(exclude_none=True)
     payload["model"] = tag
 
-    raw = await _post_json("/v1/chat/completions", payload)
+    try:
+        raw = await _post_json("/v1/chat/completions", payload)
+    except Exception as exc:
+        # Recorded, committed, then re-raised — a failed call is exactly the
+        # kind of event the trail must not lose.
+        await _audit_call(
+            db,
+            action="inference.chat_completions",
+            tag=tag,
+            outcome="failure",
+            detail={"error_type": type(exc).__name__},
+        )
+        raise
+    await _audit_call(db, action="inference.chat_completions", tag=tag, outcome="success")
     return ChatCompletionResponse.model_validate(raw)
 
 
@@ -113,7 +128,18 @@ async def text_completions(
     payload = body.model_dump(exclude_none=True)
     payload["model"] = tag
 
-    raw = await _post_json("/v1/completions", payload)
+    try:
+        raw = await _post_json("/v1/completions", payload)
+    except Exception as exc:
+        await _audit_call(
+            db,
+            action="inference.completions",
+            tag=tag,
+            outcome="failure",
+            detail={"error_type": type(exc).__name__},
+        )
+        raise
+    await _audit_call(db, action="inference.completions", tag=tag, outcome="success")
     return CompletionResponse.model_validate(raw)
 
 
@@ -158,6 +184,44 @@ async def list_models(
             )
         )
     return ModelDescriptorList(data=items)
+
+
+
+async def _audit_call(
+    db: AsyncSession, *, action: str, tag: str, outcome: str, detail: dict | None = None
+) -> None:
+    """Record one inference call.
+
+    Inference is a read, so there is no mutation to ride along with and this
+    commits on its own. It is audited anyway because it is the surface where
+    cross-tenant access was actually reachable (see the module docstring):
+    "who ran what against whose model" is the question that would be asked
+    first if that ever happened again.
+    """
+    artifact_id = None
+    project_id = None
+    if tag.startswith(OUR_TAG_PREFIX):
+        artifact = (
+            await db.execute(
+                select(ModelArtifact).where(ModelArtifact.ollama_model_tag == tag)
+            )
+        ).scalar_one_or_none()
+        if artifact is not None:
+            artifact_id = str(artifact.id)
+            training_job = await db.get(TrainingJob, artifact.training_job_id)
+            project_id = training_job.project_id if training_job is not None else None
+    audit_service.record(
+        db,
+        action=action,
+        resource_type="model",
+        resource_id=artifact_id or tag,
+        project_id=project_id,
+        outcome=outcome,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"tag": tag, **(detail or {})},
+    )
+    await db.commit()
 
 
 # ---- helpers ---------------------------------------------------------------

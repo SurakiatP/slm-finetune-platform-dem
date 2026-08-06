@@ -18,6 +18,8 @@ from __future__ import annotations
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import request_context
+from api.services import audit_service
 from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.models.project import Project
@@ -149,8 +151,18 @@ async def submit_manual_training_job(
     )
     job_id: str = async_result.id
 
-    # 6. Persist celery_task_id and commit.
+    # 6. Persist celery_task_id + the audit row, and commit them together.
     job_row.celery_task_id = job_id
+    audit_service.record(
+        db,
+        action="training.submit",
+        resource_type="training",
+        resource_id=str(job_row.id),
+        project_id=job_row.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": job_id, "mode": "manual", "base_model": job_row.base_model},
+    )
     await db.commit()
 
     # 7. Return.
@@ -282,6 +294,16 @@ async def submit_hpo_training_job(
     job_id: str = async_result.id
 
     job_row.celery_task_id = job_id
+    audit_service.record(
+        db,
+        action="training.submit",
+        resource_type="training",
+        resource_id=str(job_row.id),
+        project_id=job_row.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": job_id, "mode": "hpo", "base_model": job_row.base_model},
+    )
     await db.commit()
 
     return TrainingJobAcceptedResponse(

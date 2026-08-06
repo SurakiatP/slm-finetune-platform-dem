@@ -9,8 +9,10 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import request_context
 from api.core.auth import CurrentUser
 from api.models.evaluation_run import EvaluationRun
+from api.models.model_artifact import ModelArtifact
 from api.models.project import Project
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
@@ -22,7 +24,7 @@ from api.schemas.evaluations import (
     EvaluationResponse,
 )
 from api.schemas.responses import Page
-from api.services import ownership
+from api.services import audit_service, ownership
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 
 
@@ -92,6 +94,16 @@ async def submit_evaluation_job(
 
     ev.celery_task_id = job_id
     ev.started_at = datetime.now(timezone.utc)
+    audit_service.record(
+        db,
+        action="evaluation.submit",
+        resource_type="evaluation",
+        resource_id=str(ev.id),
+        project_id=training_job.project_id if training_job is not None else None,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": job_id, "model_artifact_id": str(ev.model_artifact_id), "dataset_id": str(ev.dataset_id)},
+    )
     await db.commit()
 
     return EvaluationAcceptedResponse(
@@ -162,6 +174,16 @@ async def cancel_evaluation(
 
     ev.status = JobStatus.CANCELLED
     ev.ended_at = datetime.now(timezone.utc)
+    audit_service.record(
+        db,
+        action="evaluation.cancel",
+        resource_type="evaluation",
+        resource_id=str(ev.id),
+        project_id=await _project_id_for_evaluation(db, ev),
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": ev.celery_task_id},
+    )
     await db.commit()
     return {"evaluation_id": str(ev.id), "status": JobStatus.CANCELLED.value}
 
@@ -222,6 +244,23 @@ async def compare_evaluations(
         metrics=metrics_table,
         judge_scores=judge_scores,
     )
+
+
+
+async def _project_id_for_evaluation(db: AsyncSession, ev: EvaluationRun):
+    """Walk EvaluationRun -> ModelArtifact -> TrainingJob -> Project.
+
+    Three hops, the deepest ownership path in the schema (the same one
+    `api/services/job_ownership.py` documents). Returns None rather than
+    raising if any link is missing: an audit row with a null project is still
+    worth keeping, and this is called from a cancel that has already passed
+    its own ownership check.
+    """
+    artifact = await db.get(ModelArtifact, ev.model_artifact_id)
+    if artifact is None:
+        return None
+    training_job = await db.get(TrainingJob, artifact.training_job_id)
+    return training_job.project_id if training_job is not None else None
 
 
 __all__ = [

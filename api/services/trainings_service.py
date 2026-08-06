@@ -15,6 +15,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import request_context
 from api.core.auth import CurrentUser
 from api.core.config import get_settings
 from api.models.training_job import TrainingJob
@@ -28,7 +29,7 @@ from api.schemas.trainings import (
     TrainingMetricsResponse,
     TrainingResponse,
 )
-from api.services import mlflow_metrics, ownership
+from api.services import audit_service, mlflow_metrics, ownership
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 
 log = logging.getLogger(__name__)
@@ -87,6 +88,16 @@ async def cancel_training(
 
     job.status = JobStatus.CANCELLED
     job.ended_at = datetime.now(timezone.utc)
+    audit_service.record(
+        db,
+        action="training.cancel",
+        resource_type="training",
+        resource_id=str(job.id),
+        project_id=job.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": job.celery_task_id},
+    )
     await db.commit()
     return {"training_id": str(job.id), "status": JobStatus.CANCELLED.value}
 
