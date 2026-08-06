@@ -129,15 +129,25 @@ job, not a long-running service — README's "7 services" count
 
 | Service | Purpose | Port (host) |
 |---|---|---|
-| `postgres` (`docker-compose.yml:41`) | App state (projects/datasets/training_jobs/model_artifacts/evaluation_runs) + separate `mlflow` DB | `${POSTGRES_PORT:-5432}` |
-| `redis` (`:63`) | Celery broker (db1) + result backend (db2) + WS pub/sub channel (db0) | `${REDIS_PORT:-6379}` |
-| `minio` (`:78`) | S3-compatible blob store for datasets/model artifacts + MLflow artifact root | `${MINIO_PORT:-9000}` (S3 API), `${MINIO_CONSOLE_PORT:-9001}` (console) |
+| `postgres` (`docker-compose.yml:41`) | App state (projects/datasets/training_jobs/model_artifacts/evaluation_runs) + separate `mlflow` DB | `127.0.0.1:${POSTGRES_PORT:-5432}` |
+| `redis` (`:63`) | Celery broker (db1) + result backend (db2) + WS pub/sub channel (db0) | `127.0.0.1:${REDIS_PORT:-6379}` |
+| `minio` (`:78`) | S3-compatible blob store for datasets/model artifacts + MLflow artifact root | `127.0.0.1:${MINIO_PORT:-9000}` (S3 API), `127.0.0.1:${MINIO_CONSOLE_PORT:-9001}` (console) |
 | `minio-init` (`:98`) | One-shot `mc mb` job that creates the `mlflow`/`datasets`/`models` buckets on first boot | n/a |
-| `mlflow` (`:124`) | Experiment tracking server (Postgres backend store + MinIO artifact store) | `${MLFLOW_PORT:-5000}` |
+| `mlflow` (`:124`) | Experiment tracking server (Postgres backend store + MinIO artifact store) | `127.0.0.1:${MLFLOW_PORT:-5000}` |
 | `api` (`:166`) | FastAPI app (`uvicorn api.main:app --reload`) — the HTTP + WS surface | `${API_PORT:-8000}` (default 8000) |
 | `frontend` (`:202`) | nginx serving the built React SPA (`frontend/`), reverse-proxying `/api` and `/ws` to `api` so the browser only ever talks to one origin (`docker/frontend.Dockerfile:1-9`, `docker/frontend.nginx.conf`) | `${FRONTEND_PORT:-8082}` |
 | `worker` (`:218`) | Celery worker (GPU) — runs SDG/training/HPO/export/evaluation tasks | n/a (no exposed port) |
-| `ollama` (`:265`) | OpenAI-compatible inference server (GPU) for the exported GGUF models | `${OLLAMA_PORT:-11434}` |
+| `ollama` (`:265`) | OpenAI-compatible inference server (GPU) for the exported GGUF models | `127.0.0.1:${OLLAMA_PORT:-11434}` |
+
+**Every port above except the API's binds `127.0.0.1`.** A bare `"5432:5432"`
+publishes on all interfaces, which put Postgres, Redis, MinIO, MLflow and
+Ollama on the public internet of any host running this stack. Loopback
+binding — rather than dropping `ports:` altogether — keeps them reachable
+through an SSH tunnel (`ssh -L 9001:localhost:9001`), which is what
+`scripts/deploy_pasaflow_vm.sh` hands the operator for the MinIO console,
+MLflow and Ollama. Container-to-container traffic is unaffected: it goes over
+the `slm-net` compose network by service name and never touches the host
+binding. Guarded by `tests/unit/test_compose_port_exposure.py`.
 
 ---
 

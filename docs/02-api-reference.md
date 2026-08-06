@@ -1061,9 +1061,39 @@ since it's tagged `metadata` in the OpenAPI spec.
 
 ### GET /health
 
-Liveness probe. No params, no DB check — just returns `{"status": "ok"}`
-(`api/main.py:134-136`). Not under `/api/v1`. Use this for container
-healthchecks, not as a readiness check for DB/Redis/MinIO/MLflow.
+Liveness probe. No params, no DB check — just returns `{"status": "ok"}`.
+Not under `/api/v1`, and public (no token). Use this for container
+healthchecks. Deliberately dependency-free: it decides whether a supervisor
+restarts the container, so it must never fail because something *else* is
+down. `GET /ready` is the endpoint that asks about dependencies.
+
+### GET /ready
+
+Readiness probe. Probes PostgreSQL, Redis, MinIO and the Celery worker
+concurrently, each bounded by a 3-second timeout. Not under `/api/v1`, and
+public — orchestrators and load balancers have no token to send.
+
+Success: `200` with a per-dependency breakdown.
+
+```json
+{
+  "status": "degraded",
+  "checks": {"postgres": "ok", "redis": "ok", "minio": "ok", "worker": "unavailable"}
+}
+```
+
+`status` is `ok` (everything up), `degraded` (a non-fatal dependency is
+down), or `unready`.
+
+**`503` only when PostgreSQL or Redis is unreachable** — the two the API
+cannot answer a single request without. **MinIO and the worker report
+`unavailable` on a `200`**: with MinIO down, uploads and artifact downloads
+fail but every read still works; with no worker, submits still enqueue and
+`api/services/job_reconcile.py` ends orphaned jobs rather than leaving clients
+spinning. Returning `503` for either would pull the whole API out of rotation
+and take the UI offline to report a partial outage. See
+`api/services/readiness.py` for the reasoning and
+`tests/unit/test_readiness.py` for the guard.
 
 ---
 

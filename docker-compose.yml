@@ -47,7 +47,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-slm}
       POSTGRES_DB: ${POSTGRES_DB:-slm}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       # Runs only on first init (empty volume). Creates the separate
@@ -65,7 +65,7 @@ services:
     container_name: slm-redis
     restart: unless-stopped
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -84,8 +84,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio-data:/data
     healthcheck:
@@ -148,7 +148,7 @@ services:
       - --default-artifact-root=s3://${MLFLOW_S3_BUCKET:-mlflow}/
       - --serve-artifacts
     ports:
-      - "${MLFLOW_PORT:-5000}:5000"
+      - "127.0.0.1:${MLFLOW_PORT:-5000}:5000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -176,6 +176,15 @@ services:
     environment:
       <<: *app-env
     ports:
+      # The ONLY service published beyond the host. Every other container
+      # binds 127.0.0.1 so an external port scan reaches nothing but this
+      # API (BACKEND_GAP_ANALYSIS.md P0 "Secrets และขอบเขตเครือข่าย").
+      # Loopback binding, not removal, deliberately: `scripts/
+      # deploy_pasaflow_vm.sh` hands the operator localhost URLs for the
+      # MinIO console / MLflow / Ollama, and those still work over an SSH
+      # tunnel (`ssh -L 9001:localhost:9001`). Dropping `ports:` entirely
+      # would break that workflow and force `docker compose exec` for every
+      # debugging session.
       - "${API_PORT:-8000}:8000"
     volumes:
       - ./api:/app/api
@@ -251,7 +260,7 @@ services:
     container_name: slm-ollama
     restart: unless-stopped
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama-data:/root/.ollama
     deploy: *gpu-deploy

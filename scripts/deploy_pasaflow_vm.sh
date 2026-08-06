@@ -296,6 +296,10 @@ cat <<EOF | tee -a "$LOG"
     MLflow  -> http://localhost:5000
     Ollama  -> http://localhost:11434
 
+  Everything except the API binds 127.0.0.1, so the three URLs above are
+  reachable only from the VM itself. From your laptop, tunnel first:
+    ssh -L 9001:localhost:9001 -L 5000:localhost:5000 <this-host>
+
   Log:         $LOG
 
 Next:

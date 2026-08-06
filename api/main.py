@@ -13,7 +13,7 @@ import uuid
 from contextlib import asynccontextmanager, suppress
 from collections.abc import AsyncIterator
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.core import request_context
@@ -22,7 +22,7 @@ from api.core.config import get_settings
 from api.core.database import engine
 from api.core.exceptions import install_handlers
 from api.core.logging_config import configure_logging
-from api.services import job_reconcile
+from api.services import job_reconcile, readiness
 from api.routers import (
     datasets,
     evaluations,
@@ -49,7 +49,18 @@ _RECONCILE_INTERVAL_SECONDS = 300
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    log.info("api starting (db=%s, redis=%s)", _redact(settings.database_url), settings.redis_url)
+    log.info(
+        "api starting (env=%s, db=%s, redis=%s)",
+        settings.environment,
+        _redact(settings.database_url),
+        settings.redis_url,
+    )
+
+    # Emitted here rather than from the validator itself: settings are built at
+    # import time, before `configure_logging()` runs, so warning from inside
+    # `Settings` would bypass the JSON formatter or be dropped outright.
+    for warning in settings.startup_warnings():
+        log.warning("config: %s", warning)
 
     # Recover jobs whose worker died. `run_forever` sweeps once immediately
     # and then on an interval; it is started as a task rather than awaited
@@ -228,4 +239,27 @@ async def root() -> dict[str, str]:
 
 @app.get("/health", tags=["system"], summary="Liveness probe")
 async def health() -> dict[str, str]:
+    """Is this process alive? Deliberately touches nothing else.
+
+    A supervisor restarts the container when this fails, so it must never
+    depend on Postgres, Redis, MinIO or the worker — otherwise one dependency
+    blip restarts an API that was serving fine. `/ready` is the endpoint that
+    asks about dependencies.
+    """
     return {"status": "ok"}
+
+
+@app.get("/ready", tags=["system"], summary="Readiness probe")
+async def ready(response: Response) -> dict[str, object]:
+    """Can this instance serve? Probes Postgres, Redis, MinIO and the worker.
+
+    `503` only when Postgres or Redis is down — those are the two the API
+    cannot answer a single request without. MinIO or a missing worker report
+    `degraded` on a `200`, because the API still serves reads and still
+    accepts submits; see `api/services/readiness.py` for why failing on those
+    would be the bigger outage.
+    """
+    report = await readiness.check()
+    if not report.ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return report.as_dict()

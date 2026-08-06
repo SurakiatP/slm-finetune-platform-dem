@@ -61,6 +61,14 @@ def _configure_celery_logging(*_args: object, **_kwargs: object) -> None:
     """
     configure_logging(settings.log_level)
 
+    # The worker boots from the same `Settings`, so it is subject to the same
+    # production credential checks — and it is the process that actually calls
+    # OpenRouter, which makes the missing-API-key warning more urgent here than
+    # in the API. Emitted after `configure_logging` for the reason documented
+    # in `api/main.py`'s lifespan.
+    for warning in settings.startup_warnings():
+        logging.getLogger("workers").warning("config: %s", warning)
+
 
 # ---- Request-context propagation -------------------------------------------
 #

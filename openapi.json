@@ -2564,6 +2564,7 @@
           "system"
         ],
         "summary": "Liveness probe",
+        "description": "Is this process alive? Deliberately touches nothing else.\n\nA supervisor restarts the container when this fails, so it must never\ndepend on Postgres, Redis, MinIO or the worker — otherwise one dependency\nblip restarts an API that was serving fine. `/ready` is the endpoint that\nasks about dependencies.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -2576,6 +2577,30 @@
                   },
                   "type": "object",
                   "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Readiness probe",
+        "description": "Can this instance serve? Probes Postgres, Redis, MinIO and the worker.\n\n`503` only when Postgres or Redis is down — those are the two the API\ncannot answer a single request without. MinIO or a missing worker report\n`degraded` on a `200`, because the API still serves reads and still\naccepts submits; see `api/services/readiness.py` for why failing on those\nwould be the bigger outage.",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Ready Ready Get"
                 }
               }
             }

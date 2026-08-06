@@ -27,7 +27,13 @@ _PUBLIC_PREFIXES = (
     "/api/v1/base-models",
     "/api/v1/sdg-pipeline",
 )
-_PUBLIC_EXACT = {"/", "/health", "/openapi.json", "/docs", "/redoc"}
+# `/ready` joins `/health` as public on purpose. Container orchestrators and
+# load balancers probe readiness with no credentials — there is nowhere for
+# them to get a token — so requiring auth would mean the probe always fails
+# and the instance is never routed to. What it discloses is infrastructure
+# liveness ("minio: unavailable"), never user data, and an attacker who can
+# reach the API can already observe the same outage by watching requests fail.
+_PUBLIC_EXACT = {"/", "/health", "/ready", "/openapi.json", "/docs", "/redoc"}
 
 _DUMMY = str(uuid4())
 

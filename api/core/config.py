@@ -7,10 +7,17 @@ Use `get_settings()` (cached) — never re-instantiate `Settings` ad hoc.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal, Self
 
-from pydantic import AnyUrl, Field, field_validator
+from pydantic import AnyUrl, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# Credential values shipped in `.env.example`. `cp .env.example .env` is the
+# documented Quickstart step, so these are what a deployment that never
+# changed anything is running on — the exact thing the P0 acceptance
+# criterion ("ระบบไม่สามารถเริ่มด้วย credential เริ่มต้น") is about.
+_DEFAULT_MINIO_CREDENTIAL = "minioadmin"
+_DEFAULT_DB_CREDENTIALS = ("slm", "slm")
 
 
 class Settings(BaseSettings):
@@ -22,6 +29,12 @@ class Settings(BaseSettings):
     )
 
     # ---- App ---------------------------------------------------------------
+    # Gates the credential checks below. `dev` is the default on purpose: the
+    # Quickstart is `cp .env.example .env`, and the unit suite constructs
+    # Settings with nothing but DATABASE_URL set. Enforcing unconditionally
+    # would break both, so the deployment has to *say* it is production
+    # before production rules apply.
+    environment: Literal["dev", "staging", "production"] = "dev"
     log_level: str = Field(default="INFO")
     api_port: int = Field(default=8000, ge=1, le=65535)
     # NoDecode disables pydantic-settings' default JSON decoding so the
@@ -125,6 +138,90 @@ class Settings(BaseSettings):
     # to True once the frontend ships the header, to actually reject
     # unauthenticated requests.
     auth_required: bool = False
+
+    # ---- Production guards -------------------------------------------------
+
+    @model_validator(mode="after")
+    def _reject_default_credentials_in_production(self) -> Self:
+        """Refuse to boot a production deployment on the documented defaults.
+
+        Only the credentials that are *always* required are fatal. Notably
+        `openrouter_api_key` is NOT: SDG is its only consumer, and a
+        deployment that just serves inference on already-exported models is a
+        legitimate configuration that should not be blocked. It gets a warning
+        from `startup_warnings()` instead.
+
+        The Postgres password is not its own setting — it is embedded in
+        `database_url` — so it is checked by parsing the DSN rather than by
+        reading POSTGRES_PASSWORD, which this process never sees.
+        """
+        if self.environment != "production":
+            return self
+
+        offenders: list[str] = []
+        if self.minio_access_key == _DEFAULT_MINIO_CREDENTIAL:
+            offenders.append("MINIO_ACCESS_KEY")
+        if self.minio_secret_key == _DEFAULT_MINIO_CREDENTIAL:
+            offenders.append("MINIO_SECRET_KEY")
+        if _dsn_uses_default_credentials(self.database_url):
+            offenders.append("DATABASE_URL (still carries the example slm:slm credentials)")
+
+        if offenders:
+            raise ValueError(
+                "ENVIRONMENT=production but these still hold the values shipped in "
+                f".env.example: {', '.join(offenders)}. Set real secrets, or use "
+                "ENVIRONMENT=dev/staging if this is not a production deployment."
+            )
+        return self
+
+    def startup_warnings(self) -> list[str]:
+        """Configuration that is legal but worth shouting about at boot.
+
+        Returned rather than logged so the caller can emit them *after*
+        `configure_logging()` has run — settings are built before logging is
+        configured, so a `log.warning` in here would go out through the root
+        handler in a different format, or be swallowed entirely.
+        """
+        warnings: list[str] = []
+        if self.environment != "production":
+            return warnings
+
+        if not self.openrouter_api_key:
+            warnings.append(
+                "running in production with no OPENROUTER_API_KEY — synthetic data "
+                "generation will fail at call time. Fine for an inference-only "
+                "deployment; a mistake for any other."
+            )
+        if not self.auth_required:
+            warnings.append(
+                "running in production with AUTH_REQUIRED=false — every request is "
+                "anonymous and every row it creates has owner_id NULL, which fails "
+                "closed for everyone once the flag is flipped. This is the phase-1 "
+                "rollout state; flip it once the frontend sends Authorization headers."
+            )
+        if self.auth_required and not self.supabase_url:
+            warnings.append(
+                "AUTH_REQUIRED=true with no SUPABASE_URL — there is no JWKS to verify "
+                "against, so every authenticated request will be rejected."
+            )
+        return warnings
+
+
+def _dsn_uses_default_credentials(dsn: str) -> bool:
+    """True when `dsn`'s userinfo is still the example `slm:slm` pair.
+
+    Deliberately parses rather than substring-matching: `slm:slm` also appears
+    in the default host and database name (`@postgres:5432/slm`), so a naive
+    `"slm:slm" in dsn` would be both over- and under-eager depending on the
+    DSN's shape.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(dsn)
+    except ValueError:
+        return False
+    return (parts.username, parts.password) == _DEFAULT_DB_CREDENTIALS
 
 
 @lru_cache(maxsize=1)
