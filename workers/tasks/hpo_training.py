@@ -319,13 +319,20 @@ def train_hpo(
                 "best_params": best_params,
             }
 
-        except Exception as exc:
+        except BaseException as exc:
+            # BaseException, not Exception — see the long note on the same
+            # `except` in `workers/tasks/training.py`. A cancel arrives as a
+            # SIGTERM that billiard turns into `SystemExit`, which
+            # `except Exception` does not catch, so an HPO study cancelled
+            # mid-study published no terminal frame at all.
             log.exception("HPO task failed (job=%s)", job_id)
             try:
                 with session_scope() as session:
                     row = session.get(TrainingJob, training_uuid)
                     if row is not None:
-                        row.status = JobStatus.FAILED
+                        # Don't clobber a CANCELLED the cancel endpoint already set.
+                        if row.status != JobStatus.CANCELLED:
+                            row.status = JobStatus.FAILED
                         row.ended_at = datetime.now(timezone.utc)
                         row.error_message = (str(exc) or repr(exc))[:4000]
             except Exception:  # noqa: BLE001

@@ -210,14 +210,33 @@ def train_manual(
                 "final_eval_loss": result.final_eval_loss,
             }
 
-        except Exception as exc:
+        except BaseException as exc:
+            # BaseException, not Exception: `POST /trainings/{id}/cancel` revokes
+            # this task with `celery_app.control.revoke(terminate=True,
+            # signal="SIGTERM")`. Billiard's worker-child signal handler turns
+            # that SIGTERM into `sys.exit(...)` — a `SystemExit` raised inside
+            # this task body, which `except Exception` does NOT catch, so
+            # cancelling a training skipped this whole block and no `JobFailed`
+            # frame was ever published. A WebSocket-only client (which is what
+            # `smart-model-tune`'s `useTrainingWebSocket` is) then sat on the
+            # last `training_progress` frame forever. Verified on real hardware
+            # before this was widened: DB row `cancelled`, but `job:{id}:last`
+            # still held a mid-run progress frame.
+            # `data_generation.py` / `model_export.py` / `evaluation.py` carry
+            # the same treatment; this path and `hpo_training.py` were missed
+            # when 523aded landed.
             log.exception("training task failed (job=%s)", job_id)
             # Mark job FAILED in DB before re-raising; let publish be best-effort.
             try:
                 with session_scope() as session:
                     job_row = session.get(TrainingJob, training_uuid)
                     if job_row is not None:
-                        job_row.status = JobStatus.FAILED
+                        # The cancel endpoint sets status=CANCELLED *before*
+                        # revoking. Don't clobber it back to FAILED — CANCELLED
+                        # is the accurate terminal state for that run. The error
+                        # message is still recorded either way.
+                        if job_row.status != JobStatus.CANCELLED:
+                            job_row.status = JobStatus.FAILED
                         job_row.ended_at = datetime.now(timezone.utc)
                         job_row.error_message = (str(exc) or repr(exc))[:4000]
             except Exception:  # noqa: BLE001 — never mask the original failure

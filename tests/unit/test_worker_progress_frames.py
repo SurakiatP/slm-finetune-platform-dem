@@ -11,6 +11,8 @@ Covered here:
      `run_evaluation`'s throttle keeps the WS from being flooded.
   3. Export           — the six stages are wired, and the `except BaseException`
      that makes cancellation observable is still in place.
+  4. Cancellation     — the same `except BaseException` contract, enforced
+     across every task a cancel endpoint can revoke.
 
 No GPU, no Ollama, no MinIO, no broker — the export *pipeline* itself needs a
 GPU and is verified separately on real hardware; what is unit-testable here is
@@ -29,7 +31,9 @@ from api.schemas.enums import TaskType, WSMessageType
 from api.schemas.progress import EvaluationProgress, ExportProgress
 from workers.tasks import data_generation as sdg_task
 from workers.tasks import evaluation as eval_task
+from workers.tasks import hpo_training as hpo_task
 from workers.tasks import model_export as export_task
+from workers.tasks import training as training_task
 
 _EXPORT_STAGES = (
     "downloading",
@@ -42,11 +46,17 @@ _EXPORT_STAGES = (
 
 _EXPORT_SOURCE = Path(export_task.__file__).read_text(encoding="utf-8")
 
-# All three Celery task bodies must survive a SIGTERM-driven cancel identically.
+# Every cancellable Celery task body must survive a SIGTERM-driven cancel
+# identically. `POST /{resource}/{id}/cancel` goes through one shared helper
+# (`api/services/job_control.py::revoke_celery_task`), so there is exactly one
+# cancel mechanism and there must be exactly one response to it — any task
+# reachable from a cancel endpoint belongs in this dict.
 _CANCELLABLE_TASKS = {
     "data_generation": Path(sdg_task.__file__).read_text(encoding="utf-8"),
     "evaluation": Path(eval_task.__file__).read_text(encoding="utf-8"),
     "model_export": _EXPORT_SOURCE,
+    "training": Path(training_task.__file__).read_text(encoding="utf-8"),
+    "hpo_training": Path(hpo_task.__file__).read_text(encoding="utf-8"),
 }
 
 
@@ -237,9 +247,18 @@ class TestCancellationSurvivesSigterm:
     all cleanup, never publishes a terminal frame, and leaves its row's status
     stranded.
 
-    This shipped correct for `model_export` but was missed in the other two
-    until a GPU-box run caught it: cancelling an export produced a `failed`
-    frame within 0.5s, while cancelling SDG produced none at all.
+    This shipped correct for `model_export` and was then fixed for
+    `data_generation`/`evaluation` when a GPU-box run caught it: cancelling an
+    export produced a `failed` frame within 0.5s, while cancelling SDG produced
+    none at all. `training`/`hpo_training` were missed by that same fix and
+    caught the same way a release later — a cancelled training left the DB row
+    `cancelled` while `job:{id}:last` still held a mid-run `training_progress`
+    frame, so `smart-model-tune`'s `useTrainingWebSocket` (the only WS consumer
+    wired today) waited on a terminal frame that never came.
+
+    Hence the parametrization over `_CANCELLABLE_TASKS` rather than one test
+    per file: adding a new cancellable task to that dict is what stops this
+    from being missed a third time.
     """
 
     @pytest.mark.parametrize("task", sorted(_CANCELLABLE_TASKS))
