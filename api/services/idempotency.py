@@ -34,7 +34,6 @@ import logging
 from typing import Any
 
 from fastapi.responses import JSONResponse
-from redis.exceptions import RedisError
 from starlette.requests import Request
 
 from api.core.auth import CurrentUser
@@ -113,7 +112,12 @@ async def replay(
     redis = get_redis_client()
     try:
         stored = await redis.get(key)
-    except RedisError:
+    except Exception:  # noqa: BLE001
+        # Deliberately broad. Dedupe is an optimisation; a submit that would
+        # have succeeded must never 500 because the cache misbehaved. Losing
+        # dedupe costs one duplicate job at worst — raising here costs the
+        # user their submission. `RedisError` alone would not cover a socket
+        # or DNS failure that escapes redis-py's wrapping.
         log.warning("idempotency: replay lookup failed, degrading to no dedupe", exc_info=True)
         return None
     finally:
@@ -143,7 +147,7 @@ async def remember(
     redis = get_redis_client()
     try:
         await redis.set(key, json.dumps(payload), ex=TTL_SECONDS)
-    except RedisError:
+    except Exception:  # noqa: BLE001 — see the matching note in `replay`
         log.warning("idempotency: remember write failed, degrading to no dedupe", exc_info=True)
     finally:
         await redis.aclose()

@@ -32,6 +32,42 @@ frames), and
 
 ---
 
+## Duplicate submissions
+
+The three job-submit endpoints — `POST /datasets/generate`, `POST /trainings`,
+`POST /evaluations` — dedupe repeats inside a **60-second window**, so a
+double-clicked Launch button enqueues one Celery task and buys one OpenRouter
+bill instead of two.
+
+The window is keyed by the caller plus a SHA-256 of the canonical request body
+(keys sorted, so re-serialising a body does not change it). A repeat inside the
+window returns the **original `202` response verbatim**, with:
+
+```
+X-Idempotent-Replay: true
+```
+
+Nothing is enqueued for a replay. A body that differs in any field is a
+different job and proceeds normally.
+
+Two things worth knowing:
+
+- **It works without a token.** The caller is `user.id` when authenticated, and
+  `anon:<X-Forwarded-For first hop>` otherwise. Phase-1 clients that send no
+  `Authorization` header are covered.
+- **Send `Idempotency-Key` if you want to control it.** When present, that
+  header replaces the body hash — useful if you deliberately want to submit the
+  same body twice, or to make a retry after a network timeout safe.
+
+`POST /models/{id}/export` is **not** in this window; it uses a stricter
+resource-state guard instead (see its `409` below).
+
+Dedupe is best-effort: if Redis is unavailable the request proceeds normally
+rather than failing, since losing dedupe is strictly better than losing a
+submission.
+
+---
+
 ## Authentication
 
 Every route below **except the `Metadata` section** requires a Supabase JWT once
@@ -179,6 +215,36 @@ Update `name` and/or `description` (both optional; omit to leave unchanged).
 Delete a project. **Success**: `204`. **Errors**: `404` if not found.
 **Gotcha**: cascades to the project's datasets / trainings at the DB level
 (per router summary) — there is no confirmation step or dry-run.
+The project's `audit_events` rows are **not** cascaded away: their FK is
+`ON DELETE SET NULL`, so the record of who deleted what survives. See the
+activity endpoint below.
+
+### GET /api/v1/projects/{project_id}/activity
+
+Audit trail for one project, newest first.
+
+**Query**: `limit` (1–200, default 50), `offset` (default 0).
+**Success**: `200` with `Page[AuditEventResponse]`.
+**Errors**: `404` if the project doesn't exist **or belongs to someone
+else** — same shape as `GET /projects/{id}`, deliberately, so this can't be
+used to probe which project ids exist.
+
+Each event carries `action` (e.g. `project.create`, `sdg.submit`,
+`training.completed`, `export.cancel`, `inference.chat_completions`,
+`dataset.download`, `job.orphan_reconciled`), `resource_type` /
+`resource_id`, `outcome` (`success` / `failure`), `actor_id` (the Supabase
+`sub`, null for anonymous phase-1 callers), `request_id` (matches the
+`X-Request-ID` response header of the call that caused it, and the
+`request_id` field in the server logs), `created_at`, and a free-form
+`metadata` object.
+
+Events are written in the **same database transaction** as the action they
+record, so the log cannot silently miss an entry: if the audit write fails,
+the action fails with it.
+
+**Gotcha**: events whose project was later deleted are not reachable here.
+The rows survive the delete (`project_id` goes null) but no longer belong to
+a project anyone can query by id.
 
 ---
 
@@ -620,7 +686,16 @@ Enqueue a GGUF or SafeTensors export. `api/routers/models.py:66-77`.
   `job_id`, `status=pending`, `websocket_url`.
 - **Errors**: `404` model not found; `409` artifact has no
   `lora_adapter_uri` on file (training likely never completed —
-  `api/services/model_service.py:88-101`).
+  `api/services/model_service.py:88-101`); `409` **an export is already in
+  flight** for this artifact (`export_status` is `pending` or `running`).
+  The detail names the in-flight `job_id` so you can cancel it via
+  `POST /models/{id}/export/cancel` first. A *terminal* `export_status`
+  (`completed` / `failed` / `cancelled`) does not block a fresh export —
+  re-exporting at a different quantization is a normal thing to do.
+  This guard replaces the idempotency window used by the other submit
+  endpoints: one artifact can only have one export at a time, so a
+  resource-state `409` is both stricter and more informative than a
+  replayed `202` would be.
 - **Gotcha**: `format=lora` passes request validation (it's a legal
   `ArtifactFormat` value) but the Celery worker
   (`workers/tasks/model_export.py:171`) raises `ValueError("unsupported

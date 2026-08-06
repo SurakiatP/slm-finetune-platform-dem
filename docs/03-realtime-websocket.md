@@ -296,6 +296,17 @@ just GGUF.
 
 ## 7. Known sharp edges
 
+- **A `failed` frame can come from the API, not a worker.** If a worker dies
+  mid-job its row would otherwise sit `running` forever with no terminal
+  frame, and a WS-only client would wait on an ending that never arrives.
+  `api/services/job_reconcile.py` sweeps for that case and publishes the
+  terminal frame itself, carrying `error_type: "OrphanedJob"`. It lands on
+  both `job:{id}` and `job:{id}:last` in the usual order, and is an ordinary
+  `JobFailed` in every other respect — **clients need no new handling**, that
+  is the point. Detection requires both that no worker holds the task id and
+  that nothing has been published for `JOB_ORPHAN_GRACE_MINUTES` (default
+  15), so a job that is merely quiet — a long model load, a slow quantize —
+  is never touched.
 - **Last frame only, not a replay.** §3's snapshot is a single cached
   payload per `job_id`, not a history. A client that needs the full
   trajectory of a run (every HPO trial, every training step) still can't
