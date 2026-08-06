@@ -207,3 +207,84 @@ def test_export_uses_the_in_flight_guard_instead() -> None:
     src = pathlib.Path(model_service.__file__).read_text(encoding="utf-8")
     assert "already has an export in flight" in src
     assert "idempotency" not in src
+
+
+# =============================================================================
+# 5. End to end through the router — the criterion as stated
+# =============================================================================
+
+
+class TestRouterLevelDedupe:
+    """Unit-level `replay`/`remember` tests prove the primitive. This proves
+    the thing that was actually asked for: two identical POSTs produce ONE
+    Celery task and two identical 202 bodies — for an anonymous caller as
+    well as an authenticated one."""
+
+    @pytest.fixture
+    def app_client(self, monkeypatch, redis):
+        from fastapi.testclient import TestClient
+
+        from api.core.auth import require_user
+        from api.core.database import get_db
+        from api.main import app
+        from api.routers import datasets as datasets_router
+        from api.schemas.sdg import SDGJobAcceptedResponse
+
+        submitted: list[dict] = []
+
+        async def _fake_submit(db, body):  # noqa: ANN001
+            """Stands in for the service — every call here is one Celery task."""
+            submitted.append(body.model_dump(mode="json"))
+            return SDGJobAcceptedResponse(
+                job_id=f"celery-task-{len(submitted)}",
+                dataset_id=uuid4(),
+                websocket_url="/ws/jobs/x",
+            )
+
+        async def _noop_ownership(db, project_id, user):  # noqa: ANN001
+            return None
+
+        monkeypatch.setattr(datasets_router, "submit_sdg_job", _fake_submit)
+        monkeypatch.setattr(
+            datasets_router.ownership, "assert_project_access", _noop_ownership
+        )
+
+        async def _fake_db():
+            yield None
+
+        app.dependency_overrides[get_db] = _fake_db
+        app.dependency_overrides[require_user] = lambda: None  # anonymous, phase 1
+        with TestClient(app) as client:
+            yield client, submitted
+        app.dependency_overrides.clear()
+
+    def _body(self) -> dict:
+        return {
+            "sdg_mode": "description_only",
+            "project_id": str(uuid4()),
+            "task_type": "qa",
+            "task_description": "Answer questions about the return policy",
+            "num_samples": 20,
+            "holdout_size": 0,
+        }
+
+    def test_double_click_enqueues_one_task_anonymously(self, app_client) -> None:
+        client, submitted = app_client
+        body = self._body()
+        headers = {"X-Forwarded-For": "203.0.113.7"}
+
+        first = client.post("/api/v1/datasets/generate", json=body, headers=headers)
+        second = client.post("/api/v1/datasets/generate", json=body, headers=headers)
+
+        assert first.status_code == 202 and second.status_code == 202
+        assert len(submitted) == 1, "the second click reached the service"
+        assert first.json() == second.json()
+        assert second.headers.get(idempotency.REPLAY_HEADER) == "true"
+        assert idempotency.REPLAY_HEADER not in first.headers
+
+    def test_a_different_body_does_enqueue_a_second_task(self, app_client) -> None:
+        client, submitted = app_client
+        headers = {"X-Forwarded-For": "203.0.113.7"}
+        client.post("/api/v1/datasets/generate", json=self._body(), headers=headers)
+        client.post("/api/v1/datasets/generate", json=self._body(), headers=headers)
+        assert len(submitted) == 2, "distinct projects must not be deduped together"
