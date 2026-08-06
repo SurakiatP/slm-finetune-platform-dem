@@ -42,7 +42,9 @@ from api.models.dataset import Dataset
 from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
+from api.core import request_context
 from api.schemas.progress import HPOProgress, JobCompleted, JobFailed
+from api.services import audit_service
 from api.schemas.training import HPOConfig
 from workers.celery_app import celery_app
 from workers.progress import publish_ws_message, sync_redis_scope
@@ -292,6 +294,20 @@ def train_hpo(
                 row.ended_at = datetime.now(timezone.utc)
                 row.best_metric_value = best_value
                 row.best_params_json = best_params
+                audit_service.record(
+                    session,
+                    action="training.completed",
+                    resource_type="training",
+                    resource_id=str(row.id),
+                    project_id=row.project_id,
+                    request_id=request_context.current_request_id(),
+                    metadata={
+                        "job_id": job_id,
+                        "mode": "hpo",
+                        "model_artifact_id": str(artifact_id),
+                        "best_metric_value": best_value,
+                    },
+                )
 
             # ---- 7. Publish JobCompleted -------------------------------------
             publish(
@@ -335,6 +351,21 @@ def train_hpo(
                             row.status = JobStatus.FAILED
                         row.ended_at = datetime.now(timezone.utc)
                         row.error_message = (str(exc) or repr(exc))[:4000]
+                        audit_service.record(
+                            session,
+                            action=(
+                                "training.cancelled"
+                                if row.status == JobStatus.CANCELLED
+                                else "training.failed"
+                            ),
+                            resource_type="training",
+                            resource_id=str(row.id),
+                            project_id=row.project_id,
+                            outcome="failure",
+                            request_id=request_context.current_request_id(),
+                            metadata={"job_id": job_id, "error_type": type(exc).__name__},
+                        )
+
             except Exception:  # noqa: BLE001
                 log.warning("could not persist FAILED for %s", training_id, exc_info=True)
             try:

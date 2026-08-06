@@ -33,8 +33,11 @@ from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
+from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus, TaskType
+from api.core import request_context
 from api.schemas.progress import EvaluationProgress, JobCompleted, JobFailed
+from api.services import audit_service
 from workers.celery_app import celery_app
 from workers.progress import publish_ws_message, sync_redis_scope
 from workers.storage import get_jsonl, get_minio_client, parse_s3_uri
@@ -47,6 +50,22 @@ log = get_task_logger(__name__)
 # suppresses per-step inner training progress across trials ("the WS firehose
 # would be too chatty"). The final row always publishes regardless of this gap.
 _PREDICT_PROGRESS_THROTTLE_SECONDS: float = 2.0
+
+
+
+def _project_id_for_run(session, row):
+    """EvaluationRun -> ModelArtifact -> TrainingJob -> Project (3 hops).
+
+    Sync session; mirrors the depth `api/services/job_ownership.py` documents.
+    Returns None rather than raising — an audit row with an unresolved project
+    is still worth keeping, and this runs inside a terminal-status write that
+    must not acquire new failure modes.
+    """
+    artifact = session.get(ModelArtifact, row.model_artifact_id)
+    if artifact is None:
+        return None
+    training_job = session.get(TrainingJob, artifact.training_job_id)
+    return training_job.project_id if training_job is not None else None
 
 
 @celery_app.task(bind=True, name="evaluation.run", max_retries=0)
@@ -194,6 +213,15 @@ def run_evaluation(
                 row.llm_judge_model = judge_model_resolved
                 row.status = JobStatus.COMPLETED
                 row.ended_at = datetime.now(timezone.utc)
+                audit_service.record(
+                    session,
+                    action="evaluation.completed",
+                    resource_type="evaluation",
+                    resource_id=str(row.id),
+                    project_id=_project_id_for_run(session, row),
+                    request_id=request_context.current_request_id(),
+                    metadata={"job_id": job_id, "llm_judge_score": judge_score},
+                )
 
             publish(
                 JobCompleted(
@@ -238,6 +266,20 @@ def run_evaluation(
                             row.status = JobStatus.FAILED
                         row.ended_at = datetime.now(timezone.utc)
                         row.error_message = (str(exc) or repr(exc))[:4000]
+                        audit_service.record(
+                            session,
+                            action=(
+                                "evaluation.cancelled"
+                                if row.status == JobStatus.CANCELLED
+                                else "evaluation.failed"
+                            ),
+                            resource_type="evaluation",
+                            resource_id=str(row.id),
+                            project_id=_project_id_for_run(session, row),
+                            outcome="failure",
+                            request_id=request_context.current_request_id(),
+                            metadata={"job_id": job_id, "error_type": type(exc).__name__},
+                        )
             except Exception:  # noqa: BLE001
                 log.warning("could not persist FAILED for %s", evaluation_id, exc_info=True)
             try:

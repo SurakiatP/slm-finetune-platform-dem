@@ -29,7 +29,9 @@ from ai_engine.data_gen.openrouter_client import (
 from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.schemas.enums import DatasetSource, JobStatus
+from api.core import request_context
 from api.schemas.progress import JobCompleted, JobFailed, SDGProgress
+from api.services import audit_service
 from api.schemas.sdg import (
     SDGRequest,
     SDGRequestDescriptionOnly,
@@ -167,6 +169,15 @@ def generate_synthetic_data(
                 parent.storage_uri = train_uri
                 parent.size_bytes = train_size
                 parent.status = JobStatus.COMPLETED
+                audit_service.record(
+                    session,
+                    action="sdg.completed",
+                    resource_type="dataset",
+                    resource_id=str(parent.id),
+                    project_id=parent.project_id,
+                    request_id=request_context.current_request_id(),
+                    metadata={"job_id": job_id, "num_samples": parent.num_samples},
+                )
                 parent_meta = dict(parent.generation_metadata or {})
                 parent_meta.update(
                     {
@@ -284,6 +295,21 @@ def generate_synthetic_data(
                         if ds.status != JobStatus.CANCELLED:
                             ds.status = JobStatus.FAILED
                         ds.error_message = (str(exc) or repr(exc))[:4000]
+                        audit_service.record(
+                            session,
+                            action=(
+                                "sdg.cancelled"
+                                if ds.status == JobStatus.CANCELLED
+                                else "sdg.failed"
+                            ),
+                            resource_type="dataset",
+                            resource_id=str(ds.id),
+                            project_id=ds.project_id,
+                            outcome="failure",
+                            request_id=request_context.current_request_id(),
+                            metadata={"job_id": job_id, "error_type": type(exc).__name__},
+                        )
+
             except Exception:  # noqa: BLE001 — never mask the original SDG failure
                 log.warning(
                     "could not persist FAILED status for dataset %s", dataset_id, exc_info=True

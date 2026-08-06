@@ -33,7 +33,9 @@ from api.core.config import get_settings
 from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
 from api.schemas.enums import ArtifactFormat, JobStatus
+from api.core import request_context
 from api.schemas.progress import ExportProgress, JobCompleted, JobFailed
+from api.services import audit_service
 from api.services.base_model_catalog import (
     get_ollama_base_tag,
     pull_ollama_base_blocking,
@@ -50,6 +52,18 @@ from workers.storage import (
 from workers.sync_db import session_scope
 
 log = get_task_logger(__name__)
+
+
+
+def _project_id_for_artifact(session, artifact):
+    """ModelArtifact -> TrainingJob -> Project (2 hops), sync session.
+
+    Returns None rather than raising — an audit row with an unresolved project
+    is still worth keeping, and this runs inside a terminal-status write that
+    must not acquire new failure modes.
+    """
+    training_job = session.get(TrainingJob, artifact.training_job_id)
+    return training_job.project_id if training_job is not None else None
 
 
 @celery_app.task(bind=True, name="model.export", max_retries=0)
@@ -324,6 +338,20 @@ def export_model(
                         # is the more accurate terminal state for this run.
                         if row.export_status != JobStatus.CANCELLED:
                             row.export_status = JobStatus.FAILED
+                        audit_service.record(
+                            fail_session,
+                            action=(
+                                "export.cancelled"
+                                if row.export_status == JobStatus.CANCELLED
+                                else "export.failed"
+                            ),
+                            resource_type="model",
+                            resource_id=str(row.id),
+                            project_id=_project_id_for_artifact(fail_session, row),
+                            outcome="failure",
+                            request_id=request_context.current_request_id(),
+                            metadata={"job_id": job_id, "error_type": type(exc).__name__},
+                        )
             except Exception:  # noqa: BLE001 — never mask the original failure
                 log.warning(
                     "could not persist export_error_message for %s",
@@ -560,6 +588,15 @@ def _persist_export_uris(
             art.ollama_model_tag = ollama_tag
         art.export_error_message = None  # clear stale failure on retry
         art.export_status = JobStatus.COMPLETED
+        audit_service.record(
+            session,
+            action="export.completed",
+            resource_type="model",
+            resource_id=str(art.id),
+            project_id=_project_id_for_artifact(session, art),
+            request_id=request_context.current_request_id(),
+            metadata={"gguf_uri": gguf_uri, "ollama_model_tag": ollama_tag},
+        )
 
 
 def _quantize_merged_to_gguf(

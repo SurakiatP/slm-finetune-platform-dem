@@ -10,9 +10,17 @@ from __future__ import annotations
 import logging
 
 from celery import Celery
-from celery.signals import setup_logging
+from celery.signals import (
+    before_task_publish,
+    setup_logging,
+    task_failure,
+    task_postrun,
+    task_prerun,
+)
 
+from api.core import request_context
 from api.core.config import get_settings
+from api.core.logging_config import configure_logging
 
 settings = get_settings()
 
@@ -45,10 +53,79 @@ celery_app.conf.update(
 
 @setup_logging.connect
 def _configure_celery_logging(*_args: object, **_kwargs: object) -> None:
-    """Honor LOG_LEVEL from settings; let `basicConfig` install a single handler."""
-    logging.basicConfig(
-        level=settings.log_level.upper(),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    """Install the same JSON formatter + context filter the API uses.
+
+    Sharing `configure_logging` is what makes an API log line and a worker
+    log line for the same job comparable at all — same shape, same fields,
+    same `request_id`.
+    """
+    configure_logging(settings.log_level)
+
+
+# ---- Request-context propagation -------------------------------------------
+#
+# A job starts in the API (someone clicked Launch) and finishes in a worker
+# minutes or hours later. Without carrying the request id across that gap,
+# "why did this training fail" means correlating by timestamp across two
+# processes.
+#
+# The context rides in the message **headers**, not the task kwargs, on
+# purpose: kwargs are part of each task's signature, and threading an extra
+# argument through all five task bodies would be a breaking change to code
+# that has nothing to do with logging. Headers are transport metadata, which
+# is exactly what this is.
+
+
+@before_task_publish.connect
+def _inject_request_context(headers: dict | None = None, **_kwargs: object) -> None:
+    """API side: stamp the current request's identity onto the message."""
+    if headers is None:
+        return
+    request_id = request_context.current_request_id()
+    if request_id:
+        headers["x_request_id"] = request_id
+    user_id = request_context.current_user_id()
+    if user_id:
+        headers["x_user_id"] = user_id
+
+
+@task_prerun.connect
+def _bind_request_context(task_id: str | None = None, task: object = None, **_kwargs: object) -> None:
+    """Worker side: rebind it, so every `log.*` in the task body inherits it.
+
+    `job_id` is bound from the Celery task id, which is the same value the
+    client holds as `job_id` and subscribes to on `/ws/jobs/{job_id}` — so a
+    user reporting "job X is stuck" can be grepped directly.
+    """
+    # Celery exposes custom message headers as attributes on `task.request`
+    # (a `Context`), not as a plain dict — `getattr` is the supported read,
+    # and it also degrades to None on a task published before this shipped.
+    ctx = getattr(task, "request", None)
+    request_context.set_request_id(getattr(ctx, "x_request_id", None))
+    request_context.set_user_id(getattr(ctx, "x_user_id", None))
+    request_context.set_job_id(task_id)
+    logging.getLogger("workers.task").info(
+        "task start: %s", getattr(task, "name", "?"), extra={"celery_task": getattr(task, "name", None)}
+    )
+
+
+@task_postrun.connect
+def _clear_request_context(
+    task_id: str | None = None, task: object = None, state: str | None = None, **_kwargs: object
+) -> None:
+    logging.getLogger("workers.task").info(
+        "task end: %s (%s)", getattr(task, "name", "?"), state, extra={"celery_state": state}
+    )
+    request_context.clear()
+
+
+@task_failure.connect
+def _log_task_failure(
+    task_id: str | None = None, exception: BaseException | None = None, **_kwargs: object
+) -> None:
+    logging.getLogger("workers.task").error(
+        "task failed: %s", type(exception).__name__ if exception else "?",
+        extra={"error_type": type(exception).__name__ if exception else None},
     )
 
 

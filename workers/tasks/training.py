@@ -36,7 +36,9 @@ from api.models.dataset import Dataset
 from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
+from api.core import request_context
 from api.schemas.progress import JobCompleted, JobFailed
+from api.services import audit_service
 from api.schemas.training import ManualTrainingConfig
 from workers.celery_app import celery_app
 from workers.progress import publish_ws_message, sync_redis_scope
@@ -239,6 +241,21 @@ def train_manual(
                             job_row.status = JobStatus.FAILED
                         job_row.ended_at = datetime.now(timezone.utc)
                         job_row.error_message = (str(exc) or repr(exc))[:4000]
+                        audit_service.record(
+                            session,
+                            action=(
+                                "training.cancelled"
+                                if job_row.status == JobStatus.CANCELLED
+                                else "training.failed"
+                            ),
+                            resource_type="training",
+                            resource_id=str(job_row.id),
+                            project_id=job_row.project_id,
+                            outcome="failure",
+                            request_id=request_context.current_request_id(),
+                            metadata={"job_id": job_id, "error_type": type(exc).__name__},
+                        )
+
             except Exception:  # noqa: BLE001 — never mask the original failure
                 log.warning("could not persist FAILED status for %s", training_id, exc_info=True)
             try:
@@ -358,6 +375,18 @@ def _persist_artifact(
 
         job_row.status = JobStatus.COMPLETED
         job_row.ended_at = datetime.now(timezone.utc)
+        audit_service.record(
+            session,
+            action="training.completed",
+            resource_type="training",
+            resource_id=str(job_row.id),
+            project_id=job_row.project_id,
+            request_id=request_context.current_request_id(),
+            metadata={
+                "job_id": job_row.celery_task_id,
+                "model_artifact_id": str(artifact_id),
+            },
+        )
     return artifact_id
 
 
