@@ -12,7 +12,7 @@ contributor understand the system's structure without reading every file.
 
 Backend/full-stack developers picking up this repository cold — including
 anyone integrating a frontend against it. For the HTTP contract itself see
-[API reference](./02-api-reference.md) and `openapi.json` in this directory;
+[API reference](./02-api-reference.md) and [`../openapi.json`](../openapi.json);
 for the live-progress channel (not in OpenAPI) see
 [realtime WebSocket](./03-realtime-websocket.md); for frontend-specific
 integration notes see

@@ -27,9 +27,9 @@ Two important scoping notes:
 
 ## How to Consume the Spec
 
-- Full machine-readable contract: `docs/openapi.json` (this directory) —
-  regenerate from a running instance via `GET /openapi.json`, or browse
-  interactively at `/docs` (Swagger UI) / `/redoc`.
+- Full machine-readable contract: [`../openapi.json`](../openapi.json) at the
+  repo root — or fetch it live from a running instance via `GET /openapi.json`,
+  or browse interactively at `/docs` (Swagger UI) / `/redoc`.
 - Endpoint-by-endpoint prose reference: `docs/02-api-reference.md`.
 - WebSocket message shapes and reconnection contract:
   `docs/03-realtime-websocket.md`.
@@ -107,7 +107,7 @@ calls it).
 | `GET /api/v1/sdg-pipeline` | — | ❌ | Not called; `smart-model-tune` doesn't display which LLM the SDG pipeline uses (generator/judge/diversity-rules). Cosmetic only — nice-to-have, not required. |
 | `GET /health` | `engineHealthCheck` (`engineApi.ts:257-264`) | ❌ | Defined, never called anywhere in `src/`. No "Engine unreachable" banner exists — the only failure signal a user gets today is `ChatPanel`'s silent mock fallback (see Priority Fix below) or a generic launch-toast error in `NewProject.tsx`. |
 
-34 REST endpoints + 1 WebSocket channel from `docs/openapi.json` are covered above.
+35 REST endpoints + 1 WebSocket channel from [`../openapi.json`](../openapi.json) are covered above.
 
 ## ⚠️ Required Frontend Change — send the Supabase token (branch `feat/be-auth001`)
 
