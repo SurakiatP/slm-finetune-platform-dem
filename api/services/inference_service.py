@@ -7,25 +7,41 @@ ModelArtifact UUID instead of an Ollama tag, and return Ollama's response.
 We deliberately do NOT support streaming (`stream=true`) in this PoC — adding
 SSE proxying is straightforward but out of scope per Phase 7 requirements.
 
-**Ownership decision (feat/be-auth001, W3)**: `chat_completions` /
-`text_completions` ownership-check `body.model` whenever it's a
-ModelArtifact UUID (`_resolve_model_tag` -> `ownership.assert_model_access`)
-— running inference against someone else's private fine-tune is the same
-class of attack as reading or exporting it. `list_models` (`GET
-/inference/models`) is left UNFILTERED: it lists every tag the shared
-Ollama daemon knows about, not per-caller. Reasoning: (1) Ollama's tag
-namespace has no user-scoping concept at all — it's one daemon shared by
-every project, per `require.md`'s single-GPU-box assumption; (2) a tag
-*could* be reverse-mapped through `ModelArtifact.ollama_model_tag ->
-TrainingJob -> Project.owner_id`, but silently dropping tags that don't
-resolve that way (base models pulled directly into Ollama, never exported
-through our pipeline) would make the listing inconsistent in a way that's
-arguably more confusing than informative; (3) the acceptance criterion this
-branch targets is DB-resource ownership (project/dataset/training/artifact/
-evaluation/job-stream) — a bare tag string is a capability from Ollama's
-own namespace, not one of ours. If per-user model listing becomes a real
-product requirement later, it needs the reverse-map query, and should
-probably also decide what a *base* model interception even means to hide.
+**Ownership decision.** Everything here is scoped by the `slm/` tag
+namespace, which `workers/tasks/model_export.py::_compute_ollama_tag` owns:
+every artifact this platform exports is registered as
+`slm/<first-8-of-uuid>`, so a tag with that prefix always reverse-maps to a
+`ModelArtifact` and therefore always has an owner. Anything else on the
+daemon — a base model someone pulled directly, `llama3.2:3b` and friends —
+maps to no row of ours and has no owner to check against.
+
+So:
+
+* `chat_completions` / `text_completions` ownership-check `body.model` when
+  it is a ModelArtifact UUID **and** when it is a literal `slm/` tag
+  (`_resolve_model_tag` -> `ownership.assert_model_access`). Running
+  inference against someone else's private fine-tune is the same class of
+  attack as reading or exporting it.
+* `list_models` filters `slm/` tags to the caller's own artifacts.
+* Base-model tags stay listed and callable for everyone. Hiding them would
+  make the picker lie about what the daemon can actually serve, and they
+  leak nothing — they are not derived from anyone's data.
+
+**This was previously the opposite**, and the earlier reasoning is worth
+recording because it was wrong in an instructive way: the listing was left
+unfiltered on the grounds that a bare tag is "a capability from Ollama's own
+namespace, not one of ours", and that dropping unresolvable tags would make
+the listing inconsistent. But the two halves interacted — the unfiltered
+listing handed every caller the exact `slm/<8hex>` strings that
+`_resolve_model_tag` then accepted as literals without any check. Either
+half alone looks defensible; together they were a working cross-tenant read.
+Filtering the listing without also closing the literal path would have been
+theatre, since the tags are short enough to guess and were being published
+anyway.
+
+`user is None` is a complete no-op throughout, matching the phase-1 rule in
+`api/services/ownership.py` — anonymous callers see and can call exactly
+what they could before auth existed.
 """
 
 from __future__ import annotations
@@ -35,10 +51,12 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.auth import CurrentUser
 from api.core.config import get_settings
+from api.models.model_artifact import ModelArtifact
 from api.schemas.inference import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -53,6 +71,14 @@ log = logging.getLogger(__name__)
 
 # Ollama's OpenAI-compat router lives under /v1; native API under /api.
 _OLLAMA_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=10.0)
+
+# The tag namespace this platform owns. `workers/tasks/model_export.py`'s
+# `_compute_ollama_tag` registers every exported artifact as
+# `slm/<first-8-chars-of-uuid>`, so a tag with this prefix always maps back
+# to a `ModelArtifact` row and therefore always has an owner. Anything else
+# on the daemon (a base model someone pulled directly, e.g. `llama3.2:3b`)
+# does not.
+OUR_TAG_PREFIX = "slm/"
 
 
 async def chat_completions(
@@ -91,19 +117,41 @@ async def text_completions(
     return CompletionResponse.model_validate(raw)
 
 
-async def list_models() -> ModelDescriptorList:
+async def list_models(
+    db: AsyncSession, user: CurrentUser | None = None
+) -> ModelDescriptorList:
     """List models known to the local Ollama daemon (OpenAI shape).
 
-    Deliberately NOT ownership-filtered — see module docstring's "inference
-    decision" note. Every literal Ollama tag the shared daemon knows about
-    is visible to any authenticated caller.
+    Tags in our own namespace (`slm/…`) are filtered to the caller's own
+    artifacts; everything else the daemon knows about — base models pulled
+    straight in — stays visible to everyone, because those carry no ownership
+    information and hiding them would only make the picker lie about what the
+    daemon can actually serve.
+
+    `user is None` returns the unfiltered list, identical to pre-auth
+    behaviour (phase-1 rule, `api/services/ownership.py`).
     """
     raw = await _get_json("/v1/models")
+    entries = raw.get("data") or []
+
+    visible: set[str] | None = None
+    if user is not None:
+        stmt = ownership.scope_models_to_owner(
+            select(ModelArtifact.ollama_model_tag).where(
+                ModelArtifact.ollama_model_tag.is_not(None)
+            ),
+            user,
+        )
+        visible = set((await db.execute(stmt)).scalars().all())
+
     items = []
-    for entry in raw.get("data") or []:
+    for entry in entries:
+        tag = entry["id"]
+        if visible is not None and tag.startswith(OUR_TAG_PREFIX) and tag not in visible:
+            continue
         items.append(
             ModelDescriptor(
-                id=entry["id"],
+                id=tag,
                 created=int(entry.get("created", 0)),
                 owned_by=entry.get("owned_by", "slm-platform"),
                 metadata=None,
@@ -120,17 +168,46 @@ async def _resolve_model_tag(
 ) -> str:
     """Accept either a UUID (ModelArtifact id) or a literal Ollama tag.
 
-    UUID → look up ollama_model_tag on the artifact (must be exported first),
-    ownership-checked exactly like `GET /models/{id}` — running (free)
-    inference against someone else's private fine-tune is the same class of
-    attack as reading or exporting it. Otherwise pass through verbatim
-    (allows callers to use base models the daemon already has, like
-    `llama3.2:3b`) — a literal tag carries no ownership information to
-    check against.
+    Three cases:
+
+    * **UUID** → look up `ollama_model_tag` on the artifact (must be exported
+      first), ownership-checked exactly like `GET /models/{id}`.
+    * **Literal tag in our namespace** (`slm/…`) → reverse-map it to the
+      `ModelArtifact` it names and run the same ownership check. Skipping this
+      was a real hole: `GET /inference/models` used to hand every caller the
+      full tag list, so anyone could read `slm/<8hex>` off it and pass it here
+      as a literal to run inference on someone else's private fine-tune.
+      Filtering the listing alone would have been theatre — this is the path
+      that actually enforced nothing.
+    * **Any other literal tag** (`llama3.2:3b`, anything pulled straight into
+      the daemon) → passed through verbatim. It maps to no row of ours, so
+      there is no owner to check it against.
+
+    `user is None` short-circuits every check — phase-1 anonymous behaviour is
+    byte-identical to before auth existed (see `api/services/ownership.py`).
     """
     try:
         artifact_id = UUID(identifier)
     except (ValueError, TypeError):
+        if user is None or not identifier.startswith(OUR_TAG_PREFIX):
+            return identifier
+        stmt = select(ModelArtifact).where(ModelArtifact.ollama_model_tag == identifier)
+        artifact = (await db.execute(stmt)).scalar_one_or_none()
+        # One response for both "no such tag" and "not yours", phrased with the
+        # tag the caller supplied. `assert_model_access`'s own 404 names the
+        # artifact's UUID, which would both distinguish the two cases and hand
+        # the caller an id they had no way to know — so its error is swallowed
+        # and re-raised in this shape. Anti-oracle rule, ADR-009.
+        not_found = HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model {identifier} not found",
+        )
+        if artifact is None:
+            raise not_found
+        try:
+            await ownership.assert_model_access(db, artifact.id, user)
+        except HTTPException:
+            raise not_found from None
         return identifier
 
     artifact = await ownership.assert_model_access(db, artifact_id, user)

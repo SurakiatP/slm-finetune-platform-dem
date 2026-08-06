@@ -52,5 +52,8 @@ async def text_completions(
     response_model=ModelDescriptorList,
     summary="OpenAI-compatible model listing (Ollama-served)",
 )
-async def list_inference_models() -> ModelDescriptorList:
-    return await inference_service.list_models()
+async def list_inference_models(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+) -> ModelDescriptorList:
+    return await inference_service.list_models(db, user)
