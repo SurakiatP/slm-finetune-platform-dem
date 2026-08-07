@@ -29,7 +29,8 @@ from api.schemas.artifacts import (
 )
 from api.schemas.enums import ArtifactFormat, JobStatus
 from api.schemas.responses import Page
-from api.services import audit_service, ownership
+from api.services import audit_service, ownership, quota
+from api.services.quota import Bucket
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 from workers.storage import get_minio_client, parse_s3_uri
 
@@ -123,6 +124,16 @@ async def submit_export_job(
                 f"POST /api/v1/models/{model_id}/export/cancel first."
             ),
         )
+
+    # GPU quota gate — one bucket shared with training/HPO and evaluation
+    # (see quota.py). Deliberately runs AFTER the in-flight 409 guard above,
+    # not before: a caller re-POSTing an export that is already running
+    # deserves the specific, actionable 409 ("it's already running, cancel
+    # it first"), not a generic 429 that tells them nothing about what to
+    # do. The two guards never conflict — they answer different questions
+    # (is *this* artifact mid-export? vs. is this actor/the platform over
+    # its GPU concurrency cap?), so ordering them this way costs nothing.
+    await quota.assert_can_submit(db, bucket=Bucket.GPU, actor_id=request_context.current_user_id())
 
     # Local import keeps the API process from eagerly loading worker-only deps.
     from workers.tasks.model_export import export_model

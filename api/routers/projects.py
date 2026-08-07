@@ -13,7 +13,8 @@ from api.core.database import get_db
 from api.schemas.audit import AuditEventResponse
 from api.schemas.projects import ProjectCreate, ProjectResponse, ProjectUpdate
 from api.schemas.responses import Page
-from api.services import audit_service, projects_service
+from api.schemas.usage import UsageEventResponse
+from api.services import audit_service, projects_service, usage_service
 
 router = APIRouter()
 
@@ -116,5 +117,30 @@ async def list_project_activity(
     project anyone can query by id.
     """
     return await audit_service.list_activity(
+        db, project_id, limit=limit, offset=offset, user=user
+    )
+
+
+@router.get(
+    "/{project_id}/usage",
+    response_model=Page[UsageEventResponse],
+    summary="Usage/cost log for one project (newest first)",
+)
+async def list_project_usage(
+    project_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Page[UsageEventResponse]:
+    """Every OpenRouter usage event recorded against this project, newest first.
+
+    Ownership is enforced inside `list_project_usage` (it calls
+    `ownership.assert_project_access` before touching `usage_events` at
+    all), so this 404s for someone else's project exactly like
+    `GET /projects/{id}` and `/activity` do — never an empty page, which
+    would itself reveal that the project exists.
+    """
+    return await usage_service.list_project_usage(
         db, project_id, limit=limit, offset=offset, user=user
     )

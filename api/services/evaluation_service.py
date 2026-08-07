@@ -24,7 +24,8 @@ from api.schemas.evaluations import (
     EvaluationResponse,
 )
 from api.schemas.responses import Page
-from api.services import audit_service, ownership
+from api.services import audit_service, ownership, quota
+from api.services.quota import Bucket
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 
 
@@ -72,6 +73,11 @@ async def submit_evaluation_job(
                     f"artifact task_type={project.task_type.value}"
                 ),
             )
+
+    # GPU quota gate — one bucket shared with training/HPO and export (they
+    # all pin the same RTX 3060). After all validation above, right before
+    # the row insert.
+    await quota.assert_can_submit(db, bucket=Bucket.GPU, actor_id=request_context.current_user_id())
 
     ev = EvaluationRun(
         model_artifact_id=artifact.id,

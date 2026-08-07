@@ -83,6 +83,21 @@ def _stub_ownership(monkeypatch):
     monkeypatch.setattr(model_service.ownership, "assert_model_access", _assert)
 
 
+@pytest.fixture(autouse=True)
+def _stub_quota(monkeypatch):
+    """This file is about the in-flight 409 guard in isolation — the GPU
+    quota gate (429) that now sits right after it is exercised separately
+    in `tests/unit/test_gpu_quota_guards.py`, including the ordering case
+    where both guards would otherwise fire. Stubbing it here as a no-op
+    keeps this file's `_db()` MagicMock (no real SQLAlchemy execution)
+    valid: `quota.assert_can_submit` issues real `db.execute(...)` calls
+    that a bare MagicMock can't satisfy.
+    """
+    stub = AsyncMock(return_value=None)
+    monkeypatch.setattr(model_service.quota, "assert_can_submit", stub)
+    return stub
+
+
 class TestSecondExportIsRefused:
     @pytest.mark.parametrize("status", _BLOCKED)
     async def test_409_while_in_flight(self, spy_apply, status) -> None:

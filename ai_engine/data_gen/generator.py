@@ -73,6 +73,14 @@ from .prompts import (
     build_pdf_qa_messages,
     parse_generator_response,
 )
+from .usage import (
+    STAGE_GENERATE,
+    STAGE_JUDGE,
+    STAGE_META_PROMPT,
+    STAGE_PDF_QA,
+    SDGBudgetExceededError,
+    UsageAccumulator,
+)
 from .validators import validate_generated_rows
 
 log = logging.getLogger(__name__)
@@ -157,6 +165,7 @@ class SyntheticDataGenerator:
         seed_rows: list[dict[str, Any]] | None = None,
         pdf_bytes: bytes | None = None,
         progress_cb: ProgressCallback | None = None,
+        usage: UsageAccumulator | None = None,
     ) -> SDGRunResult:
         """Run one full SDG job.
 
@@ -166,6 +175,17 @@ class SyntheticDataGenerator:
                 None / [] (description_only / PDF-only QA).
             pdf_bytes: raw PDF bytes (QA + PDF only).
             progress_cb: optional sync callback for SDGProgress emission.
+            usage: optional accumulator the worker constructs (with prices +
+                remaining budget already resolved) and passes in. Deliberately
+                a *parameter* here rather than a field folded into
+                `SDGRunResult`: a run that raises (SDGAbortedError,
+                SDGBudgetExceededError, ...) never returns a result at all,
+                but the worker still needs to read what was spent so far in
+                order to bill it — the caller-held accumulator survives the
+                exception even though the return value doesn't. Default
+                `None` is load-bearing: every existing caller and snapshot
+                test keeps working untouched (no-op accounting) until the
+                worker opts in.
         """
         target = request.num_samples
         seed_rows = seed_rows or []
@@ -253,6 +273,7 @@ class SyntheticDataGenerator:
             classification_labels=cls_labels,
             tool_definitions=tool_defs,
             include_unknown=sentinel_active,
+            usage=usage,
         )
 
         # ---- Quota (cls + tool only) -------------------------------------
@@ -288,6 +309,7 @@ class SyntheticDataGenerator:
                     request=request,
                     pdf_bytes=pdf_bytes,
                     target=target,
+                    usage=usage,
                 )
                 api_calls += pdf_calls
                 # Dedup against any seeds we may also have.
@@ -298,6 +320,11 @@ class SyntheticDataGenerator:
                 # Use the PDF-derived Q&As as in-context examples for the loop.
                 for r in kept:
                     label_examples.setdefault("__qa__", []).append(r)
+            except SDGBudgetExceededError:
+                # Must propagate out of generate() untouched — do NOT let the
+                # broad `except Exception` below (PDF-call-is-best-effort)
+                # swallow it as just another flaky PDF call.
+                raise
             except Exception as exc:  # noqa: BLE001 — PDF call is best-effort
                 log.warning(
                     "PDF first-pass failed; continuing with text-only Generator: %s",
@@ -376,8 +403,13 @@ class SyntheticDataGenerator:
             candidates: list[dict[str, Any]] = []
             for raw, b in zip(gen_results, batch_inputs):
                 if isinstance(raw, Exception):
+                    # chat_batch returns exceptions inline rather than
+                    # raising (see AsyncOpenRouterClient.chat_batch) — a
+                    # failed call burned no billable tokens, so skip it.
                     failed_attempts.append(f"generator call error: {raw}")
                     continue
+                if usage is not None:
+                    usage.add(raw.model, STAGE_GENERATE, raw.prompt_tokens, raw.completion_tokens)
                 try:
                     rows = parse_generator_response(raw.content)
                 except (ValueError, JSONDecodeError) as exc:
@@ -412,6 +444,13 @@ class SyntheticDataGenerator:
                             # Let the validator drop malformed answers.
                             pass
                     candidates.append(row)
+
+            if usage is not None:
+                # Not caught by the `except Exception` above — that block
+                # only wraps the chat_batch() call itself, not this loop —
+                # so a budget breach here propagates straight out of
+                # generate() as required.
+                usage.check_budget()
 
             if not candidates:
                 consecutive_failures += 1
@@ -450,6 +489,7 @@ class SyntheticDataGenerator:
                 rows=valid_rows,
                 classification_labels=cls_labels,
                 tool_definitions=tool_defs,
+                usage=usage,
             )
             api_calls += judge_calls
             judge_rejected_total += j_low
@@ -517,6 +557,7 @@ class SyntheticDataGenerator:
         classification_labels: list[str] | None,
         tool_definitions: list[ToolDefinition] | None,
         include_unknown: bool,
+        usage: UsageAccumulator | None = None,
     ) -> SDGRules:
         """One meta-prompter LLM call. Falls back to generic rules on any error."""
         prompt = build_meta_prompt(
@@ -534,6 +575,8 @@ class SyntheticDataGenerator:
                 temperature=0.5,
                 response_format={"type": "json_object"},
             )
+            if usage is not None:
+                usage.add(chat.model, STAGE_META_PROMPT, chat.prompt_tokens, chat.completion_tokens)
             return parse_meta_response(chat.content, include_unknown=include_unknown)
         except Exception as exc:  # noqa: BLE001 — fall back, log
             log.warning("meta-prompter LLM call failed (%s); using fallback rules", exc)
@@ -546,6 +589,7 @@ class SyntheticDataGenerator:
         rows: list[dict[str, Any]],
         classification_labels: list[str] | None,
         tool_definitions: list[ToolDefinition] | None,
+        usage: UsageAccumulator | None = None,
     ) -> tuple[list[dict[str, Any]], int, int, int]:
         """Score every row; keep those with weighted >= JUDGE_THRESHOLD.
 
@@ -579,8 +623,12 @@ class SyntheticDataGenerator:
         parse_fail = 0
         for row, raw in zip(rows, results):
             if isinstance(raw, Exception):
+                # chat_batch returns exceptions inline rather than raising —
+                # a failed call burned no billable tokens, so skip it.
                 parse_fail += 1
                 continue
+            if usage is not None:
+                usage.add(raw.model, STAGE_JUDGE, raw.prompt_tokens, raw.completion_tokens)
             score = parse_judge_response(raw.content)
             if score is None:
                 parse_fail += 1
@@ -589,6 +637,11 @@ class SyntheticDataGenerator:
                 low += 1
                 continue
             kept.append(row)
+        if usage is not None:
+            # Outside the try/except above (which only wraps the chat_batch
+            # call itself), so a budget breach here is not swallowed by that
+            # handler and propagates straight out of generate().
+            usage.check_budget()
         return kept, low, parse_fail, len(prompts)
 
     async def _pdf_first_pass(
@@ -597,6 +650,7 @@ class SyntheticDataGenerator:
         request: SDGRequestWithSeed | SDGRequestDescriptionOnly,
         pdf_bytes: bytes,
         target: int,
+        usage: UsageAccumulator | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """One multimodal call to extract Q&A pairs from a PDF.
 
@@ -616,6 +670,13 @@ class SyntheticDataGenerator:
             pdf_data_url=data_url,
         )
         chat: ChatResult = await self._sync_pdf_call(messages=messages)
+        if usage is not None:
+            usage.add(chat.model, STAGE_PDF_QA, chat.prompt_tokens, chat.completion_tokens)
+            # This call site is NOT wrapped in a try/except here — the
+            # caller (generate()) wraps _pdf_first_pass() as a whole in a
+            # best-effort try/except and explicitly re-raises
+            # SDGBudgetExceededError before its broad `except Exception`.
+            usage.check_budget()
         rows = parse_generator_response(chat.content)
         # Validate against the QA schema; drop anything that doesn't fit.
         accepted, _failures = validate_generated_rows(TaskType.QA, rows)

@@ -44,6 +44,7 @@ from ai_engine.data_gen.pdf_loader import (
     probe as pdf_probe,
 )
 from ai_engine.data_gen.constants import MAX_SEED_PDF_BYTES
+from ai_engine.data_gen.usage import STAGE_FORMAT_DETECTION
 from api.core.auth import CurrentUser
 from api.core.config import get_settings
 from api.models.dataset import Dataset
@@ -61,7 +62,7 @@ from api.schemas.responses import Page
 from api.schemas.sdg import SeedUploadResponse
 from api.schemas.upload import FormatDetectionReport
 from api.core import request_context
-from api.services import audit_service, ownership
+from api.services import audit_service, ownership, usage_service
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 from workers.storage import (
     get_minio_client,
@@ -439,6 +440,7 @@ async def _upload_jsonl_seed(
         name=name,
         valid_rows=valid,
         fd_report=fd_report,
+        fd_result=fd_result,
     )
 
     return SeedUploadResponse(
@@ -505,11 +507,16 @@ async def _persist_jsonl_dataset(
     name: str | None,
     valid_rows: list[dict],
     fd_report: FormatDetectionReport,
+    fd_result: FormatDetectionResult | None = None,
 ) -> Dataset:
     """Create the Dataset row + write the canonicalised JSONL to MinIO.
 
     Returns the freshly-refreshed Dataset (so the caller can read
     ``dataset.id`` for the response). Stage 4 of the upload pipeline.
+
+    ``fd_result`` is optional only so existing direct callers/tests that
+    predate usage tracking keep working unchanged — the real upload path
+    (`_upload_jsonl_seed`) always passes it.
     """
     dataset_name = name or f"seed-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     dataset = Dataset(
@@ -540,6 +547,42 @@ async def _persist_jsonl_dataset(
         request_id=request_context.current_request_id(),
         metadata={"format": "jsonl", "num_samples": dataset.num_samples},
     )
+
+    # Format Detection is the one counted OpenRouter surface that runs in
+    # the API process rather than a Celery worker (it's a single call made
+    # synchronously, via asyncio.to_thread, during this upload) — which is
+    # exactly why usage_service.record was built to accept an AsyncSession
+    # as well as a sync Session. Recorded here, inside the same
+    # transaction this function already commits below, so a seed upload
+    # either persists both the dataset and its cost, or neither.
+    #
+    # `fd_result.ran` is True on the passthrough skip paths too (no API
+    # key, LLM error, no-mapping-produced) — those are best-effort
+    # fallbacks, not billed calls. The token fields are what actually
+    # distinguish a billed call: they're populated ONLY on the LLM success
+    # path (see `FormatDetectionResult` docstring), so their absence means
+    # no call was billed, which is not the same as a call that billed and
+    # returned zero tokens.
+    if (
+        fd_result is not None
+        and fd_result.ran
+        and fd_result.model is not None
+        and fd_result.prompt_tokens is not None
+        and fd_result.completion_tokens is not None
+    ):
+        usage_service.record(
+            db,
+            actor_id=request_context.current_user_id(),
+            project_id=dataset.project_id,
+            job_id=None,
+            provider="openrouter",
+            model=fd_result.model,
+            stage=STAGE_FORMAT_DETECTION,
+            prompt_tokens=fd_result.prompt_tokens,
+            completion_tokens=fd_result.completion_tokens,
+            outcome="completed",
+        )
+
     await db.commit()
     await db.refresh(dataset)
     return dataset

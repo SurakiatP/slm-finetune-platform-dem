@@ -32,6 +32,7 @@ from api.routers import (
     projects,
     tasks_meta,
     trainings,
+    usage,
     websocket,
 )
 
@@ -109,6 +110,7 @@ _OPENAPI_TAGS = [
     {"name": "models", "description": "Trained model artifacts; export to GGUF / SafeTensors."},
     {"name": "inference", "description": "OpenAI-compatible inference (proxied to Ollama)."},
     {"name": "evaluations", "description": "Per-task metrics and LLM-as-judge scoring."},
+    {"name": "usage", "description": "OpenRouter usage/cost events and monthly rollups."},
     {"name": "jobs", "description": "Job progress snapshots (last WS frame per job, via Redis)."},
     {"name": "metadata", "description": "Static catalogs powering frontend dynamic forms."},
     {"name": "system", "description": "Health, readiness, and infrastructure probes."},
@@ -189,7 +191,7 @@ API_V1 = "/api/v1"
 
 _AUTH = [Depends(require_user)]
 
-# Router-level (not per-route) so a new route added to any of these six
+# Router-level (not per-route) so a new route added to any of these seven
 # resources is protected by default — nobody has to remember to add the
 # dependency on the next endpoint. tasks_meta (3 static-catalog routers),
 # `/`, `/health`, `/docs`, `/redoc`, `/openapi.json` stay public: no DB,
@@ -216,6 +218,9 @@ app.include_router(
     prefix=f"{API_V1}/evaluations",
     tags=["evaluations"],
     dependencies=_AUTH,
+)
+app.include_router(
+    usage.router, prefix=f"{API_V1}/usage", tags=["usage"], dependencies=_AUTH
 )
 app.include_router(tasks_meta.tasks_router, prefix=f"{API_V1}/tasks", tags=["metadata"])
 app.include_router(tasks_meta.base_models_router, prefix=f"{API_V1}/base-models", tags=["metadata"])
