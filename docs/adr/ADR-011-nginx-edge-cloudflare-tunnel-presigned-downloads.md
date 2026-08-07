@@ -83,6 +83,34 @@ a client and `api`, this guarantees exactly one trusted hop — `api`'s
 appended-to by anything upstream of `edge`, and `idempotency.client_host()`
 gets a real, un-spoofable client address to key on.
 
+### The tunnel is opt-in, and the tunnel id is passed as an argument
+
+`cloudflared` carries `profiles: ["tunnel"]`, so a plain `docker compose up`
+does not start it and `scripts/deploy_pasaflow_vm.sh` passes
+`--profile tunnel` on **every** compose invocation, including the ones its
+own post-deploy banner tells the operator to run later. A developer machine
+has no tunnel credentials, and `restart: unless-stopped` would have
+crash-looped the container forever; a deployment, conversely, must never come
+up without it, because `api` and `edge` both bind `127.0.0.1` and the tunnel
+is the only ingress. A stack brought up without the profile is healthy, exits
+0, and is unreachable from the internet — the most expensive kind of failure,
+which is why `tests/unit/test_compose_port_exposure.py` enumerates every
+`docker compose` call in that script rather than checking the flag appears
+somewhere in it.
+
+The tunnel id reaches cloudflared as the argument to `tunnel run` in
+`docker-compose.yml`, **not** as a `tunnel:` key in
+`docker/cloudflared/config.yml`. Compose interpolates the compose file and
+never the contents of a bind-mounted one, so a `${...}` placeholder in that
+YAML would have arrived verbatim and the tunnel would have failed to start.
+The interpolation deliberately uses `:-` and not `:?`: compose evaluates the
+whole file before selecting services or profiles and treats `:?` as an error
+on an *empty* value as well as an unset one, and `.env.example` ships the
+variable blank — so `:?` broke `docker compose up`, `build`, `config` and
+`ps` for anyone following the README quickstart. Requiring the value belongs
+where a deployment happens, which is the deploy script's Phase 4.6
+pre-flight.
+
 ### Rate limiting at the edge, not the application
 
 `docker/edge.nginx.conf` defines five `limit_req_zone`s (`api_read` 20r/s,

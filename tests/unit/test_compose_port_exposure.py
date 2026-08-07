@@ -364,10 +364,83 @@ def test_the_tunnel_is_opt_in_so_local_dev_does_not_crash_loop_it() -> None:
     profiles = _COMPOSE["services"]["cloudflared"].get("profiles") or []
     assert profiles, "cloudflared has no `profiles:` — a plain `docker compose up` would start it"
 
-    deploy = (_COMPOSE_PATH.parent / "scripts" / "deploy_pasaflow_vm.sh").read_text(encoding="utf-8")
-    for verb in ("up -d", "pull"):
-        assert f"--profile {profiles[0]} {verb}" in deploy, (
-            f"the deploy script's `docker compose {verb}` does not pass "
-            f"`--profile {profiles[0]}`, so the tunnel — the only ingress — "
-            "would never start on a real deployment"
-        )
+
+# Verbs that select services and therefore need the profile. `version` and
+# `exec` do not: the first ignores the file entirely, the second addresses one
+# already-running container by name.
+_PROFILE_REQUIRING_VERBS = ("up", "pull", "ps", "stop", "down", "restart", "start")
+
+# Compose global flags that consume the following token, so it must not be
+# mistaken for the subcommand.
+_VALUE_FLAGS = ("--profile", "-f", "--file", "-p", "--project-name", "--env-file", "--project-directory")
+
+
+def _deploy_compose_invocations() -> list[tuple[int, str]]:
+    """Every service-selecting `docker compose` line in the deploy script.
+
+    Enumerated, not substring-matched. The first version of the guard below
+    asked whether `--profile tunnel up -d` appeared ANYWHERE in the file — so
+    once two of the three call sites were fixed, it went green while the
+    third, in the operator-facing "to restart stack later" banner, still said
+    a bare `docker compose up -d`. Following the script's own printed
+    instructions would then bring the stack up without cloudflared: every
+    container healthy, exit 0, and the box unreachable from the internet.
+
+    Comments are stripped first — the script explains this profile in prose
+    that itself contains the string `docker compose up`, and a guard that
+    counts its own explanation as a violation is a guard someone deletes.
+    """
+    path = _COMPOSE_PATH.parent / "scripts" / "deploy_pasaflow_vm.sh"
+    hits: list[tuple[int, str]] = []
+    for n, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = re.sub(r"(^|\s)#.*$", "", raw)
+        for m in re.finditer(r"docker compose\b", line):
+            # Everything up to the next shell separator is this one command.
+            rest = re.split(r"[|;&]|\d?>", line[m.end() :], maxsplit=1)[0]
+            # Find the SUBCOMMAND: the first token that is neither a flag nor
+            # a flag's value. Two wrong versions of this preceded the right
+            # one, in opposite directions, and both are instructive:
+            #   * "the word right after `compose`" matched `tunnel` in
+            #     `--profile tunnel pull` and so found nothing at all;
+            #   * "any token in the verb list" matched the `pull` in
+            #     `docker compose exec -T ollama ollama pull …`, flagging an
+            #     `exec` that needs no profile.
+            # Only the subcommand decides, so only the subcommand is read.
+            verb = None
+            skip_next = False
+            for tok in rest.split():
+                if skip_next:
+                    skip_next = False
+                    continue
+                if tok in _VALUE_FLAGS:
+                    skip_next = True
+                    continue
+                if tok.startswith("-"):
+                    continue
+                verb = tok
+                break
+            if verb in _PROFILE_REQUIRING_VERBS:
+                hits.append((n, line.strip()))
+    assert hits, (
+        "no service-selecting `docker compose` invocations found in the deploy "
+        "script. Either the script stopped using compose, or this helper's "
+        "parsing broke — do not 'fix' this by deleting the assertion; an "
+        "enumeration over nothing passes vacuously."
+    )
+    return hits
+
+
+def test_every_deploy_compose_invocation_enables_the_tunnel_profile() -> None:
+    profile = (_COMPOSE["services"]["cloudflared"].get("profiles") or [None])[0]
+    assert profile, "cloudflared has no profile to enable"
+
+    missing = [
+        (n, line) for n, line in _deploy_compose_invocations() if f"--profile {profile}" not in line
+    ]
+    assert not missing, (
+        "these `docker compose` invocations in scripts/deploy_pasaflow_vm.sh do "
+        f"not pass `--profile {profile}`, so they silently exclude cloudflared — "
+        "the only ingress. A stack brought up this way is healthy and "
+        "unreachable:\n"
+        + "\n".join(f"  line {n}: {line}" for n, line in missing)
+    )

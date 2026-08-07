@@ -106,8 +106,8 @@ class Settings(BaseSettings):
     # have one; earlier revisions of this comment claimed otherwise.)
     # A restrictive default would break both. A production value MUST
     # include `localhost`, `127.0.0.1`, and `api` — omit any of those and
-    # the healthcheck itself gets rejected with 400, which looks like the
-    # app is down when it is actually the host guard doing its job.
+    # that Phase 7 curl gets rejected with 400, which looks like the app is
+    # down when it is actually the host guard doing its job.
     api_allowed_hosts: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
 
     @field_validator("api_allowed_hosts", mode="before")

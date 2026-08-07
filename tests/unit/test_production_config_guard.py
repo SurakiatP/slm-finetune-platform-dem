@@ -371,12 +371,15 @@ class TestApiAllowedHostsEmptyMeansAllowAll:
         app = Starlette(routes=[Route("/health", lambda r: PlainTextResponse("ok"))])
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
 
-        # The three Hosts a real deployment must answer: the compose
-        # healthcheck, in-network probes, and the public hostname.
+        # The three Hosts a real deployment must answer: the deploy script's
+        # Phase 7 curl, in-network probes, and the public hostname. (There is
+        # deliberately no compose `healthcheck:` on `api` or `edge` — only
+        # postgres/redis/minio/mlflow define one. Earlier revisions of this
+        # comment cited one that does not exist.)
         for host in ("localhost", "api", "slmpc.pasaflow.com"):
             r = TestClient(app, base_url=f"http://{host}").get("/health")
             assert r.status_code == 200, (
                 f"the API_ALLOWED_HOSTS value shipped in .env.example rejects "
                 f"Host: {host} with {r.status_code}. Every request, including "
-                "the compose healthcheck, would 400 on a fresh deploy."
+                "the deploy script's own health check, would 400 on a fresh deploy."
             )

@@ -450,7 +450,7 @@ for i in $(seq 1 36); do
   sleep 5
 done
 
-docker compose ps | tee -a "$LOG"
+docker compose --profile tunnel ps | tee -a "$LOG"
 
 # --------- Phase 6: Migrations + ollama pull --------------------------------
 say "==== Phase 6: Migrations ===="
@@ -544,6 +544,8 @@ Next:
     on this box.
   - Paste the "tail -20 $LOG" output back to Claude for triage if anything looked off
   - If everything green → run 11-node E2E from docs/guidebook-e2e/test-e2e-on-vm.html
-  - To restart stack later:   cd $REPO_DIR && docker compose up -d
-  - To stop:                   cd $REPO_DIR && docker compose stop
+  - To restart stack later:   cd $REPO_DIR && docker compose --profile tunnel up -d
+    (the --profile flag is REQUIRED: without it cloudflared is skipped and the
+     box comes up healthy but unreachable — it is the only ingress)
+  - To stop:                   cd $REPO_DIR && docker compose --profile tunnel stop
 EOF
