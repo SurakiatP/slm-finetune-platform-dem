@@ -286,3 +286,57 @@ class TestCancellationSurvivesSigterm:
         """Swallowing it would make Celery mark a killed task as succeeded."""
         tail = _CANCELLABLE_TASKS[task].split("except BaseException as exc:")[1]
         assert "\n            raise\n" in tail, f"{task}: missing the trailing bare re-raise"
+
+
+class TestCommittedRunsAreNotUnwound:
+    """REGRESSION GUARDS for the defect that has now recurred four times.
+
+    Every one of these tasks commits its terminal row and *then* keeps
+    working — publishing a frame, writing a log line, building a return
+    value. All of that sits inside the same `try` whose
+    `except BaseException` handler writes FAILED and publishes `JobFailed`.
+    So anything raising after the commit — a Redis blip while announcing
+    completion, a broken log handler, or a cancel's SIGTERM arriving as
+    `SystemExit` in that window — reported a finished run as failed and sent
+    `JobFailed` after `JobCompleted`, leaving the WS stream contradicting
+    itself and (for the three tasks that upload) deleting the artifact the
+    row now references.
+
+    The fix is a `committed` flag set the instant the referencing commit
+    lands, gating the status write, the `JobFailed` publish and any storage
+    cleanup. It was applied to `data_generation` first; `training` and
+    `model_export` were found to have the identical bug a round later, and
+    `hpo_training` and `evaluation` a round after that.
+
+    Parametrized over `_CANCELLABLE_TASKS` for the same reason the class
+    above is: the failure mode is not "the logic is wrong", it is **"one of
+    the five files was missed"** — which has happened every single time.
+    `hpo_training` alone has been missed twice. Adding a new task to that
+    dict is what makes this catch the sixth occurrence.
+    """
+
+    @pytest.mark.parametrize("task", sorted(_CANCELLABLE_TASKS))
+    def test_declares_a_committed_flag(self, task: str) -> None:
+        src = _CANCELLABLE_TASKS[task]
+        assert "committed = False" in src and "committed = True" in src, (
+            f"{task}: no `committed` flag — a failure after the terminal "
+            f"commit will unwind a finished run to FAILED"
+        )
+
+    @pytest.mark.parametrize("task", sorted(_CANCELLABLE_TASKS))
+    def test_status_write_is_gated_on_it(self, task: str) -> None:
+        """The FAILED write must be unreachable once the run has committed."""
+        tail = _CANCELLABLE_TASKS[task].split("except BaseException as exc:")[1]
+        assert "not committed" in tail.split("JobStatus.FAILED")[0], (
+            f"{task}: the FAILED write in the handler is not gated on "
+            f"`not committed`"
+        )
+
+    @pytest.mark.parametrize("task", sorted(_CANCELLABLE_TASKS))
+    def test_terminal_frame_is_gated_on_it(self, task: str) -> None:
+        """A client that got `JobCompleted` must never then get `JobFailed`."""
+        tail = _CANCELLABLE_TASKS[task].split("except BaseException as exc:")[1]
+        before_frame = tail.split("JobFailed(")[0]
+        assert "if not committed:" in before_frame, (
+            f"{task}: the JobFailed publish is not gated on `not committed`"
+        )

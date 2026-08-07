@@ -85,6 +85,16 @@ def run_evaluation(
         def publish(msg: Any) -> None:
             publish_ws_message(redis, job_id, msg)
 
+        # Declared before the `try:` so the `except BaseException` handler can
+        # read it. Evaluation uploads nothing — it only reads the dataset — so
+        # unlike the other four tasks there is no orphaned artifact to clean
+        # up here. What this flag protects is the run's terminal state: a
+        # failure after the COMPLETED commit (a broken log handler, or a
+        # cancel's SIGTERM arriving as `SystemExit` in that window) must not
+        # rewrite a finished evaluation as failed, nor publish `JobFailed`
+        # after `JobCompleted`.
+        committed = False
+
         try:
             # ---- 1. Load context --------------------------------------------
             with session_scope() as session:
@@ -224,6 +234,10 @@ def run_evaluation(
                     metadata={"job_id": job_id, "llm_judge_score": judge_score},
                 )
 
+            # The run is durably COMPLETED. From here the handler must not
+            # rewrite its terminal state or emit a contradicting frame.
+            committed = True
+
             publish(
                 JobCompleted(
                     job_id=job_id,
@@ -260,7 +274,11 @@ def run_evaluation(
             try:
                 with session_scope() as session:
                     row = session.get(EvaluationRun, eval_uuid)
-                    if row is not None:
+                    # Same guard as the other four tasks: `committed` means
+                    # this run already finished and its row says so. The
+                    # exception is still re-raised so Celery records the task
+                    # failure; it is the row that must stay true.
+                    if row is not None and not committed:
                         # The cancel endpoint already set CANCELLED before
                         # revoking; don't overwrite it with FAILED.
                         if row.status != JobStatus.CANCELLED:
@@ -284,16 +302,20 @@ def run_evaluation(
                         )
             except Exception:  # noqa: BLE001
                 log.warning("could not persist FAILED for %s", evaluation_id, exc_info=True)
-            try:
-                publish(
-                    JobFailed(
-                        job_id=job_id,
-                        error=str(exc) or repr(exc),
-                        error_type=type(exc).__name__,
+            # A client that already received `JobCompleted` must never then
+            # receive `JobFailed` for the same job_id. A terminal frame is
+            # terminal.
+            if not committed:
+                try:
+                    publish(
+                        JobFailed(
+                            job_id=job_id,
+                            error=str(exc) or repr(exc),
+                            error_type=type(exc).__name__,
+                        )
                     )
-                )
-            except Exception:  # noqa: BLE001
-                log.warning("failed to publish JobFailed", exc_info=True)
+                except Exception:  # noqa: BLE001
+                    log.warning("failed to publish JobFailed", exc_info=True)
             raise
 
 

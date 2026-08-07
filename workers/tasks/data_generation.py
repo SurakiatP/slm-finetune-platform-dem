@@ -124,23 +124,26 @@ def generate_synthetic_data(
             budget_remaining_usd = min(remaining_candidates)
 
     usage = UsageAccumulator(prices=prices, budget_remaining_usd=budget_remaining_usd)
-    # Flipped once the success leg's usage rows are committed, so the
-    # `except BaseException` handler can tell "this run was never billed" from
-    # "this run was billed and then something failed while announcing it".
-    # Without it, a Redis error after the commit bills the same tokens twice.
-    usage_recorded = False
-
     # Every MinIO key written by this run, appended the instant `put_jsonl`
     # returns — i.e. before the `Dataset` row that references it is ever
-    # committed. Declared before `try:`, same as `usage_recorded`, so it
-    # survives whatever raises and reaches the `except BaseException` handler
-    # below. `committed` mirrors `usage_recorded`'s role exactly: it flips
-    # True the instant the DB row(s) pointing at `uploaded_keys` are durably
-    # committed, and the handler deletes `uploaded_keys` ONLY when it is
-    # still False. Gap-analysis item 13: a cancel or failure landing in the
-    # upload-then-commit window otherwise orphans the JSONL(s) in MinIO
-    # forever — nothing in the DB ever comes to reference them.
+    # committed.
     uploaded_keys: list[str] = []
+
+    # The single "this run's terminal commit landed" flag, declared before
+    # `try:` so it survives whatever raises and is readable in the
+    # `except BaseException` handler. One flag, three jobs — all of them
+    # variations on "the DB now says this run finished, so stop treating it
+    # as in-flight":
+    #   • don't bill the tokens a second time (a duplicate usage row doubles
+    #     this actor's monthly spend and trips the budget cap early)
+    #   • don't delete `uploaded_keys` — the Dataset row references them now,
+    #     and deleting a live dataset would be catastrophic (item 13)
+    #   • don't rewrite the terminal status or publish `JobFailed` after
+    #     `JobCompleted`
+    # The other four task modules carry the same flag under the same name;
+    # `tests/unit/test_worker_progress_frames.py` asserts all five have it,
+    # because the recurring defect here has never been "the logic is wrong",
+    # it has been "one of the five files was missed".
     committed = False
 
     with sync_redis_scope() as redis:
@@ -326,12 +329,6 @@ def generate_synthetic_data(
             # deleting a live, DB-referenced dataset would be catastrophic.
             committed = True
 
-            # The success leg's usage rows are now committed. Anything that
-            # raises from here on must NOT be billed a second time by the
-            # `except BaseException` handler — a duplicate row would double
-            # this actor's recorded monthly spend and trip the budget cap early.
-            usage_recorded = True
-
             # Wrapped for the same reason its `JobFailed` twin is: the work is
             # done and durably committed, so a Redis hiccup while announcing it
             # must not unwind a completed run into a FAILED one.
@@ -406,7 +403,7 @@ def generate_synthetic_data(
             try:
                 with session_scope() as session:
                     ds = session.get(Dataset, parent_uuid)
-                    # `usage_recorded` means the success leg already committed:
+                    # `committed` means the success leg already committed:
                     # the JSONL is in MinIO and the row is durably COMPLETED.
                     # Anything raising after that point — a broken log handler,
                     # or a cancel's SIGTERM landing in this window and arriving
@@ -416,7 +413,7 @@ def generate_synthetic_data(
                     # WebSocket stream contradicting itself. The exception is
                     # still re-raised below, so Celery records the task as
                     # failed; it is the *dataset's* state that must stay true.
-                    if ds is not None and not usage_recorded:
+                    if ds is not None and not committed:
                         # The cancel endpoint sets status=CANCELLED *before*
                         # revoking. Don't clobber it back to FAILED — CANCELLED
                         # is the accurate terminal state for that run. The
@@ -459,7 +456,7 @@ def generate_synthetic_data(
                     # Rides this same session/transaction, so a usage-write
                     # failure can never mask the original SDG failure — it is
                     # still inside the enclosing `except Exception`.
-                    if not usage_recorded:
+                    if not committed:
                         usage_service.record_run(
                             session,
                             usage.entries(),
@@ -490,7 +487,7 @@ def generate_synthetic_data(
             # came to reference `uploaded_keys` — i.e. this cancel/failure
             # landed in the upload-then-commit window, and the JSONL(s)
             # sitting in MinIO are unreachable from the DB. Delete them.
-            # Gated on the exact same flag/reasoning as `usage_recorded`
+            # Gated on the exact same flag/reasoning as the status write
             # above — see its comment. Every delete is individually
             # try/excepted so a MinIO hiccup during cleanup can never mask
             # the original SDG failure being handled here, and a fresh
@@ -530,7 +527,7 @@ def generate_synthetic_data(
             # Same guard as the status write above: a client that already
             # received `JobCompleted` must never then receive `JobFailed` for
             # the same job_id. A terminal frame is terminal.
-            if not usage_recorded:
+            if not committed:
                 try:
                     publish_ws_message(
                         redis,

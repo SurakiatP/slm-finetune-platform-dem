@@ -558,7 +558,7 @@ class TestUsageBilledWhenDatasetRowIsGone:
     def test_any_failure_after_the_commit_does_not_bill_twice(
         self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
     ) -> None:
-        """The `usage_recorded` flag, not the publish guard, is what covers this.
+        """The `committed` flag, not the publish guard, is what covers this.
 
         Wrapping the terminal `JobCompleted` publish in try/except handles the
         Redis case, but ANY post-commit exception reaches the same handler.
@@ -627,7 +627,7 @@ class TestUsageBilledWhenDatasetRowIsGone:
 
 
 # =============================================================================
-# 7. Terminal-frame gate — behavioural cover for the `not usage_recorded`
+# 7. Terminal-frame gate — behavioural cover for the `not committed`
 #    guard on the `JobFailed` publish (round-3 review).
 #
 #    `test_worker_progress_frames.py` only asserts the *source text* contains
