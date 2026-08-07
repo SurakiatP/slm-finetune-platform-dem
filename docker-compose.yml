@@ -284,7 +284,18 @@ services:
       # config.yml.
       - ${CLOUDFLARE_TUNNEL_CREDS_DIR:-./.cloudflared}:/etc/cloudflared:ro
       - ./docker/cloudflared/config.yml:/etc/cloudflared/config.yml:ro
-    command: ["tunnel", "--no-autoupdate", "--config", "/etc/cloudflared/config.yml", "run"]
+    # The tunnel id is an ARGUMENT here, not a `tunnel:` key inside
+    # config.yml. Compose interpolates this file; it does not interpolate the
+    # contents of a bind-mounted one, so a `${...}` placeholder in config.yml
+    # would reach cloudflared verbatim and the tunnel would never start —
+    # silently, since nothing else in the stack depends on it booting.
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --config
+      - /etc/cloudflared/config.yml
+      - run
+      - ${CLOUDFLARE_TUNNEL_ID:?set CLOUDFLARE_TUNNEL_ID in .env — see docs/runbooks/}
     depends_on:
       - edge
     networks: [slm-net]

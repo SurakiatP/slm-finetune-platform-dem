@@ -7,7 +7,7 @@ exports, the listing cap, and the 503 when `MINIO_PUBLIC_URL` is unset.
 
 This layer deliberately CANNOT catch host/region/path-style bugs — `_FakeMinio.
 presigned_get_object` never touches SigV4 at all. That's what
-`tests/unit/test_presigned_url_shape.py` (Layer 2, a real `Minio` client, no
+`tests/unit/test_presign_url_shape.py` (Layer 2, a real `Minio` client, no
 network) exists for; see its module docstring.
 
 **Import-by-name trap**: `api/services/download_links.py` does
@@ -145,6 +145,23 @@ async def _project_training_and_artifact(
 
 
 async def _audit_rows(db: AsyncSession, action: str) -> list[AuditEvent]:
+    """Rows that survived a rollback — i.e. rows that were really COMMITTED.
+
+    Querying the same session that wrote them proves nothing: SQLAlchemy
+    autoflushes pending objects before a SELECT, so an uncommitted row is
+    returned exactly like a committed one. Deleting BOTH `await db.commit()`
+    calls from `api/services/download_links.py` left this file fully green
+    until this rollback was added.
+
+    That matters because `api/core/database.py`'s `get_db` yields and closes
+    without committing — so a missing commit here silently drops every
+    `dataset.download_url` / `model.download_url` audit row, on a code path
+    whose entire purpose is to leave a trail of who was handed a capability
+    URL. The service commits deliberately and before returning the URL, for
+    the same reason `datasets_service.py` does on the streaming download:
+    the record must exist before the credential escapes.
+    """
+    await db.rollback()
     rows = (await db.execute(select(AuditEvent).where(AuditEvent.action == action))).scalars().all()
     return list(rows)
 

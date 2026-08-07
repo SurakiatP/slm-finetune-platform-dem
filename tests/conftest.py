@@ -261,7 +261,7 @@ class _FakeMinio:
         path-style vs virtual-style URL, because it never touches SigV4 at
         all. Those are exactly the bug classes that break on real
         hardware, which is why they get their own no-network test against
-        a real `Minio` instance in `tests/unit/test_presigned_url_shape.py`
+        a real `Minio` instance in `tests/unit/test_presign_url_shape.py`
         instead of being (wrongly) trusted to this fake.
         """
         query = f"X-Fake-Expires={expires}"

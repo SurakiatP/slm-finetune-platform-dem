@@ -302,3 +302,81 @@ def test_both_entrypoints_emit_the_warnings() -> None:
     for module in (api_main, celery_app):
         src = Path(module.__file__).read_text(encoding="utf-8")
         assert "startup_warnings()" in src, f"{module.__name__} never emits config warnings"
+
+
+class TestApiAllowedHostsEmptyMeansAllowAll:
+    """The case that actually ships, which the first draft never tested.
+
+    `TrustedHostMiddleware` is wired to `settings.api_allowed_hosts`
+    (`api/main.py`). Starlette computes `allow_any = "*" in allowed_hosts`,
+    so an empty list matches nothing and answers **400 to every request** --
+    `/health` included, which reads as a dead stack rather than a config
+    problem.
+
+    Every other test in this repo builds `Settings` with the variable
+    *absent*, where the field default `["*"]` fires and everything looks
+    fine. But `.env.example` ships a bare `API_ALLOWED_HOSTS=` line and
+    `scripts/deploy_pasaflow_vm.sh` seeds the VM's `.env` from it, so
+    "present but empty" is the production default and "absent" is only ever
+    the unit suite's shape. Textbook "the assertion sits where it passes":
+    the guard was in the branch that held and missing from its neighbour.
+    """
+
+    def test_an_empty_env_var_allows_all_rather_than_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_ALLOWED_HOSTS", "")
+        assert Settings(database_url=DEFAULT_DSN).api_allowed_hosts == ["*"]
+
+    def test_a_whitespace_only_value_also_allows_all(self) -> None:
+        """`API_ALLOWED_HOSTS=  ,  ` is a typo, not a deny-all instruction."""
+        assert Settings(database_url=DEFAULT_DSN, api_allowed_hosts="  ,  ").api_allowed_hosts == ["*"]
+
+    def test_a_real_list_is_still_honoured(self) -> None:
+        """The neighbouring case: fixing the empty case must not turn the
+        setting into a no-op that always allows everything."""
+        s = Settings(database_url=DEFAULT_DSN, api_allowed_hosts="slmpc.pasaflow.com, localhost")
+        assert s.api_allowed_hosts == ["slmpc.pasaflow.com", "localhost"]
+        assert "*" not in s.api_allowed_hosts
+
+    def test_the_value_env_example_actually_ships_serves_health(self) -> None:
+        """Ties the config file to real behaviour, which is where this broke.
+
+        Reads `API_ALLOWED_HOSTS` out of `.env.example` verbatim, feeds it to
+        `Settings`, and drives `TrustedHostMiddleware` with the result. A
+        parse-level assertion alone would not have caught the original bug's
+        consequence; this asserts the shipped value produces a served
+        request rather than a 400.
+        """
+        from pathlib import Path
+
+        from starlette.applications import Starlette
+        from starlette.middleware.trustedhost import TrustedHostMiddleware
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+        from starlette.testclient import TestClient
+
+        env_example = (Path(__file__).resolve().parents[2] / ".env.example").read_text()
+        shipped = next(
+            (
+                line.split("=", 1)[1]
+                for line in env_example.splitlines()
+                if line.startswith("API_ALLOWED_HOSTS=")
+            ),
+            None,
+        )
+        assert shipped is not None, ".env.example no longer declares API_ALLOWED_HOSTS"
+
+        hosts = Settings(database_url=DEFAULT_DSN, api_allowed_hosts=shipped).api_allowed_hosts
+        app = Starlette(routes=[Route("/health", lambda r: PlainTextResponse("ok"))])
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
+
+        # The three Hosts a real deployment must answer: the compose
+        # healthcheck, in-network probes, and the public hostname.
+        for host in ("localhost", "api", "slmpc.pasaflow.com"):
+            r = TestClient(app, base_url=f"http://{host}").get("/health")
+            assert r.status_code == 200, (
+                f"the API_ALLOWED_HOSTS value shipped in .env.example rejects "
+                f"Host: {host} with {r.status_code}. Every request, including "
+                "the compose healthcheck, would 400 on a fresh deploy."
+            )

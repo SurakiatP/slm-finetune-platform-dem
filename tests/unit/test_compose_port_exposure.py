@@ -242,3 +242,74 @@ def test_dev_override_is_not_named_override_yml() -> None:
         "`docker compose up` — this repo's dev overrides must be opt-in via "
         "`-f docker-compose.dev.yml`, not this auto-loaded filename"
     )
+
+
+# ---------------------------------------------------------------------------
+# The cloudflared bootstrap seam.
+#
+# `docker/cloudflared/config.yml` is bind-mounted read-only. Compose
+# interpolates the compose file, NOT the contents of files it mounts — so a
+# `${...}` placeholder in that YAML reaches cloudflared verbatim, the tunnel
+# never starts, and every public route is down. Nothing else in the stack
+# depends on cloudflared booting, so the failure is silent: the deploy
+# script's wait loop times out and still prints a green summary advertising
+# the public hostname.
+#
+# That is exactly the seam the round-2 review named: one wave wrote the
+# config, another wrote the env-var prompt, and nobody owned the middle. The
+# two guards below are the middle.
+# ---------------------------------------------------------------------------
+
+_CF_CONFIG_PATH = _COMPOSE_PATH.parent / "docker" / "cloudflared" / "config.yml"
+
+
+def _strip_yaml_comments(text: str) -> str:
+    """Assertions about forbidden syntax must not match the comments that
+    explain why it is forbidden — the same trap that made every guard in
+    tests/unit/test_edge_nginx_config.py fail against a correct config."""
+    return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+
+
+def test_the_tunnel_config_carries_no_uninterpolated_placeholder() -> None:
+    code = _strip_yaml_comments(_CF_CONFIG_PATH.read_text(encoding="utf-8"))
+    assert "${" not in code, (
+        "docker/cloudflared/config.yml contains a ${...} placeholder. Nothing "
+        "substitutes it: compose does not interpolate bind-mounted file "
+        "contents, and no script rewrites this file. cloudflared would fail "
+        "to start and every public route would be down. Pass the value as an "
+        "argument in docker-compose.yml's cloudflared `command:` instead, "
+        "where interpolation actually happens."
+    )
+
+
+def test_the_tunnel_id_reaches_cloudflared_from_the_compose_file() -> None:
+    """The other half: having removed the placeholder, the id must still get
+    there. Also pins the env-var NAME — the original bug was that config.yml
+    said TUNNEL_ID while .env.example and the deploy script both said
+    CLOUDFLARE_TUNNEL_ID, so even a working substitution step would have
+    read the wrong variable."""
+    command = [str(c) for c in (_COMPOSE["services"]["cloudflared"].get("command") or [])]
+    joined = " ".join(command)
+
+    assert "run" in command, "cloudflared is not invoked with `tunnel run`"
+
+    # Extract the VARIABLE NAMES actually referenced, rather than asking
+    # whether the string appears anywhere. The first version of this
+    # assertion did the latter and could not fail: the `:?` error message is
+    # itself "set CLOUDFLARE_TUNNEL_ID in .env", so renaming the real
+    # variable to ${TUNNEL_ID:?set CLOUDFLARE_TUNNEL_ID...} — reintroducing
+    # the exact name mismatch this test exists to prevent — kept it green.
+    # Same shape as a guard matching the comment that explains it.
+    referenced = set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)[:?\-}]", joined))
+    assert "CLOUDFLARE_TUNNEL_ID" in referenced, (
+        f"cloudflared's command references {sorted(referenced)}, not "
+        "CLOUDFLARE_TUNNEL_ID. With no `tunnel:` key in config.yml it has no "
+        "tunnel to run, and .env.example/the deploy script both write "
+        "CLOUDFLARE_TUNNEL_ID — a different name here is the original bug."
+    )
+
+    env_example = (_COMPOSE_PATH.parent / ".env.example").read_text(encoding="utf-8")
+    assert "CLOUDFLARE_TUNNEL_ID=" in env_example, (
+        "compose reads CLOUDFLARE_TUNNEL_ID but .env.example does not declare "
+        "it — an operator following the example file gets an unset variable"
+    )

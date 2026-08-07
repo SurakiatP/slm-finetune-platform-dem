@@ -215,6 +215,76 @@ def test_app_locations_overwrite_x_forwarded_for() -> None:
     assert all(v == "$remote_addr" for v in xff), f"X-Forwarded-For set to {xff!r}, not $remote_addr"
 
 
+def _app_proxy_locations() -> list[tuple[str, str]]:
+    """Every `location` in the app server that proxies to the API.
+
+    Enumerated from the config rather than listed by hand: the point of the
+    two guards below is to catch a location nobody remembered to add to a
+    list.
+    """
+    found: list[tuple[str, str]] = []
+    for m in re.finditer(r"(?m)^\s*location\s+([^\{]+?)\s*\{", _APP_SERVER):
+        block = _block_from(_APP_SERVER, m.end() - 1)
+        if "proxy_pass http://api:8000" in block:
+            found.append((m.group(1).strip(), block))
+    assert found, "no location in the app server proxies to api:8000"
+    return found
+
+
+@pytest.mark.parametrize(
+    "selector,block", _app_proxy_locations(), ids=[s for s, _ in _app_proxy_locations()]
+)
+def test_every_api_proxy_location_overwrites_x_forwarded_for(selector: str, block: str) -> None:
+    """Completeness, not just correctness — the guard above cannot see a
+    location that omits the directive entirely.
+
+    nginx forwards a client's own `X-Forwarded-For` verbatim when a location
+    does not override it. So a new `location /admin/ { proxy_pass
+    http://api:8000; }` with no override hands attacker-controlled input
+    straight to `api/services/idempotency.py::client_host` and to the
+    `client_ip` field in every request log — while
+    `test_app_locations_overwrite_x_forwarded_for` stays green, because it
+    only inspects the directives that ARE present.
+
+    Both mutations that motivated this test passed the old guard: deleting
+    the XFF line from `/api/`, and adding a new proxy location without one.
+    """
+    m = re.search(r"proxy_set_header\s+X-Forwarded-For\s+(\S+);", block)
+    assert m, (
+        f"location {selector!r} proxies to the API but never sets "
+        "X-Forwarded-For. nginx will forward the client's own header "
+        "verbatim, making idempotency.client_host() attacker-controlled."
+    )
+    assert m.group(1) == "$remote_addr", (
+        f"location {selector!r} sets X-Forwarded-For to {m.group(1)!r}. It "
+        "must OVERWRITE with $remote_addr; appending preserves the "
+        "forgeable client-supplied chain."
+    )
+
+
+@pytest.mark.parametrize(
+    "selector,block", _app_proxy_locations(), ids=[s for s, _ in _app_proxy_locations()]
+)
+def test_every_api_proxy_location_is_rate_limited(selector: str, block: str) -> None:
+    """`_EXPECTED_LOCATION_ZONES` is an allowlist and therefore cannot catch
+    a route nobody added to it. This is the completeness half.
+
+    `= /health` is the one deliberate exception — uptime monitors poll it
+    and it touches no dependency (`api/main.py`'s /health is
+    dependency-free by design, unlike /ready).
+    """
+    if selector == "= /health":
+        pytest.skip("/health is deliberately unlimited for uptime monitors")
+    # The two directives do NOT share a syntax: `limit_req zone=name burst=N`
+    # takes a key=value, `limit_conn name number` takes bare positionals.
+    # Matching only the first form silently exempts every WebSocket location.
+    assert re.search(r"limit_req\s+zone=\w+|limit_conn\s+\w+\s+\d+\s*;", block), (
+        f"location {selector!r} proxies to the API with no limit_req/limit_conn "
+        "zone. Every route reachable from the public internet needs one — the "
+        "app-level quota only counts jobs, not requests."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Upload cap — numeric comparison against the app's own constant, NOT a
 # substring match. Raising MAX_SEED_PDF_BYTES without raising nginx's cap in

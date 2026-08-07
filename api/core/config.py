@@ -110,8 +110,25 @@ class Settings(BaseSettings):
     @field_validator("api_allowed_hosts", mode="before")
     @classmethod
     def _split_csv_hosts(cls, v: object) -> object:
+        """CSV -> list, with **empty meaning allow-all**, not deny-all.
+
+        The empty case is the one that ships. `.env.example` carries a bare
+        `API_ALLOWED_HOSTS=` line, and `scripts/deploy_pasaflow_vm.sh` seeds
+        the VM's `.env` from it — so "the variable is present but empty" is
+        the literal production default, while "the variable is absent" (where
+        the field default fires) is only ever the unit suite's shape.
+
+        Returning `[]` here would therefore be catastrophic and silent:
+        Starlette computes `allow_any = "*" in allowed_hosts`, so an empty
+        list matches no Host at all and `TrustedHostMiddleware` answers 400
+        to **every** request — including `/health`, which makes the whole
+        stack look dead while it is in fact working perfectly. The field
+        default above, this validator, and `.env.example`'s comment all have
+        to agree on allow-all, and only this line was disagreeing.
+        """
         if isinstance(v, str):
-            return [s.strip() for s in v.split(",") if s.strip()]
+            hosts = [s.strip() for s in v.split(",") if s.strip()]
+            return hosts or ["*"]
         return v
 
     @field_validator("minio_public_url")

@@ -215,3 +215,26 @@ class TestPublicUrlIsRequired:
         )
         url = storage.presigned_get_url(storage.get_presign_client(), _BUCKET, _KEY, expires=300)
         assert url.startswith("http://storage.local/")
+
+
+def test_the_files_that_point_here_use_this_module_s_real_name() -> None:
+    """`tests/conftest.py` and `test_download_links.py` both cite this file
+    as the justification for `_FakeMinio` not signing anything. Both cited a
+    filename that does not exist (`test_presigned_url_shape.py`), so anyone
+    following the pointer to check the fake's weakness found nothing and had
+    to guess whether the coverage existed at all.
+
+    A cross-reference that names a file is only worth writing if something
+    checks the file is there.
+    """
+    from pathlib import Path
+
+    me = Path(__file__)
+    tests_dir = me.parent.parent
+    for citing in (tests_dir / "conftest.py", me.parent / "test_download_links.py"):
+        text = citing.read_text(encoding="utf-8")
+        if me.name not in text and "presign" in text:
+            raise AssertionError(
+                f"{citing.name} references a presign-shape test file by a name "
+                f"that is not {me.name!r}. Fix the pointer or drop it."
+            )
