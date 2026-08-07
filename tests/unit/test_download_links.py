@@ -366,3 +366,83 @@ class TestModelDownloadUrl:
                 db, artifact.id, ArtifactFormat.GGUF, ALICE
             )
         assert exc.value.status_code == 409
+
+
+# =============================================================================
+# 7. Object storage down -> 503, not an unhandled 500
+# =============================================================================
+
+
+class TestStorageUnavailable:
+    """Minting has to list/stat the object before it can sign a URL, and
+    those are the only calls on this path that leave the process.
+
+    Unguarded they escape as a 500, which tells the caller "you sent a bad
+    request or we have a bug" when the truth is "a dependency is down, retry".
+    503 is what this module already returns when presigning is unconfigured,
+    and it is what `api/services/readiness.py` treats MinIO trouble as —
+    degraded, not fatal — so a client that backs off recovers by itself.
+    """
+
+    async def test_gguf_mint_503s_when_listing_raises(
+        self, db: AsyncSession, patch_presign, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project, artifact = await _project_training_and_artifact(
+            db, owner=ALICE.id, gguf_uri=s3_uri(_BUCKET_MODELS, "exports/x/gguf"),
+        )
+
+        def _down(*_a, **_k):
+            raise ConnectionError("minio:9000 refused the connection")
+
+        monkeypatch.setattr(download_links, "_first_gguf_object", _down)
+        with pytest.raises(HTTPException) as exc:
+            await download_links.mint_model_download_url(
+                db, artifact.id, ArtifactFormat.GGUF, ALICE
+            )
+        assert exc.value.status_code == 503
+
+    async def test_lora_mint_503s_when_listing_raises(
+        self, db: AsyncSession, patch_presign, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The lora/safetensors branch drains a lazy generator — the request
+        only fires during iteration, so a guard wrapped around the call that
+        merely *builds* the generator would not catch this."""
+        project, artifact = await _project_training_and_artifact(
+            db, owner=ALICE.id, lora_adapter_uri=s3_uri(_BUCKET_MODELS, "adapters/x"),
+        )
+
+        def _down_iter(*_a, **_k):
+            def _gen():
+                raise ConnectionError("minio:9000 went away mid-listing")
+                yield  # pragma: no cover
+            return _gen()
+
+        monkeypatch.setattr(patch_presign, "list_objects", _down_iter)
+        with pytest.raises(HTTPException) as exc:
+            await download_links.mint_model_download_url(
+                db, artifact.id, ArtifactFormat.LORA, ALICE
+            )
+        assert exc.value.status_code == 503
+
+    async def test_the_503_does_not_leak_the_internal_endpoint(
+        self, db: AsyncSession, patch_presign, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The neighbouring case, and the one a naive `detail=str(exc)` gets
+        wrong: MinIO's errors embed `minio:9000` and the bucket layout. That
+        is the same class of leak as the raw `s3://` URI `model_service`'s
+        400 detail used to echo back."""
+        project, artifact = await _project_training_and_artifact(
+            db, owner=ALICE.id, gguf_uri=s3_uri(_BUCKET_MODELS, "exports/x/gguf"),
+        )
+
+        def _down(*_a, **_k):
+            raise ConnectionError("HTTPConnectionPool(host='minio', port=9000): refused")
+
+        monkeypatch.setattr(download_links, "_first_gguf_object", _down)
+        with pytest.raises(HTTPException) as exc:
+            await download_links.mint_model_download_url(
+                db, artifact.id, ArtifactFormat.GGUF, ALICE
+            )
+        detail = str(exc.value.detail)
+        assert "minio" not in detail.lower()
+        assert "9000" not in detail

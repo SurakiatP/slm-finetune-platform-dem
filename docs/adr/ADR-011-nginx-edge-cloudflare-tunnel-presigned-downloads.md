@@ -202,6 +202,51 @@ round requires setting Access up *before* any hostname goes live, and later
 confirming that `AUTH_REQUIRED=false` genuinely refuses to boot once the
 frontend changes land and the flag can flip for real.
 
+### The interactive API docs are not exposed at the edge
+
+`/docs`, `/redoc`, `/openapi.json` and `/ready` are served by `api/main.py`
+without authentication, and none of them get a `location` block in
+`docker/edge.nginx.conf`. They fall through to the SPA route and are simply
+not reachable from the internet.
+
+The reasoning is that under a public-internet threat model the spec is a
+complete map of every endpoint, including the ones this round added, and
+`/ready` fans out to Postgres, Redis, MinIO and a Celery `inspect` on every
+call — a free amplification primitive for anyone who finds it. Neither is
+worth publishing to reach an audience of about three people. The cost is
+real and accepted: Swagger is no longer available on the deployed box, so
+API exploration means `docker compose exec` plus a local port-forward, or
+reading the committed `openapi.json`, which
+`tests/unit/test_openapi_spec_is_current.py` keeps in lockstep with the app
+precisely so that reading it is a genuine substitute.
+
+`/health` is the deliberate exception: it stays proxied and unrate-limited,
+because uptime monitors poll it and it touches no dependency.
+
+This is guarded by `test_the_api_docs_and_ready_are_not_proxied`. It was
+previously only a comment in the nginx config, which does not fail CI when
+someone adds `location /docs { proxy_pass http://api:8000; }` — a one-line
+change that looks helpful.
+
+### An unrecognised Host is rejected, not served the SPA
+
+The edge declares a `default_server` catch-all that returns **421** for any
+Host it does not recognise.
+
+Without it nginx promotes the first `server` block, which is the app — and
+the app answers `try_files $uri /index.html`. The storage hostname is
+written in three places nothing links: `server_name` in
+`docker/edge.nginx.conf`, `hostname:` in `docker/cloudflared/config.yml`,
+and `MINIO_PUBLIC_URL` in the environment. Only the first two can be
+compared statically (and now are, by
+`test_the_edge_and_the_tunnel_agree_on_every_hostname`); the third is
+runtime configuration that no test can reach. So the design makes a
+mismatch loud instead of assuming all three get typed identically: a
+misrouted presigned fetch would otherwise return **HTTP 200 with an HTML
+page**, and the browser would save `index.html` under the name
+`model.gguf` — a self-consistent-looking success, which is far more
+expensive to diagnose than a 4xx.
+
 ## Deferred
 
 - **A real secret manager.** `docker-compose.yml`'s mlflow `command:` still

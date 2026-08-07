@@ -29,6 +29,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from ai_engine.data_gen.constants import MAX_SEED_PDF_BYTES
 
@@ -101,9 +102,38 @@ def _location_block(text: str, selector: str) -> str:
 _CONF_CODE = _strip_comments(_CONF_TEXT)
 
 _SERVERS = _server_blocks(_CONF_CODE)
-assert len(_SERVERS) == 2, f"expected exactly 2 `server` blocks, found {len(_SERVERS)}"
-_STORAGE_SERVER = next(s for s in _SERVERS if "proxy_pass http://minio:9000" in s)
-_APP_SERVER = next(s for s in _SERVERS if s is not _STORAGE_SERVER)
+assert len(_SERVERS) == 3, (
+    f"expected exactly 3 `server` blocks (catch-all, app, storage), found {len(_SERVERS)}"
+)
+# Select by what each block DOES, not by position — a reordering must not
+# silently repoint these constants at the wrong block.
+def _pick(marker: str, what: str) -> str:
+    """`next(...)` with a message.
+
+    A bare generator here raises `StopIteration` at import time, which pytest
+    reports as a collection ERROR for the whole file with no explanation —
+    the entire suite goes red and the reader learns nothing. Deleting
+    `default_server` is the likeliest real regression in this file, so its
+    failure has to name itself.
+    """
+    for block in _SERVERS:
+        if marker in block:
+            return block
+    raise AssertionError(
+        f"no `server` block in docker/edge.nginx.conf contains {marker!r} "
+        f"({what}). If that block was removed or renamed deliberately, update "
+        "this file's guards to match — do not leave them selecting nothing."
+    )
+
+
+_STORAGE_SERVER = _pick("proxy_pass http://minio:9000", "the storage vhost")
+_APP_SERVER = _pick("proxy_pass http://api:8000", "the app vhost")
+_CATCHALL_SERVER = _pick(
+    "default_server",
+    "the catch-all that rejects unknown Hosts; without it nginx promotes the "
+    "first block and unknown Hosts are answered with the SPA at status 200",
+)
+assert _CATCHALL_SERVER is not _APP_SERVER and _CATCHALL_SERVER is not _STORAGE_SERVER
 
 
 # ---------------------------------------------------------------------------
@@ -437,3 +467,104 @@ def test_nginx_config_is_syntactically_valid() -> None:
     assert result.returncode == 0, (
         f"nginx -t failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The hostname seam, and the catch-all that makes a mismatch visible.
+# ---------------------------------------------------------------------------
+
+
+def _server_names(block: str) -> set[str]:
+    m = re.search(r"server_name\s+([^;]+);", block)
+    assert m, "block has no server_name"
+    return {n.strip().strip('"') for n in m.group(1).split() if n.strip().strip('"')}
+
+
+def test_an_unknown_host_is_rejected_rather_than_served_the_spa() -> None:
+    """The storage hostname lives in three unlinked places: this file's
+    `server_name`, `docker/cloudflared/config.yml`'s `hostname:`, and
+    `MINIO_PUBLIC_URL` in the environment. Nothing can statically tie the
+    third one, so the design has to make a mismatch loud instead of relying
+    on all three being typed identically.
+
+    Without a `default_server`, nginx promotes the FIRST server block, and
+    the app block answers `try_files $uri /index.html` — so a misrouted
+    presigned fetch returns **200 with an HTML page**, and the browser saves
+    `index.html` under the name `model.gguf`. A 4xx is recoverable; a
+    self-consistent-looking 200 is the one that wastes an afternoon.
+    """
+    assert re.search(r"listen\s+80\s+default_server\s*;", _CATCHALL_SERVER), (
+        "no server block is marked default_server, so nginx will use the "
+        "first one (the app) and answer unknown Hosts with the SPA"
+    )
+    assert re.search(r"return\s+4\d\d", _CATCHALL_SERVER), (
+        "the catch-all does not return a 4xx — it must reject, not serve"
+    )
+    assert "try_files" not in _CATCHALL_SERVER
+    assert "proxy_pass" not in _CATCHALL_SERVER
+
+    # And the two real vhosts must NOT claim default_server themselves,
+    # which would put the catch-all back to never matching.
+    for name, block in (("app", _APP_SERVER), ("storage", _STORAGE_SERVER)):
+        assert "default_server" not in block, f"the {name} vhost claims default_server"
+
+
+def test_the_edge_and_the_tunnel_agree_on_every_hostname() -> None:
+    """The two in-repo halves of the seam. cloudflared forwards only the
+    hostnames listed in its ingress rules, and nginx serves only the ones in
+    a `server_name`; a value in one and not the other is a route that 421s
+    (or, before the catch-all existed, silently returned the SPA).
+
+    `localhost`/`127.0.0.1`/`edge` are local-only names that deliberately
+    have no tunnel route, so the comparison is one-directional: every
+    tunnel hostname must be served, not every served name must be tunnelled.
+    """
+    cf = yaml.safe_load(
+        (_CONF_PATH.parent / "cloudflared" / "config.yml").read_text(encoding="utf-8")
+    )
+    tunnel_hosts = {r["hostname"] for r in cf["ingress"] if "hostname" in r}
+    served = _server_names(_APP_SERVER) | _server_names(_STORAGE_SERVER)
+
+    unserved = tunnel_hosts - served
+    assert not unserved, (
+        f"cloudflared routes {sorted(unserved)} to the edge, but no server_name "
+        "in docker/edge.nginx.conf matches — those requests hit the catch-all "
+        "and 421."
+    )
+
+
+def test_the_storage_vhost_has_its_own_dedicated_hostname() -> None:
+    """SigV4 signs the Host header, so storage cannot share a hostname with
+    the app: the two vhosts must be selectable by Host alone."""
+    app_names = _server_names(_APP_SERVER)
+    storage_names = _server_names(_STORAGE_SERVER)
+    assert storage_names, "the storage vhost has no server_name"
+    assert not (app_names & storage_names), (
+        f"app and storage vhosts share hostname(s) {sorted(app_names & storage_names)} — "
+        "nginx would resolve them by block order, not intent"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Plan decision #12: the interactive API docs are not exposed publicly.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/ready"])
+def test_the_api_docs_and_ready_are_not_proxied(path: str) -> None:
+    """`api/main.py` serves these without auth. Under a public-internet
+    threat model the spec is a map of every endpoint including the ones just
+    added, so decision #12 keeps them off the edge — reachable via
+    `docker compose exec` and from the committed `openapi.json` instead.
+
+    This existed only as a comment in the conf. A comment does not fail CI
+    when someone adds `location /docs { proxy_pass http://api:8000; }`,
+    which is a one-line change that looks helpful.
+    """
+    for selector, block in _app_proxy_locations():
+        assert not selector.rstrip("/").endswith(path.rstrip("/")), (
+            f"{path} is proxied through the edge (location {selector!r}). "
+            "Decision #12 keeps the interactive docs and /ready off the "
+            "public surface; if that changed, update ADR-011 and this test "
+            "together."
+        )

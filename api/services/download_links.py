@@ -38,6 +38,7 @@ losing an hour to it twice in one codebase is one time too many.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -65,6 +66,8 @@ from workers.storage import get_minio_client, get_presign_client, parse_s3_uri, 
 # over. 200 is comfortably above any real LoRA adapter (a handful of files)
 # or merged-weights safetensors export (shards + config, still low tens).
 MAX_LISTING_OBJECTS = 200
+
+log = logging.getLogger(__name__)
 
 
 def _get_presign_client_or_503():
@@ -209,7 +212,10 @@ async def mint_model_download_url(
     truncated = False
 
     if fmt is ArtifactFormat.GGUF:
-        target = _first_gguf_object(bucket, prefix)
+        try:
+            target = _first_gguf_object(bucket, prefix)
+        except Exception as exc:  # noqa: BLE001 - transport, not logic
+            raise _storage_unavailable(exc) from exc
         if target is None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -234,9 +240,15 @@ async def mint_model_download_url(
     else:
         minio = get_minio_client()
         listing_prefix = prefix.rstrip("/") + "/"
-        objects = list(
-            minio.list_objects(bucket_name=bucket, prefix=listing_prefix, recursive=True)
-        )
+        try:
+            # `list_objects` is lazy — the request only fires while the
+            # generator is drained, so the `list(...)` has to be inside the
+            # guard, not just the call that builds it.
+            objects = list(
+                minio.list_objects(bucket_name=bucket, prefix=listing_prefix, recursive=True)
+            )
+        except Exception as exc:  # noqa: BLE001 - transport, not logic
+            raise _storage_unavailable(exc) from exc
         if len(objects) > MAX_LISTING_OBJECTS:
             truncated = True
             objects = objects[:MAX_LISTING_OBJECTS]
@@ -275,6 +287,34 @@ async def mint_model_download_url(
         expires_at=expires_at,
         expires_in=expires_in,
         truncated=truncated,
+    )
+
+
+def _storage_unavailable(exc: Exception) -> HTTPException:
+    """Turn a MinIO transport failure into a 503, not a 500.
+
+    Minting a URL has to *list* or *stat* the object first, and those are the
+    only calls on this path that leave the process. When MinIO is down they
+    raise `urllib3`/`minio` errors that would otherwise escape as an
+    unhandled 500 -- indistinguishable, to a caller, from a bug in the
+    request they sent.
+
+    503 is the honest code and it is the same one this module already returns
+    when presigning is simply not configured: in both cases the request was
+    fine and the dependency is not. `api/services/readiness.py` deliberately
+    reports MinIO trouble as `degraded` on a 200 rather than failing the
+    whole probe, so a caller that retries on 503 recovers on its own once
+    storage comes back.
+
+    Deliberately does NOT leak the underlying error text -- it embeds the
+    internal endpoint (`minio:9000`) and sometimes the bucket layout, which
+    is the same class of leak the raw `s3://` URI in `model_service`'s 400
+    detail was.
+    """
+    log.warning("object storage unavailable while minting a download URL: %s", exc)
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Object storage is unavailable; retry shortly.",
     )
 
 
