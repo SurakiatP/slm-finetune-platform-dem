@@ -14,11 +14,24 @@ leave the job-progress surface readable by anyone who can guess (or was once
 handed) a Celery task id, which is exactly the "Celery UUID as a secret"
 anti-pattern `BACKEND_GAP_ANALYSIS.md` rejects.
 
-Every failure returns the *same* `404` with the *same* detail, whether the
-job has published no frame yet, the snapshot TTL lapsed, the stored payload
-is corrupt, the job id is unknown, or the job belongs to someone else. That
-uniformity is deliberate: distinguishing them would turn this into an oracle
-for enumerating other users' job ids. See ADR-009.
+**Two different failures, two different codes (ADR-012).** `job_id` unknown
+to `resolve_job_owner` (no Dataset/TrainingJob/EvaluationRun/ModelArtifact
+anywhere references it) is a genuine 404 — same as "no frame yet", "TTL
+lapsed" and "corrupt payload" below, which are all "there is nothing here"
+in the same sense. A `job_id` that *does* resolve, but to a project owned by
+someone else (or by nobody, `owner_id IS NULL`, which fails closed the same
+way) is a 403 — the job demonstrably exists, the caller just isn't allowed
+to see it. This mirrors `api/services/ownership.py`'s `assert_*_access`
+split exactly, and inherits the same accepted trade-off: a 403 here tells an
+authenticated caller that a given `job_id` belongs to *someone*, which a
+uniform 404 would not. See `ownership.py`'s module docstring and ADR-012 for
+why that trade was made anyway.
+
+Once past the ownership check (or when `user is None` and it's skipped
+entirely), "no frame yet" / "TTL lapsed" / "corrupt payload" are unrelated to
+ownership and all still collapse into the same 404 they always have — there
+is no separate id to leak on that path, only whether a Redis key happens to
+be populated right now.
 
 Phase 1 (`AUTH_REQUIRED=false`, no token presented): `user` is `None` and the
 ownership check is skipped entirely — behaviour is identical to before auth
@@ -47,14 +60,23 @@ _snapshot_adapter: TypeAdapter[WSMessage] = TypeAdapter(WSMessage)
 
 
 def _not_found(job_id: str) -> HTTPException:
-    """The single failure response this endpoint ever gives.
-
-    Shared by the no-frame, corrupt-frame, unknown-job and not-your-job
-    paths so none of them can be told apart from the outside.
+    """There is nothing here — shared by the no-frame, corrupt-frame and
+    unknown-job paths, none of which have a real id to be 403 about.
     """
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"No progress frame for job {job_id}",
+    )
+
+
+def _forbidden(job_id: str) -> HTTPException:
+    """The job resolves to a real row; `user` just doesn't own it (or the
+    row's `Project.owner_id` is null, which fails closed the same way — see
+    `ownership.py`'s module docstring). ADR-012.
+    """
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"Job {job_id} is not accessible",
     )
 
 
@@ -70,11 +92,14 @@ async def get_job_progress(
 ) -> WSMessage:
     if user is not None:
         owner = await resolve_job_owner(db, job_id)
+        if not owner.found:
+            raise _not_found(job_id)
         # `owner.owner_id != user.id` also covers `owner_id is None` — a
         # Project created before auth is owned by nobody, not by everybody
-        # (see `Project.owner_id`'s docstring). Fails closed.
-        if not owner.found or owner.owner_id != user.id:
-            raise _not_found(job_id)
+        # (see `Project.owner_id`'s docstring). Fails closed, now as 403:
+        # the job genuinely exists, `user` just isn't its owner (ADR-012).
+        if owner.owner_id != user.id:
+            raise _forbidden(job_id)
 
     redis = get_redis_client()
     try:

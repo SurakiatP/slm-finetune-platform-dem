@@ -350,10 +350,21 @@ class TestActivityEndpointOverHttp:
         assert "event_metadata" not in body["items"][0]
         assert body["items"][0]["request_id"] == "req-fixed"
 
-    def test_another_user_gets_404(self, client_and_project) -> None:
+    def test_another_user_gets_403(self, client_and_project) -> None:
+        """ADR-012: an existing project owned by someone else is 403, not
+        the 404 this used to be."""
         client, project_id, state = client_and_project
         state["user"] = USER_B
         resp = client.get(f"/api/v1/projects/{project_id}/activity")
+        assert resp.status_code == 403
+
+    def test_missing_project_gets_404(self, client_and_project) -> None:
+        """Pair for the test above: a project id that names no row at all
+        must stay 404, distinct from the 403 an existing-but-not-yours
+        project now gets."""
+        client, _project_id, state = client_and_project
+        state["user"] = USER_B
+        resp = client.get(f"/api/v1/projects/{uuid4()}/activity")
         assert resp.status_code == 404
 
     def test_pagination_params_are_validated(self, client_and_project) -> None:

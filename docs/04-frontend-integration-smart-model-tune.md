@@ -270,11 +270,26 @@ Reversing that order takes the product down.
 
 - `owner_id` appears on project responses. Never send it — it is set from your
   token and rejected as input.
-- Another user's resource returns **`404`, not `403`**, with a message identical
-  to a genuine not-found. Don't build UI that distinguishes them; it can't.
+- **Another user's resource now returns `403`, not `404`**
+  ([ADR-012](./adr/ADR-012-owner-mismatch-403-not-404.md) — this reverses
+  what an earlier pass of this doc said, back when the backend still
+  returned `404` for both cases; that behavior shipped in round 3.5). A
+  resource id that doesn't exist at all is still `404`. If the UI
+  currently treats every non-`200` on a resource fetch as "not found"
+  (redirect to a 404 page, etc.), a `403` will hit that same path today —
+  which is *safe* (the resource still doesn't render) but not
+  *informative* (a "you don't have access to this" message is now
+  possible and distinguishable from "this doesn't exist", where it wasn't
+  before). Not a required change to ship the auth flip — `AUTH_REQUIRED`
+  can go to `true` without the frontend doing anything differently here —
+  but worth building the distinct branch once someone's touching this
+  code path, since the backend now actually provides the information the
+  UI would need to show it. See `docs/patches/smart-model-tune-auth.md`
+  for the concrete diff, if this was addressed as part of that patch.
 - Anything created before the cutover has `owner_id = null` and becomes
-  **invisible to everyone** once a token is sent. Existing demo projects need an
-  owner assigned or they vanish.
+  **invisible to everyone** once a token is sent — still fails closed the
+  same way, just returns `403` now instead of `404` (it exists, it's just
+  nobody's). Existing demo projects need an owner assigned or they vanish.
 
 ## Priority Fix List
 
@@ -469,6 +484,11 @@ and it 404s once the 24h TTL lapses.
 - **`GET /api/v1/jobs/{job_id}/progress`** is a REST snapshot of the same
   frame, for surfaces that don't hold a socket open. `404` means "no frame
   yet" — fall back to the resource's own `status`, don't treat it as an error.
+  As of ADR-012 this endpoint can also return `403` for a job that belongs
+  to another user, but only once a bearer token is actually sent — the
+  ownership check is skipped entirely for anonymous callers, which is what
+  `smart-model-tune` still is today, so this is a forward-compatibility
+  note rather than something to handle before the auth flip.
 - **New `WSMessageType` values**: `export_progress`
   (`stage: downloading|merging|converting|quantizing|uploading|registering`,
   plus `detail`) and `evaluation_progress`

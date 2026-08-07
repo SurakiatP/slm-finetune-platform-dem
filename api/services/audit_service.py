@@ -80,9 +80,10 @@ async def list_activity(
     """Paginated audit trail for one project, newest first.
 
     `assert_project_access` runs first — before touching `audit_events` at
-    all — so a non-owner gets the same 404 they'd get probing the project
-    directly, rather than an empty (and therefore existence-revealing)
-    page.
+    all — so a non-owner gets the same 403 they'd get probing the project
+    directly (404 if the project doesn't exist at all), rather than an
+    empty (and therefore existence-revealing) page. See ADR-012 for why
+    that's 403 and not the 404 this used to be.
     """
     from api.services import ownership  # deferred — see the module header
 

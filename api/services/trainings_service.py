@@ -77,8 +77,8 @@ async def cancel_training(
     """Revoke the underlying Celery task + flip status to CANCELLED.
 
     Idempotent: cancelling an already-terminal job returns 200 with the existing
-    status. Cancelling a non-existent job, or one belonging to another user,
-    returns 404.
+    status. Cancelling a non-existent job is a 404; cancelling one that
+    exists but belongs to another user is a 403 (ADR-012).
     """
     job = await ownership.assert_training_access(db, training_id, user)
     if job.status in TERMINAL_JOB_STATUSES:

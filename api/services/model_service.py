@@ -178,8 +178,9 @@ async def cancel_export(
 ) -> dict[str, str]:
     """Revoke the underlying export Celery task + flip export_status to CANCELLED.
 
-    404 if the artifact doesn't exist or belongs to another user. 409 if no
-    export was ever requested for this artifact (``export_status is None``)
+    404 if the artifact doesn't exist; 403 if it exists but belongs to
+    another user (ADR-012). 409 if no export was ever requested for this
+    artifact (``export_status is None``)
     — there is nothing to cancel, and pretending otherwise would report a
     fake CANCELLED transition for a job that was never enqueued. Idempotent
     once export_status is already terminal: returns 200 with the current

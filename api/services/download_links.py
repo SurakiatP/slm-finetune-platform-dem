@@ -7,8 +7,8 @@ module owns everything that isn't pure S3-client mechanics:
   * TTL — sourced from `settings.presigned_url_ttl_seconds`, never
     hardcoded here.
   * Ownership — every mint goes through `api.services.ownership`'s
-    `assert_*_access` first, same 404-not-403 contract as every other
-    resource endpoint.
+    `assert_*_access` first, same 404-if-missing/403-if-not-yours contract
+    (ADR-012) as every other resource endpoint.
   * Audit — one row per mint, written and committed before the response
     goes out, mirroring the existing `dataset.download` /
     `model.download` audit points in `datasets_service.py` /
@@ -109,8 +109,9 @@ async def mint_dataset_download_url(
 
     Checked in this order: presign-client availability (a deployment-wide
     503, independent of any particular dataset — fail fast before touching
-    the DB), then ownership (404, not 403 — see `ownership.py`'s module
-    docstring for why), then whether there's anything to download yet
+    the DB), then ownership (404 if the dataset doesn't exist, 403 if it
+    does and isn't `user`'s — see `ownership.py`'s module docstring and
+    ADR-012 for why), then whether there's anything to download yet
     (409). The audit row is written, and the transaction committed, before
     the URL is returned — mirroring `datasets_service.download_dataset`'s
     `dataset.download` audit point at `datasets_service.py:187`.

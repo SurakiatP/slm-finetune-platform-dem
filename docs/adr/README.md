@@ -14,6 +14,7 @@ with a new one rather than editing a decided record in place.
 | [009](./ADR-009-supabase-jwt-auth.md) | Verify Supabase JWTs and enforce per-user ownership; two-phase rollout behind `AUTH_REQUIRED` | Accepted |
 | [010](./ADR-010-cpu-gpu-queue-split-and-quotas.md) | Split SDG onto its own CPU Celery queue; add per-bucket concurrency quotas, a monthly OpenRouter budget gate, and a Redis-backed circuit breaker | Accepted |
 | [011](./ADR-011-nginx-edge-cloudflare-tunnel-presigned-downloads.md) | Same-origin `edge` nginx (in this repo) behind a Cloudflare Tunnel as the sole ingress, zero externally published ports, and presigned MinIO downloads on a dedicated storage subdomain | Accepted |
+| [012](./ADR-012-owner-mismatch-403-not-404.md) | Owner-mismatch on an existing resource returns `403`, not `404` — genuinely-missing resources stay `404`; supersedes the "404, not 403" rule inside ADR-009's Ownership section | Accepted |
 
 **Take the next free number from this table, and grep the codebase first** —
 `ADR-008` above began life as `ADR-007` and had to be renumbered across 24

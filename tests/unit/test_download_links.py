@@ -1,7 +1,8 @@
 """Layer 1 — presigned-download-URL endpoint behaviour, against `_FakeMinio`.
 
 Covers `api/services/download_links.py`'s policy layer end to end: ownership
-(404 for a non-owner), the audit row written at mint time, the PDF fallback
+(403 for a non-owner on an existing row, 404 for a missing one — ADR-012),
+the audit row written at mint time, the PDF fallback
 for seed-PDF datasets, multi-file listing for `lora`/`safetensors` model
 exports, the listing cap, and the 503 when `MINIO_PUBLIC_URL` is unset.
 
@@ -224,12 +225,24 @@ class TestDatasetDownloadUrl:
         assert rows[0].resource_id == str(dataset.id)
         assert rows[0].event_metadata["pdf_fallback"] is False
 
-    async def test_non_owner_gets_404_not_403(self, db: AsyncSession, patch_presign) -> None:
+    async def test_non_owner_gets_403_not_404(self, db: AsyncSession, patch_presign) -> None:
+        """ADR-012: an existing dataset owned by someone else is 403, not the
+        404 this used to be."""
         uri = s3_uri(_BUCKET_DATASETS, "seeds/d1.jsonl")
         _project, dataset = await _project_and_dataset(db, owner=ALICE.id, storage_uri=uri)
 
         with pytest.raises(HTTPException) as exc:
             await download_links.mint_dataset_download_url(db, dataset.id, BOB)
+        assert exc.value.status_code == 403
+
+    async def test_missing_dataset_still_gets_404(
+        self, db: AsyncSession, patch_presign
+    ) -> None:
+        """Pair for the test above: a dataset id that names no row at all
+        must stay 404, distinct from the 403 an existing-but-not-yours
+        dataset now gets."""
+        with pytest.raises(HTTPException) as exc:
+            await download_links.mint_dataset_download_url(db, uuid4(), BOB)
         assert exc.value.status_code == 404
 
     async def test_pdf_fallback_when_storage_uri_is_null(
@@ -265,13 +278,27 @@ class TestDatasetDownloadUrl:
 
 
 class TestModelDownloadUrl:
-    async def test_non_owner_gets_404(self, db: AsyncSession, patch_presign) -> None:
+    async def test_non_owner_gets_403(self, db: AsyncSession, patch_presign) -> None:
+        """ADR-012: an existing artifact owned by someone else is 403, not
+        the 404 this used to be."""
         _project, artifact = await _project_training_and_artifact(
             db, owner=ALICE.id, gguf_uri=s3_uri(_BUCKET_MODELS, "exports/m1")
         )
         with pytest.raises(HTTPException) as exc:
             await download_links.mint_model_download_url(
                 db, artifact.id, ArtifactFormat.GGUF, BOB
+            )
+        assert exc.value.status_code == 403
+
+    async def test_missing_artifact_still_gets_404(
+        self, db: AsyncSession, patch_presign
+    ) -> None:
+        """Pair for the test above: an artifact id that names no row at all
+        must stay 404, distinct from the 403 an existing-but-not-yours
+        artifact now gets."""
+        with pytest.raises(HTTPException) as exc:
+            await download_links.mint_model_download_url(
+                db, uuid4(), ArtifactFormat.GGUF, BOB
             )
         assert exc.value.status_code == 404
 

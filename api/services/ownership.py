@@ -30,21 +30,35 @@ identical to the pre-auth codebase — including byte-for-byte identical SQL
 for the `scope_*` helpers, since their `user is None` branch returns the
 statement object untouched rather than adding a harmless-looking filter.
 
-**404, not 403, for "exists but belongs to someone else"**: every ownership
-failure below is raised with `HTTP_404_NOT_FOUND` and a detail string in the
-exact `"{Label} {id} not found"` shape the pre-auth code already used for a
-genuinely missing row. This is deliberate, not a bug: if user B could tell
-"403 forbidden" (it exists, you can't have it) apart from "404 not found"
-(it doesn't exist), the response code alone would let B enumerate the
-existence of A's projects/datasets/trainings/models/evaluations. Reserving
-403 for this case would leak exactly the information the acceptance
-criterion says must not leak.
+**403, not 404, for "exists but belongs to someone else"** (ADR-012,
+superseding the "404, not 403" decision this paragraph used to argue for).
+`BACKEND_GAP_ANALYSIS.md:33-34` states the P0 acceptance criterion in plain
+terms: user A must get **403** when reaching a resource that belongs to user
+B, in every case. The previous version of this module returned 404 instead,
+on the theory that 403 would let B enumerate which of A's ids exist. That
+theory was correct — it just wasn't the trade the customer's own acceptance
+criterion asked for, and it was never signed off as a deviation from it.
 
-**`owner_id IS NULL` fails closed**: those rows predate auth, or were
-created during phase-1 while no user was attached. Per `Project.owner_id`'s
-own `doc=`, once a `user` is present, a null-owner row is invisible to
-*everyone*, not visible to everyone — treated exactly like a row owned by
-some other user.
+Say the trade-off honestly rather than pretending it disappeared: **403
+genuinely is an existence oracle.** Once `_check_owner` raises `_forbidden`,
+anyone who can authenticate can distinguish "this id exists and isn't
+yours" (403) from "this id doesn't exist" (404) for every project, dataset,
+training job, model artifact and evaluation run in the system — including
+by brute-forcing UUIDs, though the 122 bits of a v4 UUID make that
+impractical on its own. We are accepting that leak, not eliminating it,
+because the P0 criterion is explicit that the response code must be 403 and
+because the alternative (404 for everything) is the exact thing the
+criterion was written to rule out. If a future requirement needs both "no
+enumeration" and "spec-correct status codes", that needs a new decision
+(rate-limiting the ownership-failure path, or a different id scheme), not a
+silent revert of this one.
+
+**`owner_id IS NULL` still fails closed, now with 403**: those rows predate
+auth, or were created during phase-1 while no user was attached. Per
+`Project.owner_id`'s own `doc=`, once a `user` is present, a null-owner row
+is invisible to *everyone*, not visible to everyone. The row still exists,
+so refusing it is a 403 — the same code as "exists, owned by someone else"
+— not a 404; there is no third status for "exists, owned by nobody".
 """
 
 from __future__ import annotations
@@ -76,12 +90,27 @@ def owner_id_for(user: CurrentUser | None) -> str | None:
 
 
 def _not_found(label: str, resource_id: object) -> HTTPException:
-    """Build the 404 both the pre-auth "missing row" path and the ownership
-    check below raise — same shape, so a probe can't tell them apart.
+    """The row genuinely doesn't exist. Raised only by the `db.get(...) is
+    None` checks below, before `_check_owner` ever runs — so by
+    construction this fires when, and only when, there is no row at all.
     """
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"{label} {resource_id} not found",
+    )
+
+
+def _forbidden(label: str, resource_id: object) -> HTTPException:
+    """The row exists, and `user` isn't its owner (including `owner_id IS
+    NULL`, which belongs to nobody). Only reachable from `_check_owner`,
+    which only ever runs after its caller has already confirmed the row
+    exists — see every `assert_*_access` below. That ordering is what makes
+    403 here correct rather than merely "the code we chose": there is no
+    path that raises `_forbidden` for a row that isn't there.
+    """
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"{label} {resource_id} is not accessible",
     )
 
 
@@ -92,17 +121,20 @@ def _check_owner(
     label: str,
     resource_id: object,
 ) -> None:
-    """Raise 404 unless `user` is `None` (no-op) or `owner_id == user.id`.
+    """Raise 403 unless `user` is `None` (no-op) or `owner_id == user.id`.
 
-    Centralises the two failure modes that must be indistinguishable from
-    the caller's side: `owner_id is None` (fail-closed on legacy/phase-1
-    rows) and `owner_id` set to somebody else. Both raise the identical
-    `_not_found(label, resource_id)`.
+    Centralises the two failure modes ADR-012 both route to the same
+    status: `owner_id is None` (fail-closed on legacy/phase-1 rows) and
+    `owner_id` set to somebody else. Both raise `_forbidden(label,
+    resource_id)` — 403, not 404, per the P0 acceptance criterion in
+    `BACKEND_GAP_ANALYSIS.md:33-34`. Every caller of this function has
+    already loaded the row and confirmed it exists (see the module
+    docstring), so `_forbidden` never fires for a row that isn't there.
     """
     if user is None:
         return
     if owner_id is None or owner_id != user.id:
-        raise _not_found(label, resource_id)
+        raise _forbidden(label, resource_id)
 
 
 async def _project_owner_id(db: AsyncSession, project_id: UUID) -> str | None:
@@ -126,8 +158,8 @@ async def _project_owner_id(db: AsyncSession, project_id: UUID) -> str | None:
 async def assert_project_access(
     db: AsyncSession, project_id: UUID, user: CurrentUser | None
 ) -> Project:
-    """Load `Project(project_id)`; 404 if missing or (when `user` is set)
-    not owned by `user`. Returns the row.
+    """Load `Project(project_id)`; 404 if missing, 403 if it exists and
+    (when `user` is set) isn't owned by `user`. Returns the row.
     """
     project = await db.get(Project, project_id)
     if project is None:
@@ -139,8 +171,9 @@ async def assert_project_access(
 async def assert_dataset_access(
     db: AsyncSession, dataset_id: UUID, user: CurrentUser | None
 ) -> Dataset:
-    """Load `Dataset(dataset_id)`; 404 if missing or its project isn't
-    owned by `user` (1-hop: Dataset -> Project). Returns the row.
+    """Load `Dataset(dataset_id)`; 404 if missing, 403 if it exists and its
+    project isn't owned by `user` (1-hop: Dataset -> Project). Returns the
+    row.
     """
     dataset = await db.get(Dataset, dataset_id)
     if dataset is None:
@@ -154,8 +187,9 @@ async def assert_dataset_access(
 async def assert_training_access(
     db: AsyncSession, training_id: UUID, user: CurrentUser | None
 ) -> TrainingJob:
-    """Load `TrainingJob(training_id)`; 404 if missing or its project isn't
-    owned by `user` (1-hop: TrainingJob -> Project). Returns the row.
+    """Load `TrainingJob(training_id)`; 404 if missing, 403 if it exists and
+    its project isn't owned by `user` (1-hop: TrainingJob -> Project).
+    Returns the row.
     """
     training = await db.get(TrainingJob, training_id)
     if training is None:
@@ -169,8 +203,9 @@ async def assert_training_access(
 async def assert_model_access(
     db: AsyncSession, model_id: UUID, user: CurrentUser | None
 ) -> ModelArtifact:
-    """Load `ModelArtifact(model_id)`; 404 if missing or not owned by
-    `user` (2-hop: ModelArtifact -> TrainingJob -> Project). Returns the row.
+    """Load `ModelArtifact(model_id)`; 404 if missing, 403 if it exists and
+    isn't owned by `user` (2-hop: ModelArtifact -> TrainingJob -> Project).
+    Returns the row.
     """
     artifact = await db.get(ModelArtifact, model_id)
     if artifact is None:
@@ -190,9 +225,9 @@ async def assert_model_access(
 async def assert_evaluation_access(
     db: AsyncSession, evaluation_id: UUID, user: CurrentUser | None
 ) -> EvaluationRun:
-    """Load `EvaluationRun(evaluation_id)`; 404 if missing or not owned by
-    `user` (3-hop: EvaluationRun -> ModelArtifact -> TrainingJob -> Project).
-    Returns the row.
+    """Load `EvaluationRun(evaluation_id)`; 404 if missing, 403 if it exists
+    and isn't owned by `user` (3-hop: EvaluationRun -> ModelArtifact ->
+    TrainingJob -> Project). Returns the row.
     """
     evaluation = await db.get(EvaluationRun, evaluation_id)
     if evaluation is None:
@@ -216,6 +251,18 @@ async def assert_evaluation_access(
 # a `list_*` call site can unconditionally pipe its statement through the
 # matching helper without an `if user:` branch, and phase-1 callers get the
 # exact same SQL as before this module existed.
+#
+# ADR-012 does NOT touch these. `_check_owner`/`_forbidden` above answer "may
+# `user` load *this specific row*" — there's a concrete id to be 403 about.
+# A `scope_*` helper answers a different question, "which rows does a list
+# query return", by adding a `WHERE Project.owner_id = user.id` filter; a row
+# that fails it is never rendered into a response at all, it is just absent
+# from the page. There is no id in play for a 403 to attach to and no
+# request to fail — returning 403 for a *list* endpoint would be a category
+# error, not a stricter check. Silently filtering is the correct behaviour
+# here regardless of which status code the single-resource endpoints use, so
+# this asymmetry with the `assert_*_access` family above is intentional, not
+# a spot the 404→403 change was missed.
 
 
 def scope_projects_to_owner(stmt: Select, user: CurrentUser | None) -> Select:

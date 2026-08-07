@@ -169,8 +169,9 @@ async def cancel_evaluation(
     """Revoke the underlying Celery task + flip status to CANCELLED.
 
     Idempotent: cancelling an already-terminal evaluation run returns 200
-    with the existing status. Cancelling a non-existent run, or one
-    belonging to another user, returns 404.
+    with the existing status. Cancelling a non-existent run is a 404;
+    cancelling one that exists but belongs to another user is a 403
+    (ADR-012).
     """
     ev = await ownership.assert_evaluation_access(db, evaluation_id, user)
     if ev.status in TERMINAL_JOB_STATUSES:

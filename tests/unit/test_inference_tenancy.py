@@ -167,13 +167,26 @@ class TestLiteralTagOwnership:
             )
 
     async def test_uuid_branch_still_ownership_checked(self, db, seeded) -> None:
+        """The UUID branch calls `ownership.assert_model_access` directly
+        (no swallow-and-collapse, unlike the literal-tag branch above) — so
+        an existing artifact owned by someone else is now 403 (ADR-012),
+        propagated straight through."""
         with pytest.raises(HTTPException) as exc:
             await inference_service._resolve_model_tag(db, str(seeded["a"].id), USER_B)
-        assert exc.value.status_code == 404
+        assert exc.value.status_code == 403
         assert (
             await inference_service._resolve_model_tag(db, str(seeded["a"].id), USER_A)
             == TAG_A
         )
+
+    async def test_uuid_branch_404s_on_a_missing_artifact(self, db, seeded) -> None:
+        """Pair for the test above: a UUID that names no `ModelArtifact` at
+        all must stay 404, distinct from the 403 an existing-but-not-yours
+        artifact now gets. Catches a mutation that made `assert_model_access`
+        403 unconditionally."""
+        with pytest.raises(HTTPException) as exc:
+            await inference_service._resolve_model_tag(db, str(uuid4()), USER_B)
+        assert exc.value.status_code == 404
 
     async def test_anonymous_is_a_complete_no_op(self, db, seeded) -> None:
         """Phase-1 rule: `user is None` behaves exactly as before auth existed.

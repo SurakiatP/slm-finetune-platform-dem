@@ -292,9 +292,12 @@ expensive to diagnose than a 4xx.
 - **MinIO per-user service accounts / STS.** Every presigned URL is signed
   with the platform's one root MinIO credential, scoped down only by which
   bucket/key the application chose to sign, not by any MinIO-side per-user
-  policy. Ownership enforcement (404-not-403) happens entirely in
-  `api/services/download_links.py` before a URL is ever minted; MinIO itself
-  has no idea one user's key differs from another's. Real per-user STS
+  policy. Ownership enforcement (403 for an existing-but-not-yours
+  resource, 404 for one that doesn't exist — flipped from 404-for-both by
+  [ADR-012](./ADR-012-owner-mismatch-403-not-404.md), after this ADR was
+  written) happens entirely in `api/services/download_links.py` before a
+  URL is ever minted; MinIO itself has no idea one user's key differs from
+  another's. Real per-user STS
   credentials would need a token-exchange step this platform's auth model
   (Supabase JWT, no local user store — ADR-009) doesn't have a natural home
   for yet. Deferred until there's a concrete cross-tenant leak this doesn't

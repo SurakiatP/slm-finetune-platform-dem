@@ -289,7 +289,8 @@ async def cancel_dataset(
     (see `_persist_jsonl_dataset` / `_persist_pdf_dataset` above), so they
     always hit the terminal-status branch and are reported as already-done
     rather than treated as a cancellable job. Cancelling a non-existent
-    dataset, or one belonging to another user, returns 404.
+    dataset is a 404; cancelling one that exists but belongs to another
+    user is a 403 (ADR-012).
     """
     ds = await ownership.assert_dataset_access(db, dataset_id, user)
     if ds.status in TERMINAL_JOB_STATUSES:
