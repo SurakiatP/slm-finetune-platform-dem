@@ -5,10 +5,11 @@ Steps:
   2. Validate dataset exists, belongs to the project, has finished generation
      (storage_uri set) and matches the project's task_type.
   3. Validate base_model is in the supported allowlist (ADR-002).
-  4. Insert TrainingJob row (status=PENDING, status flips to RUNNING in the worker).
-  5. Enqueue the train.manual Celery task.
-  6. Stash celery_task_id back on the row.
-  7. Return TrainingJobAcceptedResponse.
+  4. GPU quota gate (Bucket.GPU, shared with HPO training/evaluation/export).
+  5. Insert TrainingJob row (status=PENDING, status flips to RUNNING in the worker).
+  6. Enqueue the train.manual Celery task.
+  7. Stash celery_task_id back on the row.
+  8. Return TrainingJobAcceptedResponse.
 
 HPO mode goes through `submit_hpo_training_job` (Phase 6 — currently 501).
 """
@@ -18,6 +19,9 @@ from __future__ import annotations
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import request_context
+from api.services import audit_service, quota
+from api.services.quota import Bucket
 from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.models.project import Project
@@ -127,7 +131,13 @@ async def submit_manual_training_job(
             ),
         )
 
-    # 4. Insert TrainingJob row.
+    # 4. GPU quota gate — one bucket shared with HPO training, evaluation, and
+    # export (they all pin the same RTX 3060). Runs after every validation /
+    # resource-state check above and right before the row insert, so a
+    # rejected submit never leaves a half-created TrainingJob behind.
+    await quota.assert_can_submit(db, bucket=Bucket.GPU, actor_id=request_context.current_user_id())
+
+    # 5. Insert TrainingJob row.
     job_row = TrainingJob(
         project_id=project.id,
         dataset_id=dataset.id,
@@ -140,7 +150,7 @@ async def submit_manual_training_job(
     db.add(job_row)
     await db.flush()  # populate job_row.id
 
-    # 5. Enqueue Celery task. Local import keeps the API process from
+    # 6. Enqueue Celery task. Local import keeps the API process from
     # eagerly loading worker-only deps (torch, unsloth, minio, ...).
     from workers.tasks.training import train_manual
 
@@ -149,11 +159,21 @@ async def submit_manual_training_job(
     )
     job_id: str = async_result.id
 
-    # 6. Persist celery_task_id and commit.
+    # 7. Persist celery_task_id + the audit row, and commit them together.
     job_row.celery_task_id = job_id
+    audit_service.record(
+        db,
+        action="training.submit",
+        resource_type="training",
+        resource_id=str(job_row.id),
+        project_id=job_row.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": job_id, "mode": "manual", "base_model": job_row.base_model},
+    )
     await db.commit()
 
-    # 7. Return.
+    # 8. Return.
     return TrainingJobAcceptedResponse(
         job_id=job_id,
         training_id=job_row.id,
@@ -259,7 +279,12 @@ async def submit_hpo_training_job(
                     ),
                 )
 
-    # 5. Insert TrainingJob row.
+    # 5. GPU quota gate — same shared bucket as manual training, evaluation,
+    # and export (see quota.py). After all validation above, right before
+    # the row insert.
+    await quota.assert_can_submit(db, bucket=Bucket.GPU, actor_id=request_context.current_user_id())
+
+    # 6. Insert TrainingJob row.
     job_row = TrainingJob(
         project_id=project.id,
         dataset_id=dataset.id,
@@ -272,7 +297,7 @@ async def submit_hpo_training_job(
     db.add(job_row)
     await db.flush()
 
-    # 6. Enqueue Celery task. Local import keeps the API process from
+    # 7. Enqueue Celery task. Local import keeps the API process from
     # eagerly loading worker-only deps.
     from workers.tasks.hpo_training import train_hpo
 
@@ -282,6 +307,16 @@ async def submit_hpo_training_job(
     job_id: str = async_result.id
 
     job_row.celery_task_id = job_id
+    audit_service.record(
+        db,
+        action="training.submit",
+        resource_type="training",
+        resource_id=str(job_row.id),
+        project_id=job_row.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": job_id, "mode": "hpo", "base_model": job_row.base_model},
+    )
     await db.commit()
 
     return TrainingJobAcceptedResponse(

@@ -201,8 +201,14 @@ class _FakeMinio:
         body = self._store.get((bucket_name, object_name))
         if body is None:
             raise KeyError(f"fake_minio: {bucket_name}/{object_name} not found")
+
+        def _stream(chunk_size: int = 64 * 1024):
+            for i in range(0, len(body), chunk_size):
+                yield body[i : i + chunk_size]
+
         return SimpleNamespace(
             read=lambda *_a, **_k: body,
+            stream=_stream,
             close=lambda: None,
             release_conn=lambda: None,
         )
@@ -238,10 +244,41 @@ class _FakeMinio:
     def remove_object(self, bucket_name: str, object_name: str) -> None:
         self._store.pop((bucket_name, object_name), None)
 
+    def presigned_get_object(
+        self,
+        bucket_name: str,
+        object_name: str,
+        expires: Any = None,
+        response_headers: dict[str, str] | None = None,
+        **_: Any,
+    ) -> str:
+        """Deterministic fake presigned URL — NOT a substitute for the
+        real-`Minio` URL-shape test.
+
+        This fake can only prove that `download_links.py` calls through to
+        *some* presign function with the right bucket/key/expires — it
+        cannot catch a wrong host, a missing `region=`, or a broken
+        path-style vs virtual-style URL, because it never touches SigV4 at
+        all. Those are exactly the bug classes that break on real
+        hardware, which is why they get their own no-network test against
+        a real `Minio` instance in `tests/unit/test_presign_url_shape.py`
+        instead of being (wrongly) trusted to this fake.
+        """
+        query = f"X-Fake-Expires={expires}"
+        if response_headers:
+            for k, v in sorted(response_headers.items()):
+                query += f"&{k}={v}"
+        return f"https://fake-presigned.example.com/{bucket_name}/{object_name}?{query}"
+
 
 @pytest.fixture
 def fake_minio(monkeypatch: pytest.MonkeyPatch) -> _FakeMinio:
-    """In-memory MinIO; patches workers.storage.get_minio_client globally."""
+    """In-memory MinIO; patches both `get_minio_client` and
+    `get_presign_client` (workers.storage) to return the *same* fake
+    object, so existing byte-level assertions (built against
+    `get_minio_client`) keep holding while presigned-URL code paths also
+    get a working fake to call through to.
+    """
     client = _FakeMinio()
 
     def _factory() -> _FakeMinio:
@@ -251,6 +288,7 @@ def fake_minio(monkeypatch: pytest.MonkeyPatch) -> _FakeMinio:
     import workers.storage
 
     monkeypatch.setattr(workers.storage, "get_minio_client", _factory)
+    monkeypatch.setattr(workers.storage, "get_presign_client", _factory)
     return client
 
 

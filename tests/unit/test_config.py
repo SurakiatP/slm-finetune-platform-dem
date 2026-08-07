@@ -84,3 +84,64 @@ def test_cors_origins_explicit_list_kwarg() -> None:
     Settings = _import_settings()
     s = Settings(api_cors_origins=["http://x"])  # type: ignore[arg-type]
     assert s.api_cors_origins == ["http://x"]
+
+
+# =============================================================================
+# T2 — new Settings fields (cost persistence, concurrency quotas, circuit
+# breaker + budget). These guard the documented defaults in .env.example.
+# =============================================================================
+
+
+def test_model_pricing_json_defaults_to_empty_string() -> None:
+    Settings = _import_settings()
+    s = Settings()
+    assert s.model_pricing_json == ""
+
+
+def test_model_pricing_json_env_survives_as_raw_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unlike `api_cors_origins`, this field is typed `str`, not `list`/`dict`,
+    specifically to dodge pydantic-settings' JSON pre-decode pass. A raw JSON
+    string set in the environment must come through untouched, not parsed."""
+    raw = '{"openai/gpt-4o": {"prompt": 2.5, "completion": 10.0}}'
+    monkeypatch.setenv("MODEL_PRICING_JSON", raw)
+    Settings = _import_settings()
+    s = Settings()
+    assert s.model_pricing_json == raw
+    assert isinstance(s.model_pricing_json, str)
+
+
+def test_quota_defaults() -> None:
+    Settings = _import_settings()
+    s = Settings()
+    assert s.quota_max_gpu_jobs_per_actor == 1
+    assert s.quota_max_sdg_jobs_per_actor == 2
+    assert s.quota_max_gpu_jobs_global == 4
+    assert s.quota_max_sdg_jobs_global == 8
+    assert s.quota_retry_after_seconds == 30
+
+
+def test_circuit_breaker_defaults() -> None:
+    Settings = _import_settings()
+    s = Settings()
+    assert s.openrouter_breaker_failure_threshold == 5
+    assert s.openrouter_breaker_open_seconds == 60
+
+
+def test_budget_defaults_are_unlimited() -> None:
+    """`None` means unlimited — the feature ships dark until a deployment
+    opts in by setting a real number."""
+    Settings = _import_settings()
+    s = Settings()
+    assert s.budget_monthly_usd_per_actor is None
+    assert s.budget_monthly_usd_global is None
+
+
+def test_budget_can_be_set_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BUDGET_MONTHLY_USD_PER_ACTOR", "10.5")
+    monkeypatch.setenv("BUDGET_MONTHLY_USD_GLOBAL", "100")
+    Settings = _import_settings()
+    s = Settings()
+    assert s.budget_monthly_usd_per_actor == 10.5
+    assert s.budget_monthly_usd_global == 100.0

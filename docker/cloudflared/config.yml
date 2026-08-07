@@ -1,0 +1,34 @@
+# Locally-managed tunnel config (in-repo ingress rules), NOT dashboard/token
+# mode. With token mode the ingress rules live in Cloudflare's dashboard
+# instead of this file — someone could repoint the tunnel straight at
+# `api:8000`, bypassing every rate limit / body-size cap in
+# docker/edge.nginx.conf, and no test in this repo would go red because
+# there would be nothing here to read. Keeping the rules in-repo is what
+# lets tests/unit/test_compose_port_exposure.py::test_the_edge_is_the_only_ingress
+# assert every route stays behind `edge`.
+#
+# There is deliberately NO `tunnel:` key here, and this file must never
+# contain a shell-style placeholder. It is bind-mounted read-only, and
+# docker compose interpolates the *compose file* — never the contents of a
+# mounted file. A `tunnel: ${TUNNEL_ID}` line therefore reached cloudflared
+# as that literal string and the tunnel never started, silently, taking
+# every public route down with it while the deploy script still printed a
+# green summary. The tunnel id is passed instead as the argument to
+# `tunnel run` in docker-compose.yml, where the variable really is
+# interpolated (and `:?` makes an unset value fail loudly), so there is no
+# substitution step left for anyone to forget.
+#
+# `credentials-file` points at the mounted creds directory
+# (CLOUDFLARE_TUNNEL_CREDS_DIR in .env.example).
+credentials-file: /etc/cloudflared/creds.json
+
+# cloudflared forwards the original Host header by default — do NOT set
+# `originRequest.httpHostHeader` here. Both `server_name` matching in
+# docker/edge.nginx.conf and the SigV4 host-based signature check on the
+# storage subdomain depend on the Host header arriving unmodified.
+ingress:
+  - hostname: slmpc.pasaflow.com
+    service: http://edge:80
+  - hostname: storage.slmpc.pasaflow.com
+    service: http://edge:80
+  - service: http_status:404

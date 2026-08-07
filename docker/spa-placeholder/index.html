@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>slm-platform</title>
+</head>
+<body>
+  <!--
+    Stub root for `edge`'s static file server (docker/edge.nginx.conf,
+    `location /`). This directory is the DEFAULT for the `${SPA_DIST_DIR}`
+    compose bind-mount (docker-compose.yml, `edge` service) — it exists so
+    `docker compose up` works and `edge` serves *something* before a real
+    frontend `dist/` is pointed at that variable. Not a real SPA: no
+    router, no build step, nothing to maintain here.
+  -->
+  <p>slm-platform edge is up. No frontend build is mounted at SPA_DIST_DIR.</p>
+</body>
+</html>

@@ -6,19 +6,23 @@ tables — `Base.metadata` is fully populated.
 
 from __future__ import annotations
 
+from api.models.audit_event import AuditEvent
 from api.models.base import Base, TimestampMixin
 from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
 from api.models.project import Project
 from api.models.training_job import TrainingJob
+from api.models.usage_event import UsageEvent
 
 __all__ = [
+    "AuditEvent",
     "Base",
-    "TimestampMixin",
-    "Project",
     "Dataset",
-    "TrainingJob",
-    "ModelArtifact",
     "EvaluationRun",
+    "ModelArtifact",
+    "Project",
+    "TimestampMixin",
+    "TrainingJob",
+    "UsageEvent",
 ]

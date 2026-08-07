@@ -1,4 +1,4 @@
-# ADR-007 — Last-frame snapshot for job progress, and two new `WSMessageType` values
+# ADR-008 — Last-frame snapshot for job progress, and two new `WSMessageType` values
 
 - **Status**: Accepted
 - **Date**: 2026-08-04

@@ -42,6 +42,10 @@ dependencies = [
     "mlflow>=2.19.0",
     "optuna>=4.1.0",
     "tenacity>=9.0.0",
+    # Supabase JWT verification (api/core/auth.py). `crypto` extra pulls in
+    # cryptography for RS256/ES256 — Supabase's new publishable-key format
+    # signs with asymmetric keys verified against a JWKS endpoint.
+    "pyjwt[crypto]>=2.10.0",
     # Phase 9 SDG hardening (ADR-007).
     "datasketch>=1.6.0",
     "pypdf>=5.0.0",
@@ -95,6 +99,12 @@ dev = [
     # scikit-learn (used by metrics_classification) arrives transitively.
     "rouge-score>=0.1.2",
     "sacrebleu>=2.4.0",
+    # tests/unit/test_compose_port_exposure.py parses docker-compose.yml to
+    # assert that only the API is published beyond the host. Declared rather
+    # than relied on transitively: it arrives today via optuna/mlflow-skinny,
+    # and a security guard must not stop running because an unrelated
+    # dependency dropped it.
+    "pyyaml>=6.0",
 ]
 
 [project.urls]

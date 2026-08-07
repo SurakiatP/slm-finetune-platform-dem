@@ -17,7 +17,7 @@ frontend progress bar/log view against `/ws/jobs/{job_id}`.
 See also: [architecture](./01-architecture.md),
 [API reference](./02-api-reference.md),
 [frontend integration](./04-frontend-integration-smart-model-tune.md),
-[ADR-007](./adr/ADR-007-ws-progress-snapshot.md) (the design record for §3).
+[ADR-008](./adr/ADR-008-ws-progress-snapshot.md) (the design record for §3).
 
 ---
 
@@ -124,7 +124,7 @@ read is delivered twice — once via the snapshot, once via the live relay a
 moment later. This is harmless by construction: every frame is a full state
 snapshot, not a delta, and both known consumers keep only the latest frame
 they've seen per kind, so a duplicate is redundant, not incorrect. See
-[ADR-007](./adr/ADR-007-ws-progress-snapshot.md) for why this is accepted
+[ADR-008](./adr/ADR-008-ws-progress-snapshot.md) for why this is accepted
 rather than fixed with locking.
 
 **What is still true, despite the above:**
@@ -296,11 +296,22 @@ just GGUF.
 
 ## 7. Known sharp edges
 
+- **A `failed` frame can come from the API, not a worker.** If a worker dies
+  mid-job its row would otherwise sit `running` forever with no terminal
+  frame, and a WS-only client would wait on an ending that never arrives.
+  `api/services/job_reconcile.py` sweeps for that case and publishes the
+  terminal frame itself, carrying `error_type: "OrphanedJob"`. It lands on
+  both `job:{id}` and `job:{id}:last` in the usual order, and is an ordinary
+  `JobFailed` in every other respect — **clients need no new handling**, that
+  is the point. Detection requires both that no worker holds the task id and
+  that nothing has been published for `JOB_ORPHAN_GRACE_MINUTES` (default
+  15), so a job that is merely quiet — a long model load, a slow quantize —
+  is never touched.
 - **Last frame only, not a replay.** §3's snapshot is a single cached
   payload per `job_id`, not a history. A client that needs the full
   trajectory of a run (every HPO trial, every training step) still can't
   get it from this channel — WS consumers only ever see "the current
-  state," same as before ADR-007; it's just delivered immediately on
+  state," same as before ADR-008; it's just delivered immediately on
   connect now instead of only on the next publish.
 - **The snapshot is not durable.** 24h TTL in Redis, lost on a flush or
   eviction. It's a UX accelerator layered on top of the authoritative
@@ -318,7 +329,7 @@ just GGUF.
 - **`format_detection` (SDG) and `scoring` (evaluation) are reserved,
   never-emitted phase values** — see §4/§6. Don't build UI expecting either.
 
-See [ADR-007](./adr/ADR-007-ws-progress-snapshot.md) for the full design
+See [ADR-008](./adr/ADR-008-ws-progress-snapshot.md) for the full design
 record behind §3 — including the rejected alternatives (Redis Streams with
 real replay, persisting frames to Postgres) and why the duplicate-frame race
 is accepted rather than fixed with locking.

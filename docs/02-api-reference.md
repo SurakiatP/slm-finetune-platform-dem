@@ -12,7 +12,10 @@ changing a router.
 This is the human companion to [`openapi.json`](./openapi.json); regenerate
 that with `scripts/export_openapi.py` when the contract changes. All routes
 are mounted under `/api/v1` except `GET /health` (root-level). The spec
-currently has **33 paths / 40 operations**; this doc covers all of them.
+currently has **39 paths / 46 operations**; this doc covers all of them.
+(That count is asserted against `openapi.json` by
+`tests/unit/test_openapi_spec_is_current.py` — it had drifted twice, and this
+file previously stated two *different* stale numbers in two places.)
 
 **A note on error codes**: FastAPI's auto-generated OpenAPI only documents
 the success response and a generic `422` (Pydantic validation failure) for
@@ -31,6 +34,260 @@ frames), and
 (which UI screen consumes what).
 
 ---
+
+## Duplicate submissions
+
+The three job-submit endpoints — `POST /datasets/generate`, `POST /trainings`,
+`POST /evaluations` — dedupe repeats inside a **60-second window**, so a
+double-clicked Launch button enqueues one Celery task and buys one OpenRouter
+bill instead of two.
+
+The window is keyed by the caller plus a SHA-256 of the canonical request body
+(keys sorted, so re-serialising a body does not change it). A repeat inside the
+window returns the **original `202` response verbatim**, with:
+
+```
+X-Idempotent-Replay: true
+```
+
+Nothing is enqueued for a replay. A body that differs in any field is a
+different job and proceeds normally.
+
+Two things worth knowing:
+
+- **It works without a token.** The caller is `user.id` when authenticated, and
+  `anon:<X-Forwarded-For first hop>` otherwise. Phase-1 clients that send no
+  `Authorization` header are covered.
+- **Send `Idempotency-Key` if you want to control it.** When present, that
+  header replaces the body hash — useful if you deliberately want to submit the
+  same body twice, or to make a retry after a network timeout safe.
+
+`POST /models/{id}/export` is **not** in this window; it uses a stricter
+resource-state guard instead (see its `409` below).
+
+Dedupe is best-effort: if Redis is unavailable the request proceeds normally
+rather than failing, since losing dedupe is strictly better than losing a
+submission.
+
+---
+
+## Submit gates: concurrency quotas, budget, and the circuit breaker
+
+Five job-submit call sites — `POST /datasets/generate`, `POST /trainings`
+(both `manual` and `hpo` modes), `POST /models/{id}/export`, and
+`POST /evaluations` — sit behind a small stack of pre-write gates. Every
+gate runs **before** anything is written to the DB, so a rejection never
+leaves a stray `pending` row behind that would itself count toward the next
+caller's quota check. Source: `api/services/quota.py`,
+`api/services/circuit_breaker.py`, `api/services/usage_service.py`
+(`assert_within_budget`). See also
+[ADR-010](./adr/ADR-010-cpu-gpu-queue-split-and-quotas.md) for why each of
+these is shaped the way it is.
+
+### 429 — concurrency quota exceeded
+
+All five submit call sites are gated by an in-flight job count read live
+from the DB — `Dataset.status`, `TrainingJob.status`, `EvaluationRun.status`,
+and `ModelArtifact.export_status` rows currently `pending` or `running`.
+Two buckets: `Bucket.SDG` (just `Dataset`) and `Bucket.GPU` (`TrainingJob` +
+`EvaluationRun` + `ModelArtifact.export_status` summed together, since
+training/eval/export all pin the same single GPU one job at a time). Each
+bucket has a global cap, checked for every caller, and a per-actor cap,
+checked only for an authenticated caller (there is no `Project.owner_id` to
+join on for an anonymous request, so anonymous callers trip only the global
+cap):
+
+| Setting | Default |
+|---|---|
+| `QUOTA_MAX_SDG_JOBS_GLOBAL` | 8 |
+| `QUOTA_MAX_SDG_JOBS_PER_ACTOR` | 2 |
+| `QUOTA_MAX_GPU_JOBS_GLOBAL` | 4 |
+| `QUOTA_MAX_GPU_JOBS_PER_ACTOR` | 1 |
+
+```json
+// 429 response
+{ "detail": "Your gpu job quota reached (1/1 in flight). Try again shortly." }
+```
+
+Header: `Retry-After: 30` (`QUOTA_RETRY_AFTER_SECONDS`, default 30 seconds).
+**Why 429 and not 503**: 503 is the code most HTTP client libraries and
+reverse proxies treat as safe to auto-retry — exactly the wrong incentive
+when the rejection reason is an already-saturated queue.
+
+### 402 — monthly budget exceeded
+
+`POST /datasets/generate` **only** — the other four submit endpoints don't
+call OpenRouter, so there is nothing to bill against this cap. Checked once
+at submit (`usage_service.assert_within_budget`) *and* continuously through
+the run itself, inside the worker, after every OpenRouter response
+(`UsageAccumulator.check_budget()`) — a submit-time-only check would let a
+run that starts at $0 burn arbitrarily over a multi-hour SDG loop. Two
+independent caps, both `None` (unlimited) by default and both measured
+against the current **UTC calendar month**: `BUDGET_MONTHLY_USD_PER_ACTOR`
+and `BUDGET_MONTHLY_USD_GLOBAL`.
+
+```json
+// 402 response
+{ "detail": "Monthly budget exceeded for this account: spent $50.00 of $50.00 limit" }
+```
+
+No `Retry-After` — a budget cap doesn't reset on a timer a client can
+usefully wait out. **Both caps default to unlimited (`None`)**, so this
+response is not possible in a stock deployment; see
+[ADR-010](./adr/ADR-010-cpu-gpu-queue-split-and-quotas.md) for why the caps
+should stay unset until per-model pricing is verified.
+
+### 503 — OpenRouter circuit breaker open
+
+`POST /datasets/generate` **only**, for the same reason as the 402 above —
+it's the only submit endpoint whose worker calls OpenRouter.
+`api/services/circuit_breaker.py` is a 3-state (`closed`/`open`/`half_open`)
+breaker backed by Redis (state has to survive `worker_max_tasks_per_child=1`
+recycling the Celery worker process after every task, so an in-process
+breaker would never accumulate failures). Trips after
+`OPENROUTER_BREAKER_FAILURE_THRESHOLD` (default 5) *consecutive*
+outage-shaped failures — connection errors, timeouts, rate limits, 5xx; a
+plain 4xx never counts — and stays open for
+`OPENROUTER_BREAKER_OPEN_SECONDS` (default 60 seconds) before admitting a
+single half-open probe call. A successful probe closes it; a failing one
+re-opens it for another full window.
+
+"Consecutive" is literal: any successful call resets the counter, so four
+timeouts followed by a success leave the breaker fully closed. Both clients
+in `ai_engine/data_gen/openrouter_client.py` therefore report *both*
+terminal outcomes to the breaker, not just failures.
+
+**Format Detection participates too.** The seed-upload call at
+`api/services/datasets_service.py` is a counted OpenRouter surface, so it
+both feeds the breaker (an outage seen during an upload trips it for the SDG
+workers) and honours it (an already-open breaker fails that call fast rather
+than burning four retries). It is deliberately **not** budget-gated: failing
+a seed upload with 402 because a *different* feature exhausted the month's
+budget would break the product for a fraction of a cent. The call still
+counts *toward* the budget — its usage row is written like any other.
+
+```json
+// 503 response
+{ "detail": "OpenRouter is temporarily unavailable; try again shortly." }
+```
+
+Header: `Retry-After: <seconds remaining in the open window>`.
+
+### Which endpoint can return what
+
+| Endpoint | 429 quota | 402 budget | 503 breaker |
+|---|:---:|:---:|:---:|
+| `POST /datasets/generate` | ✓ (SDG bucket) | ✓ | ✓ |
+| `POST /trainings` (`manual` & `hpo`) | ✓ (GPU bucket) | — | — |
+| `POST /models/{id}/export` | ✓ (GPU bucket) | — | — |
+| `POST /evaluations` | ✓ (GPU bucket) | — | — |
+
+On `POST /datasets/generate`, the three checks run in this order — breaker,
+then budget, then quota — cheapest/most-certain first: the breaker is a
+platform-wide fact true for every caller, budget is a harder but still
+fairly static number, and quota is the most transient (a single other job
+finishing can flip it back under the limit), so it's checked last and is
+the most likely to be a false rejection.
+
+---
+
+## Authentication
+
+Every route below **except the `Metadata` section** requires a Supabase JWT once
+`AUTH_REQUIRED=true`. See [ADR-009](./adr/ADR-009-supabase-jwt-auth.md).
+
+```
+Authorization: Bearer <supabase access token>
+```
+
+Get the token client-side from `supabase.auth.getSession()`. The backend verifies
+it against the project's JWKS (`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`),
+checking signature, `exp`, `aud` (`authenticated`) and `iss`. There is no separate
+API key and no backend login endpoint — Supabase is the only identity source.
+
+### Two-phase rollout — what you get today
+
+`AUTH_REQUIRED` defaults to **`false`**, and until it is flipped:
+
+| Request | Phase 1 (`false`) | Phase 2 (`true`) |
+|---|---|---|
+| No `Authorization` header | **served anonymously**, no ownership filtering | `401` |
+| Valid token | served, scoped to that user | served, scoped to that user |
+| Invalid / expired / forged token | **`401`** | `401` |
+
+The third row is the one to internalise: *absent* is tolerated in phase 1,
+*invalid* never is. Sending a broken token is worse than sending none.
+
+### Public routes
+
+`/api/v1/tasks`, `/api/v1/tasks/{task_type}/example`, `/api/v1/base-models` and
+`/api/v1/sdg-pipeline` are static catalogs with no DB access and no user data —
+readable without a token in both phases, so a login screen can populate its
+pickers. `/health`, `/docs`, `/redoc` and `/openapi.json` are also open.
+
+### Ownership
+
+`Project.owner_id` holds the token's `sub`. Every other resource inherits its
+owner by foreign key (`Dataset`/`TrainingJob` → project; `ModelArtifact` →
+training → project; `EvaluationRun` → artifact → training → project). You never
+send `owner_id` — it is set server-side on create and rejected as input.
+
+Two responses that will look wrong until you know why:
+
+- **Another user's *existing* resource returns `403`, not `404`**
+  ([ADR-012](./adr/ADR-012-owner-mismatch-403-not-404.md); this reverses
+  the `404`-for-both rule ADR-009 originally shipped with). A resource id
+  that doesn't exist **at all** still returns `404` — the two are
+  deliberately distinguishable now, per the P0 acceptance criterion in
+  `BACKEND_GAP_ANALYSIS.md:33-34` ("user A must get `403` on every
+  resource... of user B, in every case"). Know what that buys an attacker
+  before you rely on it elsewhere: an authenticated caller **can** tell
+  "exists, not yours" apart from "doesn't exist" for any id, which a
+  uniform `404` would not have revealed. That's an accepted trade-off, not
+  an oversight — see the ADR for the reasoning.
+- **Resources created before authentication existed (`owner_id IS NULL`) are
+  invisible to everyone** once you send a token. They fail closed exactly
+  as before — only the status code moved, from `404` to `403` (the row
+  exists, it just isn't yours or anyone else's). If you had test data
+  before the cutover, it needs an owner assigned or it becomes unreachable.
+- This applies to every single-resource endpoint below that says "404 if
+  … belongs to another user" — read that as "403 if it exists and belongs
+  to another user; 404 only if it doesn't exist." **List** endpoints
+  (`GET /projects`, `GET /datasets`, etc.) are unaffected either way — a
+  non-owner's rows are silently absent from the page, never a `403`.
+
+### WebSocket
+
+`/ws/jobs/{job_id}` cannot use a header — browsers do not allow them on
+`new WebSocket()`. Pass the token as a subprotocol instead:
+
+```js
+new WebSocket(url, ["bearer", accessToken]);
+```
+
+The server echoes `bearer` back as the selected subprotocol. Close codes:
+
+| Code | Meaning |
+|---|---|
+| `4401` | no credential while auth is required, **or** a credential was offered that failed verification or wasn't the two-value `["bearer", token]` shape |
+| `4403` | authenticated, but the job is unknown **or** belongs to another user — deliberately the same code and reason for both, so the endpoint can't be probed for which job ids exist |
+
+Unlike the HTTP header, a *malformed* subprotocol is rejected rather than treated
+as anonymous: a header can be mangled by proxies, a subprotocol is only ever set
+by your own code.
+
+**The WebSocket keeps a single close code for both cases; the REST
+progress endpoint does not, as of ADR-012.** `4403` above is unchanged —
+splitting it was explicitly out of scope this round, since close codes
+4401/4403 are effectively unobservable to browsers today (`onclose`
+reports `1006` for most server-initiated closes), so there was nothing to
+gain yet; that's a separate, already-tracked gap. `GET
+/api/v1/jobs/{job_id}/progress`, the REST twin of this same stream, now
+splits its failures instead of collapsing them: `job_id` unknown to the
+backend (no row anywhere references it) is `404` — same as "no frame
+published yet", "TTL expired" and "corrupt payload", which are unrelated
+to ownership and still collapse into that one `404` as before — while a
+`job_id` that resolves to a real job owned by someone else is `403`.
 
 ## Projects
 
@@ -92,19 +349,102 @@ List projects, paginated. `api/routers/projects.py:32-45`.
 
 ### GET /api/v1/projects/{project_id}
 
-Get one project. **Errors**: `404` if not found.
+Get one project. **Errors**: `404` if it doesn't exist; `403` if it exists
+and belongs to another user (ADR-012).
 
 ### PATCH /api/v1/projects/{project_id}
 
 Update `name` and/or `description` (both optional; omit to leave unchanged).
 `task_type` is not a field on `ProjectUpdate` — sending it is rejected by
-`extra="forbid"` with `422`. **Errors**: `404` if not found.
+`extra="forbid"` with `422`. **Errors**: `404` if it doesn't exist; `403` if
+it exists and belongs to another user (ADR-012).
 
 ### DELETE /api/v1/projects/{project_id}
 
-Delete a project. **Success**: `204`. **Errors**: `404` if not found.
+Delete a project. **Success**: `204`. **Errors**: `404` if it doesn't
+exist; `403` if it exists and belongs to another user (ADR-012).
 **Gotcha**: cascades to the project's datasets / trainings at the DB level
 (per router summary) — there is no confirmation step or dry-run.
+The project's `audit_events` rows are **not** cascaded away: their FK is
+`ON DELETE SET NULL`, so the record of who deleted what survives. See the
+activity endpoint below.
+
+### GET /api/v1/projects/{project_id}/activity
+
+Audit trail for one project, newest first.
+
+**Query**: `limit` (1–200, default 50), `offset` (default 0).
+**Success**: `200` with `Page[AuditEventResponse]`.
+**Errors**: `404` if the project doesn't exist at all; `403` if it exists
+and belongs to someone else (ADR-012) — same split as `GET /projects/{id}`,
+deliberately, so a `200` with `items=[]` can never be used to confirm a
+project id exists that the caller doesn't own.
+
+Each event carries `action` (e.g. `project.create`, `sdg.submit`,
+`training.completed`, `export.cancel`, `inference.chat_completions`,
+`dataset.download`, `job.orphan_reconciled`), `resource_type` /
+`resource_id`, `outcome` (`success` / `failure`), `actor_id` (the Supabase
+`sub`, null for anonymous phase-1 callers), `request_id` (matches the
+`X-Request-ID` response header of the call that caused it, and the
+`request_id` field in the server logs), `created_at`, and a free-form
+`metadata` object.
+
+Events are written in the **same database transaction** as the action they
+record, so the log cannot silently miss an entry: if the audit write fails,
+the action fails with it.
+
+**Gotcha**: events whose project was later deleted are not reachable here.
+The rows survive the delete (`project_id` goes null) but no longer belong to
+a project anyone can query by id.
+
+### GET /api/v1/projects/{project_id}/usage
+
+OpenRouter usage/cost log for one project, newest first. `api/routers/projects.py:124-146`.
+
+**Query**: `limit` (1–200, default 50), `offset` (default 0).
+**Success**: `200` `Page[UsageEventResponse]` — each row: `id`, `created_at`,
+`actor_id` (Supabase `sub`, null for anonymous phase-1 callers), `project_id`,
+`job_id` (the Celery task id — same value used for `/ws/jobs/{id}`, `null`
+for the one usage surface that isn't job-shaped: seed-upload Format
+Detection), `provider` (currently always `"openrouter"`), `model`, `stage`
+(`meta_prompt` \| `generate` \| `judge` \| `pdf_qa` \| `format_detection`),
+`prompt_tokens`, `completion_tokens`, `cost_usd` (see gotcha below),
+`outcome` (`completed` \| `failed` \| `cancelled`).
+**Errors**: `404` if the project doesn't exist at all; `403` if it exists
+and belongs to someone else (ADR-012) — same split and same reasoning as
+`/activity` above: an empty page would itself confirm the project exists,
+so a non-owner gets `403`, never a silently-empty `200`.
+**Gotcha**: `cost_usd` is `null`, not `0`, for any row against a model
+absent from the pricing map (`api/services/model_pricing.py`) — a response
+containing any `null` `cost_usd` is a floor, not a total. One `UsageEvent`
+row is written per `(job_id, model, stage)` bucket, not per OpenRouter call
+— a single SDG run typically produces a handful of rows (one each for
+`generate`/`judge`/`meta_prompt`/etc.), not one per API call, because the
+worker aggregates token counts through an in-memory accumulator before
+writing.
+
+```json
+// 200 response
+{
+  "items": [
+    {
+      "id": "77777777-0000-0000-0000-000000000001",
+      "created_at": "2026-08-06T12:00:00Z",
+      "actor_id": "supabase-user-abc",
+      "project_id": "00000000-0000-0000-0000-000000000001",
+      "job_id": "celery-task-id",
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "stage": "generate",
+      "prompt_tokens": 12000,
+      "completion_tokens": 4500,
+      "cost_usd": "2.940000",
+      "outcome": "completed"
+    }
+  ],
+  "total": 1, "limit": 50, "offset": 0
+}
+```
 
 ---
 
@@ -141,7 +481,10 @@ Upload seed examples (multipart form) — JSON array, JSONL, or (QA-only) PDF.
 - **Caps**: JSON/JSONL ≤ 10 MiB, PDF ≤ `MAX_SEED_PDF_BYTES` (25 MiB) —
   `413` over the cap (`api/services/datasets_service.py:71-74, 400-417, 621-626`).
 - **Errors**:
-  - `404` project not found.
+  - `404` project doesn't exist; `403` if it exists and belongs to another
+    user (ADR-012) — ownership is asserted on the *project* here, before
+    anything is read from `file`, since the attack that matters on an
+    upload is seeding data into someone else's project.
   - `400` project/upload `task_type` mismatch; empty file; unparseable
     JSON; top-level JSON not an array; PDF for non-QA task_type; corrupt PDF
     (`PdfCorruptError`); no valid rows survive Format Detection + schema
@@ -209,6 +552,10 @@ on `sdg_mode`. `api/routers/datasets.py:59-70`, `api/schemas/sdg.py`.
   `status=pending`, `websocket_url` (`/ws/jobs/{job_id}`).
 - **Errors**:
   - `404` project not found, or (with_seed) `seed_dataset_id` not found.
+    **Not ownership-checked at all** — unlike almost every other endpoint
+    in this document, this one does a raw existence lookup with no
+    `assert_project_access` call, so there is no 403 here for either id;
+    a known gap, tracked separately, not something ADR-012 touches.
   - `400` project/request `task_type` mismatch; seed dataset
     `source != seed`; seed `task_type` mismatch; seed belongs to a
     different project; PDF seed used with `task_type != qa`.
@@ -263,7 +610,8 @@ Success: `200` `Page[DatasetResponse]`.
 
 ### GET /api/v1/datasets/{dataset_id}
 
-Get a dataset. **Errors**: `404`.
+Get a dataset. **Errors**: `404` if it doesn't exist; `403` if it exists
+and belongs to another user (ADR-012).
 
 - **Response shape** (`DatasetResponse`) — the fields worth knowing:
   `status` (`pending`/`running`/`completed`/`failed`/`cancelled` — lifecycle
@@ -284,18 +632,64 @@ Get a dataset. **Errors**: `404`.
 
 Preview the first N rows. Query: `limit` (1–200, default 20). Success:
 `200` `DatasetPreviewResponse` (`samples: list[dict]`, `total: int`).
-**Errors**: `404` not found; `409` dataset has no rows yet (still
-generating) — `storage_uri` is null.
+**Errors**: `404` if it doesn't exist; `403` if it exists and belongs to
+another user (ADR-012); `409` dataset has no rows yet (still generating) —
+`storage_uri` is null.
 
 ### GET /api/v1/datasets/{dataset_id}/download
 
 Stream the raw JSONL file (`application/x-ndjson`, `Content-Disposition:
-attachment`). **Errors**: `404` not found; `409` no rows yet (same check as
+attachment`). **Errors**: `404` if it doesn't exist; `403` if it exists and
+belongs to another user (ADR-012); `409` no rows yet (same check as
 preview).
+
+### GET /api/v1/datasets/{dataset_id}/download-url
+
+Mint a presigned, time-boxed MinIO GET URL for the dataset's stored
+object, so the caller downloads directly from storage instead of
+streaming through the API process. Additive alongside `GET
+/{dataset_id}/download` above — that endpoint is unchanged and still
+works. Source: `api/services/download_links.py::mint_dataset_download_url`.
+
+- **Params**: none besides `dataset_id` in the path.
+- **Success `200`** (`DatasetDownloadUrlResponse`):
+  ```json
+  {
+    "url": "https://storage.slmpc.pasaflow.com/datasets/<key>?X-Amz-Algorithm=...&X-Amz-Signature=...",
+    "filename": "my-dataset.jsonl",
+    "content_type": "application/x-ndjson",
+    "expires_at": "2026-08-07T13:05:00Z",
+    "expires_in": 300
+  }
+  ```
+  `expires_in` is `settings.presigned_url_ttl_seconds` (default `300`,
+  configurable `60`–`604800`). If `Dataset.storage_uri` is null but a seed
+  PDF was uploaded, this falls back to
+  `generation_metadata["pdf_uri"]` and returns `filename="<name>.pdf"` /
+  `content_type="application/pdf"` instead — closing a gap the streaming
+  `/download` endpoint above has today (a PDF-seeded dataset 409s there
+  with no download surface at all).
+- **Errors**:
+  - **`503`** when `MINIO_PUBLIC_URL` is not configured on this
+    deployment — presigned downloads are simply unavailable, not broken.
+    Checked before touching the DB.
+  - **`404` if the dataset doesn't exist; `403` if it exists and belongs to
+    another user** — same ownership contract as every other resource
+    endpoint (see
+    [ADR-012](./adr/ADR-012-owner-mismatch-403-not-404.md), which
+    superseded ADR-009's original `404`-for-both rule).
+  - `409` when there is nothing to download yet (`storage_uri` and the PDF
+    fallback are both empty — still generating).
+- Every minted URL is a bearer capability valid until `expires_in` seconds
+  from mint time, not a per-request-checked credential — see the note on
+  the equivalent model endpoint under
+  [Models & Export](#models--export) for the full reasoning, which applies
+  identically here.
 
 ### DELETE /api/v1/datasets/{dataset_id}
 
-Delete a dataset. **Success**: `204`. **Errors**: `404` not found; `409`
+Delete a dataset. **Success**: `204`. **Errors**: `404` if it doesn't
+exist; `403` if it exists and belongs to another user (ADR-012); `409`
 if any `TrainingJob` or `EvaluationRun` still references it (both FKs are
 `ondelete=RESTRICT`) — delete those first, or delete the parent project to
 cascade (`api/services/datasets_service.py:200-233`).
@@ -308,7 +702,8 @@ rows that predate the dedicated column) and flips `status=cancelled`.
 `api/services/datasets_service.py:259-287`.
 
 - **Success**: `200` — `{"dataset_id": "...", "status": "cancelled"}`.
-- **Errors**: `404` if the dataset doesn't exist.
+- **Errors**: `404` if the dataset doesn't exist; `403` if it exists and
+  belongs to another user (ADR-012).
 - **Idempotent**: cancelling a dataset that's already terminal
   (`completed`/`failed`/`cancelled`) returns `200` with the *existing*
   status, performs no revoke, and mutates nothing. This also covers plain
@@ -364,7 +759,9 @@ Start a training job — `mode` discriminates `manual` vs `hpo`.
   run starts; poll `GET /trainings/{id}` or `GET /trainings/{id}/mlflow-url`.)
 - **Errors** (same checks for both modes,
   `api/services/training_service.py:72-165, 167-283`):
-  - `404` project or dataset not found.
+  - `404` project or dataset not found. **Not ownership-checked** — same
+    known gap as `POST /datasets/generate` above; no `assert_*_access`
+    call on this path, so no 403 either.
   - `400` dataset belongs to a different project; dataset `task_type` ≠
     project `task_type`.
   - `409` dataset not ready (`storage_uri` unset or `num_samples=0` — SDG
@@ -429,7 +826,8 @@ List training jobs. Query: `project_id`, `status` (query alias for
 
 ### GET /api/v1/trainings/{training_id}
 
-Get a training job. **Errors**: `404`. `TrainingResponse` includes
+Get a training job. **Errors**: `404` if no such training exists; `403` if
+it exists and belongs to another user (ADR-012). `TrainingResponse` includes
 `config_json` (the full submitted config, manual or HPO),
 `best_metric_value`/`best_params_json` (HPO winners, null for manual mode),
 `error_message`, `started_at`/`ended_at`.
@@ -441,7 +839,8 @@ Cancel a running/pending training job. **Note the status code — 202, not
 Celery broker, not a synchronous guarantee. Idempotent — cancelling an
 already-terminal job (`completed`/`failed`/`cancelled`) returns the
 existing status rather than erroring
-(`api/services/trainings_service.py:71-104`). **Errors**: `404` not found.
+(`api/services/trainings_service.py:71-104`). **Errors**: `404` not found;
+`403` if the training exists but belongs to another user (ADR-012).
 Response body: `{"training_id": "...", "status": "cancelled"}`.
 
 ### POST /api/v1/trainings/{training_id}/cancel
@@ -457,7 +856,8 @@ documented as "a request to the broker, not a synchronous guarantee."
 Both verbs perform the identical revoke-then-flip-status work; only the
 documented status code differs, since `DELETE` predates this alias and
 its `202` contract is left unchanged. Same idempotency semantics as
-`DELETE`. **Errors**: `404` not found.
+`DELETE`. **Errors**: `404` not found; `403` if the training exists but
+belongs to another user (ADR-012).
 
 ```json
 // 200 response
@@ -466,7 +866,8 @@ its `202` contract is left unchanged. Same idempotency semantics as
 
 ### GET /api/v1/trainings/{training_id}/mlflow-url
 
-Resolve the MLflow run URL. **Errors**: `404` training not found. Success:
+Resolve the MLflow run URL. **Errors**: `404` training not found; `403` if
+it exists but belongs to another user (ADR-012). Success:
 `200` `MlflowUrlResponse` — `mlflow_url` is `null` if the run hasn't started
 yet (no `mlflow_run_id`/`mlflow_experiment_id` on the row); no error is
 raised for that case.
@@ -475,7 +876,8 @@ raised for that case.
 
 Full metric history (every key MLflow logged) plus, for HPO runs, a child
 trial summary. `api/routers/trainings.py:109-118`. **Errors**: `404`
-training not found; `502` if MLflow is unreachable
+training not found; `403` if it exists but belongs to another user
+(ADR-012); `502` if MLflow is unreachable
 (`api/services/trainings_service.py:214-222`). If the run hasn't started
 (`mlflow_run_id` still null), returns `200` with `metrics={}` and
 `hpo_children=null` — **not a 404**. `hpo_children` is `null` for manual
@@ -484,7 +886,8 @@ mode, a list (possibly empty) for HPO mode.
 ### GET /api/v1/trainings/{training_id}/loss-history
 
 Lightweight `train_loss` + `eval_loss` series only, for chart components.
-**Errors**: `404` training not found; `502` if MLflow is unreachable.
+**Errors**: `404` training not found; `403` if it exists but belongs to
+another user (ADR-012); `502` if MLflow is unreachable.
 **Gotcha**: if the run hasn't started yet (no `mlflow_run_id`) this returns
 `200` with **empty arrays**, not a 404 — same pattern as `/metrics`. Points
 are sorted by step and de-duplicated by `(step, value)` server-side
@@ -511,7 +914,8 @@ List model artifacts. Query: `project_id`, `training_job_id`, `limit`
 
 ### GET /api/v1/models/{model_id}
 
-Get one artifact. **Errors**: `404`. Response includes `lora_adapter_uri`
+Get one artifact. **Errors**: `404` if it doesn't exist; `403` if it exists
+and belongs to another user (ADR-012). Response includes `lora_adapter_uri`
 (set once training completes), `gguf_uri`/`safetensors_uri` (set only
 after a successful export of that format), `ollama_model_tag` (set once
 GGUF export registers with Ollama — required for inference and for
@@ -544,9 +948,19 @@ Enqueue a GGUF or SafeTensors export. `api/routers/models.py:66-77`.
   ignored for `safetensors`).
 - **Success**: `202` `ModelExportResponse` — `artifact_id`, `format`,
   `job_id`, `status=pending`, `websocket_url`.
-- **Errors**: `404` model not found; `409` artifact has no
+- **Errors**: `404` model not found; `403` if it exists and belongs to
+  another user (ADR-012); `409` artifact has no
   `lora_adapter_uri` on file (training likely never completed —
-  `api/services/model_service.py:88-101`).
+  `api/services/model_service.py:88-101`); `409` **an export is already in
+  flight** for this artifact (`export_status` is `pending` or `running`).
+  The detail names the in-flight `job_id` so you can cancel it via
+  `POST /models/{id}/export/cancel` first. A *terminal* `export_status`
+  (`completed` / `failed` / `cancelled`) does not block a fresh export —
+  re-exporting at a different quantization is a normal thing to do.
+  This guard replaces the idempotency window used by the other submit
+  endpoints: one artifact can only have one export at a time, so a
+  resource-state `409` is both stricter and more informative than a
+  replayed `202` would be.
 - **Gotcha**: `format=lora` passes request validation (it's a legal
   `ArtifactFormat` value) but the Celery worker
   (`workers/tasks/model_export.py:171`) raises `ValueError("unsupported
@@ -576,7 +990,8 @@ Cancel an in-progress export. Revokes `export_celery_task_id` and flips
 
 - **Success**: `200` — `{"artifact_id": "...", "status": "cancelled"}`.
 - **Errors**:
-  - `404` model artifact not found.
+  - `404` model artifact not found; `403` if it exists and belongs to
+    another user (ADR-012).
   - **`409 Conflict`** when `export_status is None` — no export was ever
     requested for this artifact. This is the one cancel endpoint in this
     group that can 409: unlike datasets/trainings/evaluations (which
@@ -608,13 +1023,80 @@ Cancel an in-progress export. Revokes `export_celery_task_id` and flips
 ### GET /api/v1/models/{model_id}/download
 
 Stream a previously-exported artifact. Query: `format` (alias `fmt`,
-default `gguf`). **Errors**: `404` model not found; `409` requested format
+default `gguf`). **Errors**: `404` model not found; `403` if it exists and
+belongs to another user (ADR-012); `409` requested format
 was never exported for this model, or (GGUF specifically) no `.gguf` blob
 was found under the export prefix; `400` unsupported `format` value, or
 format is `safetensors`/`lora` — those are multi-file directories not
-zipped server-side, so this endpoint returns `400` telling the caller to
-fetch objects via the MinIO API directly (`api/services/model_service.py:
-127-194`). **Only GGUF actually streams a file through this endpoint.**
+zipped server-side. As of round 3 (`api/services/model_service.py:
+303-317`), that `400` no longer echoes the raw `s3://` object URI (an
+internal storage address that was leaking into an HTTP error body) — it
+now just points the caller at the `/download-url` endpoint below.
+**Only GGUF actually streams a file through this endpoint.**
+
+### GET /api/v1/models/{model_id}/download-url
+
+Mint one or more presigned MinIO GET URLs for a previously-exported
+artifact. Query: `format` (alias `format`, one of `gguf` | `safetensors` |
+`lora`, default `gguf`). Additive alongside `GET /{model_id}/download`
+above. Source:
+`api/services/download_links.py::mint_model_download_url`.
+
+`gguf` mints exactly one URL, for the first `.gguf` object found under the
+export prefix (same selection rule the streaming endpoint uses).
+`safetensors`/`lora` are multi-file directories — this is the endpoint
+that actually closes the "these formats can't be downloaded at all"
+gap the streaming endpoint has (it `400`s on them, see above): the
+objects under the export prefix are listed internally (never leaving the
+compose network — only the individual signed GET URLs do) and one
+presigned URL is minted per object, capped at
+`api.services.download_links.MAX_LISTING_OBJECTS` (`200`). A listing
+that exceeds the cap sets `truncated: true` and returns only the first
+200 files rather than growing the response unboundedly.
+
+- **Success `200`** (`ModelDownloadUrlResponse`):
+  ```json
+  {
+    "format": "gguf",
+    "files": [
+      {
+        "key": "models/<artifact_id>/export/model.gguf",
+        "name": "my-model.gguf",
+        "size_bytes": 1789569024,
+        "url": "https://storage.slmpc.pasaflow.com/models/<key>?X-Amz-Algorithm=...&X-Amz-Signature=..."
+      }
+    ],
+    "expires_at": "2026-08-07T13:05:00Z",
+    "expires_in": 300,
+    "truncated": false
+  }
+  ```
+  `size_bytes` is a best-effort `stat_object` lookup — if it fails, it is
+  `0` rather than failing the whole mint; the URL itself is unaffected.
+- **Errors**:
+  - **`503`** when `MINIO_PUBLIC_URL` is not configured on this
+    deployment — presigned downloads are simply unavailable, not broken.
+    Checked before touching the DB (same shape as `GET
+    /datasets/{dataset_id}/download-url`, see [Datasets & SDG](#datasets--sdg)).
+  - **`404` if the model doesn't exist; `403` if it exists and belongs to
+    another user** — same ownership contract as every other resource
+    endpoint (see
+    [ADR-012](./adr/ADR-012-owner-mismatch-403-not-404.md)), joined through
+    `TrainingJob` → `Project`.
+  - `409` when the requested format was never exported (`"Model {id} has
+    not been exported as {format}. POST /api/v1/models/{id}/export
+    first."`), or (GGUF specifically) no `.gguf` object was found under
+    the export prefix.
+
+**Every minted URL is a bearer capability, not a scoped, per-request
+check.** Ownership and format validity are only verified once, at mint
+time — the URL itself carries no identity, so anyone who obtains it (a
+forwarded link, a browser history entry, a proxy log — see
+[ADR-011](./adr/ADR-011-nginx-edge-cloudflare-tunnel-presigned-downloads.md)
+for why the storage vhost deliberately never logs the query string) can
+use it to fetch the object directly from MinIO until it expires, with no
+further ownership check. Treat `expires_in` as the actual security
+boundary, not the initial mint check.
 
 ---
 
@@ -635,7 +1117,10 @@ Start an evaluation run. `api/routers/evaluations.py:26-36`.
 - **Success**: `202` `EvaluationAcceptedResponse` — `evaluation_id`,
   `job_id`, `status=pending`, `websocket_url`.
 - **Errors** (`api/services/evaluation_service.py:28-73`):
-  - `404` model artifact not found, or dataset not found.
+  - `404` model artifact not found, or dataset not found; `403` if either
+    exists but belongs to another user (ADR-012) — both `model_artifact_id`
+    and `dataset_id` are ownership-checked independently, since owning
+    neither, or owning one but not the other, are each their own attack.
   - `409` model artifact has no `ollama_model_tag` (not yet exported+
     registered — `POST /models/{id}/export` with `format=gguf` first);
     dataset has no rows persisted (`storage_uri` unset or
@@ -673,7 +1158,8 @@ default 0). Success: `200` `Page[EvaluationResponse]`.
 
 ### GET /api/v1/evaluations/{evaluation_id}
 
-Get one run. **Errors**: `404`. `EvaluationResponse` includes
+Get one run. **Errors**: `404` if it doesn't exist; `403` if it exists and
+belongs to another user (ADR-012). `EvaluationResponse` includes
 `metrics_json` (task-specific metrics, null until complete),
 `llm_judge_score`/`llm_judge_model`, `error_message`.
 
@@ -684,7 +1170,8 @@ Cancel a running evaluation. Revokes `celery_task_id`, flips
 evaluation_service.py:151-171`.
 
 - **Success**: `200` — `{"evaluation_id": "...", "status": "cancelled"}`.
-- **Errors**: `404` if the evaluation run doesn't exist.
+- **Errors**: `404` if the evaluation run doesn't exist; `403` if it exists
+  and belongs to another user (ADR-012).
 - **Idempotent**: cancelling an already-terminal run
   (`completed`/`failed`/`cancelled`) returns `200` with the existing
   status and does nothing else.
@@ -710,8 +1197,16 @@ Pivot metrics across multiple runs into a chart-ready grid.
   dropped key, so the frontend can render a complete grid),
   `judge_scores: {evaluation_id: score_or_null}`.
 - **Errors**: `404` if any id in `evaluation_ids` doesn't resolve to an
-  existing `EvaluationRun` — the error lists *all* missing ids at once
-  (`api/services/evaluation_service.py:159-171`), not just the first.
+  existing, **caller-owned** `EvaluationRun` — the error lists *all*
+  missing ids at once (`api/services/evaluation_service.py:159-171`), not
+  just the first. **No `403` here, deliberately** — this endpoint scopes
+  the query to the caller's own runs with `scope_evaluations_to_owner`
+  (the same list-filtering helper `GET /evaluations` uses) rather than
+  calling `assert_evaluation_access` per id, so a run belonging to another
+  user simply doesn't come back from the query and falls into the same
+  "not found" bucket as an id that never existed. ADR-012 doesn't touch
+  `scope_*_to_owner` — see `ownership.py`'s module docstring for why a
+  `403` doesn't make sense for a query that silently filters.
 
 ```json
 // Request
@@ -734,7 +1229,7 @@ training, HPO, export, evaluation) — for clients that don't want to hold a
 socket open, or a WS client's own first paint. Source:
 `api/routers/jobs.py`. See
 [`03-realtime-websocket.md`](./03-realtime-websocket.md) for the full
-`WSMessage` payload shapes and the snapshot mechanism (ADR-007).
+`WSMessage` payload shapes and the snapshot mechanism (ADR-008).
 
 ### GET /api/v1/jobs/{job_id}/progress
 
@@ -748,10 +1243,20 @@ Return the last-published progress frame for a job, validated against the
   `/ws/jobs/{job_id}`.
 - **Errors**: `404` + the standard `ErrorResponse` (`{"detail": "..."}`)
   when no frame exists for `job_id` — either the job never published one,
-  or the snapshot's 24h Redis TTL expired. **A corrupt or legacy stored
-  payload that fails `WSMessage` validation is also reported as `404`,
-  never `500`** — a snapshot that can't be parsed is treated as
-  equivalent to no snapshot (`api/routers/jobs.py:44-51`).
+  the snapshot's 24h Redis TTL expired, or `job_id` doesn't resolve to any
+  known Dataset/TrainingJob/EvaluationRun/ModelArtifact at all. **A corrupt
+  or legacy stored payload that fails `WSMessage` validation is also
+  reported as `404`, never `500`** — a snapshot that can't be parsed is
+  treated as equivalent to no snapshot (`api/routers/jobs.py:44-51`).
+  **`403`, distinct from all of the above (ADR-012):** when `job_id`
+  resolves to a real job — one of the four tables actually references it —
+  but that job's project belongs to another user (or to nobody,
+  `owner_id IS NULL`, which fails closed the same way). This is the REST
+  twin of `/ws/jobs/{job_id}`'s `4403` close code; unlike the WebSocket,
+  which keeps one code for "unknown" and "not yours" (see
+  [Authentication](#authentication) above), this endpoint now
+  distinguishes them. Anonymous callers (`AUTH_REQUIRED=false`, no token)
+  skip this check entirely and can only ever see `404`, same as before.
 - **Gotcha**: the snapshot is a UX accelerator, not a source of truth —
   it lives in Redis with a 24h TTL and is lost on a Redis flush.
   Authoritative job state remains each resource's own `status` column
@@ -782,6 +1287,61 @@ Return the last-published progress frame for a job, validated against the
 
 ---
 
+## Usage & Cost
+
+Account-level companion to the project-scoped
+[`GET /projects/{project_id}/usage`](#get-apiv1projectsproject_idusage) log
+above. Source: `api/routers/usage.py`, `api/services/usage_service.py`. See
+also [Submit gates](#submit-gates-concurrency-quotas-budget-and-the-circuit-breaker)
+above — this is the exact data the `402` budget check reads.
+
+### GET /api/v1/usage
+
+The caller's own cross-project usage/cost rollup for the current UTC
+calendar month, grouped by `(model, stage)`. `api/routers/usage.py:18-49`.
+
+- **No params.** Always scoped to the caller — `user.id` when a verified
+  token is present, `None` otherwise (phase 1 / auth disabled). There is no
+  `project_id` filter here; that's what the project-scoped log is for.
+- **Success**: `200` `UsageSummaryResponse` — `period_start`/`period_end`
+  (start of the current UTC month → now), `prompt_tokens`/
+  `completion_tokens`/`cost_usd` (grand totals across the period),
+  `items: list[UsageRollupItem]` (one entry per `(model, stage)` bucket),
+  `has_unpriced_usage` (`true` when at least one row in the period has
+  `cost_usd IS NULL` — the signal that the total above is a floor, not a
+  total).
+- **This is the exact aggregate the `402` budget check reads** —
+  `usage_service.assert_within_budget`'s per-actor check sums the identical
+  window, so a caller watching this endpoint can see a `402` coming before
+  it happens.
+- **Gotcha**: under phase 1 (`AUTH_REQUIRED=false`, no token sent),
+  `actor_id` resolves to `None`, which rolls up every anonymous-caller row
+  platform-wide rather than "your" usage specifically — there's no
+  per-caller identity to scope to until a token is sent.
+
+```json
+// 200 response
+{
+  "period_start": "2026-08-01T00:00:00Z",
+  "period_end": "2026-08-06T15:00:00Z",
+  "prompt_tokens": 84000,
+  "completion_tokens": 31000,
+  "cost_usd": "18.760000",
+  "items": [
+    {
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "stage": "generate",
+      "prompt_tokens": 60000,
+      "completion_tokens": 25000,
+      "cost_usd": "15.400000"
+    }
+  ],
+  "has_unpriced_usage": false
+}
+```
+
+---
+
 ## Inference
 
 OpenAI-compatible passthrough to the local Ollama daemon, for playground /
@@ -806,6 +1366,10 @@ OpenAI-compatible chat completions. `api/routers/inference.py:23-32`.
     inference_service.py:41-45`). This API is non-streaming only.
   - `404` `model` is a UUID but no matching `ModelArtifact` exists; or
     Ollama itself 404s the resolved tag.
+  - `403` `model` is a UUID that names a real `ModelArtifact` belonging to
+    another user (ADR-012) — this branch calls `ownership.assert_model_access`
+    directly and its result propagates as-is, same split as `GET
+    /models/{id}`.
   - `409` `model` resolves to a `ModelArtifact` with no
     `ollama_model_tag` set — export it with `format=gguf` first.
   - `502` Ollama is unreachable, or returns any other `4xx`/`5xx`.
@@ -813,6 +1377,19 @@ OpenAI-compatible chat completions. `api/routers/inference.py:23-32`.
   successful GGUF export (same registration requirement as evaluations
   with an LLM judge). Passing a raw Ollama tag bypasses that check
   entirely — useful for comparing against stock base models.
+- **The `slm/` literal-tag path does NOT get the `403` above, even after
+  ADR-012.** When `model` is a literal tag in this platform's own
+  namespace (`slm/<8hex>`, what `GET /inference/models` lists rather than a
+  raw UUID) instead of a `ModelArtifact` id, `_resolve_model_tag` reverse-maps
+  it to the owning artifact, runs the same ownership check, and then
+  **deliberately swallows whatever `ownership.assert_model_access` raised —
+  403 or 404 alike — and re-raises its own `404`** naming the tag, not the
+  artifact's UUID. This predates ADR-012 and is intentionally unaffected by
+  it: the caller only ever supplied a short tag, not a `ModelArtifact` id,
+  so there's no id-shaped thing here to legitimately have a `403` about,
+  and collapsing "no such tag" with "not yours" avoids handing the caller
+  an artifact UUID they had no way to know
+  (`api/services/inference_service.py:_resolve_model_tag`).
 
 ```json
 // Request
@@ -847,8 +1424,22 @@ Body (`CompletionRequest`): `model`, `prompt` (string or list of strings),
 ### GET /api/v1/inference/models
 
 List models the local Ollama daemon currently has loaded (OpenAI `/models`
-shape). No params, no auth. Success: `200` `ModelDescriptorList` —
+shape). No params. Success: `200` `ModelDescriptorList` —
 `{object: "list", data: [{id, object, created, owned_by, metadata}]}`.
+
+**Owner-scoped.** Entries in our own namespace (`slm/…`, one per exported
+fine-tune) are filtered to the caller's own artifacts. Base models the
+daemon has pulled in (`llama3.2:1b`, …) carry no ownership information and
+stay listed for everyone — hiding them would only make a model picker lie
+about what the daemon can serve. An anonymous caller (no `Authorization`
+header, phase 1) gets the unfiltered list, identical to pre-auth behaviour.
+
+**Tag shape.** `id` for our models is the canonical `slm/<first-8-of-uuid>`,
+not the `slm/<8hex>:latest` the daemon reports — Ollama appends an implicit
+version on create that the DB never stores. The id in this response is
+exactly the string `model` accepts on `/chat/completions` and
+`/completions`, so a picker's value round-trips. The suffixed form is also
+accepted on those endpoints for callers that copied it out of `ollama list`.
 
 ---
 
@@ -898,32 +1489,61 @@ since it's tagged `metadata` in the OpenAPI spec.
 
 ### GET /health
 
-Liveness probe. No params, no DB check — just returns `{"status": "ok"}`
-(`api/main.py:134-136`). Not under `/api/v1`. Use this for container
-healthchecks, not as a readiness check for DB/Redis/MinIO/MLflow.
+Liveness probe. No params, no DB check — just returns `{"status": "ok"}`.
+Not under `/api/v1`, and public (no token). Use this for container
+healthchecks. Deliberately dependency-free: it decides whether a supervisor
+restarts the container, so it must never fail because something *else* is
+down. `GET /ready` is the endpoint that asks about dependencies.
+
+### GET /ready
+
+Readiness probe. Probes PostgreSQL, Redis, MinIO and the Celery worker
+concurrently, each bounded by a 3-second timeout. Not under `/api/v1`, and
+public — orchestrators and load balancers have no token to send.
+
+Success: `200` with a per-dependency breakdown.
+
+```json
+{
+  "status": "degraded",
+  "checks": {"postgres": "ok", "redis": "ok", "minio": "ok", "worker": "unavailable"}
+}
+```
+
+`status` is `ok` (everything up), `degraded` (a non-fatal dependency is
+down), or `unready`.
+
+**`503` only when PostgreSQL or Redis is unreachable** — the two the API
+cannot answer a single request without. **MinIO and the worker report
+`unavailable` on a `200`**: with MinIO down, uploads and artifact downloads
+fail but every read still works; with no worker, submits still enqueue and
+`api/services/job_reconcile.py` ends orphaned jobs rather than leaving clients
+spinning. Returning `503` for either would pull the whole API out of rotation
+and take the UI offline to report a partial outage. See
+`api/services/readiness.py` for the reasoning and
+`tests/unit/test_readiness.py` for the guard.
 
 ---
 
 ## Verification notes
 
-All 33 paths / 40 operations in `openapi.json` are covered above — the
-enumeration was cross-checked against `python3 -c "import json;
-json.load(open('openapi.json'))['paths']"` before writing this file
-(33 paths, 40 GET/POST/PATCH/DELETE operations). This count includes the
-5 job-control endpoints added alongside ADR-006/ADR-007 (`GET
-/jobs/{job_id}/progress`, and one `POST .../cancel` each for datasets,
-model export, evaluations, and trainings — the last being an alias for
-the pre-existing `DELETE /trainings/{id}`).
+`openapi.json` currently enumerates 39 paths / 46 operations, and
+`tests/unit/test_openapi_spec_is_current.py` now asserts that the count stated
+at the top of this file matches it — regenerate with
+`python scripts/export_openapi.py` and update that one number when routes
+change. This file covers all of them, plus the 2 new usage
+endpoints documented above that **do not appear in `openapi.json` yet** —
+see discrepancy 4 below.
 
 Discrepancies found while writing this doc (not code changes — flagged for
 awareness):
 
 1. **`openapi.json` under-documents error responses.** Every operation's
    spec only lists its success code(s) plus a generic `422`. The `400`/
-   `404`/`409`/`413`/`502` paths shown above are real (`HTTPException`
-   raises in the service layer) but don't appear in the spec at all,
-   because none of the routers pass an explicit `responses=` to their
-   FastAPI decorators. If a typed client is code-genned from
+   `403`/`404`/`409`/`413`/`429`/`402`/`503`/`502` paths shown above are real
+   (`HTTPException` raises in the service layer) but don't appear in the
+   spec at all, because none of the routers pass an explicit `responses=`
+   to their FastAPI decorators. If a typed client is code-genned from
    `openapi.json`, it will not know these status codes are possible.
 2. **`api/services/training_service.py`'s module docstring is stale.** It
    says "HPO mode goes through `submit_hpo_training_job` (Phase 6 —
@@ -934,7 +1554,16 @@ awareness):
    just wasn't updated after Phase 6 shipped.
 3. **`/trainings/{id}/loss-history` and `/trainings/{id}/metrics` do not
    404 on "missing" data**, despite that being an intuitive assumption —
-   they 404 only if `training_id` itself doesn't exist. If the training
-   hasn't started logging to MLflow yet (`mlflow_run_id` still null), both
-   return `200` with empty series, so the frontend can render an empty
-   chart without special-casing a 404.
+   they 404 only if `training_id` itself doesn't exist (`403` if it exists
+   but belongs to another user, ADR-012). If the training hasn't started
+   logging to MLflow yet (`mlflow_run_id` still null), both return `200`
+   with empty series, so the frontend can render an empty chart without
+   special-casing a 404.
+4. **`GET /api/v1/projects/{project_id}/usage` and `GET /api/v1/usage` are
+   real, routed endpoints** (`api/routers/projects.py`,
+   `api/routers/usage.py`, both wired in `api/main.py`) **that
+   `openapi.json` does not list at all.** The spec hasn't been regenerated
+   (`scripts/export_openapi.py`) since these were added, so a client
+   code-genned from the current `openapi.json` won't know either endpoint
+   exists. Documented above from the router/schema/service source directly,
+   same as every other endpoint in this file.

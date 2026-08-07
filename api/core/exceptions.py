@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 # FastAPI HTTPExceptions and routing-layer 404s/405s.
 from starlette.exceptions import HTTPException
 
+from api.core import request_context
 from api.schemas.responses import ErrorResponse
 
 log = logging.getLogger("api.errors")
@@ -63,9 +64,17 @@ def install_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
-        # Mint a correlation id so the user can quote it back; the matching
-        # log line on the server has the full traceback.
-        correlation_id = uuid.uuid4().hex[:12]
+        # The correlation id IS the request id the client already has (from
+        # the `X-Request-ID` response header set by the request-context
+        # middleware in api/main.py): prefer the bound contextvar, then
+        # request.state (set by the same middleware before this handler can
+        # run), and only mint a fresh one as a last resort — e.g. if this
+        # handler is ever exercised without that middleware installed.
+        correlation_id = (
+            request_context.current_request_id()
+            or getattr(request.state, "request_id", None)
+            or uuid.uuid4().hex[:12]
+        )
         log.exception(
             "unhandled exception (%s %s) — correlation=%s",
             request.method,

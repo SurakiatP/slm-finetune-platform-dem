@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core.auth import CurrentUser, require_user
 from api.core.database import get_db
 from api.schemas.inference import (
     ChatCompletionRequest,
@@ -28,8 +29,9 @@ router = APIRouter()
 async def chat_completions(
     body: ChatCompletionRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> ChatCompletionResponse:
-    return await inference_service.chat_completions(db, body)
+    return await inference_service.chat_completions(db, body, user)
 
 
 @router.post(
@@ -40,8 +42,9 @@ async def chat_completions(
 async def text_completions(
     body: CompletionRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> CompletionResponse:
-    return await inference_service.text_completions(db, body)
+    return await inference_service.text_completions(db, body, user)
 
 
 @router.get(
@@ -49,5 +52,8 @@ async def text_completions(
     response_model=ModelDescriptorList,
     summary="OpenAI-compatible model listing (Ollama-served)",
 )
-async def list_inference_models() -> ModelDescriptorList:
-    return await inference_service.list_models()
+async def list_inference_models(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+) -> ModelDescriptorList:
+    return await inference_service.list_models(db, user)

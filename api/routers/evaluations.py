@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core.auth import CurrentUser, require_user
 from api.core.database import get_db
 from api.schemas.enums import JobStatus
 from api.schemas.evaluations import (
@@ -18,7 +20,7 @@ from api.schemas.evaluations import (
     EvaluationResponse,
 )
 from api.schemas.responses import Page
-from api.services import evaluation_service
+from api.services import evaluation_service, idempotency
 
 router = APIRouter()
 
@@ -31,9 +33,18 @@ router = APIRouter()
 )
 async def start_evaluation(
     body: EvaluationCreate,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> EvaluationAcceptedResponse:
-    return await evaluation_service.submit_evaluation_job(db, body)
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+) -> EvaluationAcceptedResponse | JSONResponse:
+    # Replay first: a repeat within the dedupe window costs no DB work, and
+    # ownership was already enforced on the original call that populated it.
+    body_json = body.model_dump(mode="json")
+    if (replayed := await idempotency.replay(request, user, body_json)) is not None:
+        return replayed
+    resp = await evaluation_service.submit_evaluation_job(db, body, user)
+    await idempotency.remember(request, user, body_json, resp.model_dump(mode="json"))
+    return resp
 
 
 @router.get(
@@ -43,6 +54,7 @@ async def start_evaluation(
 )
 async def list_evaluations(
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
     model_artifact_id: Annotated[UUID | None, Query()] = None,
     dataset_id: Annotated[UUID | None, Query()] = None,
     status_filter: Annotated[JobStatus | None, Query(alias="status")] = None,
@@ -56,6 +68,7 @@ async def list_evaluations(
         status_filter=status_filter,
         limit=limit,
         offset=offset,
+        user=user,
     )
 
 
@@ -67,8 +80,9 @@ async def list_evaluations(
 async def get_evaluation(
     evaluation_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> EvaluationResponse:
-    return await evaluation_service.get_evaluation(db, evaluation_id)
+    return await evaluation_service.get_evaluation(db, evaluation_id, user)
 
 
 @router.post(
@@ -79,8 +93,9 @@ async def get_evaluation(
 async def cancel_evaluation(
     evaluation_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> dict[str, str]:
-    return await evaluation_service.cancel_evaluation(db, evaluation_id)
+    return await evaluation_service.cancel_evaluation(db, evaluation_id, user)
 
 
 @router.post(
@@ -91,5 +106,6 @@ async def cancel_evaluation(
 async def compare_evaluations(
     body: EvaluationCompareRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> EvaluationCompareResponse:
-    return await evaluation_service.compare_evaluations(db, body)
+    return await evaluation_service.compare_evaluations(db, body, user)

@@ -44,17 +44,27 @@ def revoke_celery_task(task_id: str | None, *, context: str) -> None:
     anyone connected on ``/ws/jobs/{id}`` — do not "fix" this by adding a
     publish call in this function.
 
-    **That guarantee only holds because all three task bodies catch
-    ``BaseException``, not ``Exception``.** ``SystemExit`` derives from
+    **That guarantee only holds because all five cancellable task bodies
+    catch ``BaseException``, not ``Exception``.** ``SystemExit`` derives from
     ``BaseException``, so a task that narrows its handler silently stops
     emitting a terminal frame on cancel *and* leaves its row's status
     wherever it was. This was measured, not assumed: on a live worker a
     cancelled export reports ``error_message == "-241"``
     (``sys.exit(-(256 - 15))``). Before the widening, cancelling SDG or an
-    evaluation produced no terminal frame at all. If you touch the ``except``
-    clause in ``workers/tasks/{data_generation,evaluation,model_export}.py``,
+    evaluation produced no terminal frame at all.
+
+    The widening landed in two passes, which is itself the lesson: ``523aded``
+    covered ``data_generation`` / ``evaluation`` / ``model_export``, and
+    ``training`` / ``hpo_training`` were missed until a GPU-box run caught
+    them a release later — a cancelled training left its row ``cancelled``
+    while ``job:{id}:last`` still held a mid-run ``training_progress`` frame,
+    so a WebSocket-only client waited forever. If you touch the ``except``
+    clause in any of
+    ``workers/tasks/{data_generation,evaluation,model_export,training,hpo_training}.py``,
     keep it at ``BaseException`` and keep the ``!= JobStatus.CANCELLED`` guard
-    — without the guard, widening turns every cancel into ``failed``.
+    — without the guard, widening turns every cancel into ``failed``. The
+    parametrized guard in ``tests/unit/test_worker_progress_frames.py``
+    (``_CANCELLABLE_TASKS``) enforces both across all five files at once.
     """
     if not task_id:
         return

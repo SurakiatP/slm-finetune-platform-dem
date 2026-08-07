@@ -40,6 +40,25 @@ class Project(Base, TimestampMixin):
             "on browser/storage changes)."
         ),
     )
+    owner_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+        doc=(
+            "Supabase auth 'sub' claim (a UUID string) identifying the user "
+            "who owns this Project. Not a foreign key to any local table — "
+            "there is no local users table and there will not be one; "
+            "identity comes entirely from Supabase. "
+            "Nullable deliberately, for two reasons: (1) rows created before "
+            "this column existed have no owner, and (2) this branch ships in "
+            "a phase-1 compatibility mode where requests may legitimately "
+            "arrive with no authenticated user at all. "
+            "Enforcement rule for whoever reads this column later: once "
+            "authentication is required, rows with owner_id IS NULL are "
+            "visible to NOBODY — this fails closed, not open. Do not treat "
+            "null as 'public'."
+        ),
+    )
 
     datasets: Mapped[list["Dataset"]] = relationship(
         back_populates="project",
