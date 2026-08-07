@@ -624,3 +624,182 @@ class TestUsageBilledWhenDatasetRowIsGone:
                 f"{ds.status} by a post-commit failure"
             )
             assert ds.error_message is None
+
+
+# =============================================================================
+# 7. Terminal-frame gate — behavioural cover for the `not usage_recorded`
+#    guard on the `JobFailed` publish (round-3 review).
+#
+#    `test_worker_progress_frames.py` only asserts the *source text* contains
+#    `JobFailed(`, which stays true when the publish is wrapped in a guard —
+#    so deleting or inverting that guard left the whole suite green. These
+#    two tests pin the actual frames on both sides of the guard: nothing
+#    after `JobCompleted`, and everything unchanged on the cancel path.
+# =============================================================================
+
+
+def _frame_types(fake_redis_pubsub) -> list[str]:
+    """Ordered `type` field of every frame published to the job channel."""
+    import json
+
+    return [json.loads(msg)["type"] for _channel, msg in fake_redis_pubsub.published]
+
+
+class TestTerminalFrameIsTerminal:
+    def _run_to_commit_then_explode(
+        self, monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub, exc: BaseException
+    ):
+        dg_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+        )
+
+        async def _fake_run_generator(**kwargs):
+            kwargs["usage"].add(dg_module.sdg_models.GENERATOR, STAGE_GENERATE, 1000, 500)
+            return SDGRunResult(
+                valid_rows=[{"question": "q", "answer": "a"}],
+                rejected_count=0,
+                duplicate_count=0,
+                judge_rejected_count=0,
+                judge_parse_failures=0,
+                api_calls=1,
+            )
+
+        monkeypatch.setattr(dg_module, "_run_generator", _fake_run_generator)
+
+        # Explode in the success-path log line: after the commit AND after the
+        # `JobCompleted` frame has already gone out to the client.
+        real_info = dg_module.log.info
+
+        def _explode_on_done_log(msg, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            if isinstance(msg, str) and msg.startswith("SDG done"):
+                raise exc
+            return real_info(msg, *args, **kwargs)
+
+        monkeypatch.setattr(dg_module.log, "info", _explode_on_done_log)
+
+        project_id = uuid4()
+        dataset_id = uuid4()
+        _seed_project_and_dataset(sync_sessionmaker, project_id=project_id, dataset_id=dataset_id)
+        try:
+            dg_module.generate_synthetic_data.apply(
+                kwargs={
+                    "request_payload": _build_description_only_payload(project_id),
+                    "dataset_id": str(dataset_id),
+                }
+            )
+        except BaseException as raised:  # noqa: BLE001
+            # Celery's `.apply()` traps Exception but lets BaseException through;
+            # the task re-raising is the behaviour under test, not a test error.
+            assert raised is exc
+        return dg_module, dataset_id
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            RuntimeError("something failed after the run was committed"),
+            # The real trigger: `POST /datasets/{id}/cancel` revokes with
+            # SIGTERM, which billiard raises as `SystemExit` at an arbitrary
+            # point — including the window after the success commit.
+            SystemExit(-241),
+        ],
+        ids=["exception", "systemexit-from-cancel"],
+    )
+    def test_no_jobfailed_frame_after_jobcompleted(
+        self, monkeypatch: pytest.MonkeyPatch, fake_minio, fake_redis_pubsub, sync_sessionmaker, exc
+    ) -> None:
+        """A terminal frame is terminal. A client that already received
+        `JobCompleted` must never then receive `JobFailed` for the same job_id,
+        and the `job:{id}:last` snapshot a late subscriber reads must still say
+        completed.
+        """
+        dg_module, dataset_id = self._run_to_commit_then_explode(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub, exc
+        )
+
+        types = _frame_types(fake_redis_pubsub)
+        assert "completed" in types, f"the run never announced completion: {types}"
+        assert "failed" not in types, (
+            f"a JobFailed frame followed JobCompleted for the same job: {types}"
+        )
+
+        assert types[-1] == "completed", f"the last frame was not the terminal one: {types}"
+
+        # ...and the snapshot key, which is what a client connecting late reads.
+        # `job_id` is the Celery task id, so recover it from the channel.
+        import json
+
+        from api.core.redis_client import job_channel, job_snapshot_key
+
+        channel = fake_redis_pubsub.published[-1][0]
+        job_id = next(
+            jid
+            for jid in [channel.rsplit(":", 1)[-1]]
+            if job_channel(jid) == channel
+        )
+        snapshot = fake_redis_pubsub.client.get(job_snapshot_key(job_id))
+        assert snapshot is not None
+        assert json.loads(snapshot)["type"] == "completed", (
+            "a late subscriber reads a failed snapshot for a completed run"
+        )
+
+    def test_cancel_before_the_commit_still_publishes_jobfailed(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        """The guard must not over-reach. A cancel landing BEFORE the success
+        commit is the entire reason the handler catches `BaseException`: it must
+        still write CANCELLED, bill the burned tokens as cancelled, and publish
+        the terminal `JobFailed` frame a WebSocket-only client is waiting on.
+        Driven with a real `SystemExit`, which `except Exception` would miss.
+        """
+        dg_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+        )
+
+        project_id = uuid4()
+        dataset_id = uuid4()
+        _seed_project_and_dataset(sync_sessionmaker, project_id=project_id, dataset_id=dataset_id)
+
+        sysexit = SystemExit(-241)
+
+        async def _cancelled_run_generator(**kwargs):
+            kwargs["usage"].add(dg_module.sdg_models.GENERATOR, STAGE_GENERATE, 1800, 900)
+            # The cancel endpoint flips the row to CANCELLED, then revokes.
+            session = sync_sessionmaker()
+            try:
+                ds = session.get(Dataset, dataset_id)
+                ds.status = JobStatus.CANCELLED
+                session.commit()
+            finally:
+                session.close()
+            raise sysexit
+
+        monkeypatch.setattr(dg_module, "_run_generator", _cancelled_run_generator)
+
+        try:
+            dg_module.generate_synthetic_data.apply(
+                kwargs={
+                    "request_payload": _build_description_only_payload(project_id),
+                    "dataset_id": str(dataset_id),
+                }
+            )
+        except SystemExit as raised:
+            assert raised is sysexit, "the task must re-raise so Celery marks it failed"
+
+        with sync_sessionmaker() as session:
+            ds = session.get(Dataset, dataset_id)
+            assert ds is not None
+            assert ds.status == JobStatus.CANCELLED, (
+                f"the guard broke the cancel path: status is {ds.status}"
+            )
+            assert ds.error_message is not None
+
+        rows = _usage_rows(sync_sessionmaker)
+        assert len(rows) == 1, "a cancelled run's burned tokens were not billed"
+        assert rows[0].outcome == "cancelled"
+
+        types = _frame_types(fake_redis_pubsub)
+        assert "completed" not in types, f"a cancelled run announced completion: {types}"
+        assert "failed" in types, (
+            "no terminal frame on cancel — a WebSocket-only client waits forever: "
+            f"{types}"
+        )
