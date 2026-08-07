@@ -7,9 +7,15 @@ via `api.services.ownership`) turns a type annotation into
 `ModuleNotFoundError: No module named 'jwt'` at worker boot.
 
 That is not hypothetical: adding `audit_service` to the five task bodies did
-exactly this, and every unit test stayed green because the dev environment
-has PyJWT installed. The failure only appeared as a crash-looping `worker`
-container on the vast.ai box.
+exactly this, and every unit test stayed green because **the dev environment
+has PyJWT installed** — nothing about a normal `pytest` run can see this
+class of bug; it only surfaced as a crash-looping `worker` container on real
+infra (the vast.ai box). Round 2 added five more modules that workers import
+transitively — `api.services.usage_service`, `api.services.model_pricing`,
+`api.services.quota`, `api.services.circuit_breaker`, and
+`ai_engine.data_gen.usage` — any one of which can reintroduce the same bug
+via a stray `CurrentUser` type annotation or a module-scope `ownership`
+import, so they're guarded here the same way `audit_service` is.
 
 Each check runs in a subprocess with `jwt` blocked at the import-hook level,
 which is the closest in-repo approximation of the worker image's site-packages.
@@ -38,6 +44,19 @@ _WORKER_BOOT_MODULES = (
     "workers.tasks.hpo_training",
     "workers.tasks.evaluation",
     "workers.tasks.model_export",
+)
+
+# Round-2 modules the task bodies import transitively (usage/budget
+# tracking, pricing lookups, quota checks, the circuit breaker around
+# OpenRouter calls). Same risk as `audit_service`: any one of these can
+# reach `api.core.auth`/PyJWT through a careless module-scope import or
+# type annotation, and no ordinary test run would catch it.
+_ROUND_2_SERVICE_MODULES = (
+    "api.services.usage_service",
+    "api.services.model_pricing",
+    "api.services.quota",
+    "api.services.circuit_breaker",
+    "ai_engine.data_gen.usage",
 )
 
 _BLOCK_JWT_AND_IMPORT = """
@@ -105,4 +124,33 @@ def test_the_read_path_still_enforces_ownership() -> None:
     assert "ownership.assert_project_access" in body
     assert "from api.services import ownership" in body, (
         "the deferred import must live inside list_activity, not at module scope"
+    )
+
+
+@pytest.mark.parametrize("module", _ROUND_2_SERVICE_MODULES)
+def test_round_2_service_module_imports_without_pyjwt(module: str) -> None:
+    """The five modules the round-2 task bodies import transitively
+    (usage/budget tracking, pricing, quota, the OpenRouter circuit
+    breaker) must each import cleanly in the worker's PyJWT-less
+    environment."""
+    result = _import_without_pyjwt(module)
+    assert "IMPORTED" in result.stdout, (
+        f"{module} cannot be imported in the worker image.\n"
+        f"stderr:\n{result.stderr}"
+    )
+
+
+def test_usage_service_read_path_still_enforces_ownership() -> None:
+    """Same guard as `test_the_read_path_still_enforces_ownership`, for
+    `usage_service`'s own read path: deferring the `ownership` import into
+    `list_project_usage` must not quietly drop the access check along with
+    it — a deferred import nobody calls is worse than no deferral at all."""
+    src = (_REPO_ROOT / "api" / "services" / "usage_service.py").read_text(
+        encoding="utf-8"
+    )
+    body = src.split("async def list_project_usage")[1]
+    assert "ownership.assert_project_access" in body
+    assert "from api.services import ownership" in body, (
+        "the deferred import must live inside list_project_usage, not at "
+        "module scope"
     )

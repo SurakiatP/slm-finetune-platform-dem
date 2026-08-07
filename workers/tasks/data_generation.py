@@ -18,6 +18,7 @@ from uuid import UUID
 from celery.utils.log import get_task_logger
 from pydantic import TypeAdapter
 
+from ai_engine.data_gen import models as sdg_models
 from ai_engine.data_gen.generator import (
     GenerationProgress,
     SyntheticDataGenerator,
@@ -26,12 +27,13 @@ from ai_engine.data_gen.openrouter_client import (
     AsyncOpenRouterClient,
     OpenRouterClient,
 )
+from ai_engine.data_gen.usage import UsageAccumulator
 from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.schemas.enums import DatasetSource, JobStatus
 from api.core import request_context
 from api.schemas.progress import JobCompleted, JobFailed, SDGProgress
-from api.services import audit_service
+from api.services import audit_service, circuit_breaker, model_pricing, usage_service
 from api.schemas.sdg import (
     SDGRequest,
     SDGRequestDescriptionOnly,
@@ -65,11 +67,56 @@ def generate_synthetic_data(
     parent_uuid = UUID(dataset_id)
     holdout_size = request.holdout_size
     effective_target = request.num_samples + holdout_size
+    actor_id = request_context.current_user_id()
 
+    # Prices resolved here, as plain floats, and handed to the accumulator —
+    # `ai_engine` must never learn about `api.core.config` (hexagonal rule).
+    # A model missing from the pricing map is simply omitted; the
+    # accumulator's `has_unpriced_usage` is how the gap gets surfaced.
+    prices: dict[str, tuple[float, float]] = {}
+    for model_id in {
+        sdg_models.DIVERSITY_RULES,
+        sdg_models.GENERATOR,
+        sdg_models.JUDGE,
+        sdg_models.PDF_QA,
+        sdg_models.FORMAT_DETECTION,
+    }:
+        price = model_pricing.price_for(model_id)
+        if price is not None:
+            prices[model_id] = price
+
+    # Constructed BEFORE the `try:` block below — and this is load-bearing,
+    # not incidental: `usage` must still be readable inside the `except
+    # BaseException` handler further down, because the accumulator is
+    # passed INTO `generate()` rather than returned on `SDGRunResult` — a
+    # run that raises never returns a result, and that handler must still
+    # be able to read what was spent in order to bill it.
+    budget_remaining_usd: float | None = None
     with session_scope() as session:
         ds = session.get(Dataset, parent_uuid)
         if ds is not None:
             ds.status = JobStatus.RUNNING
+
+        # Tighter of the per-actor and global remaining budget, computed
+        # once at task start — not re-checked against the DB again mid-run;
+        # `UsageAccumulator.check_budget()` enforces the ceiling against
+        # this fixed number as tokens accumulate. `None` when both caps are
+        # unset (unlimited).
+        remaining_candidates: list[float] = []
+        if actor_id is not None and settings.budget_monthly_usd_per_actor is not None:
+            actor_spent = usage_service.monthly_spend_usd_sync(session, actor_id=actor_id)
+            remaining_candidates.append(
+                float(settings.budget_monthly_usd_per_actor) - float(actor_spent)
+            )
+        if settings.budget_monthly_usd_global is not None:
+            global_spent = usage_service.global_monthly_spend_usd_sync(session)
+            remaining_candidates.append(
+                float(settings.budget_monthly_usd_global) - float(global_spent)
+            )
+        if remaining_candidates:
+            budget_remaining_usd = min(remaining_candidates)
+
+    usage = UsageAccumulator(prices=prices, budget_remaining_usd=budget_remaining_usd)
 
     with sync_redis_scope() as redis:
 
@@ -115,6 +162,7 @@ def generate_synthetic_data(
                     pdf_bytes=pdf_bytes,
                     settings=settings,
                     progress_cb=emit_progress,
+                    usage=usage,
                 )
             )
 
@@ -179,6 +227,27 @@ def generate_synthetic_data(
                     request_id=request_context.current_request_id(),
                     metadata={"job_id": job_id, "num_samples": parent.num_samples},
                 )
+                # Usage must be written on every terminal outcome — completed,
+                # failed AND cancelled — because the tokens were burned either
+                # way. This is the success leg; the failure/cancel leg mirrors
+                # it in the `except BaseException` handler below.
+                usage_service.record_run(
+                    session,
+                    usage.entries(),
+                    actor_id=actor_id,
+                    project_id=parent.project_id,
+                    job_id=job_id,
+                    outcome="completed",
+                    provider="openrouter",
+                )
+                if usage.has_unpriced_usage:
+                    # A model in use is missing from the pricing map, so the
+                    # recorded cost is a floor, not a total.
+                    log.warning(
+                        "SDG usage has unpriced model(s): job=%s dataset=%s",
+                        job_id,
+                        dataset_id,
+                    )
                 parent_meta = dict(parent.generation_metadata or {})
                 parent_meta.update(
                     {
@@ -311,6 +380,34 @@ def generate_synthetic_data(
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )
+                        # Usage must be written on every terminal outcome —
+                        # completed, failed AND cancelled — because the
+                        # tokens were burned either way. A run cancelled
+                        # after 1800 calls is precisely the case a budget
+                        # must count. Mirrors the "cancelled" vs "failed"
+                        # choice audit_service.record just made above, and
+                        # rides the same session/transaction so a usage-write
+                        # failure can never mask the original SDG failure
+                        # (it's still inside this same `except Exception`).
+                        usage_service.record_run(
+                            session,
+                            usage.entries(),
+                            actor_id=request_context.current_user_id(),
+                            project_id=ds.project_id,
+                            job_id=job_id,
+                            outcome=(
+                                "cancelled"
+                                if ds.status == JobStatus.CANCELLED
+                                else "failed"
+                            ),
+                            provider="openrouter",
+                        )
+                        if usage.has_unpriced_usage:
+                            log.warning(
+                                "SDG usage has unpriced model(s): job=%s dataset=%s",
+                                job_id,
+                                dataset_id,
+                            )
 
             except Exception:  # noqa: BLE001 — never mask the original SDG failure
                 log.warning(
@@ -342,6 +439,7 @@ async def _run_generator(
     pdf_bytes: bytes | None,
     settings,
     progress_cb,
+    usage: UsageAccumulator | None = None,
 ):
     """Set up async + sync clients, run the generator with an explicit target.
 
@@ -349,16 +447,26 @@ async def _run_generator(
     otherwise equals num_samples.
     """
     effective_request = request.model_copy(update={"num_samples": effective_target})
+    # `precheck`/`on_call_failure` wire both clients into the shared Redis
+    # circuit breaker: `precheck()` fails fast (raises `CircuitOpenError`)
+    # instead of grinding through tenacity retries against a provider
+    # that's already known to be down, and `on_failure()` is what counts a
+    # genuinely outage-shaped failure toward tripping the breaker for every
+    # other in-flight/future SDG job.
     sync_client = OpenRouterClient(
         api_key=settings.openrouter_api_key,
         teacher_model="placeholder/unused",
         http_referer=settings.openrouter_http_referer,
         app_title=settings.openrouter_app_title,
+        precheck=circuit_breaker.precheck,
+        on_call_failure=circuit_breaker.on_failure,
     )
     async with AsyncOpenRouterClient(
         api_key=settings.openrouter_api_key,
         http_referer=settings.openrouter_http_referer,
         app_title=settings.openrouter_app_title,
+        precheck=circuit_breaker.precheck,
+        on_call_failure=circuit_breaker.on_failure,
     ) as async_client:
         gen = SyntheticDataGenerator(async_client, sync_client)
         return await gen.generate(
@@ -366,6 +474,7 @@ async def _run_generator(
             seed_rows=seed_rows,
             pdf_bytes=pdf_bytes,
             progress_cb=progress_cb,
+            usage=usage,
         )
 
 

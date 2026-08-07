@@ -410,6 +410,89 @@
         }
       }
     },
+    "/api/v1/projects/{project_id}/usage": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Usage/cost log for one project (newest first)",
+        "description": "Every OpenRouter usage event recorded against this project, newest first.\n\nOwnership is enforced inside `list_project_usage` (it calls\n`ownership.assert_project_access` before touching `usage_events` at\nall), so this 404s for someone else's project exactly like\n`GET /projects/{id}` and `/activity` do — never an empty page, which\nwould itself reveal that the project exists.",
+        "operationId": "list_project_usage_api_v1_projects__project_id__usage_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_UsageEventResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/datasets/upload-seed": {
       "post": {
         "tags": [
@@ -2334,6 +2417,56 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EvaluationCompareResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/usage": {
+      "get": {
+        "tags": [
+          "usage"
+        ],
+        "summary": "Caller's own usage/cost rollup for the current calendar month",
+        "description": "The caller's cross-project usage/cost rollup since the start of the\ncurrent UTC calendar month, grouped by (model, stage).\n\nThis is the exact aggregate `usage_service.assert_within_budget` checks\nagainst for the per-actor monthly cap — a caller can read here the same\nnumber that will start turning into 402s once it reaches\n`budget_monthly_usd_per_actor`.\n\nActor resolution matches every other actor-scoped call site in this\ncodebase: `user.id` when a verified token is present, `None` otherwise\n(phase-1 / auth disabled) — same as `actor_id=request_context.\ncurrent_user_id()` throughout `api/services/*_service.py`. A `None`\nactor is not an error here: it rolls up whatever usage was recorded\nwith no actor attached (`UsageEvent.actor_id IS NULL`), which is the\nphase-1-correct behaviour — this endpoint is under `require_user`, so\nit never itself 401s an anonymous caller while `AUTH_REQUIRED=false`.",
+        "operationId": "get_usage_summary_api_v1_usage_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageSummaryResponse"
                 }
               }
             }
@@ -5378,6 +5511,42 @@
         ],
         "title": "Page[TrainingResponse]"
       },
+      "Page_UsageEventResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UsageEventResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 500.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "Page[UsageEventResponse]"
+      },
       "ProjectCreate": {
         "properties": {
           "name": {
@@ -6589,6 +6758,210 @@
         ],
         "title": "TrainingResponse"
       },
+      "UsageEventResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "actor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "title": "Prompt Tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "title": "Completion Tokens"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "created_at",
+          "actor_id",
+          "project_id",
+          "job_id",
+          "provider",
+          "model",
+          "stage",
+          "prompt_tokens",
+          "completion_tokens",
+          "cost_usd",
+          "outcome"
+        ],
+        "title": "UsageEventResponse",
+        "description": "Wire shape for a single usage row."
+      },
+      "UsageRollupItem": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "title": "Prompt Tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "title": "Completion Tokens"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "model",
+          "stage",
+          "prompt_tokens",
+          "completion_tokens",
+          "cost_usd"
+        ],
+        "title": "UsageRollupItem",
+        "description": "One (model, stage) bucket within a `UsageSummaryResponse`."
+      },
+      "UsageSummaryResponse": {
+        "properties": {
+          "period_start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Period Start"
+          },
+          "period_end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Period End"
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "title": "Prompt Tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "title": "Completion Tokens"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UsageRollupItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "has_unpriced_usage": {
+            "type": "boolean",
+            "title": "Has Unpriced Usage",
+            "description": "True when at least one row in this period had cost_usd IS NULL, so a consumer knows the total is a floor, not a total."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "period_start",
+          "period_end",
+          "prompt_tokens",
+          "completion_tokens",
+          "cost_usd",
+          "items",
+          "has_unpriced_usage"
+        ],
+        "title": "UsageSummaryResponse",
+        "description": "Aggregate usage/cost over a date range, broken down by model+stage."
+      },
       "ValidationError": {
         "properties": {
           "loc": {
@@ -6655,6 +7028,10 @@
     {
       "name": "evaluations",
       "description": "Per-task metrics and LLM-as-judge scoring."
+    },
+    {
+      "name": "usage",
+      "description": "OpenRouter usage/cost events and monthly rollups."
     },
     {
       "name": "jobs",

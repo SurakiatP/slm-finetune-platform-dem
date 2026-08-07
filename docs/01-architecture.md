@@ -18,8 +18,10 @@ for the live-progress channel (not in OpenAPI) see
 integration notes see
 [frontend integration](./04-frontend-integration-smart-model-tune.md); for
 the recorded decisions behind specific constraints or design changes see
-[`docs/adr/`](./adr/README.md) (currently [ADR-006](./adr/ADR-006-defer-authentication.md)
-and [ADR-008](./adr/ADR-008-ws-progress-snapshot.md); ADR-001–005 are
+[`docs/adr/`](./adr/README.md) (currently [ADR-006](./adr/ADR-006-defer-authentication.md),
+[ADR-008](./adr/ADR-008-ws-progress-snapshot.md),
+[ADR-009](./adr/ADR-009-supabase-jwt-auth.md), and
+[ADR-010](./adr/ADR-010-cpu-gpu-queue-split-and-quotas.md); ADR-001–005 are
 recorded only as the constraint table in §5 below).
 
 ---
@@ -119,13 +121,18 @@ CPU-only (everything else):
 - `workers/tasks/data_generation.py` — CPU-only orchestration around the
   async OpenRouter calls.
 
+SDG being CPU-bound is exactly why it gets its own Celery queue rather than
+sharing the GPU worker's single execution slot — see
+[§8, CPU/GPU queue topology](#8-cpugpu-queue-topology) below.
+
 ---
 
 ## 4. Infrastructure services
 
-From `docker-compose.yml` (9 service blocks; `minio-init` is a one-shot init
-job, not a long-running service — README's "7 services" count
-(`README.md:74-75`) is stale, it omits `minio-init` and `frontend`):
+From `docker-compose.yml` (10 service blocks as of the `worker-cpu` addition
+below; `minio-init` is a one-shot init job, not a long-running service —
+README's "7 services" count (`README.md:74-75`) is stale, it omits
+`minio-init`, `frontend`, and now `worker-cpu`):
 
 | Service | Purpose | Port (host) |
 |---|---|---|
@@ -136,8 +143,13 @@ job, not a long-running service — README's "7 services" count
 | `mlflow` (`:124`) | Experiment tracking server (Postgres backend store + MinIO artifact store) | `127.0.0.1:${MLFLOW_PORT:-5000}` |
 | `api` (`:166`) | FastAPI app (`uvicorn api.main:app --reload`) — the HTTP + WS surface | `${API_PORT:-8000}` (default 8000) |
 | `frontend` (`:202`) | nginx serving the built React SPA (`frontend/`), reverse-proxying `/api` and `/ws` to `api` so the browser only ever talks to one origin (`docker/frontend.Dockerfile:1-9`, `docker/frontend.nginx.conf`) | `${FRONTEND_PORT:-8082}` |
-| `worker` (`:218`) | Celery worker (GPU) — runs SDG/training/HPO/export/evaluation tasks | n/a (no exposed port) |
-| `ollama` (`:265`) | OpenAI-compatible inference server (GPU) for the exported GGUF models | `127.0.0.1:${OLLAMA_PORT:-11434}` |
+| `worker` (`:211`) | Celery worker (GPU), `-Q gpu --concurrency=1` — runs training/HPO/export/evaluation tasks | n/a (no exposed port) |
+| `worker-cpu` (`:274`) | Celery worker (CPU), `-Q cpu --concurrency=2` — runs SDG generation only; reuses the `api` image, not the CUDA `worker` image | n/a (no exposed port) |
+| `ollama` (`:317`) | OpenAI-compatible inference server (GPU) for the exported GGUF models | `127.0.0.1:${OLLAMA_PORT:-11434}` |
+
+`worker-cpu` is new — see [§8](#8-cpugpu-queue-topology) below for why it
+exists and why it deliberately reuses the API image instead of building a
+second CUDA one.
 
 **Every port above except the API's binds `127.0.0.1`.** A bare `"5432:5432"`
 publishes on all interfaces, which put Postgres, Redis, MinIO, MLflow and
@@ -352,3 +364,85 @@ in place of the rolling `deepseek/deepseek-v4-flash` alias — SDG output is
 training data, so an upstream model swap under a stable alias would silently
 change what every subsequent fine-tune learns. See [realtime WebSocket](./03-realtime-websocket.md)
 for how this loop's progress is streamed live.
+
+---
+
+## 8. CPU/GPU queue topology
+
+Two Celery workers, one broker, and a `task_routes` split — added because a
+single shared worker let SDG starve GPU training. See
+[ADR-010](./adr/ADR-010-cpu-gpu-queue-split-and-quotas.md) for the decision
+record; this section is the mechanics.
+
+### The problem this fixes
+
+Before this split there were no `task_routes` at all: one `worker` service
+at `--concurrency=1` drained a single default queue, and all five task
+types (`sdg.generate`, `train.manual`, `train.hpo`, `model.export`,
+`evaluation.run`) serialized into that one slot. SDG generation is a long
+(potentially 20+ minute), CPU-bound loop of OpenRouter calls with no GPU
+involvement at all (§3 above) — but because it shared the same queue and
+the same `--concurrency=1` worker as training, a long-running SDG job
+blocked GPU training for the *entire platform*, even though the two don't
+actually contend for any real resource.
+
+### The split
+
+`workers/celery_app.py`:
+
+```python
+task_default_queue="gpu",
+task_routes={"sdg.*": {"queue": "cpu"}},
+```
+
+| Task name | Queue | Why |
+|---|---|---|
+| `sdg.generate` | `cpu` | Calls OpenRouter over HTTPS only — no `torch`/CUDA anywhere under `ai_engine/data_gen/` (verified, §3 above) |
+| `train.manual` | `gpu` (default) | Unsloth + QLoRA fine-tuning, needs the GPU |
+| `train.hpo` | `gpu` (default) | Same trainer, run per Optuna trial |
+| `model.export` | `gpu` (default) | GGUF conversion/quantization needs the base model loaded |
+| `evaluation.run` | `gpu` (default) | No direct GPU code itself, but stays on the `gpu` queue rather than being carved out too — evaluation depends on an Ollama-served model that was itself produced by a GPU export, and splitting it out would buy nothing since it isn't the thing that was blocking anyone |
+
+Everything except `sdg.*` falls through to `task_default_queue="gpu"` rather
+than needing an explicit route each — simpler than enumerating four routes
+for "everything that touches `ai_engine/training` or `ai_engine/hpo`
+somewhere."
+
+**Trap already hit once, documented in code so it isn't hit again**:
+`task_routes` keys glob against the registered Celery task **name**
+(`@celery_app.task(name="sdg.generate")`), not the Python module path.
+`workers.tasks.data_generation.*` looks like a plausible route key and
+silently matches nothing.
+
+### The two worker processes
+
+`docker-compose.yml`:
+
+| Service | Queue | Concurrency | Image | GPU reservation |
+|---|---|---|---|---|
+| `worker` | `gpu` | 1 (VRAM-bound: RTX 3060 12GB fits exactly one training/export/eval job) | `docker/worker.Dockerfile` (CUDA + Unsloth + `torch`) | Yes (`deploy: *gpu-deploy`) |
+| `worker-cpu` | `cpu` | 2 | **reuses `docker/api.Dockerfile`'s image** | No |
+
+`worker-cpu` deliberately reuses the API image rather than getting its own
+Dockerfile. `docker/api.Dockerfile` already installs the full base
+dependency set `workers.tasks.data_generation` needs (`celery`, `openai`,
+`tenacity`, `redis`, `sqlalchemy`) and never imports `torch` — the training
+extra that makes the GPU worker image large and CUDA-specific lives only in
+`docker/worker.Dockerfile`, which `sdg.generate` never touches. Building a
+second CUDA image just to run an HTTP-bound task loop would be pure waste;
+reusing the existing CPU-only image is both simpler and correctly reflects
+that this queue does no GPU work.
+
+`worker-cpu` requests no GPU `deploy:` block at all — asking for one would
+make it fail to schedule on a single-GPU host that has nothing spare to
+give it, for a queue that has no use for it.
+
+### Deploy note: draining the legacy queue
+
+Messages already sitting on the pre-split default `celery` queue will
+**not** be picked up by a worker started with `-Q gpu` or `-Q cpu` — Celery
+only consumes the queues it's told to. A deploy of this change either needs
+the old `celery` queue drained first, or the GPU worker started with
+`-Q gpu,celery` for one release cycle so in-flight messages still get
+processed (`workers/celery_app.py`'s module-level deploy-note comment spells
+out both options).
