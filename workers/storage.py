@@ -117,6 +117,50 @@ def put_directory(
     return file_count, total_bytes
 
 
+def remove_object(client: Minio, bucket: str, key: str) -> None:
+    """Delete a single object.
+
+    Used by task-level `except BaseException` handlers to clean up an
+    artifact that was uploaded to MinIO before the DB row referencing it
+    ever committed — a cancel (SIGTERM -> SystemExit) or an ordinary
+    failure landing in that window otherwise leaves the object orphaned
+    forever, since nothing in the DB points at it. Callers are expected to
+    wrap this in their own try/except: cleanup here is always best-effort
+    and must never be allowed to mask the original task failure.
+    """
+    client.remove_object(bucket_name=bucket, object_name=key)
+
+
+def remove_prefix(client: Minio, bucket: str, key_prefix: str) -> int:
+    """Delete every object whose key starts with `key_prefix`. Returns the count removed.
+
+    MinIO/S3 has no real directories — `put_directory` "uploads a folder" by
+    writing one object per file under a shared key prefix, so removing that
+    "directory" means enumerating every key under the prefix and deleting
+    them one by one; there is no single directory-delete call. Same
+    orphan-cleanup use case as `remove_object`: called from a task's
+    `except BaseException` handler when the DB row that was meant to
+    reference this prefix (a LoRA adapter directory, a GGUF export
+    directory, ...) never got committed. Best-effort by convention here too
+    — wrap at the call site.
+
+    Lists the full set of keys into memory FIRST, then deletes — rather
+    than deleting while `list_objects` is still being iterated. Deleting
+    mid-listing is a known footgun against paginated S3-style listings
+    (entries can be skipped as pages shift), and it also isn't safe against
+    any client whose `list_objects` is backed by something that can't
+    tolerate mutation during iteration.
+    """
+    prefix = key_prefix.rstrip("/") + "/"
+    keys = [
+        obj.object_name
+        for obj in client.list_objects(bucket_name=bucket, prefix=prefix, recursive=True)
+    ]
+    for key in keys:
+        client.remove_object(bucket_name=bucket, object_name=key)
+    return len(keys)
+
+
 __all__ = [
     "get_minio_client",
     "s3_uri",
@@ -124,4 +168,6 @@ __all__ = [
     "put_jsonl",
     "get_jsonl",
     "put_directory",
+    "remove_object",
+    "remove_prefix",
 ]

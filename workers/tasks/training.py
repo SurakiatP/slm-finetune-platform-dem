@@ -47,6 +47,7 @@ from workers.storage import (
     get_minio_client,
     parse_s3_uri,
     put_directory,
+    remove_prefix,
     s3_uri,
 )
 from workers.sync_db import session_scope
@@ -76,6 +77,17 @@ def train_manual(
 
         result: TrainingResult | None = None
         artifact_uri: str | None = None
+        # Set the instant `put_directory` finishes uploading the adapter to
+        # MinIO — before the `ModelArtifact` row that references it is ever
+        # committed. Declared before `try:` so it survives whatever raises
+        # and reaches the `except BaseException` handler below. `committed`
+        # mirrors `data_generation.py`'s `usage_recorded` pattern: it flips
+        # True the instant `_persist_artifact` commits, and the handler
+        # deletes `uploaded_prefix` ONLY when it is still False. Gap-analysis
+        # item 13: a cancel or failure landing in the upload-then-commit
+        # window otherwise orphans the whole adapter prefix in MinIO forever.
+        uploaded_prefix: str | None = None
+        committed = False
 
         try:
             # ---- 1. Load TrainingJob + Dataset (sync DB) -----------------------
@@ -154,6 +166,10 @@ def train_manual(
                         artifact_key,
                         result.adapter_dir,
                     )
+                    # Uploaded, but no DB row references `artifact_key` yet —
+                    # record it so a cancel/failure before `_persist_artifact`
+                    # commits below can clean it up.
+                    uploaded_prefix = artifact_key
                     artifact_uri = s3_uri(settings.minio_models_bucket, artifact_key)
                     log.info(
                         "training: job=%s uploaded %d adapter files (%.1f MB) to %s",
@@ -175,6 +191,12 @@ def train_manual(
                 artifact_uri=artifact_uri,
                 size_bytes=size_bytes,
             )
+
+            # `_persist_artifact` just committed the `ModelArtifact` row that
+            # durably references `uploaded_prefix`. From this point on it is
+            # no longer an orphan, so the `except BaseException` handler's
+            # cleanup below must never fire for it.
+            committed = True
 
             # ---- 7. Publish completion -----------------------------------------
             publish(
@@ -232,7 +254,16 @@ def train_manual(
             try:
                 with session_scope() as session:
                     job_row = session.get(TrainingJob, training_uuid)
-                    if job_row is not None:
+                    # `committed` means the artifact is on MinIO and the
+                    # TrainingJob row is durably COMPLETED. Anything raising
+                    # after that — a broken log handler, or a cancel's SIGTERM
+                    # landing in this window and arriving as `SystemExit` —
+                    # must not rewrite that terminal state, or a run that
+                    # finished is reported as failed. The exception is still
+                    # re-raised, so Celery records the task failure; it is the
+                    # job row's state that must stay true. Same guard, same
+                    # reasoning, as `data_generation.py`'s.
+                    if job_row is not None and not committed:
                         # The cancel endpoint sets status=CANCELLED *before*
                         # revoking. Don't clobber it back to FAILED — CANCELLED
                         # is the accurate terminal state for that run. The error
@@ -259,16 +290,58 @@ def train_manual(
 
             except Exception:  # noqa: BLE001 — never mask the original failure
                 log.warning("could not persist FAILED status for %s", training_id, exc_info=True)
-            try:
-                publish(
-                    JobFailed(
-                        job_id=job_id,
-                        error=str(exc) or repr(exc),
-                        error_type=type(exc).__name__,
+
+            # Orphan cleanup (gap-analysis item 13): `committed` False means
+            # this cancel/failure landed before the `ModelArtifact` row ever
+            # came to reference `uploaded_prefix` — the whole LoRA adapter
+            # directory sitting in MinIO is unreachable from the DB. Delete
+            # it. Gated on the exact same flag/reasoning `data_generation.py`
+            # uses for its `usage_recorded`/cleanup pair. Best-effort: wrapped
+            # so a MinIO hiccup during cleanup can never mask the original
+            # training failure. A fresh client is fetched rather than reusing
+            # `minio` from the `try` block, since a failure early enough
+            # (e.g. inside `_load_train_context`) means that local was never
+            # assigned.
+            #
+            # Known limitation: this only runs when the handler runs at all.
+            # A SIGKILL runs no Python code here and still leaks the prefix —
+            # closing that gap needs a separate sweeper, deliberately not
+            # built here: a sweeper that lists buckets and joins against the
+            # DB can race a job that is mid-upload and delete a live object.
+            if not committed and uploaded_prefix:
+                try:
+                    cleanup_minio = get_minio_client()
+                    removed = remove_prefix(
+                        cleanup_minio, settings.minio_models_bucket, uploaded_prefix
                     )
-                )
-            except Exception:  # noqa: BLE001
-                log.warning("failed to publish JobFailed message", exc_info=True)
+                    log.info(
+                        "training: removed %d orphaned adapter object(s) at %s (job=%s)",
+                        removed,
+                        uploaded_prefix,
+                        job_id,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort, never mask original failure
+                    log.warning(
+                        "failed to remove orphaned adapter prefix %s (job=%s)",
+                        uploaded_prefix,
+                        job_id,
+                        exc_info=True,
+                    )
+
+            # Same guard as the status write above: a client that already
+            # received `JobCompleted` must never then receive `JobFailed` for
+            # the same job_id. A terminal frame is terminal.
+            if not committed:
+                try:
+                    publish(
+                        JobFailed(
+                            job_id=job_id,
+                            error=str(exc) or repr(exc),
+                            error_type=type(exc).__name__,
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    log.warning("failed to publish JobFailed message", exc_info=True)
             raise
 
         finally:

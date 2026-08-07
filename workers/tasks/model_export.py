@@ -47,6 +47,7 @@ from workers.storage import (
     get_minio_client,
     parse_s3_uri,
     put_directory,
+    remove_prefix,
     s3_uri,
 )
 from workers.sync_db import session_scope
@@ -105,6 +106,21 @@ def export_model(
                     stage,
                     exc_info=True,
                 )
+
+        # Populated as artifacts land in MinIO / get registered with Ollama,
+        # each one BEFORE the DB row that references it is ever committed.
+        # Declared before `try:` so both survive whatever raises and reach
+        # the `except BaseException` handler below. `committed` mirrors the
+        # `usage_recorded` pattern in `data_generation.py`: it flips True the
+        # instant `_persist_export_uris` commits, and the handler cleans up
+        # ONLY when it is still False. Gap-analysis item 13: a cancel or
+        # failure landing in the upload-then-commit window otherwise orphans
+        # the GGUF/SafeTensors prefix in MinIO AND leaves a dangling Ollama
+        # tag — the latter unreachable via the DB-mediated tenancy filter,
+        # but still occupying real disk (GGUFs are large).
+        uploaded_prefixes: list[str] = []
+        ollama_tag_registered: str | None = None
+        committed = False
 
         try:
             # ---- 1. Load artifact + base_model -------------------------------
@@ -219,6 +235,10 @@ def export_model(
                     file_count, size_bytes = put_directory(
                         minio, bucket, key_prefix, os.path.dirname(gguf_path)
                     )
+                    # Uploaded, but no DB row references `key_prefix` yet —
+                    # record it so a cancel/failure before `_persist_export_uris`
+                    # commits below can clean it up.
+                    uploaded_prefixes.append(key_prefix)
                     gguf_uri = s3_uri(bucket, key_prefix)
                     log.info(
                         "export: uploaded %d gguf files (%.1f MB) to %s",
@@ -243,6 +263,11 @@ def export_model(
                             gguf_path=gguf_path,
                         )
                         ollama_tag = candidate_tag
+                        # Registered, but no DB row references this tag yet —
+                        # record it (separately from `ollama_tag`, which also
+                        # feeds the success-path persist below) so a
+                        # cancel/failure before the commit can delete it.
+                        ollama_tag_registered = candidate_tag
                     except Exception as ollama_exc:  # noqa: BLE001
                         log.warning(
                             "ollama registration failed for %s (best-effort, continuing): %s",
@@ -267,6 +292,9 @@ def export_model(
                     file_count, size_bytes = put_directory(
                         minio, bucket, key_prefix, merged_dir
                     )
+                    # Same as the GGUF branch above: uploaded, unreferenced
+                    # until the commit below.
+                    uploaded_prefixes.append(key_prefix)
                     safetensors_uri = s3_uri(bucket, key_prefix)
                     log.info(
                         "export: uploaded %d safetensors files (%.1f MB) to %s",
@@ -283,6 +311,13 @@ def export_model(
                     safetensors_uri=safetensors_uri,
                     ollama_tag=ollama_tag,
                 )
+
+                # `_persist_export_uris` just committed the `ModelArtifact`
+                # row that durably references `uploaded_prefixes` (and, if
+                # set, `ollama_tag_registered`). From this point on neither is
+                # an orphan, so the `except BaseException` handler's cleanup
+                # below must never fire for them.
+                committed = True
 
                 # ---- 8. Publish completion -----------------------------------
                 publish(
@@ -330,7 +365,14 @@ def export_model(
             try:
                 with session_scope() as fail_session:
                     row = fail_session.get(ModelArtifact, artifact_uuid)
-                    if row is not None:
+                    # `committed` means the GGUF is on MinIO and the artifact
+                    # row durably carries its URIs. A failure after that point
+                    # — including a cancel's SIGTERM arriving as `SystemExit`
+                    # in this window — must not rewrite the terminal state and
+                    # report a finished export as failed. The exception is
+                    # still re-raised so Celery records the task failure. Same
+                    # guard, same reasoning, as `data_generation.py`'s.
+                    if row is not None and not committed:
                         row.export_error_message = (str(exc) or repr(exc))[:4000]
                         # The cancel endpoint sets export_status=CANCELLED in
                         # the DB *before* revoking the task. If that already
@@ -359,16 +401,94 @@ def export_model(
                     artifact_id,
                     exc_info=True,
                 )
-            try:
-                publish(
-                    JobFailed(
-                        job_id=job_id,
-                        error=str(exc) or repr(exc),
-                        error_type=type(exc).__name__,
+
+            # Orphan cleanup (gap-analysis item 13): `committed` False means
+            # this cancel/failure landed before the `ModelArtifact` row ever
+            # came to reference `uploaded_prefixes` / `ollama_tag_registered`
+            # — both are unreachable from the DB. Delete them. Gated on the
+            # exact same flag/reasoning `data_generation.py` uses for its
+            # `usage_recorded`/cleanup pair. Every delete is individually
+            # try/excepted, and each of the two sections (MinIO, Ollama) is
+            # independently guarded, so a failure in one never skips or
+            # masks the other, and neither can mask the original export
+            # failure being handled here. A fresh MinIO client is fetched
+            # rather than reusing `minio` from the `try` block, since a
+            # failure early enough (e.g. inside `_load_export_context`)
+            # means that local was never assigned.
+            #
+            # Known limitation: this only runs when the handler runs at all.
+            # A SIGKILL runs no Python code here and still leaks both the
+            # prefix and the tag — closing that gap needs a separate
+            # sweeper, deliberately not built here: a sweeper that lists
+            # buckets/tags and joins against the DB can race a job that is
+            # mid-upload and delete a live object.
+            if not committed:
+                if uploaded_prefixes:
+                    try:
+                        cleanup_minio = get_minio_client()
+                        for prefix in uploaded_prefixes:
+                            try:
+                                removed = remove_prefix(
+                                    cleanup_minio, settings.minio_models_bucket, prefix
+                                )
+                                log.info(
+                                    "export: removed %d orphaned object(s) at %s "
+                                    "(job=%s, artifact=%s)",
+                                    removed,
+                                    prefix,
+                                    job_id,
+                                    artifact_id,
+                                )
+                            except Exception:  # noqa: BLE001 — best-effort, never mask original failure
+                                log.warning(
+                                    "failed to remove orphaned export prefix %s "
+                                    "(job=%s, artifact=%s)",
+                                    prefix,
+                                    job_id,
+                                    artifact_id,
+                                    exc_info=True,
+                                )
+                    except Exception:  # noqa: BLE001 — best-effort, never mask original failure
+                        log.warning(
+                            "could not obtain MinIO client for export cleanup "
+                            "(job=%s, artifact=%s)",
+                            job_id,
+                            artifact_id,
+                            exc_info=True,
+                        )
+                if ollama_tag_registered:
+                    # A dangling tag is unreachable via the DB-mediated
+                    # tenancy filter anyway, but GGUFs are much larger than
+                    # adapters — worth reclaiming the disk. Best-effort: an
+                    # Ollama hiccup here must never mask the original
+                    # export failure.
+                    try:
+                        OllamaClient(str(settings.ollama_base_url)).delete_model(
+                            ollama_tag_registered
+                        )
+                    except Exception:  # noqa: BLE001 — best-effort, never mask original failure
+                        log.warning(
+                            "failed to remove orphaned ollama tag %s (job=%s, artifact=%s)",
+                            ollama_tag_registered,
+                            job_id,
+                            artifact_id,
+                            exc_info=True,
+                        )
+
+            # Same guard as the status write above: a client that already
+            # received `JobCompleted` must never then receive `JobFailed` for
+            # the same job_id. A terminal frame is terminal.
+            if not committed:
+                try:
+                    publish(
+                        JobFailed(
+                            job_id=job_id,
+                            error=str(exc) or repr(exc),
+                            error_type=type(exc).__name__,
+                        )
                     )
-                )
-            except Exception:  # noqa: BLE001
-                log.warning("failed to publish JobFailed", exc_info=True)
+                except Exception:  # noqa: BLE001
+                    log.warning("failed to publish JobFailed", exc_info=True)
             raise
         finally:
             _release_gpu_memory()

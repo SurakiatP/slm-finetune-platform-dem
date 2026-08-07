@@ -41,7 +41,14 @@ from api.schemas.sdg import (
 )
 from workers.celery_app import celery_app
 from workers.progress import publish_ws_message, sync_redis_scope
-from workers.storage import get_jsonl, get_minio_client, parse_s3_uri, put_jsonl, s3_uri
+from workers.storage import (
+    get_jsonl,
+    get_minio_client,
+    parse_s3_uri,
+    put_jsonl,
+    remove_object,
+    s3_uri,
+)
 from workers.sync_db import session_scope
 
 log = get_task_logger(__name__)
@@ -123,6 +130,19 @@ def generate_synthetic_data(
     # Without it, a Redis error after the commit bills the same tokens twice.
     usage_recorded = False
 
+    # Every MinIO key written by this run, appended the instant `put_jsonl`
+    # returns — i.e. before the `Dataset` row that references it is ever
+    # committed. Declared before `try:`, same as `usage_recorded`, so it
+    # survives whatever raises and reaches the `except BaseException` handler
+    # below. `committed` mirrors `usage_recorded`'s role exactly: it flips
+    # True the instant the DB row(s) pointing at `uploaded_keys` are durably
+    # committed, and the handler deletes `uploaded_keys` ONLY when it is
+    # still False. Gap-analysis item 13: a cancel or failure landing in the
+    # upload-then-commit window otherwise orphans the JSONL(s) in MinIO
+    # forever — nothing in the DB ever comes to reference them.
+    uploaded_keys: list[str] = []
+    committed = False
+
     with sync_redis_scope() as redis:
 
         def emit_progress(p: GenerationProgress) -> None:
@@ -197,6 +217,9 @@ def generate_synthetic_data(
             bucket = settings.minio_datasets_bucket
             train_key = f"sdg/{dataset_id}.jsonl"
             train_size = put_jsonl(minio, bucket, train_key, train_rows)
+            # Uploaded, but no DB row references `train_key` yet — record it
+            # so a cancel/failure before the commit below can clean it up.
+            uploaded_keys.append(train_key)
             train_uri = s3_uri(bucket, train_key)
 
             holdout_uuid: UUID | None = None
@@ -210,6 +233,7 @@ def generate_synthetic_data(
                 holdout_size_bytes = put_jsonl(
                     minio, bucket, holdout_key, holdout_rows
                 )
+                uploaded_keys.append(holdout_key)
                 holdout_uri = s3_uri(bucket, holdout_key)
 
             with session_scope() as session:
@@ -293,6 +317,14 @@ def generate_synthetic_data(
                         },
                     )
                     session.add(child)
+
+            # The `Dataset` row(s) above just committed, durably referencing
+            # every key in `uploaded_keys` (`train_uri` on `parent`, and
+            # `holdout_uri` on `child` if a holdout was requested). From this
+            # point on the objects are no longer orphans, so the `except
+            # BaseException` handler's cleanup must never fire for them —
+            # deleting a live, DB-referenced dataset would be catastrophic.
+            committed = True
 
             # The success leg's usage rows are now committed. Anything that
             # raises from here on must NOT be billed a second time by the
@@ -452,6 +484,49 @@ def generate_synthetic_data(
                 log.warning(
                     "could not persist FAILED status for dataset %s", dataset_id, exc_info=True
                 )
+
+            # Orphan cleanup (gap-analysis item 13): `committed` False means
+            # the run reached this handler before the Dataset row(s) ever
+            # came to reference `uploaded_keys` — i.e. this cancel/failure
+            # landed in the upload-then-commit window, and the JSONL(s)
+            # sitting in MinIO are unreachable from the DB. Delete them.
+            # Gated on the exact same flag/reasoning as `usage_recorded`
+            # above — see its comment. Every delete is individually
+            # try/excepted so a MinIO hiccup during cleanup can never mask
+            # the original SDG failure being handled here, and a fresh
+            # client is fetched rather than reusing any `minio` local from
+            # the `try` block, since a failure early enough (e.g. inside
+            # `_run_generator`) means that local was never assigned.
+            #
+            # Known limitation: this only runs when the handler runs at
+            # all. A SIGKILL (as opposed to the SIGTERM the cancel endpoint
+            # sends) runs no Python code here and still leaks the object —
+            # closing that gap needs a separate sweeper, which was
+            # deliberately not built: a sweeper that lists buckets and
+            # joins against the DB can race a job that is mid-upload and
+            # delete a live object.
+            if not committed and uploaded_keys:
+                try:
+                    cleanup_minio = get_minio_client()
+                    cleanup_bucket = settings.minio_datasets_bucket
+                    for key in uploaded_keys:
+                        try:
+                            remove_object(cleanup_minio, cleanup_bucket, key)
+                        except Exception:  # noqa: BLE001 — best-effort, never mask original failure
+                            log.warning(
+                                "failed to remove orphaned SDG object %s/%s (job=%s)",
+                                cleanup_bucket,
+                                key,
+                                job_id,
+                                exc_info=True,
+                            )
+                except Exception:  # noqa: BLE001 — best-effort, never mask original failure
+                    log.warning(
+                        "could not obtain MinIO client for SDG orphan cleanup (job=%s)",
+                        job_id,
+                        exc_info=True,
+                    )
+
             # Same guard as the status write above: a client that already
             # received `JobCompleted` must never then receive `JobFailed` for
             # the same job_id. A terminal frame is terminal.
