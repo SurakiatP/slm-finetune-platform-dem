@@ -90,6 +90,36 @@ applies — the per-actor cap is simply not evaluated for that request.
 this codebase runs (the budget gate, the `/usage` rollup) relies on SQL's
 NULL-skipping aggregate behavior to make the result a floor, not a lie.
 
+### Format Detection: breaker yes, budget no
+
+Format Detection is the one counted OpenRouter surface that runs in the API
+process rather than a worker. It feeds and honours the circuit breaker, but
+is **not** gated by the monthly budget.
+
+Rejected alternative — gating it too. Consistency says every dollar-spending
+call should sit behind the same cap. But this call is a fraction of a cent,
+happens during a seed *upload* rather than as a job, and precedes any job
+existing at all. Returning 402 on an upload because a different feature (SDG)
+exhausted the month's budget takes the whole product offline to enforce a cap
+the upload barely moves. It still *counts toward* the budget — its usage row
+is written like every other — so the money is never invisible; it simply is
+not a gate.
+
+### `actor_id=None` means two different things, deliberately
+
+`usage_service._monthly_spend_stmt(actor_id=None)` means "no actor filter",
+i.e. the platform-wide total the global budget cap reads.
+`summary_for_actor(actor_id=None)` means the *anonymous bucket*
+(`actor_id IS NULL`) — one unauthenticated caller's own rows.
+
+Rejected alternative — unifying them so `GET /usage` always shows the number
+the budget gate enforces on. That promise can only hold for an anonymous
+caller by handing them the platform-wide total, which leaks every other
+user's spend to anyone without a token. The asymmetry is kept and documented
+at both call sites instead: an anonymous caller can be 402'd by the global
+cap using a number `/usage` never showed them. Once `AUTH_REQUIRED` flips,
+every caller is authenticated and the discrepancy disappears on its own.
+
 ## Consequences
 
 **Accepted:**

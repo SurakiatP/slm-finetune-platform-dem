@@ -146,7 +146,22 @@ breaker would never accumulate failures). Trips after
 outage-shaped failures — connection errors, timeouts, rate limits, 5xx; a
 plain 4xx never counts — and stays open for
 `OPENROUTER_BREAKER_OPEN_SECONDS` (default 60 seconds) before admitting a
-single half-open probe call.
+single half-open probe call. A successful probe closes it; a failing one
+re-opens it for another full window.
+
+"Consecutive" is literal: any successful call resets the counter, so four
+timeouts followed by a success leave the breaker fully closed. Both clients
+in `ai_engine/data_gen/openrouter_client.py` therefore report *both*
+terminal outcomes to the breaker, not just failures.
+
+**Format Detection participates too.** The seed-upload call at
+`api/services/datasets_service.py` is a counted OpenRouter surface, so it
+both feeds the breaker (an outage seen during an upload trips it for the SDG
+workers) and honours it (an already-open breaker fails that call fast rather
+than burning four retries). It is deliberately **not** budget-gated: failing
+a seed upload with 402 because a *different* feature exhausted the month's
+budget would break the product for a fraction of a cent. The call still
+counts *toward* the budget — its usage row is written like any other.
 
 ```json
 // 503 response

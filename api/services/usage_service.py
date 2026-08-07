@@ -298,10 +298,19 @@ def assert_within_budget_sync(db: Session, *, actor_id: str | None) -> None:
 
 
 async def summary_for_actor(
-    db: AsyncSession, *, actor_id: str, since: datetime
+    db: AsyncSession, *, actor_id: str | None, since: datetime
 ) -> UsageSummaryResponse:
     """This actor's cross-project usage/cost rollup since `since`, grouped
     by `(model, stage)`.
+
+    ⚠️ `actor_id=None` here means the **anonymous bucket** (`actor_id IS
+    NULL`) — one caller's own rows when no token was presented. This is
+    deliberately the OPPOSITE of `_monthly_spend_stmt`'s convention, where
+    `None` means "no actor filter", i.e. the global total across every user.
+    The two cannot be unified: this function answers "what have *I* spent",
+    and returning the platform-wide total to an unauthenticated caller would
+    leak every other user's spend. `_monthly_spend_stmt` answers "what has
+    the platform spent", which is exactly what the global budget cap needs.
 
     `has_unpriced_usage` is computed from a dedicated `COUNT` of NULL-cost
     rows in the same window, not inferred from `items` — inferring it from

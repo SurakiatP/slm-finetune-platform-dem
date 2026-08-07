@@ -142,6 +142,11 @@ def detect_and_rename(
             max_tokens=512,
         )
     except Exception as exc:  # noqa: BLE001 — LLM down → best-effort
+        # No `ChatResult` exists on this path, so there are no token counts to
+        # carry out — this is not a policy choice about whether to bill, it is
+        # simply that the data does not exist. (A provider-side failure after
+        # generation could in principle have been billed; OpenRouter does not
+        # tell us, and guessing would be worse than the known gap.)
         log.warning(
             "Format Detection LLM call failed (%s); proceeding with raw rows",
             type(exc).__name__,
@@ -151,11 +156,19 @@ def detect_and_rename(
     mapping = _parse_mapping(chat.content)
     if not mapping:
         # LLM returned empty / unparseable — try the rows as-is and let the
-        # required-key check below decide what to drop. No mapping was
-        # produced, so — even though the call was billed — we don't record
-        # usage here; this is a no-mapping-produced skip path, not the
-        # success path.
-        return _apply_no_mapping(rows, required_keys, notes="llm returned no mapping")
+        # required-key check below decide what to drop. The call still cost
+        # real money, so the token fields ARE carried out of here: billing
+        # tracks spend, not usefulness. Skipping it would make under-reporting
+        # correlate with failure, since badly-shaped seed data is exactly what
+        # lands on this branch most often.
+        return _apply_no_mapping(
+            rows,
+            required_keys,
+            notes="llm returned no mapping",
+            model=chat.model,
+            prompt_tokens=chat.prompt_tokens,
+            completion_tokens=chat.completion_tokens,
+        )
 
     # Success path: the LLM call was billed and produced a usable mapping.
     return _apply_mapping(
@@ -271,11 +284,21 @@ def passthrough_with_required_check(
     required_keys: set[str],
     *,
     notes: str,
+    model: str | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
 ) -> FormatDetectionResult:
     """Best-effort: pass rows through unchanged but drop any that lack required keys.
 
     Used when Format Detection is unavailable (no API key, LLM error,
     malformed mapping) — we still want to canonicalise as much as we can.
+
+    The three token fields default to `None` because most callers of this
+    helper never reached the provider at all (no API key, connection error),
+    and absent tokens mean *no call was billed* — which is not the same as a
+    call that returned zero. The one caller that DID pay — the
+    "LLM answered but produced no usable mapping" branch — passes them in, so
+    that spend is still recorded.
     """
     canonical: list[dict[str, Any]] = []
     dropped = 0
@@ -290,6 +313,9 @@ def passthrough_with_required_check(
         field_mapping={},
         rows_dropped=dropped,
         notes=notes,
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
     )
 
 

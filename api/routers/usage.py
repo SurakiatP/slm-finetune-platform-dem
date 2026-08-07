@@ -27,23 +27,28 @@ async def get_usage_summary(
     """The caller's cross-project usage/cost rollup since the start of the
     current UTC calendar month, grouped by (model, stage).
 
-    This is the exact aggregate `usage_service.assert_within_budget` checks
-    against for the per-actor monthly cap — a caller can read here the same
-    number that will start turning into 402s once it reaches
-    `budget_monthly_usd_per_actor`.
+    **For an authenticated caller** this is the exact aggregate
+    `usage_service.assert_within_budget` checks against for the per-actor
+    monthly cap — the same number that starts turning into 402s once it
+    reaches `budget_monthly_usd_per_actor`.
 
-    Actor resolution matches every other actor-scoped call site in this
-    codebase: `user.id` when a verified token is present, `None` otherwise
-    (phase-1 / auth disabled) — same as `actor_id=request_context.
-    current_user_id()` throughout `api/services/*_service.py`. A `None`
-    actor is not an error here: it rolls up whatever usage was recorded
-    with no actor attached (`UsageEvent.actor_id IS NULL`), which is the
-    phase-1-correct behaviour — this endpoint is under `require_user`, so
-    it never itself 401s an anonymous caller while `AUTH_REQUIRED=false`.
+    **For an anonymous caller it is not.** Actor resolution is `user.id`
+    when a verified token is present and `None` otherwise (phase-1 /
+    `AUTH_REQUIRED=false`), and a `None` actor rolls up only the rows
+    recorded with no actor attached (`UsageEvent.actor_id IS NULL`). The
+    budget gate, meanwhile, skips the per-actor cap entirely for such a
+    caller and applies the **global** cap — so an anonymous caller can be
+    402'd by a number this endpoint never showed them. Returning the global
+    total here instead would make the two agree, but at the price of leaking
+    every other user's spend to anyone unauthenticated, which is not a
+    trade worth making.
+
+    The endpoint sits under `require_user`, so it never itself 401s an
+    anonymous caller while `AUTH_REQUIRED=false`.
     """
     actor_id = user.id if user is not None else None
     return await usage_service.summary_for_actor(
         db,
-        actor_id=actor_id,  # type: ignore[arg-type]  # None is valid: see docstring
+        actor_id=actor_id,
         since=usage_service._current_month_start(),
     )

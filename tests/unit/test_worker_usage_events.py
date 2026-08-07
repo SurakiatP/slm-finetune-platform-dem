@@ -444,3 +444,168 @@ class TestUsageEventsBudgetExceeded:
         assert row.prompt_tokens == 100_000
         assert row.completion_tokens == 50_000
         assert row.cost_usd is not None and row.cost_usd > 0
+
+
+# =============================================================================
+# 6. Regressions found by the round-2 review (F2, F5)
+# =============================================================================
+
+
+class TestUsageIsBilledExactlyOnce:
+    """A run must be billed once, whatever happens after the success commit."""
+
+    def test_a_failure_after_the_success_commit_does_not_bill_twice(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        """The terminal `JobCompleted` publish used to sit unguarded inside the
+        outer `try`, so a Redis hiccup there sent an already-committed run into
+        the `except BaseException` handler, which billed it a second time and
+        flipped a genuinely completed dataset to FAILED. `_monthly_spend_stmt`
+        sums both rows, so the actor's recorded monthly spend doubled.
+        """
+        dg_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+        )
+
+        async def _fake_run_generator(**kwargs):
+            kwargs["usage"].add(dg_module.sdg_models.GENERATOR, STAGE_GENERATE, 1000, 500)
+            return SDGRunResult(
+                valid_rows=[{"question": "q", "answer": "a"}],
+                rejected_count=0,
+                duplicate_count=0,
+                judge_rejected_count=0,
+                judge_parse_failures=0,
+                api_calls=1,
+            )
+
+        monkeypatch.setattr(dg_module, "_run_generator", _fake_run_generator)
+
+        # Make ONLY the terminal JobCompleted frame explode — every earlier
+        # progress frame must still go through, so the run reaches the commit.
+        real_publish = dg_module.publish_ws_message
+
+        def _explode_on_completion(redis, job_id, message):  # noqa: ANN001
+            if type(message).__name__ == "JobCompleted":
+                raise RuntimeError("redis blipped while announcing completion")
+            return real_publish(redis, job_id, message)
+
+        monkeypatch.setattr(dg_module, "publish_ws_message", _explode_on_completion)
+
+        project_id = uuid4()
+        dataset_id = uuid4()
+        _seed_project_and_dataset(sync_sessionmaker, project_id=project_id, dataset_id=dataset_id)
+
+        dg_module.generate_synthetic_data.apply(
+            kwargs={
+                "request_payload": _build_description_only_payload(project_id),
+                "dataset_id": str(dataset_id),
+            }
+        )
+
+        rows = _usage_rows(sync_sessionmaker)
+        outcomes = sorted(r.outcome for r in rows)
+        assert len(rows) == 1, f"the same run was billed {len(rows)} times: {outcomes}"
+        assert rows[0].outcome == "completed"
+
+        # ...and the completed dataset must not have been unwound to FAILED.
+        with sync_sessionmaker() as session:
+            ds = session.get(Dataset, dataset_id)
+            assert ds is not None
+            assert ds.status == JobStatus.COMPLETED
+
+
+class TestUsageBilledWhenDatasetRowIsGone:
+    def test_deleted_dataset_still_bills_with_null_project(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        """Tokens burned by a run whose Dataset was deleted mid-flight are still
+        real money. `usage_events.project_id` is ON DELETE SET NULL for exactly
+        this reason — billing history outlives the row it refers to.
+        """
+        dg_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+        )
+
+        project_id = uuid4()
+        dataset_id = uuid4()
+        _seed_project_and_dataset(sync_sessionmaker, project_id=project_id, dataset_id=dataset_id)
+
+        async def _spend_then_vanish(**kwargs):
+            kwargs["usage"].add(dg_module.sdg_models.GENERATOR, STAGE_GENERATE, 700, 300)
+            # The dataset disappears mid-run, then the run fails.
+            with sync_sessionmaker() as session:
+                ds = session.get(Dataset, dataset_id)
+                if ds is not None:
+                    session.delete(ds)
+                    session.commit()
+            raise RuntimeError("boom after the row was deleted")
+
+        monkeypatch.setattr(dg_module, "_run_generator", _spend_then_vanish)
+
+        dg_module.generate_synthetic_data.apply(
+            kwargs={
+                "request_payload": _build_description_only_payload(project_id),
+                "dataset_id": str(dataset_id),
+            }
+        )
+
+        rows = _usage_rows(sync_sessionmaker)
+        assert len(rows) == 1, "a run whose dataset vanished was never billed"
+        assert rows[0].outcome == "failed"
+        assert rows[0].project_id is None
+        assert rows[0].prompt_tokens == 700
+
+    def test_any_failure_after_the_commit_does_not_bill_twice(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        """The `usage_recorded` flag, not the publish guard, is what covers this.
+
+        Wrapping the terminal `JobCompleted` publish in try/except handles the
+        Redis case, but ANY post-commit exception reaches the same handler.
+        This raises after the publish has already succeeded, so only the flag
+        can prevent the second bill — keeping the two fixes independently
+        tested rather than one masking the other.
+        """
+        dg_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+        )
+
+        async def _fake_run_generator(**kwargs):
+            kwargs["usage"].add(dg_module.sdg_models.GENERATOR, STAGE_GENERATE, 1000, 500)
+            return SDGRunResult(
+                valid_rows=[{"question": "q", "answer": "a"}],
+                rejected_count=0,
+                duplicate_count=0,
+                judge_rejected_count=0,
+                judge_parse_failures=0,
+                api_calls=1,
+            )
+
+        monkeypatch.setattr(dg_module, "_run_generator", _fake_run_generator)
+
+        # Blow up in the success-path log line, which runs *after* both the
+        # commit and the (successful) JobCompleted publish.
+        real_info = dg_module.log.info
+
+        def _explode_on_done_log(msg, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            if isinstance(msg, str) and msg.startswith("SDG done"):
+                raise RuntimeError("something failed after the run was committed")
+            return real_info(msg, *args, **kwargs)
+
+        monkeypatch.setattr(dg_module.log, "info", _explode_on_done_log)
+
+        project_id = uuid4()
+        dataset_id = uuid4()
+        _seed_project_and_dataset(sync_sessionmaker, project_id=project_id, dataset_id=dataset_id)
+
+        dg_module.generate_synthetic_data.apply(
+            kwargs={
+                "request_payload": _build_description_only_payload(project_id),
+                "dataset_id": str(dataset_id),
+            }
+        )
+
+        rows = _usage_rows(sync_sessionmaker)
+        outcomes = sorted(r.outcome for r in rows)
+        assert len(rows) == 1, f"the same run was billed {len(rows)} times: {outcomes}"
+        assert rows[0].outcome == "completed"

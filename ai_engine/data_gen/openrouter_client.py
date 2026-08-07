@@ -73,6 +73,11 @@ def is_breaker_failure(exc: BaseException) -> bool:
 # i.e. a no-op — clients behave byte-for-byte as before when unused.
 PrecheckHook = Callable[[], None]
 OnCallFailureHook = Callable[[BaseException], None]
+# Fires once per *logical* call that returned a result. A consumer counting
+# consecutive failures needs this to reset its counter: without it a breaker
+# accumulates failures over the process's whole lifetime and, once tripped,
+# has nothing that can ever close it again.
+OnCallSuccessHook = Callable[[], None]
 
 
 @dataclass(frozen=True)
@@ -100,6 +105,7 @@ class OpenRouterClient:
         *,
         precheck: PrecheckHook | None = None,
         on_call_failure: OnCallFailureHook | None = None,
+        on_call_success: OnCallSuccessHook | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY is empty — set it in .env.")
@@ -119,6 +125,7 @@ class OpenRouterClient:
         # no counting, no Redis — just call-outs at the right moments.
         self._precheck = precheck
         self._on_call_failure = on_call_failure
+        self._on_call_success = on_call_success
 
     @property
     def teacher_model(self) -> str:
@@ -191,13 +198,18 @@ class OpenRouterClient:
         response_format: dict[str, Any] | None,
     ) -> ChatResult:
         """Plain (undecorated) outer call: runs the retried inner attempt and
-        fires `on_call_failure` once, after retries are exhausted, iff the
-        final exception counts per `is_breaker_failure`. Kept separate from
-        `_chat_attempt` (which carries the `@retry` decorator) so the hook
-        cannot fire once per retry attempt.
+        fires exactly one terminal hook — `on_call_success` if a result came
+        back, `on_call_failure` if the final exception counts per
+        `is_breaker_failure`. Kept separate from `_chat_attempt` (which
+        carries the `@retry` decorator) so neither hook can fire once per
+        retry attempt.
+
+        Both hooks are terminal and mutually exclusive, which is what lets a
+        consumer count *consecutive* failures: a call that eventually
+        succeeds after three retries reports success, not three failures.
         """
         try:
-            return self._chat_attempt(
+            result = self._chat_attempt(
                 model=model,
                 messages=messages,
                 temperature=temperature,
@@ -208,6 +220,9 @@ class OpenRouterClient:
             if self._on_call_failure is not None and is_breaker_failure(exc):
                 self._on_call_failure(exc)
             raise
+        if self._on_call_success is not None:
+            self._on_call_success()
+        return result
 
     @retry(
         stop=stop_after_attempt(4),
@@ -275,6 +290,7 @@ class AsyncOpenRouterClient:
         *,
         precheck: PrecheckHook | None = None,
         on_call_failure: OnCallFailureHook | None = None,
+        on_call_success: OnCallSuccessHook | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY is empty — set it in .env.")
@@ -291,6 +307,7 @@ class AsyncOpenRouterClient:
         # __init__ comment. Stateless here too: no counting, no Redis.
         self._precheck = precheck
         self._on_call_failure = on_call_failure
+        self._on_call_success = on_call_success
 
     async def aclose(self) -> None:
         """Release pooled connections. Safe to call multiple times."""
@@ -424,14 +441,23 @@ class AsyncOpenRouterClient:
                             exc.message,
                         )
                         raise
-                    return _to_chat_result(resp)
-            # AsyncRetrying with reraise=True always either returns or raises;
-            # the loop body is the single normal exit. Mypy can't see that.
-            raise RuntimeError("unreachable: AsyncRetrying exhausted without raising")
+                    result = _to_chat_result(resp)
+                    break
+            else:
+                # AsyncRetrying with reraise=True always either breaks out of
+                # the loop or raises; exhausting it normally is unreachable.
+                # Mypy can't see that.
+                raise RuntimeError("unreachable: AsyncRetrying exhausted without raising")
         except BaseException as exc:
             if self._on_call_failure is not None and is_breaker_failure(exc):
                 self._on_call_failure(exc)
             raise
+        # Deliberately outside the `try`: a hook that raises is the caller's
+        # bug, and must not be misreported to `on_call_failure` as an
+        # OpenRouter failure.
+        if self._on_call_success is not None:
+            self._on_call_success()
+        return result
 
 
 # --- Shared helpers --------------------------------------------------------
@@ -458,4 +484,5 @@ __all__ = [
     "is_breaker_failure",
     "PrecheckHook",
     "OnCallFailureHook",
+    "OnCallSuccessHook",
 ]

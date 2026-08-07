@@ -62,7 +62,7 @@ from api.schemas.responses import Page
 from api.schemas.sdg import SeedUploadResponse
 from api.schemas.upload import FormatDetectionReport
 from api.core import request_context
-from api.services import audit_service, ownership, usage_service
+from api.services import audit_service, circuit_breaker, ownership, usage_service
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 from workers.storage import (
     get_minio_client,
@@ -653,11 +653,24 @@ async def _run_format_detection(
             return passthrough_with_required_check(
                 rows, required_keys, notes="OPENROUTER_API_KEY not set"
             )
+        # Format Detection is a counted OpenRouter surface, so it both feeds
+        # and honours the shared circuit breaker: a provider outage seen here
+        # trips it for the SDG workers too, and an already-open breaker fails
+        # this call fast instead of burning four retries during an upload.
+        #
+        # It is deliberately NOT budget-gated. Failing a seed upload with 402
+        # because a *different* feature (SDG) exhausted the month's budget
+        # would break the product for a fraction of a cent. The call still
+        # *counts toward* the budget — its usage row is written like any
+        # other — it just is not blocked by it.
         client = OpenRouterClient(
             api_key=api_key,
             teacher_model=llm_models.FORMAT_DETECTION,
             http_referer=http_referer,
             app_title=app_title,
+            precheck=circuit_breaker.precheck,
+            on_call_failure=circuit_breaker.on_failure,
+            on_call_success=circuit_breaker.record_success,
         )
         return detect_and_rename(
             rows=rows,

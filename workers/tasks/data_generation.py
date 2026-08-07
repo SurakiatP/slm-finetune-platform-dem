@@ -117,6 +117,11 @@ def generate_synthetic_data(
             budget_remaining_usd = min(remaining_candidates)
 
     usage = UsageAccumulator(prices=prices, budget_remaining_usd=budget_remaining_usd)
+    # Flipped once the success leg's usage rows are committed, so the
+    # `except BaseException` handler can tell "this run was never billed" from
+    # "this run was billed and then something failed while announcing it".
+    # Without it, a Redis error after the commit bills the same tokens twice.
+    usage_recorded = False
 
     with sync_redis_scope() as redis:
 
@@ -289,29 +294,41 @@ def generate_synthetic_data(
                     )
                     session.add(child)
 
-            publish_ws_message(
-                redis,
-                job_id,
-                JobCompleted(
-                    job_id=job_id,
-                    result={
-                        "samples_generated": len(train_rows),
-                        "holdout_samples": len(holdout_rows),
-                        "rejected_count": result.rejected_count,
-                        "duplicate_count": result.duplicate_count,
-                        "judge_rejected_count": result.judge_rejected_count,
-                        "judge_parse_failures": result.judge_parse_failures,
-                        "api_calls": result.api_calls,
-                        "storage_uri": train_uri,
-                        "holdout_storage_uri": holdout_uri,
-                        "holdout_dataset_id": (
-                            str(holdout_uuid) if holdout_uuid else None
-                        ),
-                        "size_bytes": train_size,
-                    },
-                    dataset_id=parent_uuid,
-                ),
-            )
+            # The success leg's usage rows are now committed. Anything that
+            # raises from here on must NOT be billed a second time by the
+            # `except BaseException` handler — a duplicate row would double
+            # this actor's recorded monthly spend and trip the budget cap early.
+            usage_recorded = True
+
+            # Wrapped for the same reason its `JobFailed` twin is: the work is
+            # done and durably committed, so a Redis hiccup while announcing it
+            # must not unwind a completed run into a FAILED one.
+            try:
+                publish_ws_message(
+                    redis,
+                    job_id,
+                    JobCompleted(
+                        job_id=job_id,
+                        result={
+                            "samples_generated": len(train_rows),
+                            "holdout_samples": len(holdout_rows),
+                            "rejected_count": result.rejected_count,
+                            "duplicate_count": result.duplicate_count,
+                            "judge_rejected_count": result.judge_rejected_count,
+                            "judge_parse_failures": result.judge_parse_failures,
+                            "api_calls": result.api_calls,
+                            "storage_uri": train_uri,
+                            "holdout_storage_uri": holdout_uri,
+                            "holdout_dataset_id": (
+                                str(holdout_uuid) if holdout_uuid else None
+                            ),
+                            "size_bytes": train_size,
+                        },
+                        dataset_id=parent_uuid,
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — announcement only, work is done
+                log.warning("failed to publish JobCompleted message", exc_info=True)
 
             log.info(
                 "SDG done: job=%s parent=%s holdout=%s train=%d holdout=%d "
@@ -380,24 +397,36 @@ def generate_synthetic_data(
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )
-                        # Usage must be written on every terminal outcome —
-                        # completed, failed AND cancelled — because the
-                        # tokens were burned either way. A run cancelled
-                        # after 1800 calls is precisely the case a budget
-                        # must count. Mirrors the "cancelled" vs "failed"
-                        # choice audit_service.record just made above, and
-                        # rides the same session/transaction so a usage-write
-                        # failure can never mask the original SDG failure
-                        # (it's still inside this same `except Exception`).
+                    # Usage must be written on every terminal outcome —
+                    # completed, failed AND cancelled — because the tokens were
+                    # burned either way. A run cancelled after 1800 calls is
+                    # precisely the case a budget must count.
+                    #
+                    # Deliberately OUTSIDE the `if ds is not None` above: a run
+                    # whose Dataset row was deleted mid-flight still spent real
+                    # OpenRouter dollars, and `usage_events.project_id` is
+                    # `ON DELETE SET NULL` for exactly this reason — billing
+                    # history outlives the row it refers to. When the row is
+                    # gone we simply do not know the project, so it is NULL.
+                    #
+                    # Skipped entirely when the success leg already committed
+                    # its rows: without that guard, a failure *after* the
+                    # commit (e.g. the terminal WS publish) bills the same
+                    # tokens a second time and inflates monthly spend 2x.
+                    #
+                    # Rides this same session/transaction, so a usage-write
+                    # failure can never mask the original SDG failure — it is
+                    # still inside the enclosing `except Exception`.
+                    if not usage_recorded:
                         usage_service.record_run(
                             session,
                             usage.entries(),
                             actor_id=request_context.current_user_id(),
-                            project_id=ds.project_id,
+                            project_id=ds.project_id if ds is not None else None,
                             job_id=job_id,
                             outcome=(
                                 "cancelled"
-                                if ds.status == JobStatus.CANCELLED
+                                if ds is not None and ds.status == JobStatus.CANCELLED
                                 else "failed"
                             ),
                             provider="openrouter",
@@ -460,6 +489,7 @@ async def _run_generator(
         app_title=settings.openrouter_app_title,
         precheck=circuit_breaker.precheck,
         on_call_failure=circuit_breaker.on_failure,
+        on_call_success=circuit_breaker.record_success,
     )
     async with AsyncOpenRouterClient(
         api_key=settings.openrouter_api_key,
@@ -467,6 +497,7 @@ async def _run_generator(
         app_title=settings.openrouter_app_title,
         precheck=circuit_breaker.precheck,
         on_call_failure=circuit_breaker.on_failure,
+        on_call_success=circuit_breaker.record_success,
     ) as async_client:
         gen = SyntheticDataGenerator(async_client, sync_client)
         return await gen.generate(

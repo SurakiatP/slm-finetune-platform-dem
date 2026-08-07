@@ -203,8 +203,13 @@ def test_llm_error_leaves_usage_fields_none():
     assert result.completion_tokens is None
 
 
-def test_no_mapping_produced_leaves_usage_fields_none():
-    """LLM responded but produced no usable mapping — not the success path."""
+def test_no_mapping_produced_still_reports_usage():
+    """LLM responded but produced no usable mapping — the call was still billed.
+
+    Billing tracks spend, not usefulness. This branch is where badly-shaped
+    seed data lands most often, so dropping it would make under-reporting
+    correlate with failure — the worst possible profile for a cost record.
+    """
     fake = _FakeClient(response_content="not json at all")
     result = detect_and_rename(
         rows=[
@@ -218,9 +223,9 @@ def test_no_mapping_produced_leaves_usage_fields_none():
     )
     assert result.ran is True
     assert result.field_mapping == {}
-    assert result.model is None
-    assert result.prompt_tokens is None
-    assert result.completion_tokens is None
+    assert result.model is not None
+    assert result.prompt_tokens is not None
+    assert result.completion_tokens is not None
 
 
 def test_llm_success_populates_usage_fields():
