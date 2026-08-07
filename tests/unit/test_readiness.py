@@ -206,3 +206,66 @@ class TestEndpointContract:
         ready = src.split("async def ready(")[1]
         assert "if not report.ready:" in ready
         assert "HTTP_503_SERVICE_UNAVAILABLE" in ready
+
+
+class TestWorkerProbeFitsInsideItsOwnBound:
+    """REGRESSION GUARD for a bug that shipped green and only real infra showed.
+
+    `_probe_worker` calls `celery_app.control.inspect(timeout=X).ping()`
+    inside a `_guard` bounded at `PROBE_TIMEOUT_SECONDS`. The subtlety is
+    that Celery's `inspect` does **not** return as soon as replies arrive —
+    it waits out its whole timeout window collecting from every node, then
+    adds broadcast and deserialisation cost on top. Measured on a
+    two-worker box: inner=2.5s took 3.22s wall.
+
+    The original `PROBE_TIMEOUT_SECONDS - 0.5` therefore overshot the 3s
+    outer `wait_for` every single time, and `/ready` reported
+    `worker: unavailable` — and the whole endpoint `degraded` — while both
+    workers were answering the ping perfectly. Nothing in the unit suite
+    could see it: the probe is monkeypatched everywhere else, so the only
+    thing that ever exercised the real timing was a live box.
+
+    Overhead scales with node count, so the margin must be proportional,
+    not a fixed subtraction.
+    """
+
+    def test_inner_timeout_leaves_real_headroom(self) -> None:
+        """Numeric, not a source-text match.
+
+        The first draft of this guard asserted on `inspect.getsource(...)` and
+        immediately matched the *comment* explaining the old bug rather than
+        the code — a neat demonstration of why string assertions are the wrong
+        tool. The measured overhead was 0.19-0.72s and grows with node count,
+        so the inner window plus a generous overhead allowance must still fit
+        inside the outer bound.
+        """
+        overhead_allowance = 1.0  # comfortably above the 0.72s seen live
+        assert (
+            readiness.WORKER_PROBE_TIMEOUT_SECONDS + overhead_allowance
+            <= readiness.PROBE_TIMEOUT_SECONDS
+        ), (
+            f"inner window {readiness.WORKER_PROBE_TIMEOUT_SECONDS}s + "
+            f"{overhead_allowance}s overhead exceeds the outer "
+            f"{readiness.PROBE_TIMEOUT_SECONDS}s bound — `/ready` will report "
+            f"a healthy worker as unavailable, which is exactly the bug this "
+            f"guards against"
+        )
+
+    async def test_a_probe_that_takes_its_full_inner_window_still_passes(
+        self, monkeypatch
+    ) -> None:
+        """Simulate the real timing: a worker probe that burns its inner
+        window plus overhead must still land inside `_guard`'s bound."""
+
+        async def slow_but_successful_worker_probe() -> None:
+            # Inner window + the measured ~0.6s overhead, as observed live.
+            await asyncio.sleep(readiness.PROBE_TIMEOUT_SECONDS / 2 + 0.3)
+
+        monkeypatch.setitem(
+            readiness._PROBES, "worker", slow_but_successful_worker_probe
+        )
+        report = await readiness.check()
+        assert report.checks["worker"] == readiness.OK, (
+            "a worker probe taking its full inner window plus overhead was "
+            "reported unavailable — the margin is too thin again"
+        )

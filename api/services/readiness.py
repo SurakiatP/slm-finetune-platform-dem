@@ -45,6 +45,23 @@ log = logging.getLogger("api.readiness")
 # probe on a 5-10s interval never overlaps itself.
 PROBE_TIMEOUT_SECONDS = 3.0
 
+# The window `_probe_worker` gives Celery's `inspect` to collect ping replies.
+# Half the outer bound, not `outer - 0.5`, and that difference was a live bug:
+# `inspect` does NOT return as soon as replies arrive — it waits out its entire
+# window, then adds broadcast and deserialisation cost. Measured on a
+# two-worker box:
+#
+#     inner=0.5s -> 0.69s wall      inner=1.5s -> 2.09s wall
+#     inner=1.0s -> 1.53s wall      inner=2.5s -> 3.22s wall
+#
+# so a 2.5s inner window reliably overshot `_guard`'s 3s `wait_for` and
+# `/ready` reported `worker: unavailable` while both workers were answering
+# perfectly. Overhead grows with node count, so the margin has to be
+# proportional rather than a fixed subtraction. The window size does not
+# affect whether workers are *found* — they reply in milliseconds; it only
+# bounds how long we wait for stragglers.
+WORKER_PROBE_TIMEOUT_SECONDS = PROBE_TIMEOUT_SECONDS / 2
+
 # Dependencies this instance cannot serve a single request without.
 REQUIRED = ("postgres", "redis")
 
@@ -120,7 +137,9 @@ async def _probe_minio() -> None:
 async def _probe_worker() -> None:
     from workers.celery_app import celery_app
 
-    inspector = celery_app.control.inspect(timeout=PROBE_TIMEOUT_SECONDS - 0.5)
+    # See `WORKER_PROBE_TIMEOUT_SECONDS` for why this is proportional to the
+    # outer bound rather than a fixed subtraction from it.
+    inspector = celery_app.control.inspect(timeout=WORKER_PROBE_TIMEOUT_SECONDS)
     # Blocking broadcast — same reason `job_reconcile` offloads it. `ping()`
     # returns None when nobody answers, which is exactly the case this probe
     # exists to surface, so it is turned into a failure explicitly.
