@@ -139,6 +139,41 @@ class Settings(BaseSettings):
     # unauthenticated requests.
     auth_required: bool = False
 
+    # ---- Model pricing (see api/services/model_pricing.py) -----------------
+    # JSON object of {model_id: {"prompt": usd_per_1m, "completion": usd_per_1m}}
+    # overriding/extending the built-in price map. Typed `str`, not `dict`,
+    # on purpose — a `dict[str, ...]` field would hit the same
+    # pydantic-settings JSON-pre-decode surprise documented on
+    # `api_cors_origins` above. The consuming module is responsible for
+    # parsing this string itself.
+    model_pricing_json: str = ""
+
+    # ---- Concurrency quotas (see api/services/quota.py) ---------------------
+    # Per-actor caps apply to authenticated callers only — ownership is
+    # tracked via `Project.owner_id`, and the DB has no IP address to bucket
+    # anonymous callers on. Under today's AUTH_REQUIRED=false this means the
+    # per-actor limit is inert and only the global cap is enforced; that is
+    # deliberate, and it stays that way until AUTH_REQUIRED flips. Do not
+    # paper over the gap with a Redis-per-IP side channel.
+    quota_max_gpu_jobs_per_actor: int = Field(default=1, ge=1)
+    quota_max_sdg_jobs_per_actor: int = Field(default=2, ge=1)
+    quota_max_gpu_jobs_global: int = Field(default=4, ge=1)
+    quota_max_sdg_jobs_global: int = Field(default=8, ge=1)
+    # Seconds a quota-rejected request's `Retry-After` header advises waiting.
+    quota_retry_after_seconds: int = Field(default=30, ge=1)
+
+    # ---- OpenRouter circuit breaker (see api/services/circuit_breaker.py) --
+    openrouter_breaker_failure_threshold: int = Field(default=5, ge=1)
+    openrouter_breaker_open_seconds: int = Field(default=60, ge=1)
+
+    # ---- Monthly OpenRouter budget ------------------------------------------
+    # The reset window is the *calendar* month, matching OpenRouter's own
+    # billing period. Both caps default to `None`, meaning unlimited — the
+    # feature ships dark, and a deployment opts in by setting a real number
+    # rather than the other way around.
+    budget_monthly_usd_per_actor: float | None = Field(default=None, ge=0)
+    budget_monthly_usd_global: float | None = Field(default=None, ge=0)
+
     # ---- Production guards -------------------------------------------------
 
     @model_validator(mode="after")

@@ -45,10 +45,46 @@ celery_app.conf.update(
     task_time_limit=3 * 60 * 60,           # hard kill after 3h
     task_soft_time_limit=3 * 60 * 60 - 60, # SoftTimeLimit 1m before hard kill
     worker_prefetch_multiplier=1,          # GPU jobs are heavy; don't prefetch
-    worker_max_tasks_per_child=1,          # release CUDA memory between tasks
+    # Releases CUDA memory between tasks on the GPU worker — a long-running
+    # process holding a fragmented allocator is how you get an OOM on a task
+    # that would fit fine in a fresh process. This is a *global* Celery
+    # setting, so it also applies to the CPU worker (`-Q cpu`), where it buys
+    # nothing (no CUDA context to release) but is harmless — an SDG task is
+    # cheap to reload a fresh child process for. Special-casing this per-queue
+    # (e.g. via a second `worker_max_tasks_per_child` override scoped to the
+    # GPU worker only) would add config-plumbing complexity for zero benefit,
+    # since "wasteful but harmless" on the CPU side is an acceptable trade.
+    worker_max_tasks_per_child=1,
+    # ---- CPU/GPU queue split ------------------------------------------
+    #
+    # Problem: originally there were no `task_routes` at all and a single
+    # `worker` service at `--concurrency=1`, so all five task types
+    # (sdg.generate, train.manual, train.hpo, model.export, evaluation.run)
+    # serialized into one slot — a long CPU-only SDG run (calls OpenRouter,
+    # no GPU involved) would block GPU training for the whole platform.
+    #
+    # TRAP: `task_routes` keys glob against the task **name** passed to
+    # `@celery_app.task(name=...)`, NOT the module path the task function
+    # lives in. `workers.tasks.data_generation.*` looks plausible but
+    # silently matches nothing, because the registered name is `sdg.generate`
+    # — the routes below key on the real names. Every other task
+    # (train.manual, train.hpo, model.export, evaluation.run) touches a GPU
+    # somewhere in ai_engine/training or ai_engine/hpo, so they fall through
+    # to `task_default_queue` rather than needing an explicit route each.
+    task_default_queue="gpu",
+    task_routes={"sdg.*": {"queue": "cpu"}},
     timezone="UTC",
     enable_utc=True,
 )
+
+# ---- Deploy note -------------------------------------------------------
+#
+# Messages already sitting on the legacy default `celery` queue (from
+# before this routing split shipped) will NOT be picked up by a worker
+# started with `-Q gpu` (or `-Q cpu`) — Celery only consumes the queues it
+# is told to. Either drain the old `celery` queue before deploying this
+# change, or start the GPU worker with `-Q gpu,celery` for one release
+# cycle so in-flight messages still get processed.
 
 
 @setup_logging.connect

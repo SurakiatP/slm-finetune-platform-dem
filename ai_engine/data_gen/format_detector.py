@@ -41,6 +41,15 @@ class FormatDetectionResult:
     rows_dropped: int
     """Rows that couldn't be canonicalised (required keys still missing)."""
     notes: str | None = None
+    # Token accounting for the billed OpenRouter call made inside
+    # `detect_and_rename`. Populated on the LLM success path only; every
+    # early-return path (empty input, already-canonical, LLM error,
+    # no-mapping-produced) leaves all three `None`. An absent value means
+    # no call was billed — that is NOT the same as a call that billed and
+    # returned zero tokens (which would show up as `0`, not `None`).
+    model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 class _LLMFieldMapping(BaseModel):
@@ -142,10 +151,21 @@ def detect_and_rename(
     mapping = _parse_mapping(chat.content)
     if not mapping:
         # LLM returned empty / unparseable — try the rows as-is and let the
-        # required-key check below decide what to drop.
+        # required-key check below decide what to drop. No mapping was
+        # produced, so — even though the call was billed — we don't record
+        # usage here; this is a no-mapping-produced skip path, not the
+        # success path.
         return _apply_no_mapping(rows, required_keys, notes="llm returned no mapping")
 
-    return _apply_mapping(rows, mapping, required_keys)
+    # Success path: the LLM call was billed and produced a usable mapping.
+    return _apply_mapping(
+        rows,
+        mapping,
+        required_keys,
+        model=chat.model,
+        prompt_tokens=chat.prompt_tokens,
+        completion_tokens=chat.completion_tokens,
+    )
 
 
 # ---- Internals ------------------------------------------------------------
@@ -211,12 +231,20 @@ def _apply_mapping(
     rows: list[dict[str, Any]],
     mapping: dict[str, str],
     required_keys: set[str],
+    *,
+    model: str | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
 ) -> FormatDetectionResult:
     """Apply ``mapping`` to every row; drop rows still missing required keys.
 
     Counterpart to :func:`passthrough_with_required_check` for the case when
     the LLM produced a usable rename map. Kept as a private helper so the
     public :func:`detect_and_rename` orchestrator stays short and readable.
+
+    ``model``/``prompt_tokens``/``completion_tokens`` are only ever passed by
+    the LLM-success branch of :func:`detect_and_rename` — every other caller
+    of this helper (there are none today) would leave them ``None``.
     """
     canonical_rows: list[dict[str, Any]] = []
     dropped = 0
@@ -232,6 +260,9 @@ def _apply_mapping(
         field_mapping=mapping,
         rows_dropped=dropped,
         notes=None,
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
     )
 
 

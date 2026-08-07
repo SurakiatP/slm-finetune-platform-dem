@@ -13,14 +13,16 @@ from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
 from api.models.project import Project
 from api.models.training_job import TrainingJob
+from api.models.usage_event import UsageEvent
 
 __all__ = [
-    "Base",
-    "TimestampMixin",
-    "Project",
-    "Dataset",
-    "TrainingJob",
-    "ModelArtifact",
-    "EvaluationRun",
     "AuditEvent",
+    "Base",
+    "Dataset",
+    "EvaluationRun",
+    "ModelArtifact",
+    "Project",
+    "TimestampMixin",
+    "TrainingJob",
+    "UsageEvent",
 ]
