@@ -533,6 +533,36 @@ def test_the_edge_and_the_tunnel_agree_on_every_hostname() -> None:
     )
 
 
+_LOCAL_NAMES = {"localhost", "127.0.0.1", "edge"}
+
+
+def test_the_app_vhost_still_answers_the_local_names() -> None:
+    """These three became load-bearing the moment the catch-all landed.
+
+    Before it existed, dropping them was harmless — nginx fell back to the
+    only server block. Now an unmatched Host gets 421, so removing any of
+    them breaks:
+
+      * `scripts/deploy_pasaflow_vm.sh`'s Phase 7 sanity check, which curls
+        `http://localhost:${EDGE_PORT}/health` and `fail`s the whole deploy
+        on a non-200;
+      * the Phase 8 banner's loopback debugging recipes;
+      * in-network probes addressing the container as `http://edge/...`.
+
+    The requirement was written into the docstring of the test above and
+    encoded nowhere, which is how it survived a mutation that stripped all
+    three and left the suite green. nginx strips the port before matching
+    `server_name`, so `Host: localhost:8088` from the EDGE_PORT curl is
+    covered by the bare `localhost` entry.
+    """
+    missing = _LOCAL_NAMES - _server_names(_APP_SERVER)
+    assert not missing, (
+        f"the app vhost no longer answers {sorted(missing)}. With a "
+        "default_server catch-all in place those Hosts now get 421, which "
+        "fails the deploy script's own health check and looks like an outage."
+    )
+
+
 def test_the_storage_vhost_has_its_own_dedicated_hostname() -> None:
     """SigV4 signs the Host header, so storage cannot share a hostname with
     the app: the two vhosts must be selectable by Host alone."""

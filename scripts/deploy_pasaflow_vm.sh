@@ -385,6 +385,31 @@ else
   ok "ENVIRONMENT=${DEPLOY_ENVIRONMENT:-dev} — production credential guard not applicable (this script never sets ENVIRONMENT=production itself; see docs/runbooks/auth_cutover.md for that step)"
 fi
 
+# --------- Phase 4.6: tunnel prerequisites ----------------------------------
+# cloudflared is the ONLY ingress -- api and edge both bind 127.0.0.1 -- so a
+# deploy without a tunnel id produces a stack that is up, healthy, and
+# unreachable from anywhere. That must fail here, loudly, rather than at the
+# end of a 3-minute wait loop.
+#
+# This check lives in the deploy script and NOT as `${VAR:?}` in
+# docker-compose.yml on purpose. Compose interpolates the whole file before
+# it selects services or profiles, and treats `:?` as an error when the
+# variable is unset *or empty* -- and .env.example ships it empty. Putting it
+# there broke `docker compose up/build/config/ps` for anyone following the
+# README quickstart. Requiring it belongs where a deployment happens.
+say "==== Phase 4.6: Tunnel prerequisites ===="
+TUNNEL_ID_VAL=$(grep -E '^CLOUDFLARE_TUNNEL_ID=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+if [[ -z "$TUNNEL_ID_VAL" ]]; then
+  fail "CLOUDFLARE_TUNNEL_ID is empty in ${ENV_FILE}. cloudflared is the only ingress (api and edge both bind 127.0.0.1), so without it the stack comes up completely unreachable. Create a tunnel with 'cloudflared tunnel create', put its UUID here, and place the credentials JSON in CLOUDFLARE_TUNNEL_CREDS_DIR."
+fi
+CREDS_DIR_VAL=$(grep -E '^CLOUDFLARE_TUNNEL_CREDS_DIR=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+CREDS_DIR_VAL="${CREDS_DIR_VAL:-./.cloudflared}"
+if [[ ! -f "${CREDS_DIR_VAL}/creds.json" ]]; then
+  warn "no creds.json under ${CREDS_DIR_VAL} — cloudflared will start and immediately fail to authenticate. docker/cloudflared/config.yml expects it at /etc/cloudflared/creds.json inside the container."
+fi
+ok "tunnel id present"
+unset TUNNEL_ID_VAL CREDS_DIR_VAL
+
 # --------- Phase 5: docker compose pull + up --------------------------------
 # Images are pre-built in CI and pushed to GHCR (see
 # .github/workflows/build-images.yml). We PULL, never build: a from-scratch
@@ -398,10 +423,14 @@ warn "Subsequent pulls fetch only changed layers and are fast."
 warn "Safe to detach if running inside tmux/screen. Re-attach to monitor."
 # Public GHCR packages — no `docker login` needed. postgres/redis/minio/ollama
 # pull from Docker Hub as before; api/worker/mlflow pull from GHCR.
-docker compose pull 2>&1 | tee -a "$LOG"
+# `--profile tunnel` on every compose invocation from here on: cloudflared
+# is opt-in so that a plain `docker compose up` (local dev, no tunnel
+# credentials) does not crash-loop it. A deploy is exactly the case that
+# wants it, so the profile is enabled here rather than in the compose file.
+docker compose --profile tunnel pull 2>&1 | tee -a "$LOG"
 ok "images pulled"
 
-docker compose up -d 2>&1 | tee -a "$LOG"
+docker compose --profile tunnel up -d 2>&1 | tee -a "$LOG"
 
 # Wait for all 10 long-running services: postgres, redis, minio, mlflow, api,
 # edge, cloudflared, worker, worker-cpu, ollama. (`minio-init` is an 11th
@@ -412,7 +441,7 @@ docker compose up -d 2>&1 | tee -a "$LOG"
 # report success while 3 real services are still starting.
 say "Waiting for stack to be healthy (up to 3 min)..."
 for i in $(seq 1 36); do
-  STATE=$(docker compose ps --format json 2>/dev/null || true)
+  STATE=$(docker compose --profile tunnel ps --format json 2>/dev/null || true)
   UP=$(echo "$STATE" | grep -c '"State":"running"' || true)
   if [[ "$UP" -ge 10 ]]; then
     ok "$UP/10 containers running"

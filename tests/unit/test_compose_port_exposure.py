@@ -313,3 +313,61 @@ def test_the_tunnel_id_reaches_cloudflared_from_the_compose_file() -> None:
         "compose reads CLOUDFLARE_TUNNEL_ID but .env.example does not declare "
         "it — an operator following the example file gets an unset variable"
     )
+
+
+def _env_example_values() -> dict[str, str]:
+    text = (_COMPOSE_PATH.parent / ".env.example").read_text(encoding="utf-8")
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def test_no_required_interpolation_is_shipped_empty_by_env_example() -> None:
+    """`${VAR:?...}` in compose must not name a variable `.env.example`
+    ships blank.
+
+    Compose treats `:?` as an error when the variable is unset **or empty**,
+    and it interpolates the whole file before selecting services or
+    profiles. So one `:?` naming a blank example value breaks `docker
+    compose up`, `build`, `config` and even `ps` for anyone following the
+    README's `cp .env.example .env` quickstart — for every service, not just
+    the one that reads it.
+
+    This is the exact bug the API_ALLOWED_HOSTS fix had, reintroduced by that
+    fix's own sibling: `.env.example` shipping a value that breaks the flow
+    it documents. The previous guard only asserted the KEY was present, which
+    the blank form satisfies — the assertion sat where it passed.
+
+    A required-at-deploy value belongs in `scripts/deploy_pasaflow_vm.sh`'s
+    pre-flight instead, where a deployment actually happens.
+    """
+    shipped = _env_example_values()
+    required = set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*):\?", _COMPOSE_TEXT))
+    offenders = sorted(v for v in required if shipped.get(v, "") == "")
+    assert not offenders, (
+        f"docker-compose.yml requires {offenders} via `:?`, but .env.example "
+        "ships them empty. Every `docker compose` command fails after a "
+        "quickstart `cp .env.example .env`. Use `:-` and enforce the value in "
+        "the deploy script's pre-flight, or ship a real default."
+    )
+
+
+def test_the_tunnel_is_opt_in_so_local_dev_does_not_crash_loop_it() -> None:
+    """`cloudflared` carries `restart: unless-stopped` and has nothing to run
+    without credentials, so on a developer machine it would restart forever.
+    A compose profile keeps it out of a plain `docker compose up`; the deploy
+    script opts in with `--profile tunnel`."""
+    profiles = _COMPOSE["services"]["cloudflared"].get("profiles") or []
+    assert profiles, "cloudflared has no `profiles:` — a plain `docker compose up` would start it"
+
+    deploy = (_COMPOSE_PATH.parent / "scripts" / "deploy_pasaflow_vm.sh").read_text(encoding="utf-8")
+    for verb in ("up -d", "pull"):
+        assert f"--profile {profiles[0]} {verb}" in deploy, (
+            f"the deploy script's `docker compose {verb}` does not pass "
+            f"`--profile {profiles[0]}`, so the tunnel — the only ingress — "
+            "would never start on a real deployment"
+        )

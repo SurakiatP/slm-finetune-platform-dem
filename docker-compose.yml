@@ -284,18 +284,34 @@ services:
       # config.yml.
       - ${CLOUDFLARE_TUNNEL_CREDS_DIR:-./.cloudflared}:/etc/cloudflared:ro
       - ./docker/cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+    # Opt-in: `docker compose up` skips this service, the deploy script runs
+    # `--profile tunnel`. Local development has no tunnel to run and no
+    # credentials to run it with, and without a profile this container would
+    # crash-loop forever under `restart: unless-stopped`.
+    profiles: ["tunnel"]
     # The tunnel id is an ARGUMENT here, not a `tunnel:` key inside
     # config.yml. Compose interpolates this file; it does not interpolate the
     # contents of a bind-mounted one, so a `${...}` placeholder in config.yml
     # would reach cloudflared verbatim and the tunnel would never start —
     # silently, since nothing else in the stack depends on it booting.
+    #
+    # `:-` and NOT `:?`. Compose interpolates the whole file before it selects
+    # services or profiles, and treats `:?` as an error when the variable is
+    # unset *or empty* — and `.env.example` ships it empty. A `:?` here
+    # therefore broke `docker compose up`, `build`, `config` and even `ps`
+    # for anyone following the README's `cp .env.example .env` quickstart:
+    # the same "the example file breaks the flow it documents" bug as the
+    # API_ALLOWED_HOSTS one, reintroduced by its own fix. Requiring the value
+    # belongs where a deployment actually happens — scripts/
+    # deploy_pasaflow_vm.sh's pre-flight — not in a file every local
+    # `docker compose` invocation has to parse.
     command:
       - tunnel
       - --no-autoupdate
       - --config
       - /etc/cloudflared/config.yml
       - run
-      - ${CLOUDFLARE_TUNNEL_ID:?set CLOUDFLARE_TUNNEL_ID in .env — see docs/runbooks/}
+      - ${CLOUDFLARE_TUNNEL_ID:-}
     depends_on:
       - edge
     networks: [slm-net]

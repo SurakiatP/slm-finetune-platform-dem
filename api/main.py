@@ -151,7 +151,7 @@ app.add_middleware(
 # `settings.api_allowed_hosts` is owned by api/core/config.py (do not edit
 # that file from here) and defaults to `["*"]`. A production
 # `API_ALLOWED_HOSTS` MUST include `localhost`, `127.0.0.1`, and `api` — omit
-# any of those and the docker healthcheck (curls `localhost`) and in-network
+# any of those and the deploy script's Phase 7 curl (`localhost`) and in-network
 # probes get rejected with 400, which looks like the app is down when it is
 # actually this guard doing its job.
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.api_allowed_hosts)

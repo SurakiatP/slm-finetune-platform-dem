@@ -99,8 +99,11 @@ class Settings(BaseSettings):
     # api_cors_origins above.
     #
     # Default is "*" (allow-all) DELIBERATELY, not an oversight: this unit
-    # suite constructs `Settings` with nothing but DATABASE_URL set, and the
-    # docker-compose healthcheck curls `localhost` from inside the container.
+    # suite constructs `Settings` with nothing but DATABASE_URL set, and `scripts/deploy_pasaflow_vm.sh`'s
+    # Phase 7 sanity check curls `http://localhost:${EDGE_PORT}/health` and
+    # fails the deploy on a non-200. (There is deliberately no compose
+    # `healthcheck:` on `api` or `edge` — only postgres/redis/minio/mlflow
+    # have one; earlier revisions of this comment claimed otherwise.)
     # A restrictive default would break both. A production value MUST
     # include `localhost`, `127.0.0.1`, and `api` — omit any of those and
     # the healthcheck itself gets rejected with 400, which looks like the
