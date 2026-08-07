@@ -42,11 +42,13 @@ class FormatDetectionResult:
     """Rows that couldn't be canonicalised (required keys still missing)."""
     notes: str | None = None
     # Token accounting for the billed OpenRouter call made inside
-    # `detect_and_rename`. Populated on the LLM success path only; every
-    # early-return path (empty input, already-canonical, LLM error,
-    # no-mapping-produced) leaves all three `None`. An absent value means
-    # no call was billed — that is NOT the same as a call that billed and
-    # returned zero tokens (which would show up as `0`, not `None`).
+    # `detect_and_rename`. Populated whenever the provider actually answered
+    # — both the success path AND the "answered but produced no usable
+    # mapping" path, because that call cost money too. Left `None` only when
+    # no call reached the provider at all: empty input, already-canonical
+    # rows, no API key, or an exception before a response came back. An
+    # absent value therefore means no call was billed — NOT the same as a
+    # call that billed and returned zero tokens (which shows as `0`).
     model: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None

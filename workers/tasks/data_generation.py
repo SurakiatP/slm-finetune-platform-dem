@@ -374,7 +374,17 @@ def generate_synthetic_data(
             try:
                 with session_scope() as session:
                     ds = session.get(Dataset, parent_uuid)
-                    if ds is not None:
+                    # `usage_recorded` means the success leg already committed:
+                    # the JSONL is in MinIO and the row is durably COMPLETED.
+                    # Anything raising after that point — a broken log handler,
+                    # or a cancel's SIGTERM landing in this window and arriving
+                    # as `SystemExit` — must NOT rewrite that terminal state.
+                    # Doing so reports a run that finished as FAILED and emits
+                    # a `JobFailed` frame after `JobCompleted`, leaving the
+                    # WebSocket stream contradicting itself. The exception is
+                    # still re-raised below, so Celery records the task as
+                    # failed; it is the *dataset's* state that must stay true.
+                    if ds is not None and not usage_recorded:
                         # The cancel endpoint sets status=CANCELLED *before*
                         # revoking. Don't clobber it back to FAILED — CANCELLED
                         # is the accurate terminal state for that run. The
@@ -442,18 +452,22 @@ def generate_synthetic_data(
                 log.warning(
                     "could not persist FAILED status for dataset %s", dataset_id, exc_info=True
                 )
-            try:
-                publish_ws_message(
-                    redis,
-                    job_id,
-                    JobFailed(
-                        job_id=job_id,
-                        error=str(exc) or repr(exc),
-                        error_type=type(exc).__name__,
-                    ),
-                )
-            except Exception:  # noqa: BLE001
-                log.warning("failed to publish JobFailed message", exc_info=True)
+            # Same guard as the status write above: a client that already
+            # received `JobCompleted` must never then receive `JobFailed` for
+            # the same job_id. A terminal frame is terminal.
+            if not usage_recorded:
+                try:
+                    publish_ws_message(
+                        redis,
+                        job_id,
+                        JobFailed(
+                            job_id=job_id,
+                            error=str(exc) or repr(exc),
+                            error_type=type(exc).__name__,
+                        ),
+                    )
+                except Exception:  # noqa: BLE001
+                    log.warning("failed to publish JobFailed message", exc_info=True)
             raise
 
 

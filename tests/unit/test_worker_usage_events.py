@@ -609,3 +609,18 @@ class TestUsageBilledWhenDatasetRowIsGone:
         outcomes = sorted(r.outcome for r in rows)
         assert len(rows) == 1, f"the same run was billed {len(rows)} times: {outcomes}"
         assert rows[0].outcome == "completed"
+
+        # The assertion the review pass found missing — and its absence here,
+        # while its sibling above (the publish case) DID assert status, is
+        # exactly what let the terminal-state half of the bug survive: the
+        # check sat where it passed and was omitted where it would fail.
+        # A durably-committed COMPLETED run must not be unwound to FAILED by
+        # something that broke after the commit.
+        with sync_sessionmaker() as session:
+            ds = session.get(Dataset, dataset_id)
+            assert ds is not None
+            assert ds.status == JobStatus.COMPLETED, (
+                "a durably-committed COMPLETED run was unwound to "
+                f"{ds.status} by a post-commit failure"
+            )
+            assert ds.error_message is None

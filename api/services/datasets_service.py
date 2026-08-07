@@ -556,13 +556,14 @@ async def _persist_jsonl_dataset(
     # transaction this function already commits below, so a seed upload
     # either persists both the dataset and its cost, or neither.
     #
-    # `fd_result.ran` is True on the passthrough skip paths too (no API
-    # key, LLM error, no-mapping-produced) — those are best-effort
-    # fallbacks, not billed calls. The token fields are what actually
-    # distinguish a billed call: they're populated ONLY on the LLM success
-    # path (see `FormatDetectionResult` docstring), so their absence means
-    # no call was billed, which is not the same as a call that billed and
-    # returned zero tokens.
+    # `fd_result.ran` is True on the passthrough skip paths too (no API key,
+    # LLM error, no-mapping-produced) and so cannot be the gate. The token
+    # fields are what actually distinguish a billed call: they are populated
+    # whenever the provider answered — including the "answered but produced
+    # no usable mapping" path, which costs money like any other — and left
+    # `None` only when no call reached the provider at all. Their absence
+    # therefore means no call was billed, which is not the same as a call
+    # that billed and returned zero tokens.
     if (
         fd_result is not None
         and fd_result.ran
