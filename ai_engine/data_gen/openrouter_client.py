@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,6 +46,35 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _RETRYABLE = (APIConnectionError, APITimeoutError, RateLimitError)
 
 
+def is_breaker_failure(exc: BaseException) -> bool:
+    """Should this exception count as one failed call against a circuit breaker?
+
+    True for the existing `_RETRYABLE` tuple (connection/timeout/rate-limit)
+    and for any 5xx `APIStatusError`. Explicitly False for every other 4xx
+    (including 429 handled separately above — a `RateLimitError` is already
+    covered by `_RETRYABLE`) and for anything else.
+
+    This is evaluated only *after* tenacity's 4 attempts are exhausted, so
+    one `True` here means one genuinely-failed logical call, not one flaky
+    packet — the breaker counts calls, not retry attempts. Never counting a
+    non-429 4xx matches the existing retry policy (those aren't retried
+    either, because retrying a bad request just repeats the same client
+    error) and keeps a single malformed request from tripping the breaker
+    for every other caller.
+    """
+    if isinstance(exc, _RETRYABLE):
+        return True
+    if isinstance(exc, APIStatusError):
+        return 500 <= exc.status_code < 600
+    return False
+
+
+# Hook types shared by both clients. Both are optional and default to None,
+# i.e. a no-op — clients behave byte-for-byte as before when unused.
+PrecheckHook = Callable[[], None]
+OnCallFailureHook = Callable[[BaseException], None]
+
+
 @dataclass(frozen=True)
 class ChatResult:
     content: str
@@ -67,6 +97,9 @@ class OpenRouterClient:
         http_referer: str = "http://localhost:8000",
         app_title: str = "slm-platform",
         timeout_seconds: float = 60.0,
+        *,
+        precheck: PrecheckHook | None = None,
+        on_call_failure: OnCallFailureHook | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY is empty — set it in .env.")
@@ -81,18 +114,16 @@ class OpenRouterClient:
             },
         )
         self._teacher_model = teacher_model
+        # Circuit-breaker injection points (api/services/circuit_breaker.py
+        # wires these in from the worker side). This module stays stateless:
+        # no counting, no Redis — just call-outs at the right moments.
+        self._precheck = precheck
+        self._on_call_failure = on_call_failure
 
     @property
     def teacher_model(self) -> str:
         return self._teacher_model
 
-    @retry(
-        stop=stop_after_attempt(4),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(_RETRYABLE),
-        before_sleep=before_sleep_log(log, logging.WARNING),
-        reraise=True,
-    )
     def chat(
         self,
         *,
@@ -103,35 +134,27 @@ class OpenRouterClient:
         max_tokens: int | None = 4096,
         response_format: dict[str, Any] | None = None,
     ) -> ChatResult:
-        """One chat completion call. Retries network/timeout/rate-limit errors only."""
-        try:
-            resp = self._client.chat.completions.create(
-                model=model or self._teacher_model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format=response_format,
-            )
-        except APIStatusError as exc:
-            log.error(
-                "OpenRouter API error (status=%s, model=%s): %s",
-                exc.status_code,
-                model or self._teacher_model,
-                exc.message,
-            )
-            raise
-        return _to_chat_result(resp)
+        """One chat completion call. Retries network/timeout/rate-limit errors only.
 
-    @retry(
-        stop=stop_after_attempt(4),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(_RETRYABLE),
-        before_sleep=before_sleep_log(log, logging.WARNING),
-        reraise=True,
-    )
+        `precheck` (if configured) runs before every underlying SDK call
+        attempt, including each retry — this is how a caller (the worker's
+        circuit breaker) makes an already-open breaker fail fast instead of
+        grinding through 4 attempts. `on_call_failure` (if configured) fires
+        exactly once for this *logical* call — after tenacity's retries are
+        exhausted, not once per attempt — and only when `is_breaker_failure`
+        says the final exception should count against the breaker.
+        """
+        return self._run_with_failure_hook(
+            model or self._teacher_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
+
     def chat_raw(
         self,
         *,
@@ -146,7 +169,65 @@ class OpenRouterClient:
         Used for multimodal calls (e.g. PDF + text) where we need an
         OpenAI-compatible content array per message instead of plain
         system/user strings.
+
+        Same `precheck` / `on_call_failure` hook semantics as `chat` — see
+        that docstring.
         """
+        return self._run_with_failure_hook(
+            model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
+
+    def _run_with_failure_hook(
+        self,
+        model: str,
+        *,
+        messages: list[dict[str, Any]],
+        temperature: float,
+        max_tokens: int | None,
+        response_format: dict[str, Any] | None,
+    ) -> ChatResult:
+        """Plain (undecorated) outer call: runs the retried inner attempt and
+        fires `on_call_failure` once, after retries are exhausted, iff the
+        final exception counts per `is_breaker_failure`. Kept separate from
+        `_chat_attempt` (which carries the `@retry` decorator) so the hook
+        cannot fire once per retry attempt.
+        """
+        try:
+            return self._chat_attempt(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=response_format,
+            )
+        except BaseException as exc:
+            if self._on_call_failure is not None and is_breaker_failure(exc):
+                self._on_call_failure(exc)
+            raise
+
+    @retry(
+        stop=stop_after_attempt(4),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type(_RETRYABLE),
+        before_sleep=before_sleep_log(log, logging.WARNING),
+        reraise=True,
+    )
+    def _chat_attempt(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        temperature: float,
+        max_tokens: int | None,
+        response_format: dict[str, Any] | None,
+    ) -> ChatResult:
+        """Single SDK call attempt; tenacity retries this whole method body."""
+        if self._precheck is not None:
+            self._precheck()
         try:
             resp = self._client.chat.completions.create(
                 model=model,
@@ -191,6 +272,9 @@ class AsyncOpenRouterClient:
         http_referer: str = "http://localhost:8000",
         app_title: str = "slm-platform",
         timeout_seconds: float = 120.0,
+        *,
+        precheck: PrecheckHook | None = None,
+        on_call_failure: OnCallFailureHook | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY is empty — set it in .env.")
@@ -203,6 +287,10 @@ class AsyncOpenRouterClient:
                 "X-Title": app_title,
             },
         )
+        # Same circuit-breaker injection points as the sync client — see its
+        # __init__ comment. Stateless here too: no counting, no Redis.
+        self._precheck = precheck
+        self._on_call_failure = on_call_failure
 
     async def aclose(self) -> None:
         """Release pooled connections. Safe to call multiple times."""
@@ -292,34 +380,58 @@ class AsyncOpenRouterClient:
         max_tokens: int | None,
         response_format: dict[str, Any] | None,
     ) -> ChatResult:
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(4),
-            wait=wait_exponential(multiplier=1, min=2, max=30),
-            retry=retry_if_exception_type(_RETRYABLE),
-            before_sleep=before_sleep_log(log, logging.WARNING),
-            reraise=True,
-        ):
-            with attempt:
-                try:
-                    resp = await self._client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        response_format=response_format,
-                    )
-                except APIStatusError as exc:
-                    log.error(
-                        "OpenRouter API error (status=%s, model=%s): %s",
-                        exc.status_code,
-                        model,
-                        exc.message,
-                    )
-                    raise
-                return _to_chat_result(resp)
-        # AsyncRetrying with reraise=True always either returns or raises;
-        # the loop body is the single normal exit. Mypy can't see that.
-        raise RuntimeError("unreachable: AsyncRetrying exhausted without raising")
+        """Single funnel for both `chat` and `chat_batch`.
+
+        `precheck` (if configured) runs before every SDK call attempt inside
+        the `AsyncRetrying` loop below — including retries — so an
+        already-open breaker fails fast instead of grinding through 4
+        attempts. `on_call_failure` (if configured) fires exactly once per
+        *logical* call: the `try/except` wraps the whole retry loop, not an
+        individual attempt, so it only sees the final exception after
+        retries are exhausted, and only calls the hook when
+        `is_breaker_failure` says that exception should count.
+
+        Note for `chat_batch` callers: an exception raised by `precheck`
+        (or any other exception here) is not swallowed by `chat_batch`'s
+        `return_exceptions=True` — it comes back as that prompt's exception
+        instance in the results list, which is the intended fail-fast
+        behaviour, not a bug.
+        """
+        try:
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(4),
+                wait=wait_exponential(multiplier=1, min=2, max=30),
+                retry=retry_if_exception_type(_RETRYABLE),
+                before_sleep=before_sleep_log(log, logging.WARNING),
+                reraise=True,
+            ):
+                with attempt:
+                    if self._precheck is not None:
+                        self._precheck()
+                    try:
+                        resp = await self._client.chat.completions.create(
+                            model=model,
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            response_format=response_format,
+                        )
+                    except APIStatusError as exc:
+                        log.error(
+                            "OpenRouter API error (status=%s, model=%s): %s",
+                            exc.status_code,
+                            model,
+                            exc.message,
+                        )
+                        raise
+                    return _to_chat_result(resp)
+            # AsyncRetrying with reraise=True always either returns or raises;
+            # the loop body is the single normal exit. Mypy can't see that.
+            raise RuntimeError("unreachable: AsyncRetrying exhausted without raising")
+        except BaseException as exc:
+            if self._on_call_failure is not None and is_breaker_failure(exc):
+                self._on_call_failure(exc)
+            raise
 
 
 # --- Shared helpers --------------------------------------------------------
@@ -343,4 +455,7 @@ __all__ = [
     "ChatResult",
     "Prompt",
     "OPENROUTER_BASE_URL",
+    "is_breaker_failure",
+    "PrecheckHook",
+    "OnCallFailureHook",
 ]
