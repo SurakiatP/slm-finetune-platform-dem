@@ -301,13 +301,18 @@ async def download_artifact(
         )
 
     # SafeTensors / LoRA — these are multi-file directories. We don't tar/zip
-    # server-side (RAM cost on large weights). Expose the URI for the client
-    # to enumerate via the MinIO API or our object-listing endpoint.
+    # server-side (RAM cost on large weights). Point the caller at the
+    # presigned multi-file listing endpoint instead of echoing the raw
+    # `s3://` URI back in the response: that URI is an internal storage
+    # address (bucket + key layout), not something a client should ever see
+    # or need — leaking it here was Wave 1b's item #4 fix. No URI in this
+    # detail message, on purpose.
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail=(
-            f"{fmt_lower} export is a multi-file directory (uri={uri}); "
-            "fetch individual objects via the MinIO API."
+            f"{fmt_lower} export is a multi-file directory; use "
+            f"GET /api/v1/models/{model_id}/download-url?format={fmt_lower} "
+            "to get a presigned URL for each file."
         ),
     )
 

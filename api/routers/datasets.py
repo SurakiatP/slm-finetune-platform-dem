@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.core.auth import CurrentUser, require_user
 from api.core.database import get_db
 from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse
+from api.schemas.download_links import DatasetDownloadUrlResponse
 from api.schemas.enums import TaskType
 from api.schemas.responses import Page
 from api.schemas.sdg import (
@@ -31,6 +32,7 @@ from api.schemas.sdg import (
     SeedUploadResponse,
 )
 from api.services import datasets_service, idempotency, ownership
+from api.services.download_links import mint_dataset_download_url
 from api.services.sdg_service import submit_sdg_job
 
 router = APIRouter()
@@ -145,6 +147,24 @@ async def download_dataset(
     user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> StreamingResponse:
     return await datasets_service.download_dataset(db, dataset_id, user)
+
+
+@router.get(
+    "/{dataset_id}/download-url",
+    response_model=DatasetDownloadUrlResponse,
+    summary="Mint a presigned MinIO URL for the dataset's stored object",
+)
+async def get_dataset_download_url(
+    dataset_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+) -> DatasetDownloadUrlResponse:
+    # Additive alongside `GET /{dataset_id}/download` (the existing
+    # streaming endpoint stays). Falls back to the seed PDF object when
+    # `storage_uri` is null — see `mint_dataset_download_url`'s docstring —
+    # which also closes the "PDF-seeded dataset has no download surface"
+    # gap the streaming endpoint has today.
+    return await mint_dataset_download_url(db, dataset_id, user)
 
 
 @router.delete(

@@ -46,6 +46,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-slm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-slm}
       POSTGRES_DB: ${POSTGRES_DB:-slm}
+      # Consumed by docker/postgres-init.sql's `\getenv` on first (empty
+      # volume) init only, to create mlflow's own role — see that file and
+      # the `mlflow` service below for why it doesn't share ${POSTGRES_USER}.
+      MLFLOW_DB_USER: ${MLFLOW_DB_USER:-mlflow}
+      MLFLOW_DB_PASSWORD: ${MLFLOW_DB_PASSWORD:-mlflow}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -136,17 +141,32 @@ services:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-    command:
-      - mlflow
-      - server
-      - --host=0.0.0.0
-      - --port=5000
       # MLflow MUST have its own database. Sharing `${POSTGRES_DB}` with the
       # app makes MLflow's auto-run alembic clobber the app's `alembic_version`
-      # row, blocking application migrations.
-      - --backend-store-uri=postgresql+psycopg2://${POSTGRES_USER:-slm}:${POSTGRES_PASSWORD:-slm}@postgres:5432/${MLFLOW_DB:-mlflow}
-      - --default-artifact-root=s3://${MLFLOW_S3_BUCKET:-mlflow}/
-      - --serve-artifacts
+      # row, blocking application migrations. Own role too (not
+      # ${POSTGRES_USER}/${POSTGRES_PASSWORD}) — see docker/postgres-init.sql.
+      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://${MLFLOW_DB_USER:-mlflow}:${MLFLOW_DB_PASSWORD:-mlflow}@postgres:5432/${MLFLOW_DB:-mlflow}
+    # `sh -c 'exec mlflow server ...'` reading the DSN from
+    # $MLFLOW_BACKEND_STORE_URI (set above), rather than the previous plain
+    # `command:` list with the DSN spelled out as a `--backend-store-uri=...`
+    # argument, moves the password from Cmd to Env. Be honest about what
+    # this buys: `docker inspect` on this container shows BOTH Config.Cmd
+    # and Config.Env, so someone with docker-group access (or the daemon
+    # socket) sees the password either way — this is not a secret-manager-
+    # grade fix. What it does close: `ps aux` / `docker top` show a
+    # container's argv to ANY local user who can list processes, with no
+    # docker permissions required at all, and that path no longer has the
+    # password in it. `exec` (not a bare `mlflow server ...`) keeps mlflow
+    # as PID 1 so `docker compose stop` still delivers SIGTERM to it
+    # directly instead of to an intermediate shell.
+    command:
+      - sh
+      - -c
+      - >-
+        exec mlflow server --host=0.0.0.0 --port=5000
+        --backend-store-uri "$$MLFLOW_BACKEND_STORE_URI"
+        --default-artifact-root=s3://${MLFLOW_S3_BUCKET:-mlflow}/
+        --serve-artifacts
     ports:
       - "127.0.0.1:${MLFLOW_PORT:-5000}:5000"
     depends_on:
@@ -176,29 +196,45 @@ services:
     environment:
       <<: *app-env
     ports:
-      # The ONLY service published beyond the host. Every other container
-      # binds 127.0.0.1 so an external port scan reaches nothing but this
-      # API (BACKEND_GAP_ANALYSIS.md P0 "Secrets และขอบเขตเครือข่าย").
-      # Loopback binding, not removal, deliberately: `scripts/
-      # deploy_pasaflow_vm.sh` hands the operator localhost URLs for the
-      # MinIO console / MLflow / Ollama, and those still work over an SSH
-      # tunnel (`ssh -L 9001:localhost:9001`). Dropping `ports:` entirely
-      # would break that workflow and force `docker compose exec` for every
-      # debugging session.
-      - "${API_PORT:-8000}:8000"
+      # Zero externally published ports (round 3): `edge` is the sole
+      # ingress, reached only through `cloudflared`, and `api` now binds
+      # 127.0.0.1 like every other internal service. This is a change from
+      # round 1's "the API is the one public service" — that model is gone.
+      # `edge`'s `real_ip`/`X-Forwarded-*` trust of the whole compose
+      # network (see docker/edge.nginx.conf's top-of-file comment) depends
+      # on this staying true: if `api` (or anything else) ever gets a
+      # `0.0.0.0`-published port again, a caller could reach it directly,
+      # skip `edge` entirely, and both the rate limits and the XFF-overwrite
+      # trust boundary would be bypassable. Loopback binding, not removal,
+      # deliberately: local debugging (`curl localhost:8000/...` or an SSH
+      # tunnel on the VM) still works; an external port scan does not.
+      # tests/unit/test_compose_port_exposure.py is what guards this.
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
-      - ./api:/app/api
-      - ./ai_engine:/app/ai_engine
-      - ./workers:/app/workers
-      - ./alembic:/app/alembic
-      - ./alembic.ini:/app/alembic.ini:ro
+      # No rw source bind-mounts here (./api, ./ai_engine, ./workers,
+      # ./alembic) — docker/api.Dockerfile already COPYs all of them into
+      # the image, so the mounts only mattered for `--reload`, which is
+      # gone from `command:` below. See docker-compose.dev.yml to restore
+      # both together for local development.
+      #
+      # `./tests:ro` stays: docker/api.Dockerfile does NOT COPY tests/, but
+      # the VM's `pytest tests/unit/` step (see the deploy runbook) runs
+      # `docker compose exec api ...` against this exact container.
       - ./tests:/app/tests:ro
     command:
       - uvicorn
       - api.main:app
       - --host=0.0.0.0
       - --port=8000
-      - --reload
+      # No --reload (see docker-compose.dev.yml). --proxy-headers +
+      # --forwarded-allow-ips=* trust X-Forwarded-For/-Proto from the proxy
+      # in front of this container — safe specifically because that proxy
+      # is always `edge` over the compose network (never a public
+      # interface; see the `ports:` comment above), and `edge` itself
+      # overwrites (not appends to) X-Forwarded-For before proxying, so
+      # there is exactly one hop to trust, not an open relay.
+      - --proxy-headers
+      - --forwarded-allow-ips=*
     depends_on:
       postgres:
         condition: service_healthy
@@ -206,6 +242,51 @@ services:
         condition: service_healthy
       mlflow:
         condition: service_started
+    networks: [slm-net]
+
+  # Sole ingress-facing HTTP surface. Serves the SPA static root, proxies
+  # /api/ + /ws/ to `api`, and (on the storage subdomain, same nginx
+  # process, separate `server_name`) proxies to `minio` for presigned
+  # downloads. See docker/edge.nginx.conf for the actual routing/rate-limit
+  # rules — this service block only wires it up.
+  edge:
+    image: nginx:1.27-alpine
+    container_name: slm-edge
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${EDGE_PORT:-8088}:80"
+    volumes:
+      - ./docker/edge.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Whichever frontend eventually wins (this repo's own frontend/ on
+      # feat/web-ui, or something else) points SPA_DIST_DIR at its built
+      # `dist/`. Defaults to the committed placeholder so `docker compose
+      # up` works with nothing else configured.
+      - ${SPA_DIST_DIR:-./docker/spa-placeholder}:/usr/share/nginx/html:ro
+    depends_on:
+      - api
+    networks: [slm-net]
+
+  # Cloudflare Tunnel — the ONLY thing that reaches this host from the
+  # public internet. Deliberately no `ports:` block: this container makes
+  # outbound-only connections to Cloudflare's edge and needs nothing
+  # inbound on this host. Ingress rules live in docker/cloudflared/
+  # config.yml (locally-managed, in-repo — see that file's header comment
+  # for why token/dashboard mode was rejected) and route everything to
+  # `edge`, never straight to `api`.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: slm-cloudflared
+    restart: unless-stopped
+    volumes:
+      # Order matters: the creds dir is mounted at the PARENT path first,
+      # then config.yml is mounted on top at a path inside it — reversed,
+      # the broader mount would shadow the more specific one and hide
+      # config.yml.
+      - ${CLOUDFLARE_TUNNEL_CREDS_DIR:-./.cloudflared}:/etc/cloudflared:ro
+      - ./docker/cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+    command: ["tunnel", "--no-autoupdate", "--config", "/etc/cloudflared/config.yml", "run"]
+    depends_on:
+      - edge
     networks: [slm-net]
 
   worker:
@@ -228,9 +309,10 @@ services:
       # cannot open shared object file".
       LD_LIBRARY_PATH: /opt/conda/lib/python3.11/site-packages/nvidia/cu13/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
     volumes:
-      - ./api:/app/api
-      - ./ai_engine:/app/ai_engine
-      - ./workers:/app/workers
+      # No rw source bind-mounts (./api, ./ai_engine, ./workers) — all three
+      # are COPY'd into the image by docker/worker.Dockerfile, and this
+      # service never ran with --reload in the first place (celery workers
+      # don't autoreload on code change). See docker-compose.dev.yml.
       - hf-cache:/root/.cache/huggingface
     command:
       - celery
@@ -264,13 +346,6 @@ services:
   # task_routes). SDG calls OpenRouter over HTTP and does no GPU work, so it
   # no longer has to wait behind — or block — GPU training/export/eval jobs
   # on the single `worker` service above.
-  #
-  # Placed AFTER `worker` deliberately: tests/unit/test_compose_port_exposure.py
-  # slices this file's text on the literal `"  worker:"` marker to isolate
-  # the `api` service block, and `"  worker-cpu:"` does not contain that
-  # substring — but appending a new service ahead of `worker` could still
-  # shift surrounding text in ways future edits don't expect. Keeping the
-  # ordering worker, then worker-cpu keeps that slice stable.
   worker-cpu:
     # Reuses the API image rather than building a new one: docker/api.
     # Dockerfile already does `COPY workers ./workers` and installs the full
@@ -287,10 +362,9 @@ services:
         required: false
     environment:
       <<: *app-env
-    volumes:
-      - ./api:/app/api
-      - ./ai_engine:/app/ai_engine
-      - ./workers:/app/workers
+    # No source bind-mounts — docker/api.Dockerfile (this service reuses
+    # that image) already COPYs api/, ai_engine/, workers/, and celery
+    # workers don't autoreload on code change regardless.
     command:
       - celery
       - -A
@@ -300,10 +374,10 @@ services:
       - -Q
       - cpu
       - --concurrency=2
-    # No `ports:` — tests/unit/test_compose_port_exposure.py fails the
-    # "only `api` is externally published" guard if any other service
-    # (this one included) publishes a port. This is an internal Celery
-    # worker with nothing to serve.
+    # No `ports:` — tests/unit/test_compose_port_exposure.py's
+    # `PUBLIC_SERVICES = set()` fails the build if any service at all
+    # (this one included) publishes a non-loopback port. This is an
+    # internal Celery worker with nothing to serve externally.
     # No GPU `deploy:` block — this queue is CPU-only by design (see the
     # image comment above); requesting a GPU reservation here would just
     # make the service fail to schedule on a single-GPU host it doesn't need.

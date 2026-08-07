@@ -1,0 +1,49 @@
+# Local-development override, applied EXPLICITLY:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Restores `--reload` and the rw source bind-mounts that docker-compose.yml
+# dropped in round 3 (see that file's `api`/`worker`/`worker-cpu` volume
+# comments) — the base file now assumes an immutable, COPY'd-in image
+# because that is the correct shape for the pasaflow VM, but iterating
+# locally without a rebuild per edit still needs live-mounted source and
+# uvicorn's autoreloader.
+#
+# This is deliberately NOT named `docker-compose.override.yml`. Compose
+# auto-loads a file with that exact name with no `-f` flag at all, and
+# `scripts/deploy_pasaflow_vm.sh` already generates and writes its OWN
+# `docker-compose.override.yml` on the VM for volume rebinding (data dir
+# relocation, etc). Two independent writers targeting one filename is
+# exactly how `--reload` would quietly reappear on a production box the
+# next time someone ran a local-dev command against the wrong compose
+# project directory, or the deploy script's generated file got hand-edited
+# by someone copying a local habit. Keeping this file separate and
+# opt-in-only (`-f docker-compose.dev.yml`) means the VM never loads it
+# unless someone explicitly asks for it on that command line.
+services:
+  api:
+    volumes:
+      - ./api:/app/api
+      - ./ai_engine:/app/ai_engine
+      - ./workers:/app/workers
+      - ./alembic:/app/alembic
+      - ./tests:/app/tests:ro
+    command:
+      - uvicorn
+      - api.main:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --reload
+
+  worker:
+    volumes:
+      - ./api:/app/api
+      - ./ai_engine:/app/ai_engine
+      - ./workers:/app/workers
+      - hf-cache:/root/.cache/huggingface
+
+  worker-cpu:
+    volumes:
+      - ./api:/app/api
+      - ./ai_engine:/app/ai_engine
+      - ./workers:/app/workers
