@@ -87,16 +87,18 @@ gets a real, un-spoofable client address to key on.
 
 `cloudflared` carries `profiles: ["tunnel"]`, so a plain `docker compose up`
 does not start it and `scripts/deploy_pasaflow_vm.sh` passes
-`--profile tunnel` on **every** compose invocation, including the ones its
-own post-deploy banner tells the operator to run later. A developer machine
+`--profile tunnel` on every **service-selecting** compose invocation,
+including the ones its own post-deploy banner tells the operator to run
+later. (`exec` and `version` correctly do not carry it: the first addresses
+one already-running container by name, the second ignores the compose file.) A developer machine
 has no tunnel credentials, and `restart: unless-stopped` would have
 crash-looped the container forever; a deployment, conversely, must never come
 up without it, because `api` and `edge` both bind `127.0.0.1` and the tunnel
 is the only ingress. A stack brought up without the profile is healthy, exits
 0, and is unreachable from the internet — the most expensive kind of failure,
 which is why `tests/unit/test_compose_port_exposure.py` enumerates every
-`docker compose` call in that script rather than checking the flag appears
-somewhere in it.
+service-selecting `docker compose` call in that script rather than checking
+the flag appears somewhere in it.
 
 The tunnel id reaches cloudflared as the argument to `tunnel run` in
 `docker-compose.yml`, **not** as a `tunnel:` key in

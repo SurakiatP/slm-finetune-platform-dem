@@ -368,11 +368,26 @@ def test_the_tunnel_is_opt_in_so_local_dev_does_not_crash_loop_it() -> None:
 # Verbs that select services and therefore need the profile. `version` and
 # `exec` do not: the first ignores the file entirely, the second addresses one
 # already-running container by name.
-_PROFILE_REQUIRING_VERBS = ("up", "pull", "ps", "stop", "down", "restart", "start")
+#
+# `logs` earns its place even though the script does not use it yet: a
+# profile-less `docker compose logs` omits cloudflared, which is exactly the
+# triage blindness that made the un-profiled `ps` worth fixing.
+_PROFILE_REQUIRING_VERBS = (
+    "up", "pull", "ps", "stop", "down", "restart", "start",
+    "logs", "build", "config", "create", "kill", "rm", "run",
+)
 
 # Compose global flags that consume the following token, so it must not be
-# mistaken for the subcommand.
-_VALUE_FLAGS = ("--profile", "-f", "--file", "-p", "--project-name", "--env-file", "--project-directory")
+# mistaken for the subcommand. `--ansi`, `--parallel` and `--progress` are in
+# here despite being unused today: `--progress plain` is the standard way to
+# de-noise compose output in a script that tees to a log, which this one
+# does, and omitting it would make the helper read `plain` as the subcommand
+# and drop the whole call from the enumeration — silently, which is the
+# failure this guard exists to prevent, in a new costume.
+_VALUE_FLAGS = (
+    "--profile", "-f", "--file", "-p", "--project-name", "--env-file",
+    "--project-directory", "--ansi", "--parallel", "--progress",
+)
 
 
 def _deploy_compose_invocations() -> list[tuple[int, str]]:
@@ -391,8 +406,25 @@ def _deploy_compose_invocations() -> list[tuple[int, str]]:
     counts its own explanation as a violation is a guard someone deletes.
     """
     path = _COMPOSE_PATH.parent / "scripts" / "deploy_pasaflow_vm.sh"
-    hits: list[tuple[int, str]] = []
+
+    # Join backslash continuations FIRST. A line-oriented scan sees
+    # `docker compose \` as verb `\` (no hit) and the following
+    # `--profile tunnel up -d` as a line with no `docker compose` (no hit),
+    # so reformatting one long invocation across two lines would delete it
+    # from the enumeration entirely — the same silent-escape shape as
+    # reading a flag's value as the subcommand. Line numbers are kept from
+    # the FIRST physical line so the failure message still points somewhere
+    # an editor can jump to.
+    numbered: list[tuple[int, str]] = []
     for n, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if numbered and numbered[-1][1].rstrip().endswith("\\"):
+            prev_n, prev = numbered[-1]
+            numbered[-1] = (prev_n, prev.rstrip().rstrip("\\") + " " + raw.strip())
+        else:
+            numbered.append((n, raw))
+
+    hits: list[tuple[int, str]] = []
+    for n, raw in numbered:
         line = re.sub(r"(^|\s)#.*$", "", raw)
         for m in re.finditer(r"docker compose\b", line):
             # Everything up to the next shell separator is this one command.
@@ -434,8 +466,12 @@ def test_every_deploy_compose_invocation_enables_the_tunnel_profile() -> None:
     profile = (_COMPOSE["services"]["cloudflared"].get("profiles") or [None])[0]
     assert profile, "cloudflared has no profile to enable"
 
+    # Both spellings: `--profile tunnel` and `--profile=tunnel` are equally
+    # valid shell, and rejecting the second would push the next person to
+    # rewrite correct script rather than the assertion.
+    enabled = re.compile(rf"--profile[= ]{re.escape(profile)}\b")
     missing = [
-        (n, line) for n, line in _deploy_compose_invocations() if f"--profile {profile}" not in line
+        (n, line) for n, line in _deploy_compose_invocations() if not enabled.search(line)
     ]
     assert not missing, (
         "these `docker compose` invocations in scripts/deploy_pasaflow_vm.sh do "

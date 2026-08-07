@@ -135,15 +135,24 @@ def test_the_api_reference_states_the_real_path_and_operation_count() -> None:
         if verb.lower() in {"get", "post", "put", "patch", "delete", "head", "options"}
     )
 
-    doc = (_REPO_ROOT / "docs" / "02-api-reference.md").read_text(encoding="utf-8")
-    m = re.search(r"\*\*(\d+) paths / (\d+) operations\*\*", doc)
-    assert m, (
-        "docs/02-api-reference.md no longer states a '**N paths / M operations**' "
-        "count in its header. If that sentence was removed deliberately, remove "
-        "this guard too — do not leave it matching nothing."
-    )
-    stated = (int(m.group(1)), int(m.group(2)))
-    assert stated == (paths, operations), (
-        f"docs/02-api-reference.md says {stated[0]} paths / {stated[1]} operations, "
-        f"but openapi.json has {paths} / {operations}. {_REGENERATE}"
-    )
+    # Both files that state the count, not just the one that stated it first.
+    # `docs/README.md`'s nav table carries its own copy, and it had already
+    # drifted to a third value ("35 paths / 42 ops") while this guard watched
+    # only `02-api-reference.md` -- the same "two different stale numbers in
+    # two places" this test was written to stop, one file over.
+    for rel, pattern in (
+        ("docs/02-api-reference.md", r"\*\*(\d+) paths / (\d+) operations\*\*"),
+        ("docs/README.md", r"\((\d+) paths / (\d+) ops\)"),
+    ):
+        doc = (_REPO_ROOT / rel).read_text(encoding="utf-8")
+        m = re.search(pattern, doc)
+        assert m, (
+            f"{rel} no longer states a path/operation count matching "
+            f"{pattern!r}. If that sentence was removed deliberately, remove "
+            "its entry from this guard too — do not leave it matching nothing."
+        )
+        stated = (int(m.group(1)), int(m.group(2)))
+        assert stated == (paths, operations), (
+            f"{rel} says {stated[0]} paths / {stated[1]} operations, "
+            f"but openapi.json has {paths} / {operations}. {_REGENERATE}"
+        )
