@@ -44,23 +44,42 @@ logger = logging.getLogger(__name__)
 # per-token before handing prices to callers.
 _BUILTIN_PRICING_USD_PER_1M: dict[str, tuple[float, float]] = {
     # google/gemini-2.5-flash-lite — FORMAT_DETECTION, PDF_QA.
-    # Published list price at time of writing: $0.10 prompt / $0.40
-    # completion per 1M tokens. NEEDS CONFIRMING before this is relied on
-    # for real budget enforcement — OpenRouter prices move; re-check
-    # https://openrouter.ai/google/gemini-2.5-flash-lite before trusting it
-    # for anything beyond development.
+    # VERIFIED 2026-08-07 against OpenRouter's
+    # /api/v1/models/google/gemini-2.5-flash-lite/endpoints. The SKU is sold
+    # in three tiers; this is the STANDARD one (Google Vertex, Vertex EU and
+    # AI Studio all quote it identically):
+    #   AI Studio Flex      $0.05 / $0.20   ← cheaper tier, deliberately not used
+    #   standard            $0.10 / $0.40   ← this row
+    #   AI Studio Priority  $0.18 / $0.72
     "google/gemini-2.5-flash-lite": (0.10, 0.40),
     # deepseek/deepseek-v4-flash-0731 — GENERATOR, JUDGE, DIVERSITY_RULES.
-    # NEEDS CONFIRMING, more urgently than the row above: this exact
-    # date-stamped model id was not in the reference pricing data available
-    # when this map was written. The value below ($0.14 prompt / $0.28
-    # completion per 1M) is a defensible placeholder extrapolated from
-    # DeepSeek's other "flash"-tier OpenRouter listings, not a verified
-    # quote for this specific SKU — do not treat it as authoritative. Check
-    # https://openrouter.ai/deepseek/deepseek-v4-flash-0731 and correct
-    # this entry (or set MODEL_PRICING_JSON) before it gates real spend.
+    # VERIFIED 2026-08-07 against
+    # /api/v1/models/deepseek/deepseek-v4-flash-0731/endpoints, which lists
+    # 25 providers at prices spanning more than 2x:
+    #   DeepInfra           $0.09 / $0.18   ← cheapest; this is the number
+    #                                         OpenRouter's headline `pricing`
+    #                                         field reports, so quoting the
+    #                                         API's top-level value would
+    #                                         systematically under-bill
+    #   DeepSeek first-party, and 15 others
+    #                       $0.14 / $0.28   ← this row: the modal price and
+    #                                         the model owner's own list rate
+    #   Phala               $0.20 / $0.40   ← most expensive
     "deepseek/deepseek-v4-flash-0731": (0.14, 0.28),
 }
+
+# Why the standard tier rather than the cheapest or the dearest: OpenRouter
+# picks the provider per request and the response tells us only the model id,
+# never which endpoint served it — so no per-call price is knowable after the
+# fact. Taking the floor would make a budget cap fire late, which is the
+# failure this feature exists to prevent; taking Phala's ceiling would
+# overstate a typical run by more than 2x and 402 users who are nowhere near
+# their limit. The owner's list rate is the honest middle, and any deployment
+# that pins its routing can correct it with MODEL_PRICING_JSON, no deploy.
+#
+# Not modelled: DeepSeek quotes a separate cached-input rate
+# ($0.018 per 1M, `input_cache_read`). We bill all prompt tokens at the full
+# rate, so a cache-heavy run is over-billed rather than under-billed.
 
 
 @lru_cache(maxsize=16)

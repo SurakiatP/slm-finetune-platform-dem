@@ -142,28 +142,44 @@ every caller is authenticated and the discrepancy disappears on its own.
   falsely-believed-open one is worse than letting a few extra calls
   through).
 
-**Explicitly still open — do not soften this:**
+**Prices: verified 2026-08-07, and which tier was chosen.**
 
-The per-model prices in `api/services/model_pricing.py` are **placeholders,
-not verified quotes**. `google/gemini-2.5-flash-lite`'s row is flagged in
-code as needing confirmation against live OpenRouter pricing before it's
-relied on for anything beyond development.
-`deepseek/deepseek-v4-flash-0731`'s row is flagged more urgently — that
-exact dated model id was not present in the reference pricing data
-available when the map was written, so its price is a defensible
-extrapolation from DeepSeek's other "flash"-tier OpenRouter listings, not a
-confirmed number for this specific SKU. **Every `cost_usd` value recorded
-today is therefore not trustworthy, and no budget cap
-(`BUDGET_MONTHLY_USD_PER_ACTOR` / `BUDGET_MONTHLY_USD_GLOBAL`) should be
-switched on until both rows are verified against
-https://openrouter.ai/{model} and corrected (directly or via
-`MODEL_PRICING_JSON`).** This is a real, live risk, not a hypothetical one —
-it is only non-urgent today because both budget settings default to `None`
-(unlimited), so the feature ships dark: nothing is currently gated by a
-number that hasn't been checked. Token counts themselves are unaffected by
-this — they come straight from OpenRouter's own response `usage` field —
-only the derived dollar figure is in question, and it can be recomputed
-retroactively from the stored token counts once a price is corrected.
+Both rows in `api/services/model_pricing.py` were originally written as
+unverified placeholders. They have since been checked against OpenRouter's
+`/api/v1/models/{id}/endpoints` and both happened to be correct — but the
+check surfaced something the placeholders had no way to express: **neither
+model has a single price.**
+
+| model | cheapest | **standard (used)** | dearest |
+|---|---|---|---|
+| `google/gemini-2.5-flash-lite` | $0.05 / $0.20 (AI Studio Flex) | **$0.10 / $0.40** (Vertex, Vertex EU, AI Studio) | $0.18 / $0.72 (AI Studio Priority) |
+| `deepseek/deepseek-v4-flash-0731` | $0.09 / $0.18 (DeepInfra) | **$0.14 / $0.28** (DeepSeek first-party + 15 others) | $0.20 / $0.40 (Phala) |
+
+USD per 1M prompt / completion tokens. DeepSeek is served by 25 providers
+spanning more than 2x.
+
+We record the **standard tier**, not the floor and not the ceiling.
+OpenRouter selects the provider per request and the response identifies only
+the model, never the endpoint that served it — so no per-call price is
+recoverable after the fact and any single number is an approximation. Taking
+the floor would make a budget cap fire late, which is precisely the failure
+this feature exists to prevent; note that the floor is also what
+OpenRouter's *top-level* `pricing` field reports, so reading the obvious
+field would have silently under-billed. Taking the ceiling would overstate a
+typical run by more than 2x and 402 users nowhere near their limit. The
+model owner's own list rate is the defensible middle, and a deployment that
+pins its routing can correct it via `MODEL_PRICING_JSON` without a deploy.
+
+Also not modelled: DeepSeek quotes a separate cached-input rate ($0.018 per
+1M). All prompt tokens are billed at the full rate, so a cache-heavy run is
+over-billed rather than under-billed — the safe direction.
+
+**Still true regardless:** a recorded `cost_usd` is an estimate, not an
+invoice. Token counts are the ground truth (straight from OpenRouter's
+response `usage`), cost is derived, and every figure can be recomputed
+retroactively from stored token counts if a rate turns out to be wrong or
+changes. Reconcile against the OpenRouter bill before anyone treats these
+numbers as authoritative.
 
 **Rejected alternatives:**
 
