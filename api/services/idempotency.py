@@ -54,13 +54,20 @@ def canonical_json(body: Any) -> str:
 def client_host(request: Request) -> str:
     """Best-effort caller address for anonymous dedupe bucketing.
 
-    The agreed deployment topology is a single nginx serving the frontend
-    same-origin, so `request.client.host` alone is always the proxy's own
-    address — using it directly would collapse every anonymous caller into
-    one shared dedupe bucket. `X-Forwarded-For`'s first hop is the actual
-    client as seen by that proxy, so it's preferred when present; the raw
-    socket address (or "unknown") is only a fallback for the case where
-    something ends up talking to the app directly (e.g. tests, local dev).
+    The agreed deployment topology is the `edge` nginx service
+    (`docker/edge.nginx.conf`) serving the frontend same-origin, so
+    `request.client.host` alone is always `edge`'s own container address —
+    using it directly would collapse every anonymous caller into one shared
+    dedupe bucket. `edge` deliberately *overwrites* rather than appends
+    `X-Forwarded-For` (`proxy_set_header X-Forwarded-For $remote_addr;`, not
+    `$proxy_add_x_forwarded_for`) for every location it proxies, so there is
+    never more than the one hop `edge` itself set — which is precisely why
+    reading the first (only) hop here is trustworthy and not spoofable by a
+    client-supplied XFF header riding in front of it. The raw socket address
+    (or "unknown") is only a fallback for the case where something ends up
+    talking to the app directly (e.g. tests, local dev, or a misconfigured
+    `real_ip`/edge deployment — see `_request_context_middleware` in
+    `api/main.py` for the on-box symptom of that failure mode).
     """
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:

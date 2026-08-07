@@ -20,9 +20,10 @@ integration notes see
 the recorded decisions behind specific constraints or design changes see
 [`docs/adr/`](./adr/README.md) (currently [ADR-006](./adr/ADR-006-defer-authentication.md),
 [ADR-008](./adr/ADR-008-ws-progress-snapshot.md),
-[ADR-009](./adr/ADR-009-supabase-jwt-auth.md), and
-[ADR-010](./adr/ADR-010-cpu-gpu-queue-split-and-quotas.md); ADR-001–005 are
-recorded only as the constraint table in §5 below).
+[ADR-009](./adr/ADR-009-supabase-jwt-auth.md),
+[ADR-010](./adr/ADR-010-cpu-gpu-queue-split-and-quotas.md), and
+[ADR-011](./adr/ADR-011-nginx-edge-cloudflare-tunnel-presigned-downloads.md);
+ADR-001–005 are recorded only as the constraint table in §5 below).
 
 ---
 
@@ -129,37 +130,64 @@ sharing the GPU worker's single execution slot — see
 
 ## 4. Infrastructure services
 
-From `docker-compose.yml` (10 service blocks as of the `worker-cpu` addition
-below; `minio-init` is a one-shot init job, not a long-running service —
-README's "7 services" count (`README.md:74-75`) is stale, it omits
-`minio-init`, `frontend`, and now `worker-cpu`):
+From `docker-compose.yml` (11 service blocks as of round 3's `edge`/
+`cloudflared` addition; `minio-init` is a one-shot init job, not a
+long-running service — README's "7 services" count (`README.md:74-75`) is
+stale and predates both this round and `worker-cpu`).
+
+**Round-3 drift note**: an earlier pass of this document (and of
+`README.md`'s stale count) listed a `frontend` service at
+`docker-compose.yml:202`. That service does not exist on this branch — it
+was drift from a different branch/round, not something round 3 removed.
+The table below reflects the compose file as it actually stands today:
 
 | Service | Purpose | Port (host) |
 |---|---|---|
 | `postgres` (`docker-compose.yml:41`) | App state (projects/datasets/training_jobs/model_artifacts/evaluation_runs) + separate `mlflow` DB | `127.0.0.1:${POSTGRES_PORT:-5432}` |
-| `redis` (`:63`) | Celery broker (db1) + result backend (db2) + WS pub/sub channel (db0) | `127.0.0.1:${REDIS_PORT:-6379}` |
-| `minio` (`:78`) | S3-compatible blob store for datasets/model artifacts + MLflow artifact root | `127.0.0.1:${MINIO_PORT:-9000}` (S3 API), `127.0.0.1:${MINIO_CONSOLE_PORT:-9001}` (console) |
-| `minio-init` (`:98`) | One-shot `mc mb` job that creates the `mlflow`/`datasets`/`models` buckets on first boot | n/a |
-| `mlflow` (`:124`) | Experiment tracking server (Postgres backend store + MinIO artifact store) | `127.0.0.1:${MLFLOW_PORT:-5000}` |
-| `api` (`:166`) | FastAPI app (`uvicorn api.main:app --reload`) — the HTTP + WS surface | `${API_PORT:-8000}` (default 8000) |
-| `frontend` (`:202`) | nginx serving the built React SPA (`frontend/`), reverse-proxying `/api` and `/ws` to `api` so the browser only ever talks to one origin (`docker/frontend.Dockerfile:1-9`, `docker/frontend.nginx.conf`) | `${FRONTEND_PORT:-8082}` |
-| `worker` (`:211`) | Celery worker (GPU), `-Q gpu --concurrency=1` — runs training/HPO/export/evaluation tasks | n/a (no exposed port) |
-| `worker-cpu` (`:274`) | Celery worker (CPU), `-Q cpu --concurrency=2` — runs SDG generation only; reuses the `api` image, not the CUDA `worker` image | n/a (no exposed port) |
-| `ollama` (`:317`) | OpenAI-compatible inference server (GPU) for the exported GGUF models | `127.0.0.1:${OLLAMA_PORT:-11434}` |
+| `redis` (`:68`) | Celery broker (db1) + result backend (db2) + WS pub/sub channel (db0) | `127.0.0.1:${REDIS_PORT:-6379}` |
+| `minio` (`:83`) | S3-compatible blob store for datasets/model artifacts + MLflow artifact root | `127.0.0.1:${MINIO_PORT:-9000}` (S3 API), `127.0.0.1:${MINIO_CONSOLE_PORT:-9001}` (console) |
+| `minio-init` (`:103`) | One-shot `mc mb` job that creates the `mlflow`/`datasets`/`models` buckets on first boot | n/a |
+| `mlflow` (`:129`) | Experiment tracking server (Postgres backend store + MinIO artifact store) | `127.0.0.1:${MLFLOW_PORT:-5000}` |
+| `api` (`:186`) | FastAPI app (`uvicorn api.main:app`) — the HTTP + WS surface | `127.0.0.1:${API_PORT:-8000}` |
+| `edge` (`:252`) | Sole ingress-facing HTTP surface (nginx). Serves the SPA static root (`${SPA_DIST_DIR}`, defaults to a committed placeholder — frontend-agnostic, see [ADR-011](./adr/ADR-011-nginx-edge-cloudflare-tunnel-presigned-downloads.md)), reverse-proxies `/api/` + `/ws/` to `api`, and — on a second `server_name` — proxies to `minio` for presigned downloads. Rate limiting (`limit_req`) lives here, not in the app (`docker/edge.nginx.conf`). | `127.0.0.1:${EDGE_PORT:-8088}` |
+| `cloudflared` (`:276`) | Cloudflare Tunnel client — the only thing that reaches this host from the public internet; makes outbound-only connections, needs nothing inbound. Ingress rules (`docker/cloudflared/config.yml`, locally-managed and in-repo) route both hostnames to `edge`, never straight to `api`. | none — no `ports:` block at all |
+| `worker` (`:292`) | Celery worker (GPU), `-Q gpu --concurrency=1` — runs training/HPO/export/evaluation tasks | n/a (no exposed port) |
+| `worker-cpu` (`:349`) | Celery worker (CPU), `-Q cpu --concurrency=2` — runs SDG generation only; reuses the `api` image, not the CUDA `worker` image | n/a (no exposed port) |
+| `ollama` (`:391`) | OpenAI-compatible inference server (GPU) for the exported GGUF models | `127.0.0.1:${OLLAMA_PORT:-11434}` |
 
-`worker-cpu` is new — see [§8](#8-cpugpu-queue-topology) below for why it
-exists and why it deliberately reuses the API image instead of building a
-second CUDA one.
+`worker-cpu` (round 2) and `edge`/`cloudflared` (round 3) are the additions
+past the original 7-service count — see [§8](#8-cpugpu-queue-topology)
+below for why `worker-cpu` exists and why it deliberately reuses the API
+image instead of building a second CUDA one, and
+[ADR-011](./adr/ADR-011-nginx-edge-cloudflare-tunnel-presigned-downloads.md)
+for `edge`/`cloudflared`.
 
-**Every port above except the API's binds `127.0.0.1`.** A bare `"5432:5432"`
-publishes on all interfaces, which put Postgres, Redis, MinIO, MLflow and
-Ollama on the public internet of any host running this stack. Loopback
-binding — rather than dropping `ports:` altogether — keeps them reachable
-through an SSH tunnel (`ssh -L 9001:localhost:9001`), which is what
-`scripts/deploy_pasaflow_vm.sh` hands the operator for the MinIO console,
-MLflow and Ollama. Container-to-container traffic is unaffected: it goes over
-the `slm-net` compose network by service name and never touches the host
-binding. Guarded by `tests/unit/test_compose_port_exposure.py`.
+**Zero externally published ports, as of round 3.** Every port in the table
+above binds `127.0.0.1` — including `api`, which round 1 had left directly
+published as "the one public service." That model is gone: `api` now binds
+loopback like everything else, `edge` (also loopback-bound) is the sole
+in-repo ingress surface, and `cloudflared` — the only thing that actually
+reaches this host from the public internet — publishes no port at all; it
+only dials out to Cloudflare's edge. A bare `"5432:5432"`-style mapping
+publishes on all interfaces, which is exactly what round 1's loopback
+binding on Postgres/Redis/MinIO/MLflow/Ollama already guarded against;
+round 3 closes the one exception that guard didn't cover. Loopback
+binding — rather than dropping `ports:` altogether — keeps every service
+reachable through an SSH tunnel (`ssh -L 9001:localhost:9001`, or
+`-L 8000:localhost:8000` for the API), which is what
+`scripts/deploy_pasaflow_vm.sh` hands the operator for local debugging.
+Container-to-container traffic is unaffected: it goes over the `slm-net`
+compose network by service name and never touches the host binding.
+
+This zero-public-port shape is a **precondition**, not just a hardening
+step: `docker/edge.nginx.conf` trusts `CF-Connecting-IP` (real client IP)
+from the entire compose network, which is only safe because nothing on
+that network can be reached directly from outside it to spoof the header.
+See [ADR-011](./adr/ADR-011-nginx-edge-cloudflare-tunnel-presigned-downloads.md)
+for the full reasoning. Guarded by
+`tests/unit/test_compose_port_exposure.py` — `PUBLIC_SERVICES = set()` is
+an equality assertion (not "at most these"), so any service gaining a
+published port at all fails the build, not just an unexpected one.
 
 ---
 
@@ -192,7 +220,7 @@ verification, `owner_id` on `Project`) for when auth is scheduled.
 Verified in code:
 - 3 task types enforced by `api/schemas/enums.py:13-18` (`TaskType`: `classification`, `tool_calling`, `qa`), also referenced from `ai_engine/data_gen/generator.py:44`.
 - Celery-only async: no `BackgroundTasks` import anywhere under `api/`; all long-running work is a `@celery_app.task` in `workers/tasks/*.py`.
-- Auth: Supabase JWTs are verified by `api/core/auth.py` and ownership is enforced per `Project.owner_id` (`api/services/ownership.py`, `api/services/job_ownership.py`). Ships behind `AUTH_REQUIRED`, which defaults to `false` — tokens are verified when present, but anonymous requests are still served until the frontend starts sending the header. See [ADR-009](./adr/ADR-009-supabase-jwt-auth.md); [ADR-006](./adr/ADR-006-defer-authentication.md) is the superseded record of why it was deferred first.
+- Auth: Supabase JWTs are verified by `api/core/auth.py` and ownership is enforced per `Project.owner_id` (`api/services/ownership.py`, `api/services/job_ownership.py`). Ships behind `AUTH_REQUIRED`, which defaults to `false` — tokens are verified when present, but anonymous requests are still served until the frontend starts sending the header. See [ADR-009](./adr/ADR-009-supabase-jwt-auth.md); [ADR-006](./adr/ADR-006-defer-authentication.md) is the superseded record of why it was deferred first. As of round 3, `ENVIRONMENT=production` with `AUTH_REQUIRED=false` is a **fatal boot error** (`api/core/config.py::_reject_unsafe_production_config`), not a warning — see [ADR-011](./adr/ADR-011-nginx-edge-cloudflare-tunnel-presigned-downloads.md) for why, and for Cloudflare Access as the interim gate while the frontend token patch is still outstanding.
 - MLflow: every training run opens an `mlflow_run_scope` (`ai_engine/training/mlflow_logger.py`, used from `workers/tasks/training.py` and `workers/tasks/hpo_training.py:128-138`).
 - OpenRouter-only SDG: `ai_engine/data_gen/openrouter_client.py` is the only LLM client used by `ai_engine/data_gen/*`.
 

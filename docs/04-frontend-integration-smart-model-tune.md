@@ -220,12 +220,41 @@ backoff loop's behavior on any handshake rejection — retry up to `MAX_ATTEMPTS
 then give up silently — is the correct client behavior, because there is no
 signal available yet to do anything smarter with.
 
-### 3. `VITE_ENGINE_HOST` — leave it empty
+### 3. `VITE_ENGINE_HOST` — leave it empty (now required, not just intended)
 
-The agreed topology is a single nginx serving the frontend and proxying
-`/api/v1` and `/ws` to the Engine. `useTrainingWebSocket.ts:60` already documents
-that an empty `VITE_ENGINE_HOST` falls back to same-origin, which is the intended
-production setting. Same-origin also removes CORS from the picture entirely.
+The topology is concrete as of round 3, not aspirational: a single `edge`
+nginx service (`docker/edge.nginx.conf`, wired up in `docker-compose.yml`)
+is the **only** thing that reaches the pasaflow VM from the public
+internet — routed through a Cloudflare Tunnel (`cloudflared`, no inbound
+port of its own) — and it serves the SPA's static root while proxying
+`/api/v1` and `/ws` to the Engine on the same origin. Full reasoning in
+[ADR-011](./adr/ADR-011-nginx-edge-cloudflare-tunnel-presigned-downloads.md).
+
+Concretely, there are **two hostnames**, both fronted by the same
+Cloudflare Tunnel and the same `edge` container:
+
+- `slmpc.pasaflow.com` — the app: SPA + `/api/v1/*` + `/ws/*`.
+- `storage.slmpc.pasaflow.com` — a **separate** subdomain that exists only
+  to reverse-proxy MinIO for presigned download URLs (see the new
+  `GET /datasets/{id}/download-url` / `GET /models/{id}/download-url`
+  endpoints in `docs/02-api-reference.md`). Nothing on this subdomain is
+  Engine API — do not point `VITE_ENGINE_HOST` or any `fetch` at it
+  directly; the URLs it serves come back pre-signed inside Engine API
+  responses and are meant to be followed as-is (e.g. a browser
+  `window.location`/`<a href>` navigation or download), not called through
+  `apiFetch`.
+
+Because `edge` is same-origin with the SPA on `slmpc.pasaflow.com`, leaving
+`VITE_ENGINE_HOST` empty is now **required for production, not merely the
+intended setting**: `useTrainingWebSocket.ts:60` already documents that an
+empty `VITE_ENGINE_HOST` falls back to same-origin, and same-origin is the
+only shape `edge` actually serves — there is no public port anywhere in
+this deployment that answers to a cross-origin `VITE_ENGINE_HOST` value
+(`api` itself binds `127.0.0.1` only; see
+[`01-architecture.md` §4](./01-architecture.md#4-infrastructure-services)).
+A non-empty `VITE_ENGINE_HOST` pointed at anything other than `edge`'s own
+origin will not reach this deployment at all. Same-origin also removes
+CORS from the picture entirely.
 
 ### What breaks if only one side ships
 

@@ -12,7 +12,10 @@ changing a router.
 This is the human companion to [`openapi.json`](./openapi.json); regenerate
 that with `scripts/export_openapi.py` when the contract changes. All routes
 are mounted under `/api/v1` except `GET /health` (root-level). The spec
-currently has **33 paths / 40 operations**; this doc covers all of them.
+currently has **39 paths / 46 operations**; this doc covers all of them.
+(That count is asserted against `openapi.json` by
+`tests/unit/test_openapi_spec_is_current.py` — it had drifted twice, and this
+file previously stated two *different* stale numbers in two places.)
 
 **A note on error codes**: FastAPI's auto-generated OpenAPI only documents
 the success response and a generic `422` (Pydantic validation failure) for
@@ -603,6 +606,49 @@ Stream the raw JSONL file (`application/x-ndjson`, `Content-Disposition:
 attachment`). **Errors**: `404` not found; `409` no rows yet (same check as
 preview).
 
+### GET /api/v1/datasets/{dataset_id}/download-url
+
+Mint a presigned, time-boxed MinIO GET URL for the dataset's stored
+object, so the caller downloads directly from storage instead of
+streaming through the API process. Additive alongside `GET
+/{dataset_id}/download` above — that endpoint is unchanged and still
+works. Source: `api/services/download_links.py::mint_dataset_download_url`.
+
+- **Params**: none besides `dataset_id` in the path.
+- **Success `200`** (`DatasetDownloadUrlResponse`):
+  ```json
+  {
+    "url": "https://storage.slmpc.pasaflow.com/datasets/<key>?X-Amz-Algorithm=...&X-Amz-Signature=...",
+    "filename": "my-dataset.jsonl",
+    "content_type": "application/x-ndjson",
+    "expires_at": "2026-08-07T13:05:00Z",
+    "expires_in": 300
+  }
+  ```
+  `expires_in` is `settings.presigned_url_ttl_seconds` (default `300`,
+  configurable `60`–`604800`). If `Dataset.storage_uri` is null but a seed
+  PDF was uploaded, this falls back to
+  `generation_metadata["pdf_uri"]` and returns `filename="<name>.pdf"` /
+  `content_type="application/pdf"` instead — closing a gap the streaming
+  `/download` endpoint above has today (a PDF-seeded dataset 409s there
+  with no download surface at all).
+- **Errors**:
+  - **`503`** when `MINIO_PUBLIC_URL` is not configured on this
+    deployment — presigned downloads are simply unavailable, not broken.
+    Checked before touching the DB.
+  - **`404`, not `403`, for another user's dataset** — same ownership
+    contract as every other resource endpoint (see
+    [ADR-009](./adr/ADR-009-supabase-jwt-auth.md)): a `403` would confirm
+    the id exists, so it 404s with the identical not-found message
+    instead.
+  - `409` when there is nothing to download yet (`storage_uri` and the PDF
+    fallback are both empty — still generating).
+- Every minted URL is a bearer capability valid until `expires_in` seconds
+  from mint time, not a per-request-checked credential — see the note on
+  the equivalent model endpoint under
+  [Models & Export](#models--export) for the full reasoning, which applies
+  identically here.
+
 ### DELETE /api/v1/datasets/{dataset_id}
 
 Delete a dataset. **Success**: `204`. **Errors**: `404` not found; `409`
@@ -931,9 +977,74 @@ default `gguf`). **Errors**: `404` model not found; `409` requested format
 was never exported for this model, or (GGUF specifically) no `.gguf` blob
 was found under the export prefix; `400` unsupported `format` value, or
 format is `safetensors`/`lora` — those are multi-file directories not
-zipped server-side, so this endpoint returns `400` telling the caller to
-fetch objects via the MinIO API directly (`api/services/model_service.py:
-127-194`). **Only GGUF actually streams a file through this endpoint.**
+zipped server-side. As of round 3 (`api/services/model_service.py:
+303-317`), that `400` no longer echoes the raw `s3://` object URI (an
+internal storage address that was leaking into an HTTP error body) — it
+now just points the caller at the `/download-url` endpoint below.
+**Only GGUF actually streams a file through this endpoint.**
+
+### GET /api/v1/models/{model_id}/download-url
+
+Mint one or more presigned MinIO GET URLs for a previously-exported
+artifact. Query: `format` (alias `format`, one of `gguf` | `safetensors` |
+`lora`, default `gguf`). Additive alongside `GET /{model_id}/download`
+above. Source:
+`api/services/download_links.py::mint_model_download_url`.
+
+`gguf` mints exactly one URL, for the first `.gguf` object found under the
+export prefix (same selection rule the streaming endpoint uses).
+`safetensors`/`lora` are multi-file directories — this is the endpoint
+that actually closes the "these formats can't be downloaded at all"
+gap the streaming endpoint has (it `400`s on them, see above): the
+objects under the export prefix are listed internally (never leaving the
+compose network — only the individual signed GET URLs do) and one
+presigned URL is minted per object, capped at
+`api.services.download_links.MAX_LISTING_OBJECTS` (`200`). A listing
+that exceeds the cap sets `truncated: true` and returns only the first
+200 files rather than growing the response unboundedly.
+
+- **Success `200`** (`ModelDownloadUrlResponse`):
+  ```json
+  {
+    "format": "gguf",
+    "files": [
+      {
+        "key": "models/<artifact_id>/export/model.gguf",
+        "name": "my-model.gguf",
+        "size_bytes": 1789569024,
+        "url": "https://storage.slmpc.pasaflow.com/models/<key>?X-Amz-Algorithm=...&X-Amz-Signature=..."
+      }
+    ],
+    "expires_at": "2026-08-07T13:05:00Z",
+    "expires_in": 300,
+    "truncated": false
+  }
+  ```
+  `size_bytes` is a best-effort `stat_object` lookup — if it fails, it is
+  `0` rather than failing the whole mint; the URL itself is unaffected.
+- **Errors**:
+  - **`503`** when `MINIO_PUBLIC_URL` is not configured on this
+    deployment — presigned downloads are simply unavailable, not broken.
+    Checked before touching the DB (same shape as `GET
+    /datasets/{dataset_id}/download-url`, see [Datasets & SDG](#datasets--sdg)).
+  - **`404`, not `403`, for another user's model** — same ownership
+    contract as every other resource endpoint (see
+    [ADR-009](./adr/ADR-009-supabase-jwt-auth.md)), joined through
+    `TrainingJob` → `Project`.
+  - `409` when the requested format was never exported (`"Model {id} has
+    not been exported as {format}. POST /api/v1/models/{id}/export
+    first."`), or (GGUF specifically) no `.gguf` object was found under
+    the export prefix.
+
+**Every minted URL is a bearer capability, not a scoped, per-request
+check.** Ownership and format validity are only verified once, at mint
+time — the URL itself carries no identity, so anyone who obtains it (a
+forwarded link, a browser history entry, a proxy log — see
+[ADR-011](./adr/ADR-011-nginx-edge-cloudflare-tunnel-presigned-downloads.md)
+for why the storage vhost deliberately never logs the query string) can
+use it to fetch the object directly from MinIO until it expires, with no
+further ownership check. Treat `expires_in` as the actual security
+boundary, not the initial mint check.
 
 ---
 
@@ -1324,9 +1435,11 @@ and take the UI offline to report a partial outage. See
 
 ## Verification notes
 
-`openapi.json` currently enumerates 35 paths / 42 operations (checked via
-`python3 -c "import json; d=json.load(open('openapi.json')); print(len(d['paths']))"`
-at doc-writing time). This file covers all of them, plus the 2 new usage
+`openapi.json` currently enumerates 39 paths / 46 operations, and
+`tests/unit/test_openapi_spec_is_current.py` now asserts that the count stated
+at the top of this file matches it — regenerate with
+`python scripts/export_openapi.py` and update that one number when routes
+change. This file covers all of them, plus the 2 new usage
 endpoints documented above that **do not appear in `openapi.json` yet** —
 see discrepancy 4 below.
 

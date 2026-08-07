@@ -947,6 +947,65 @@
         }
       }
     },
+    "/api/v1/datasets/{dataset_id}/download-url": {
+      "get": {
+        "tags": [
+          "datasets"
+        ],
+        "summary": "Mint a presigned MinIO URL for the dataset's stored object",
+        "operationId": "get_dataset_download_url_api_v1_datasets__dataset_id__download_url_get",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Dataset Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetDownloadUrlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/datasets/{dataset_id}/cancel": {
       "post": {
         "tags": [
@@ -1893,6 +1952,74 @@
         "responses": {
           "200": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/models/{model_id}/download-url": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Mint presigned MinIO URL(s) for a previously-exported artifact",
+        "operationId": "get_model_download_url_api_v1_models__model_id__download_url_get",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Model Id"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ArtifactFormat",
+              "default": "gguf"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDownloadUrlResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -3366,6 +3493,43 @@
           "usage"
         ],
         "title": "CompletionResponse"
+      },
+      "DatasetDownloadUrlResponse": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In",
+            "description": "Seconds from mint time until `url` stops working."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "url",
+          "filename",
+          "content_type",
+          "expires_at",
+          "expires_in"
+        ],
+        "title": "DatasetDownloadUrlResponse",
+        "description": "Body of `GET /api/v1/datasets/{id}/download-url`."
       },
       "DatasetPreviewResponse": {
         "properties": {
@@ -5227,6 +5391,76 @@
           "data"
         ],
         "title": "ModelDescriptorList"
+      },
+      "ModelDownloadFile": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key",
+            "description": "Full MinIO object key (bucket-relative)."
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Basename, suitable for a client-side Content-Disposition."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "size_bytes",
+          "url"
+        ],
+        "title": "ModelDownloadFile",
+        "description": "One object inside a `ModelDownloadUrlResponse.files` listing."
+      },
+      "ModelDownloadUrlResponse": {
+        "properties": {
+          "format": {
+            "$ref": "#/components/schemas/ArtifactFormat"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/ModelDownloadFile"
+            },
+            "type": "array",
+            "title": "Files"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "format",
+          "files",
+          "expires_at",
+          "expires_in"
+        ],
+        "title": "ModelDownloadUrlResponse",
+        "description": "Body of `GET /api/v1/models/{id}/download-url`.\n\n`gguf` always returns exactly one file (the first `.gguf` object under\nthe export prefix, matching `_first_gguf_object`'s existing selection\nrule). `safetensors`/`lora` are multi-file directories, so `files` can\ncontain many entries — capped at\n`api.services.download_links.MAX_LISTING_OBJECTS`; `truncated=True`\nmeans the prefix held more objects than the cap and the response only\ncovers the first `MAX_LISTING_OBJECTS` of them."
       },
       "ModelExportRequest": {
         "properties": {
