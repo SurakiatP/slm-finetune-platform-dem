@@ -26,8 +26,10 @@ import logging
 from typing import Any
 
 from api.core.metrics import (
+    slm_dependency_up,
     slm_job_duration_seconds_avg,
     slm_job_duration_seconds_max,
+    slm_job_failures,
     slm_jobs,
     slm_openrouter_breaker_state,
     slm_openrouter_completion_tokens_total,
@@ -71,6 +73,8 @@ async def _gather_sources() -> tuple[Any, ...]:
         metrics_sources.breaker_state(),
         metrics_sources.usage_totals(),
         readiness.probe_worker_queues(),
+        readiness.probe_dependencies(),
+        metrics_sources.job_failure_counts(),
         return_exceptions=True,
     )
 
@@ -147,6 +151,25 @@ def _apply_breaker_state(state: Any) -> None:
     slm_openrouter_breaker_state.set(state)
 
 
+def _apply_dependency_up(deps: dict[str, bool]) -> None:
+    # Same stale-series reasoning as `_apply_queue_depths` — see its comment.
+    # `probe_dependencies()` degrading to `{}` on total failure would
+    # otherwise leave a previously-down/up dependency frozen at its last
+    # observed value instead of disappearing from the scrape.
+    slm_dependency_up.clear()
+    for dependency, up in deps.items():
+        slm_dependency_up.labels(dependency=dependency).set(1.0 if up else 0.0)
+
+
+def _apply_job_failures(counts: dict[tuple[str, str], int]) -> None:
+    # Same stale-series reasoning as `_apply_queue_depths` — see its comment.
+    # `job_failure_counts()` already zero-fills every (type, error_type) pair
+    # on success, so clearing first only matters on the fail-soft-to-`{}` path.
+    slm_job_failures.clear()
+    for (job_type, error_type), count in counts.items():
+        slm_job_failures.labels(type=job_type, error_type=error_type).set(count)
+
+
 def _apply_usage_totals(totals: dict[tuple[str, str, str], dict[str, float | int]]) -> None:
     # Same stale-series reasoning as `_apply_queue_depths` — see its comment.
     # All three OpenRouter usage gauges share the same (model, stage, outcome)
@@ -197,6 +220,8 @@ async def refresh() -> None:
     breaker_state = _result_or_default(results[3], _MISSING)
     usage_totals = _result_or_default(results[4], {})
     worker_queues = _result_or_default(results[5], {})
+    dependency_up = _result_or_default(results[6], {})
+    job_failures = _result_or_default(results[7], {})
 
     _apply_safe("queue_depths", _apply_queue_depths, queue_depths)
     _apply_safe("worker_up", _apply_worker_up, worker_queues)
@@ -204,6 +229,8 @@ async def refresh() -> None:
     _apply_safe("job_durations", _apply_job_durations, job_durations)
     _apply_safe("breaker_state", _apply_breaker_state, breaker_state)
     _apply_safe("usage_totals", _apply_usage_totals, usage_totals)
+    _apply_safe("dependency_up", _apply_dependency_up, dependency_up)
+    _apply_safe("job_failures", _apply_job_failures, job_failures)
 
 
 __all__ = ["REFRESH_TIMEOUT_SECONDS", "refresh"]

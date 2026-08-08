@@ -212,6 +212,22 @@ _PROBES = {
 }
 
 
+async def probe_dependencies() -> dict[str, bool]:
+    """Report, per entry in `_PROBES`, whether that dependency answered OK.
+
+    Looks `_PROBES` up on the module at call time (`readiness._PROBES`, via
+    the module-level name below) rather than binding it in a default arg or a
+    closure — tests monkeypatch `readiness._PROBES` to exercise fake
+    dependencies, and a captured-at-import reference would silently keep
+    probing the real ones. Public and side-effect-free on failure, same shape
+    as `probe_worker_queues`: a metrics adapter (`slm_dependency_up`) reuses
+    this directly rather than growing its own second gather over `_PROBES`,
+    so the gauge and `/ready` can never disagree.
+    """
+    results = await asyncio.gather(*(_guard(name, probe) for name, probe in _PROBES.items()))
+    return {name: status == OK for name, status in results}
+
+
 async def check() -> ReadinessReport:
     """Probe every dependency concurrently and report per-dependency status.
 
@@ -220,12 +236,17 @@ async def check() -> ReadinessReport:
     indistinguishable from a hung one. The worker queues are probed as one
     unit alongside `_PROBES` — a single `_guard_worker_queues()` call, not one
     per queue — so the whole check still issues exactly one Celery broadcast.
+
+    Consumes `probe_dependencies()` rather than gathering over `_PROBES`
+    itself, so `/ready`'s verdict and `probe_dependencies()` (and anything
+    built on it, like the `slm_dependency_up` gauge) share one code path and
+    can never drift apart.
     """
-    *probe_results, worker_results = await asyncio.gather(
-        *(_guard(name, probe) for name, probe in _PROBES.items()),
+    dep_results, worker_results = await asyncio.gather(
+        probe_dependencies(),
         _guard_worker_queues(),
     )
-    checks = dict(probe_results)
+    checks = {name: (OK if ok else UNAVAILABLE) for name, ok in dep_results.items()}
     checks.update(worker_results)
     return ReadinessReport(checks=checks)
 
@@ -236,5 +257,6 @@ __all__ = [
     "WORKER_QUEUES",
     "ReadinessReport",
     "check",
+    "probe_dependencies",
     "probe_worker_queues",
 ]

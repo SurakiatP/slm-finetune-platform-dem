@@ -291,6 +291,8 @@ _ALLOWED_LABELS = {
     "stage",
     "model",
     "outcome",
+    "dependency",
+    "error_type",
 }
 
 
