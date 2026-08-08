@@ -18,8 +18,9 @@ this side touching `smart-model-tune/`'s files directly.
 This document turns [`../04-frontend-integration-smart-model-tune.md`](../04-frontend-integration-smart-model-tune.md)'s
 prose (the "⚠️ Required Frontend Change" section) into applicable code, plus
 covers four things that doc does not: the four hand-rolled fetches
-individually, structured error handling (429/402/503), the WS close-code
-trap, and the `/download-url` wiring. Where this document and `04-…md`
+individually, structured error handling (429/402/403/503), the WS
+close-code trap, and the `/download-url` wiring. Where this document and
+`04-…md`
 disagree, see **"Where this disagrees with `docs/04-…md`"** at the bottom —
 short version: they don't, on substance; `04-…md` is coarser-grained on a
 couple of points and this fills in the gaps.
@@ -40,7 +41,7 @@ $ grep -c "^import" src/lib/engineApi.ts
 0
 ```
 
-`src/lib/engineApi.ts` is 350 lines of types, helpers, and fetch calls with
+`src/lib/engineApi.ts` is 349 lines of types, helpers, and fetch calls with
 **not one `import` statement** — it doesn't even import its own types from
 elsewhere, everything is declared inline in the file. This matters because
 every step below that touches `engineApi.ts` assumes the Supabase client
@@ -130,7 +131,7 @@ need the same header added individually.
 
 ### 2a. Upload-seed — `src/lib/engineApi.ts:200`
 
-**Before (`:194-210`):**
+**Before (`:200-210`):**
 
 ```ts
   const res = await fetch(`${ENGINE_HOST}/api/v1/datasets/upload-seed`, {
@@ -204,7 +205,7 @@ list under `AUTH_REQUIRED=false`; this is why testing this endpoint
 specifically is a good pre-flip smoke check (see the verification
 checklist at the bottom).
 
-### 2c. `/inference/chat/completions` — `src/lib/engineApi.ts:330`
+### 2c. `/inference/chat/completions` — `src/lib/engineApi.ts:328`
 
 **Before (`:327-338`):**
 
@@ -259,7 +260,7 @@ export async function engineHealthCheck(): Promise<boolean> {
 }
 ```
 
-`GET /health` (`api/main.py:282-290` in this repo) is unauthenticated **by
+`GET /health` (`api/main.py:282-291` in this repo) is unauthenticated **by
 design** — it has no `Depends(require_user)` or any auth dependency at all,
 deliberately, so a supervisor/uptime monitor can hit it without a credential
 and it never depends on Postgres/Redis/MinIO. Do not add an `Authorization`
@@ -387,15 +388,26 @@ happens transparently.
 ```
 
 `onclose` never inspects `event.code` at all today. If the backend rejects
-the connection for an auth reason, this reconnect loop burns all 8 attempts
-(delays `2s, 4s, 8s, 16s, 30s, 30s, 30s, 30s` ≈ 2.5 minutes total) before
-giving up silently — indistinguishable, from the user's side, from a
-network problem, because it *looks* like a network problem the whole time.
+the connection for an auth reason, this reconnect loop burns all 8 connection
+attempts before giving up silently. With `MAX_ATTEMPTS = 8` and the
+`attempts < MAX_ATTEMPTS` guard, only the first 7 closes schedule a retry
+(the 8th attempt's close finds `attempts === 8`, which fails the guard, so
+no further `setTimeout` is queued) — delays `2s, 4s, 8s, 16s, 30s, 30s, 30s`,
+7 of them, totalling 120s = **2 minutes**, not 8 delays / 2.5 minutes. This
+is still indistinguishable, from the user's side, from a network problem,
+because it *looks* like a network problem the whole time.
 
 **What the backend actually sends** (`api/routers/websocket.py:46-51,
 93-94` in this repo):
 
-- `4401` — no credential offered while `AUTH_REQUIRED=true`.
+- `4401` — no credential offered while `AUTH_REQUIRED=true`, **or** a
+  credential *was* offered but failed verification (bad signature, expired,
+  wrong audience/issuer, or a malformed subprotocol shape) — in **both**
+  rollout phases, not just phase 2. An expired Supabase token is the case a
+  frontend will actually hit in practice: the tab was left open past the
+  token's lifetime, `autoRefreshToken` didn't get a chance to rotate it
+  before the WS reconnect fired, and the offered credential is rejected the
+  same way an absent one would be under `AUTH_REQUIRED=true`.
 - `4403` — credential verified, but the `job_id` is unknown or belongs to
   a different owner.
 
@@ -410,19 +422,19 @@ JavaScript as those numbers — they're only visible server-side (in
 backend logs), not client-side. Do not write an `if (event.code === 4401)`
 branch; it is dead code that will never execute.
 
-**The practical fix instead**: stop retrying after N rapid closes with no
-successful frame ever received, not by inspecting a code that never
-arrives. A close that happens within, say, 500ms of the *previous* close
-(i.e., the connection never got past the handshake) is the observable
-signature of a rejection — a real network flap tends to at least complete
-a handshake sometimes across 8 attempts over 2.5 minutes. Track "hard-fail
-streak" and cut the loop short once it's clearly not intermittent:
+**The practical fix instead**: stop retrying after N consecutive closes that
+never saw a successful `onopen` in between, not by inspecting a code that
+never arrives. A rejected handshake never fires `onopen` before it fires
+`onclose`; a real network flap, across 8 attempts over ~2 minutes (see the
+corrected arithmetic above), tends to succeed at least once in between drops.
+So the signal isn't *how fast* a close follows the previous one — it's
+*how many closes in a row happened with no successful open between them*.
+Track that streak and cut the loop short once it's clearly not intermittent:
 
 ```ts
     let destroyed = false;
     let terminal = false;
     let attempts = 0;
-    let lastCloseAt = 0;
     let neverConnectedStreak = 0;
     const MAX_ATTEMPTS = 8;
     const HARD_FAIL_STREAK_LIMIT = 3; // give up early if the handshake itself
@@ -438,11 +450,11 @@ streak" and cut the loop short once it's clearly not intermittent:
       ws.onclose = () => {
         if (destroyed) return;
         setConnected(false);
-        const now = Date.now();
-        const wasFastFail = now - lastCloseAt < 500 || lastCloseAt === 0;
-        lastCloseAt = now;
-        // A handshake that never opened counts toward the streak regardless
-        // of elapsed time; `onopen` above resets it on any real success.
+        // A handshake that never opened counts toward the streak; `onopen`
+        // above resets it on any real success. Deliberately not gated on
+        // elapsed time since the previous close — a slow rejection is still
+        // a rejection, and a fast one is still worth one retry before giving
+        // up, which is what the streak counter (not a timer) gives us.
         neverConnectedStreak++;
         if (!terminal && attempts < MAX_ATTEMPTS && neverConnectedStreak < HARD_FAIL_STREAK_LIMIT) {
           const delay = Math.min(1000 * 2 ** attempts, 30000);
@@ -466,7 +478,7 @@ confusing), it is not broken.
 
 ---
 
-## 5. Structured errors for 429 / 402 / 503 — read `Retry-After`
+## 5. Structured errors for 429 / 402 / 403 / 503 — read `Retry-After`
 
 **Problem locations** — every non-2xx response collapses into one
 `throw new Error(...)`, discarding the status code and any headers:
@@ -484,10 +496,31 @@ matter for a "should I show a retry countdown" UI:
   sets `Retry-After` from `settings.quota_retry_after_seconds` (default 30s).
 - **503** (OpenRouter circuit breaker open) — `api/services/circuit_breaker.py:296-303`
   sets `Retry-After` from the breaker's computed backoff.
-- **402** (monthly budget exceeded) — `api/routers/usage.py` — no
+- **402** (monthly budget exceeded) — `api/services/usage_service.py:255`
+  (per-actor cap) and `:266` (global cap) in this repo, both via
+  `assert_within_budget` — neither raise sets `headers=`, so no
   `Retry-After` (retrying sooner doesn't help; the budget resets monthly,
-  not on a short timer), so `retryAfter` will be `null` for a 402 and
-  callers should not render a countdown for it.
+  not on a short timer), and `retryAfter` will be `null` for a 402. Callers
+  should not render a countdown for it. (`api/routers/usage.py` only
+  mentions 402 in a docstring — the summary endpoint it defines reports the
+  number that eventually triggers a 402 elsewhere, it doesn't raise one
+  itself; the raise sites are the two lines above, in the service layer.)
+- **403** (owner mismatch on an existing resource) — `api/services/ownership.py`'s
+  `_check_owner`, per [ADR-012](../adr/ADR-012-owner-mismatch-403-not-404.md).
+  No `Retry-After` either (retrying doesn't help; the resource isn't yours
+  and won't become yours). Distinct from `401` (no/invalid token — you
+  aren't authenticated at all) and from `404` (nothing there — a fabricated
+  id, a deleted row, or, per ADR-012, a legacy row whose `owner_id` is
+  `null`, which now 403s instead of 404ing). Two deliberate exclusions to
+  know before writing "if 403, always render an ownership message" logic:
+  `api/services/inference_service.py::_resolve_model_tag`'s `slm/<hash>`
+  inference-tag branch keeps a single `404` for both "no such tag" and
+  "not yours" — it is not distinguishable there, by design, because the
+  tag path shouldn't hand back a signal the caller couldn't otherwise
+  derive; and every list endpoint's `scope_*_to_owner` filtering (project
+  list, dataset list, etc.) silently omits a foreign row rather than
+  erroring on it at all — a shorter-than-expected list is not a 403 and
+  should not be treated as one.
 
 Add a small typed error and use it everywhere `Error` was thrown for a
 non-2xx:
@@ -546,6 +579,8 @@ try {
     // show "try again in {e.retryAfter}s"
   } else if (e instanceof EngineError && e.status === 402) {
     // show "monthly budget exceeded" — no retry countdown, retryAfter is null
+  } else if (e instanceof EngineError && e.status === 403) {
+    // show "you don't have access to this" — distinct from a 404, no retry countdown
   } else if (e instanceof EngineError && e.status === 503) {
     // show "generation service temporarily unavailable, retry in {e.retryAfter}s"
   }
@@ -667,7 +702,37 @@ export async function engineGetModelDownloadUrl(
 }
 ```
 
-`ModelDetail.tsx` changes:
+**`model.id` is the wrong id — read this before wiring the Button.**
+`model` here comes from `getModel(id)` (`ModelDetail.tsx:70,78`) →
+`src/lib/modelsApi.ts:54-58` → `supabase.from("trained_models")...` — so
+`model.id` is the **Supabase `trained_models` row id**, not the Engine
+`ModelArtifact` UUID the `/models/{id}/download-url` path expects. The
+Engine id is never written to Supabase (`src/lib/engineStore.ts`'s header
+comment: "Engine IDs are not persisted in Supabase to avoid schema
+migrations") — it lives only in `localStorage`, in the `modelArtifactId`
+field of `EngineProjectMeta` (`engineStore.ts:16`), keyed by the
+**Supabase project id**, which is reachable here as `model.projectId`
+(`modelsApi.ts:33`, populated from `trained_models.project_id`). Passing
+`model.id` straight through, as an earlier draft of this document did,
+sends the Supabase row id where the backend expects an Engine UUID — the
+backend will not find a `ModelArtifact` with that id and the request 404s
+every time, for every model, regardless of whether export succeeded.
+
+The correct lookup is `getEngineMeta(model.projectId)?.modelArtifactId`.
+**And it can legitimately be missing**: a model trained before this
+mapping was introduced, or trained in a different browser/profile (the
+mapping is `localStorage`-only, per-browser, never synced), has no
+`modelArtifactId` recorded. That is not an error state to crash on — show
+the user why the download isn't available instead of calling the endpoint
+with `undefined`.
+
+`ModelDetail.tsx` changes — three edits, not one:
+
+```ts
+// top of file — new import, alongside the existing `getModel` import
+import { getEngineMeta } from "@/lib/engineStore";
+import { useToast } from "@/hooks/use-toast";
+```
 
 ```ts
 // exportFormats (:13-17) — drop ONNX, drop fake sizes, key by the real format value
@@ -678,13 +743,36 @@ const exportFormats = [
 ```
 
 ```tsx
-{/* :220-222 — add onClick, drop the fake `fmt.size` display */}
+{/* :214 — render the human label, not the raw lowercase API value; without
+    this edit, applying the array change above literally renders "gguf" /
+    "safetensors" as the visible row title */}
+<p className="text-sm font-semibold text-foreground">{fmt.label}</p>
+```
+
+```tsx
+{/* :219 — delete this line outright, don't just re-point it: `fmt.size` no
+    longer exists on the array above, so left as-is it renders the literal
+    string "undefined" */}
+<span className="text-xs text-muted-foreground">{fmt.size}</span>
+```
+
+```tsx
+{/* :220-222 — add onClick, look up the Engine model id via engineStore
+    (not `model.id`, see above), handle a missing mapping explicitly */}
 <Button
   variant="outline"
   size="sm"
   className="gap-2"
   onClick={async () => {
-    const result = await engineGetModelDownloadUrl(model.id, fmt.format);
+    const engineModelId = getEngineMeta(model.projectId)?.modelArtifactId;
+    if (!engineModelId) {
+      toast({
+        title: t("modelDetail.downloadUnavailableTitle"),
+        description: t("modelDetail.downloadUnavailableDescription"),
+      });
+      return;
+    }
+    const result = await engineGetModelDownloadUrl(engineModelId, fmt.format);
     // gguf is always exactly one file; safetensors/lora can be several —
     // open each in a new tab/trigger a browser download per file.
     result.files.forEach((f) => window.open(f.url, "_blank"));
@@ -693,6 +781,13 @@ const exportFormats = [
   <Download className="h-3.5 w-3.5" /> {t("modelDetail.download")}
 </Button>
 ```
+
+(`useToast`'s `toast(...)` call pattern above matches existing usage
+elsewhere in this codebase, e.g. `src/pages/ProjectDetail.tsx:55`. The two
+new keys, `modelDetail.downloadUnavailableTitle` /
+`...Description`, are new user-facing copy — per §7's build-gate note,
+add them to **both** the `en:` and `th:` blocks in
+`src/i18n/translations.ts` or `npm run build` fails on the i18n check.)
 
 If a real file-size display is wanted, it now has to come from
 `result.files[0].size_bytes` fetched on demand (or on tab-open) — there is
@@ -813,6 +908,25 @@ everything succeeds anonymously either way under the current default.
    `files[0].size_bytes` from the minting response (visible in the
    Network tab on the `/models/{id}/download-url` request) — §6.
 
+6. **Owner-mismatch on an existing resource is `403`, distinguishable from
+   a genuinely-missing one (`404`):**
+
+   ```
+   # a resource id that belongs to a different account — expect 403
+   curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer <token>" https://<host>/api/v1/projects/<someone-elses-project-id>
+
+   # a UUID that names no row at all — expect 404
+   curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer <token>" https://<host>/api/v1/projects/00000000-0000-0000-0000-000000000000
+   ```
+
+   Confirms ADR-012 landed and §5's `403` branch is reachable. Two cases
+   that will **not** show `403` here and shouldn't be treated as broken:
+   the WS endpoint (`GET /ws/jobs/{job_id}`) still answers a single `4403`
+   for both "unknown" and "not yours" — ADR-012 explicitly excludes it,
+   and per §4 the browser sees `1006` for it either way — and any list
+   endpoint (`GET /api/v1/projects`, etc.) silently omits a foreign row
+   instead of erroring, so don't expect a `403` there either.
+
 ---
 
 ## Where this disagrees with `docs/04-…md`
@@ -828,21 +942,30 @@ Nowhere on substance. Differences are granularity, not correctness:
   *three*, not four, because it doesn't count `/health`; this document
   explicitly covers `/health` and explains why it's the one call that
   should **not** get the header).
-- **One line in `04-…md` needs a heads-up, not a fix, and it isn't this
-  document's place to change it:** its "Also note" list
-  (`04-…md:273-274`) says *"Another user's resource returns `404`, not
-  `403`, with a message identical to a genuine not-found."* That was
-  accurate when `04-…md` was written. A **concurrent, separate change in
-  this same backend cycle** (tracked as the 404→403 workstream, touching
-  `api/services/ownership.py`/`job_ownership.py` — outside this document's
-  file scope) flips non-owner responses from `404` to `403` while a
-  genuinely-missing resource stays `404`. If that lands, `04-…md:273-274`
-  becomes stale and should be updated by whoever owns that workstream
-  (not this document — this document's scope is `docs/patches/` only).
-  Flagging it here so it isn't lost: **do not build frontend logic that
-  assumes 404-means-either-case** once that change ships; `403` will then
-  mean "exists, not yours" and `404` will mean "doesn't exist", and those
-  are distinguishable again.
+- **`04-…md:273-274` is current, not stale — read it before assuming
+  otherwise.** It already says *"Another user's resource now returns
+  `403`, not `404`"*, citing [ADR-012](../adr/ADR-012-owner-mismatch-403-not-404.md).
+  An earlier draft of this paragraph in this document quoted the opposite
+  (`404`, not `403`) and called the flip "pending" — that was wrong by the
+  time this document itself landed: the 404→403 change (`api/services/ownership.py`'s
+  `_check_owner` now raising `_forbidden` instead of `_not_found`, plus the
+  matching split in `api/routers/jobs.py`) shipped in commit `c8c1084`,
+  which is an ancestor of this document's own commit (`3be78e9`) — the two
+  were never out of sync in anything a reader could have seen. Current
+  state, plainly: `403` means "exists, not yours"; `404` means "doesn't
+  exist"; a legacy row with `owner_id IS NULL` now answers `403` (it
+  exists, it just belongs to nobody) instead of the pre-ADR-012 `404`.
+  **The gap this document actually had**: before this revision, `403` was
+  mentioned exactly once in the whole 849-line document — in this closing
+  section, as a heads-up about `04-…md`, never as something a frontend
+  `catch` block should branch on. A reader who skipped straight to §5
+  (structured error handling) or the verification checklist would never
+  have learned `403` existed as a status this API returns. §5 now carries
+  a `403` taxonomy entry (with ADR-012's two declared exclusions — the
+  `slm/<hash>` inference-tag branch and `scope_*_to_owner` list filtering,
+  both of which deliberately keep answering `404`/filtering silently
+  rather than `403`ing), and verification checklist item 6 exercises it
+  end-to-end against a real deployment.
 - Everything else in `04-…md` (the endpoint-mapping table, the Priority
   Fix list, the "Correct End-to-End Sequence") is out of this document's
   scope (auth + error handling + download-url only) and this document

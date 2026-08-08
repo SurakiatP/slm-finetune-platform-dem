@@ -99,8 +99,13 @@ async def submit_manual_training_job(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"Dataset {dataset.id} belongs to a different project "
-                f"({dataset.project_id}); cannot use it for training in {project.id}"
+                # Deliberately does NOT name dataset.project_id. The caller
+                # already knows the two ids they sent; the project the dataset
+                # actually belongs to may be someone else's, and echoing it
+                # would hand over a project UUID they had no way to derive —
+                # the same disclosure ADR-012's exclusions exist to avoid.
+                f"Dataset {dataset.id} belongs to a different project; "
+                f"cannot use it for training in {project.id}"
             ),
         )
     if dataset.task_type != project.task_type:

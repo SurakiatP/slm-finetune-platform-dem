@@ -322,3 +322,128 @@ class TestOwnerStamping:
     def test_owner_id_for_anonymous_is_none(self) -> None:
         """Phase-1 creates leave `owner_id` null rather than inventing one."""
         assert ownership.owner_id_for(None) is None
+
+
+# =============================================================================
+# 5. `POST /evaluations/compare` — the list-shaped endpoint
+#
+# It names concrete ids, so ADR-012's rule applies: exists-but-not-yours is
+# 403, exists-nowhere is 404. It was missed by the original 403 split because
+# it does not call `assert_evaluation_access` — it scopes a list query, and a
+# foreign run therefore fell into the same "not found" branch as a made-up
+# UUID. Correct under ADR-009, wrong under ADR-012, and not on ADR-012's
+# exclusion list.
+#
+# The pair below is the point. Asserting only the 403 case would pass against
+# an implementation that returned 403 for *everything*, which would delete the
+# 404 branch without a single test noticing.
+# =============================================================================
+
+
+class TestCompareEvaluationsOwnership:
+    async def test_another_users_evaluation_is_403(
+        self, db: AsyncSession, alice_world, bob_world
+    ) -> None:
+        from api.schemas.evaluations import EvaluationCompareRequest
+        from api.services import evaluation_service
+
+        with pytest.raises(HTTPException) as exc:
+            await evaluation_service.compare_evaluations(
+                db,
+                EvaluationCompareRequest(
+                    evaluation_ids=[alice_world["evaluation"].id, bob_world["evaluation"].id]
+                ),
+                ALICE,
+            )
+        assert exc.value.status_code == 403
+        assert str(bob_world["evaluation"].id) in str(exc.value.detail)
+        assert str(alice_world["evaluation"].id) not in str(exc.value.detail)
+
+    async def test_a_nonexistent_evaluation_is_still_404(
+        self, db: AsyncSession, alice_world
+    ) -> None:
+        """The neighbouring case. Without it, an implementation that answers
+        403 unconditionally passes the test above and silently removes 404
+        from this endpoint entirely."""
+        from api.schemas.evaluations import EvaluationCompareRequest
+        from api.services import evaluation_service
+
+        ghost = uuid4()
+        with pytest.raises(HTTPException) as exc:
+            await evaluation_service.compare_evaluations(
+                db,
+                EvaluationCompareRequest(
+                    evaluation_ids=[alice_world["evaluation"].id, ghost]
+                ),
+                ALICE,
+            )
+        assert exc.value.status_code == 404
+        assert str(ghost) in str(exc.value.detail)
+
+    async def test_403_wins_when_both_kinds_are_present(
+        self, db: AsyncSession, alice_world, bob_world
+    ) -> None:
+        """A request mixing a foreign id and a made-up one must not let the
+        404 branch mask the 403 — otherwise padding the list with one junk
+        UUID downgrades the response and hides that the other id is real."""
+        from api.schemas.evaluations import EvaluationCompareRequest
+        from api.services import evaluation_service
+
+        with pytest.raises(HTTPException) as exc:
+            await evaluation_service.compare_evaluations(
+                db,
+                EvaluationCompareRequest(
+                    evaluation_ids=[bob_world["evaluation"].id, uuid4()]
+                ),
+                ALICE,
+            )
+        assert exc.value.status_code == 403
+
+    async def test_the_owner_still_gets_their_comparison(
+        self, db: AsyncSession, alice_world
+    ) -> None:
+        """The happy path must survive the extra existence probe.
+
+        `EvaluationCompareRequest` requires at least two ids, so this needs a
+        second run of Alice's — which is also the more honest test: the
+        endpoint exists to compare, and a one-id call could never exercise
+        the `unreachable` branch it now guards.
+        """
+        from api.schemas.evaluations import EvaluationCompareRequest
+        from api.services import evaluation_service
+
+        second = EvaluationRun(
+            id=uuid4(),
+            model_artifact_id=alice_world["artifact"].id,
+            dataset_id=alice_world["dataset"].id,
+            status=JobStatus.COMPLETED,
+            celery_task_id="eval-alice-2",
+        )
+        db.add(second)
+        await db.commit()
+
+        resp = await evaluation_service.compare_evaluations(
+            db,
+            EvaluationCompareRequest(
+                evaluation_ids=[alice_world["evaluation"].id, second.id]
+            ),
+            ALICE,
+        )
+        assert resp is not None
+
+    async def test_anonymous_caller_is_unaffected(
+        self, db: AsyncSession, alice_world, bob_world
+    ) -> None:
+        """`user is None` is a documented no-op everywhere in ownership.py;
+        phase-1 behaviour must not change."""
+        from api.schemas.evaluations import EvaluationCompareRequest
+        from api.services import evaluation_service
+
+        resp = await evaluation_service.compare_evaluations(
+            db,
+            EvaluationCompareRequest(
+                evaluation_ids=[alice_world["evaluation"].id, bob_world["evaluation"].id]
+            ),
+            None,
+        )
+        assert resp is not None

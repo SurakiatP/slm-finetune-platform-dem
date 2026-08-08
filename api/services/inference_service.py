@@ -295,7 +295,12 @@ async def _resolve_model_tag(
         # tag the caller supplied. `assert_model_access`'s own 404 names the
         # artifact's UUID, which would both distinguish the two cases and hand
         # the caller an id they had no way to know — so its error is swallowed
-        # and re-raised in this shape. Anti-oracle rule, ADR-009.
+        # and re-raised in this shape. Anti-oracle rule, and a **declared
+        # exclusion from ADR-012** (see its exclusion list): everywhere else
+        # an owner mismatch is now 403, but this branch deliberately keeps
+        # both outcomes as one 404. Cited to ADR-012, not ADR-009 — ADR-009's
+        # status-code decision is superseded, and a reader who followed that
+        # citation would land on a retired rule and conclude this is a miss.
         not_found = HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model {identifier} not found",

@@ -205,11 +205,23 @@ async def compare_evaluations(
     Missing metrics on any given run are emitted as `None` rather than dropped
     so the frontend can render a complete grid.
 
-    Ownership: the id list is scoped to `user`'s own evaluations the same
-    way `list_evaluations` is (`scope_evaluations_to_owner`), so a run
-    belonging to another user simply doesn't come back from the query and
-    falls into the existing "not found" branch below — no separate 403
-    path needed, and no way to distinguish "not yours" from "doesn't exist".
+    Ownership: this endpoint names concrete ids, so ADR-012's rule applies —
+    an id that exists but belongs to someone else is **403**, and only an id
+    that exists nowhere is 404. That needs two queries, not one: the scoped
+    query answers "may this caller have it", and an unscoped existence probe
+    over just the leftovers separates "not yours" from "not real".
+
+    The earlier single-query form scoped the id list and let a foreign run
+    fall into the 404 branch. That was correct under ADR-009's
+    404-for-everything rule and is wrong under ADR-012, which says 403 in
+    every case where the row exists — and this endpoint was not on ADR-012's
+    (short, deliberate) exclusion list. The extra probe runs only when
+    something is missing, so the happy path still costs one query.
+
+    Note the accepted cost, since this endpoint takes a *list*: a caller can
+    submit many ids at once and learn, per id, which exist. ADR-012 already
+    accepted that oracle for single-id routes; batching makes it cheaper to
+    exercise, not different in kind.
     """
     stmt = ownership.scope_evaluations_to_owner(
         select(EvaluationRun).where(EvaluationRun.id.in_(list(request.evaluation_ids))),
@@ -218,11 +230,26 @@ async def compare_evaluations(
     rows = (await db.execute(stmt)).scalars().all()
     by_id: dict[UUID, EvaluationRun] = {r.id: r for r in rows}
 
-    missing = [str(eid) for eid in request.evaluation_ids if eid not in by_id]
-    if missing:
+    unreachable = [eid for eid in request.evaluation_ids if eid not in by_id]
+    if unreachable:
+        existing = set(
+            (
+                await db.execute(
+                    select(EvaluationRun.id).where(EvaluationRun.id.in_(unreachable))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        forbidden = [str(eid) for eid in unreachable if eid in existing]
+        if forbidden:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Evaluations not accessible: {forbidden}",
+            )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Evaluations not found: {missing}",
+            detail=f"Evaluations not found: {[str(eid) for eid in unreachable]}",
         )
 
     # Collect the union of metric names across all runs.

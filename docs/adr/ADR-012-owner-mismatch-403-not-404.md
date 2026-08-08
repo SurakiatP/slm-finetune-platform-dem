@@ -91,6 +91,25 @@ Concretely:
   there would be a category error, not a stricter check, regardless of
   which code the single-resource endpoints use. This asymmetry with
   `assert_*_access` is intentional (see `ownership.py`'s module docstring).
+- `api/services/inference_service.py::_resolve_model_tag`'s **literal
+  `slm/<hash>` branch** is **explicitly out of scope** and keeps a single
+  404 for both "no such tag" and "not yours". It is the one place that
+  swallows an ownership exception and reshapes it: `assert_model_access`
+  names the artifact's UUID, which would both distinguish the two cases
+  *and* hand the caller an id they had no way to derive from the tag. The
+  UUID branch of the same function does propagate the new 403 — so this
+  endpoint answers 403 when addressed by id and 404 when addressed by tag,
+  deliberately. Anyone "making it consistent" without reading this is
+  removing an anti-oracle on the one path where the id is a secret.
+- `api/services/evaluation_service.py::compare_evaluations` **is not an
+  exclusion** — it was simply missed by the first pass, because it scopes a
+  list query rather than calling `assert_evaluation_access`, so a foreign
+  run fell into the same "not found" branch as a fabricated UUID. It now
+  runs an unscoped existence probe over the unreachable ids and answers 403
+  when any of them is real. Recorded here because the endpoint takes a
+  **list**, which makes the accepted oracle cheaper to exercise — a caller
+  can learn the existence of many ids per request. Same kind, lower cost;
+  called out so the batching is a known property rather than a surprise.
 
 ### Why this is a narrow supersede, not a rewrite of ADR-009
 
