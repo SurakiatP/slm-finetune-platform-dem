@@ -131,6 +131,15 @@ def _inject_request_context(headers: dict | None = None, **_kwargs: object) -> N
     user_id = request_context.current_user_id()
     if user_id:
         headers["x_user_id"] = user_id
+    # The enqueueing request resolved a project (every ownership-sensitive
+    # endpoint funnels through `api/services/ownership.py`'s asserts, which
+    # bind it), so the task inherits it for free — no task body knows this
+    # happened. Without it, a long-running job's logs carry request/user/job
+    # but never answer "which project is this for", which is the actual
+    # question when triaging one tenant's stuck run.
+    project_id = request_context.current_project_id()
+    if project_id:
+        headers["x_project_id"] = project_id
 
 
 @task_prerun.connect
@@ -147,6 +156,7 @@ def _bind_request_context(task_id: str | None = None, task: object = None, **_kw
     ctx = getattr(task, "request", None)
     request_context.set_request_id(getattr(ctx, "x_request_id", None))
     request_context.set_user_id(getattr(ctx, "x_user_id", None))
+    request_context.set_project_id(getattr(ctx, "x_project_id", None))
     request_context.set_job_id(task_id)
     logging.getLogger("workers.task").info(
         "task start: %s", getattr(task, "name", "?"), extra={"celery_task": getattr(task, "name", None)}

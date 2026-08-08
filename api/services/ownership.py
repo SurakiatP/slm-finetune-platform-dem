@@ -69,6 +69,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import request_context
 from api.core.auth import CurrentUser
 from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
@@ -155,6 +156,34 @@ async def _project_owner_id(db: AsyncSession, project_id: UUID) -> str | None:
 # ---- load-by-id + ownership check ------------------------------------------
 
 
+def _bind_log_project(project_id: UUID | None) -> None:
+    """Stamp `project_id` onto the logging context for the rest of this request.
+
+    Why here: these five `assert_*_access` functions are the one place every
+    ownership-sensitive endpoint passes through, and each already knows (or
+    is one indexed hop from) the project. `BACKEND_GAP_ANALYSIS.md`'s P1
+    monitoring bullet asks for structured logs carrying "request ID, job ID,
+    project ID and tenant ID"; request/user/job were wired in the auth round
+    but `project_id` never was — `request_context.set_project_id` existed,
+    was listed in `_SETTERS`, was accepted by `bound()`, and had a passing
+    test that called it directly, while **no production code path ever
+    invoked it**. Same shape as round 2's dead `record_success()`: the
+    plumbing was complete and the button was never pressed.
+
+    Deliberately called BEFORE (and outside) each function's `if user is not
+    None` ownership branch. With `AUTH_REQUIRED=false` — the platform's
+    state today — that branch does not run at all, so binding inside it
+    would have produced logs that carry a project only once auth is flipped,
+    which is precisely the class of bug this exists to fix.
+
+    Also propagates to Celery: `workers/celery_app.py` stamps the bound
+    context onto the message headers at publish time, so a task enqueued by
+    a request that resolved a project inherits it without any task body
+    change.
+    """
+    request_context.set_project_id(str(project_id) if project_id else None)
+
+
 async def assert_project_access(
     db: AsyncSession, project_id: UUID, user: CurrentUser | None
 ) -> Project:
@@ -164,6 +193,7 @@ async def assert_project_access(
     project = await db.get(Project, project_id)
     if project is None:
         raise _not_found("Project", project_id)
+    _bind_log_project(project_id)
     _check_owner(project.owner_id, user, label="Project", resource_id=project_id)
     return project
 
@@ -178,6 +208,7 @@ async def assert_dataset_access(
     dataset = await db.get(Dataset, dataset_id)
     if dataset is None:
         raise _not_found("Dataset", dataset_id)
+    _bind_log_project(dataset.project_id)
     if user is not None:
         owner_id = await _project_owner_id(db, dataset.project_id)
         _check_owner(owner_id, user, label="Dataset", resource_id=dataset_id)
@@ -194,6 +225,7 @@ async def assert_training_access(
     training = await db.get(TrainingJob, training_id)
     if training is None:
         raise _not_found("Training", training_id)
+    _bind_log_project(training.project_id)
     if user is not None:
         owner_id = await _project_owner_id(db, training.project_id)
         _check_owner(owner_id, user, label="Training", resource_id=training_id)
@@ -210,15 +242,24 @@ async def assert_model_access(
     artifact = await db.get(ModelArtifact, model_id)
     if artifact is None:
         raise _not_found("Model", model_id)
+    # One row, two consumers: the owner for the 403 check and the project id
+    # for the logging context. Runs unconditionally rather than inside the
+    # `user is not None` branch the check used to own — see
+    # `_bind_log_project` for why binding must not depend on auth being on.
+    # Costs one extra indexed SELECT per call while `AUTH_REQUIRED=false`;
+    # once it flips this is the same single query as before.
+    row = (
+        await db.execute(
+            select(Project.id, Project.owner_id)
+            .join(TrainingJob, TrainingJob.project_id == Project.id)
+            .where(TrainingJob.id == artifact.training_job_id)
+        )
+    ).one_or_none()
+    _bind_log_project(row[0] if row else None)
     if user is not None:
-        owner_id = (
-            await db.execute(
-                select(Project.owner_id)
-                .join(TrainingJob, TrainingJob.project_id == Project.id)
-                .where(TrainingJob.id == artifact.training_job_id)
-            )
-        ).scalar_one_or_none()
-        _check_owner(owner_id, user, label="Model", resource_id=model_id)
+        _check_owner(
+            row[1] if row else None, user, label="Model", resource_id=model_id
+        )
     return artifact
 
 
@@ -232,16 +273,23 @@ async def assert_evaluation_access(
     evaluation = await db.get(EvaluationRun, evaluation_id)
     if evaluation is None:
         raise _not_found("Evaluation", evaluation_id)
+    # Same shape as `assert_model_access` above — see its comment.
+    row = (
+        await db.execute(
+            select(Project.id, Project.owner_id)
+            .join(TrainingJob, TrainingJob.project_id == Project.id)
+            .join(ModelArtifact, ModelArtifact.training_job_id == TrainingJob.id)
+            .where(ModelArtifact.id == evaluation.model_artifact_id)
+        )
+    ).one_or_none()
+    _bind_log_project(row[0] if row else None)
     if user is not None:
-        owner_id = (
-            await db.execute(
-                select(Project.owner_id)
-                .join(TrainingJob, TrainingJob.project_id == Project.id)
-                .join(ModelArtifact, ModelArtifact.training_job_id == TrainingJob.id)
-                .where(ModelArtifact.id == evaluation.model_artifact_id)
-            )
-        ).scalar_one_or_none()
-        _check_owner(owner_id, user, label="Evaluation", resource_id=evaluation_id)
+        _check_owner(
+            row[1] if row else None,
+            user,
+            label="Evaluation",
+            resource_id=evaluation_id,
+        )
     return evaluation
 
 

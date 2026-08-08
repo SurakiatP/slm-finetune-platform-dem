@@ -56,13 +56,31 @@ def _db(row: object | None) -> MagicMock:
     not a shape production can produce. Returning None for other models keeps
     the fake honest; the audit row's `project_id` is nullable, so these
     cancel tests simply record it as unresolved.
+
+    `execute()` returns an empty result rather than being left unstubbed.
+    It used to be unreachable here: `assert_model_access` /
+    `assert_evaluation_access` only ran their project-resolving join inside
+    `if user is not None`, and these tests pass `user=None`. Since
+    2026-08-08 that join is unconditional, because the logging context needs
+    the project id whether or not auth is on (see
+    `ownership._bind_log_project`) — so the fake has to answer it. An empty
+    result is the honest answer for a fake with no Project rows: the
+    resolver binds `None` and, with `user=None`, skips the owner check
+    exactly as before.
     """
     db = MagicMock()
 
     async def _get(model, ident, *a, **kw):  # noqa: ANN001, ANN002, ANN003
         return row if row is not None and isinstance(row, model) else None
 
+    async def _execute(*_a, **_kw):
+        result = MagicMock()
+        result.one_or_none.return_value = None
+        result.scalar_one_or_none.return_value = None
+        return result
+
     db.get = AsyncMock(side_effect=_get)
+    db.execute = AsyncMock(side_effect=_execute)
     db.commit = AsyncMock()
     db.add = MagicMock()
     return db
