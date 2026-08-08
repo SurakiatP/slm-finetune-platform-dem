@@ -6,16 +6,23 @@ The actual business logic lives behind 501 stubs until later phases.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+import time
+import uuid
+from contextlib import asynccontextmanager, suppress
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.core import request_context
+from api.core.auth import require_user
 from api.core.config import get_settings
 from api.core.database import engine
 from api.core.exceptions import install_handlers
+from api.core.logging_config import configure_logging
+from api.services import job_reconcile, readiness
 from api.routers import (
     datasets,
     evaluations,
@@ -25,26 +32,59 @@ from api.routers import (
     projects,
     tasks_meta,
     trainings,
+    usage,
     websocket,
 )
 
 settings = get_settings()
 
-logging.basicConfig(
-    level=settings.log_level.upper(),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+configure_logging(settings.log_level)
 log = logging.getLogger("api")
 
 
 # ---- Lifespan -------------------------------------------------------------
 
 
+_RECONCILE_INTERVAL_SECONDS = 300
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    log.info("api starting (db=%s, redis=%s)", _redact(settings.database_url), settings.redis_url)
+    log.info(
+        "api starting (env=%s, db=%s, redis=%s)",
+        settings.environment,
+        _redact(settings.database_url),
+        settings.redis_url,
+    )
+
+    # Emitted here rather than from the validator itself: settings are built at
+    # import time, before `configure_logging()` runs, so warning from inside
+    # `Settings` would bypass the JSON formatter or be dropped outright.
+    for warning in settings.startup_warnings():
+        log.warning("config: %s", warning)
+
+    # Recover jobs whose worker died. `run_forever` sweeps once immediately
+    # and then on an interval; it is started as a task rather than awaited
+    # here because its first act is a Celery `inspect()` broadcast, which
+    # blocks for its full timeout when the broker is unreachable. Awaiting
+    # that would delay readiness on every boot and make the API's startup
+    # depend on the broker's health — exactly the coupling this feature
+    # exists to survive.
+    #
+    # It lives in the API process rather than a Celery beat container for the
+    # same reason: what it detects is "no worker is running this", so the
+    # detector must not need a healthy worker fleet to run at all.
+    app.state.reconcile_task = asyncio.create_task(
+        job_reconcile.run_forever(interval_seconds=_RECONCILE_INTERVAL_SECONDS),
+        name="job-reconcile-loop",
+    )
+
     yield
-    log.info("api shutting down — disposing DB engine")
+
+    log.info("api shutting down — stopping reconcile loop and disposing DB engine")
+    app.state.reconcile_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await app.state.reconcile_task
     await engine.dispose()
 
 
@@ -70,6 +110,7 @@ _OPENAPI_TAGS = [
     {"name": "models", "description": "Trained model artifacts; export to GGUF / SafeTensors."},
     {"name": "inference", "description": "OpenAI-compatible inference (proxied to Ollama)."},
     {"name": "evaluations", "description": "Per-task metrics and LLM-as-judge scoring."},
+    {"name": "usage", "description": "OpenRouter usage/cost events and monthly rollups."},
     {"name": "jobs", "description": "Job progress snapshots (last WS frame per job, via Redis)."},
     {"name": "metadata", "description": "Static catalogs powering frontend dynamic forms."},
     {"name": "system", "description": "Health, readiness, and infrastructure probes."},
@@ -100,6 +141,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Registered after CORSMiddleware so it ends up outermost in the middleware
+# stack (Starlette wraps middleware in reverse registration order) — the
+# request id is minted/bound before CORS or anything downstream runs, and
+# the X-Request-ID response header survives every layer beneath it.
+@app.middleware("http")
+async def _request_context_middleware(request: Request, call_next):
+    # Truncated to the width of `audit_events.request_id` (String(64)).
+    # Without this cap an inbound header is stored verbatim, and since the
+    # audit INSERT deliberately rides the caller's transaction with no
+    # try/except, one oversized header would make Postgres raise
+    # StringDataRightTruncation and take the *mutation* down with it — a
+    # single request header turning off project create, job submit and every
+    # cancel. sqlite does not enforce VARCHAR width, so no test would have
+    # caught it.
+    request_id = (request.headers.get("X-Request-ID") or "").strip()[:64] or uuid.uuid4().hex[:12]
+    request.state.request_id = request_id
+    start = time.perf_counter()
+    status_code = 500
+    with request_context.bound(request_id=request_id):
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            duration_ms = round((time.perf_counter() - start) * 1000, 2)
+            log.info(
+                "%s %s %s",
+                request.method,
+                request.url.path,
+                status_code,
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": status_code,
+                    "duration_ms": duration_ms,
+                },
+            )
+
+
 # Uniform ErrorResponse for HTTPException, validation errors, and unhandled exceptions.
 install_handlers(app)
 
@@ -108,12 +189,39 @@ install_handlers(app)
 
 API_V1 = "/api/v1"
 
-app.include_router(projects.router, prefix=f"{API_V1}/projects", tags=["projects"])
-app.include_router(datasets.router, prefix=f"{API_V1}/datasets", tags=["datasets"])
-app.include_router(trainings.router, prefix=f"{API_V1}/trainings", tags=["trainings"])
-app.include_router(models.router, prefix=f"{API_V1}/models", tags=["models"])
-app.include_router(inference.router, prefix=f"{API_V1}/inference", tags=["inference"])
-app.include_router(evaluations.router, prefix=f"{API_V1}/evaluations", tags=["evaluations"])
+_AUTH = [Depends(require_user)]
+
+# Router-level (not per-route) so a new route added to any of these seven
+# resources is protected by default — nobody has to remember to add the
+# dependency on the next endpoint. tasks_meta (3 static-catalog routers),
+# `/`, `/health`, `/docs`, `/redoc`, `/openapi.json` stay public: no DB,
+# nothing user-scoped. `jobs`/`websocket` job-stream authorization is a
+# separate, job_id-keyed concern (celery_task_id -> owner resolution) owned
+# elsewhere, not this router-level `Depends`.
+app.include_router(
+    projects.router, prefix=f"{API_V1}/projects", tags=["projects"], dependencies=_AUTH
+)
+app.include_router(
+    datasets.router, prefix=f"{API_V1}/datasets", tags=["datasets"], dependencies=_AUTH
+)
+app.include_router(
+    trainings.router, prefix=f"{API_V1}/trainings", tags=["trainings"], dependencies=_AUTH
+)
+app.include_router(
+    models.router, prefix=f"{API_V1}/models", tags=["models"], dependencies=_AUTH
+)
+app.include_router(
+    inference.router, prefix=f"{API_V1}/inference", tags=["inference"], dependencies=_AUTH
+)
+app.include_router(
+    evaluations.router,
+    prefix=f"{API_V1}/evaluations",
+    tags=["evaluations"],
+    dependencies=_AUTH,
+)
+app.include_router(
+    usage.router, prefix=f"{API_V1}/usage", tags=["usage"], dependencies=_AUTH
+)
 app.include_router(tasks_meta.tasks_router, prefix=f"{API_V1}/tasks", tags=["metadata"])
 app.include_router(tasks_meta.base_models_router, prefix=f"{API_V1}/base-models", tags=["metadata"])
 app.include_router(tasks_meta.sdg_pipeline_router, prefix=f"{API_V1}/sdg-pipeline", tags=["metadata"])
@@ -136,4 +244,27 @@ async def root() -> dict[str, str]:
 
 @app.get("/health", tags=["system"], summary="Liveness probe")
 async def health() -> dict[str, str]:
+    """Is this process alive? Deliberately touches nothing else.
+
+    A supervisor restarts the container when this fails, so it must never
+    depend on Postgres, Redis, MinIO or the worker — otherwise one dependency
+    blip restarts an API that was serving fine. `/ready` is the endpoint that
+    asks about dependencies.
+    """
     return {"status": "ok"}
+
+
+@app.get("/ready", tags=["system"], summary="Readiness probe")
+async def ready(response: Response) -> dict[str, object]:
+    """Can this instance serve? Probes Postgres, Redis, MinIO and the worker.
+
+    `503` only when Postgres or Redis is down — those are the two the API
+    cannot answer a single request without. MinIO or a missing worker report
+    `degraded` on a `200`, because the API still serves reads and still
+    accepts submits; see `api/services/readiness.py` for why failing on those
+    would be the bigger outage.
+    """
+    report = await readiness.check()
+    if not report.ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return report.as_dict()

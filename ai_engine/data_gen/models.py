@@ -15,15 +15,20 @@ FORMAT_DETECTION = "google/gemini-2.5-flash-lite"
 # OpenRouter's OpenAI-compatible multimodal API.
 PDF_QA = "google/gemini-2.5-flash-lite"
 
+# All three SDG roles run the same SKU, pinned to the dated `-0731` snapshot
+# rather than the rolling `deepseek/deepseek-v4-flash` alias: SDG output feeds
+# straight into a fine-tune, so a silent upstream model swap would change what
+# the trained model learns with nothing in the run's metadata to explain it.
+
 # Diversity-rule generator (meta-prompting). One call per SDG job.
-DIVERSITY_RULES = "deepseek/deepseek-v4-flash"
+DIVERSITY_RULES = "deepseek/deepseek-v4-flash-0731"
 
 # Synthetic data Generator. Up to ~100 concurrent calls per loop iteration.
-GENERATOR = "deepseek/deepseek-v4-flash"
+GENERATOR = "deepseek/deepseek-v4-flash-0731"
 
 # LLM-as-Judge. Up to ~500 concurrent calls per loop iteration
 # (5 candidates per generator call × 100 calls).
-JUDGE = "deepseek/deepseek-v4-flash"
+JUDGE = "deepseek/deepseek-v4-flash-0731"
 
 
 __all__ = [

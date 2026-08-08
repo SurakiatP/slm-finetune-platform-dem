@@ -32,6 +32,236 @@ frames), and
 
 ---
 
+## Duplicate submissions
+
+The three job-submit endpoints — `POST /datasets/generate`, `POST /trainings`,
+`POST /evaluations` — dedupe repeats inside a **60-second window**, so a
+double-clicked Launch button enqueues one Celery task and buys one OpenRouter
+bill instead of two.
+
+The window is keyed by the caller plus a SHA-256 of the canonical request body
+(keys sorted, so re-serialising a body does not change it). A repeat inside the
+window returns the **original `202` response verbatim**, with:
+
+```
+X-Idempotent-Replay: true
+```
+
+Nothing is enqueued for a replay. A body that differs in any field is a
+different job and proceeds normally.
+
+Two things worth knowing:
+
+- **It works without a token.** The caller is `user.id` when authenticated, and
+  `anon:<X-Forwarded-For first hop>` otherwise. Phase-1 clients that send no
+  `Authorization` header are covered.
+- **Send `Idempotency-Key` if you want to control it.** When present, that
+  header replaces the body hash — useful if you deliberately want to submit the
+  same body twice, or to make a retry after a network timeout safe.
+
+`POST /models/{id}/export` is **not** in this window; it uses a stricter
+resource-state guard instead (see its `409` below).
+
+Dedupe is best-effort: if Redis is unavailable the request proceeds normally
+rather than failing, since losing dedupe is strictly better than losing a
+submission.
+
+---
+
+## Submit gates: concurrency quotas, budget, and the circuit breaker
+
+Five job-submit call sites — `POST /datasets/generate`, `POST /trainings`
+(both `manual` and `hpo` modes), `POST /models/{id}/export`, and
+`POST /evaluations` — sit behind a small stack of pre-write gates. Every
+gate runs **before** anything is written to the DB, so a rejection never
+leaves a stray `pending` row behind that would itself count toward the next
+caller's quota check. Source: `api/services/quota.py`,
+`api/services/circuit_breaker.py`, `api/services/usage_service.py`
+(`assert_within_budget`). See also
+[ADR-010](./adr/ADR-010-cpu-gpu-queue-split-and-quotas.md) for why each of
+these is shaped the way it is.
+
+### 429 — concurrency quota exceeded
+
+All five submit call sites are gated by an in-flight job count read live
+from the DB — `Dataset.status`, `TrainingJob.status`, `EvaluationRun.status`,
+and `ModelArtifact.export_status` rows currently `pending` or `running`.
+Two buckets: `Bucket.SDG` (just `Dataset`) and `Bucket.GPU` (`TrainingJob` +
+`EvaluationRun` + `ModelArtifact.export_status` summed together, since
+training/eval/export all pin the same single GPU one job at a time). Each
+bucket has a global cap, checked for every caller, and a per-actor cap,
+checked only for an authenticated caller (there is no `Project.owner_id` to
+join on for an anonymous request, so anonymous callers trip only the global
+cap):
+
+| Setting | Default |
+|---|---|
+| `QUOTA_MAX_SDG_JOBS_GLOBAL` | 8 |
+| `QUOTA_MAX_SDG_JOBS_PER_ACTOR` | 2 |
+| `QUOTA_MAX_GPU_JOBS_GLOBAL` | 4 |
+| `QUOTA_MAX_GPU_JOBS_PER_ACTOR` | 1 |
+
+```json
+// 429 response
+{ "detail": "Your gpu job quota reached (1/1 in flight). Try again shortly." }
+```
+
+Header: `Retry-After: 30` (`QUOTA_RETRY_AFTER_SECONDS`, default 30 seconds).
+**Why 429 and not 503**: 503 is the code most HTTP client libraries and
+reverse proxies treat as safe to auto-retry — exactly the wrong incentive
+when the rejection reason is an already-saturated queue.
+
+### 402 — monthly budget exceeded
+
+`POST /datasets/generate` **only** — the other four submit endpoints don't
+call OpenRouter, so there is nothing to bill against this cap. Checked once
+at submit (`usage_service.assert_within_budget`) *and* continuously through
+the run itself, inside the worker, after every OpenRouter response
+(`UsageAccumulator.check_budget()`) — a submit-time-only check would let a
+run that starts at $0 burn arbitrarily over a multi-hour SDG loop. Two
+independent caps, both `None` (unlimited) by default and both measured
+against the current **UTC calendar month**: `BUDGET_MONTHLY_USD_PER_ACTOR`
+and `BUDGET_MONTHLY_USD_GLOBAL`.
+
+```json
+// 402 response
+{ "detail": "Monthly budget exceeded for this account: spent $50.00 of $50.00 limit" }
+```
+
+No `Retry-After` — a budget cap doesn't reset on a timer a client can
+usefully wait out. **Both caps default to unlimited (`None`)**, so this
+response is not possible in a stock deployment; see
+[ADR-010](./adr/ADR-010-cpu-gpu-queue-split-and-quotas.md) for why the caps
+should stay unset until per-model pricing is verified.
+
+### 503 — OpenRouter circuit breaker open
+
+`POST /datasets/generate` **only**, for the same reason as the 402 above —
+it's the only submit endpoint whose worker calls OpenRouter.
+`api/services/circuit_breaker.py` is a 3-state (`closed`/`open`/`half_open`)
+breaker backed by Redis (state has to survive `worker_max_tasks_per_child=1`
+recycling the Celery worker process after every task, so an in-process
+breaker would never accumulate failures). Trips after
+`OPENROUTER_BREAKER_FAILURE_THRESHOLD` (default 5) *consecutive*
+outage-shaped failures — connection errors, timeouts, rate limits, 5xx; a
+plain 4xx never counts — and stays open for
+`OPENROUTER_BREAKER_OPEN_SECONDS` (default 60 seconds) before admitting a
+single half-open probe call. A successful probe closes it; a failing one
+re-opens it for another full window.
+
+"Consecutive" is literal: any successful call resets the counter, so four
+timeouts followed by a success leave the breaker fully closed. Both clients
+in `ai_engine/data_gen/openrouter_client.py` therefore report *both*
+terminal outcomes to the breaker, not just failures.
+
+**Format Detection participates too.** The seed-upload call at
+`api/services/datasets_service.py` is a counted OpenRouter surface, so it
+both feeds the breaker (an outage seen during an upload trips it for the SDG
+workers) and honours it (an already-open breaker fails that call fast rather
+than burning four retries). It is deliberately **not** budget-gated: failing
+a seed upload with 402 because a *different* feature exhausted the month's
+budget would break the product for a fraction of a cent. The call still
+counts *toward* the budget — its usage row is written like any other.
+
+```json
+// 503 response
+{ "detail": "OpenRouter is temporarily unavailable; try again shortly." }
+```
+
+Header: `Retry-After: <seconds remaining in the open window>`.
+
+### Which endpoint can return what
+
+| Endpoint | 429 quota | 402 budget | 503 breaker |
+|---|:---:|:---:|:---:|
+| `POST /datasets/generate` | ✓ (SDG bucket) | ✓ | ✓ |
+| `POST /trainings` (`manual` & `hpo`) | ✓ (GPU bucket) | — | — |
+| `POST /models/{id}/export` | ✓ (GPU bucket) | — | — |
+| `POST /evaluations` | ✓ (GPU bucket) | — | — |
+
+On `POST /datasets/generate`, the three checks run in this order — breaker,
+then budget, then quota — cheapest/most-certain first: the breaker is a
+platform-wide fact true for every caller, budget is a harder but still
+fairly static number, and quota is the most transient (a single other job
+finishing can flip it back under the limit), so it's checked last and is
+the most likely to be a false rejection.
+
+---
+
+## Authentication
+
+Every route below **except the `Metadata` section** requires a Supabase JWT once
+`AUTH_REQUIRED=true`. See [ADR-009](./adr/ADR-009-supabase-jwt-auth.md).
+
+```
+Authorization: Bearer <supabase access token>
+```
+
+Get the token client-side from `supabase.auth.getSession()`. The backend verifies
+it against the project's JWKS (`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`),
+checking signature, `exp`, `aud` (`authenticated`) and `iss`. There is no separate
+API key and no backend login endpoint — Supabase is the only identity source.
+
+### Two-phase rollout — what you get today
+
+`AUTH_REQUIRED` defaults to **`false`**, and until it is flipped:
+
+| Request | Phase 1 (`false`) | Phase 2 (`true`) |
+|---|---|---|
+| No `Authorization` header | **served anonymously**, no ownership filtering | `401` |
+| Valid token | served, scoped to that user | served, scoped to that user |
+| Invalid / expired / forged token | **`401`** | `401` |
+
+The third row is the one to internalise: *absent* is tolerated in phase 1,
+*invalid* never is. Sending a broken token is worse than sending none.
+
+### Public routes
+
+`/api/v1/tasks`, `/api/v1/tasks/{task_type}/example`, `/api/v1/base-models` and
+`/api/v1/sdg-pipeline` are static catalogs with no DB access and no user data —
+readable without a token in both phases, so a login screen can populate its
+pickers. `/health`, `/docs`, `/redoc` and `/openapi.json` are also open.
+
+### Ownership
+
+`Project.owner_id` holds the token's `sub`. Every other resource inherits its
+owner by foreign key (`Dataset`/`TrainingJob` → project; `ModelArtifact` →
+training → project; `EvaluationRun` → artifact → training → project). You never
+send `owner_id` — it is set server-side on create and rejected as input.
+
+Two responses that will look wrong until you know why:
+
+- **Another user's existing resource returns `404`, not `403`.** A `403` would
+  confirm the resource exists; the message is byte-identical to a genuine
+  not-found so the two cannot be told apart.
+- **Resources created before authentication existed (`owner_id IS NULL`) are
+  invisible to everyone** once you send a token. They fail closed. If you had
+  test data before the cutover, it needs an owner assigned or it disappears.
+
+### WebSocket
+
+`/ws/jobs/{job_id}` cannot use a header — browsers do not allow them on
+`new WebSocket()`. Pass the token as a subprotocol instead:
+
+```js
+new WebSocket(url, ["bearer", accessToken]);
+```
+
+The server echoes `bearer` back as the selected subprotocol. Close codes:
+
+| Code | Meaning |
+|---|---|
+| `4401` | no credential while auth is required, **or** a credential was offered that failed verification or wasn't the two-value `["bearer", token]` shape |
+| `4403` | authenticated, but the job is unknown **or** belongs to another user — deliberately the same code and reason for both, so the endpoint can't be probed for which job ids exist |
+
+Unlike the HTTP header, a *malformed* subprotocol is rejected rather than treated
+as anonymous: a header can be mangled by proxies, a subprotocol is only ever set
+by your own code.
+
+`GET /api/v1/jobs/{job_id}/progress` carries the same ownership rule as the
+socket, and collapses every failure — no frame yet, TTL expired, corrupt payload,
+unknown job, someone else's job — into one identical `404`.
+
 ## Projects
 
 Top-level grouping entity — one `task_type` per project, immutable after
@@ -105,6 +335,86 @@ Update `name` and/or `description` (both optional; omit to leave unchanged).
 Delete a project. **Success**: `204`. **Errors**: `404` if not found.
 **Gotcha**: cascades to the project's datasets / trainings at the DB level
 (per router summary) — there is no confirmation step or dry-run.
+The project's `audit_events` rows are **not** cascaded away: their FK is
+`ON DELETE SET NULL`, so the record of who deleted what survives. See the
+activity endpoint below.
+
+### GET /api/v1/projects/{project_id}/activity
+
+Audit trail for one project, newest first.
+
+**Query**: `limit` (1–200, default 50), `offset` (default 0).
+**Success**: `200` with `Page[AuditEventResponse]`.
+**Errors**: `404` if the project doesn't exist **or belongs to someone
+else** — same shape as `GET /projects/{id}`, deliberately, so this can't be
+used to probe which project ids exist.
+
+Each event carries `action` (e.g. `project.create`, `sdg.submit`,
+`training.completed`, `export.cancel`, `inference.chat_completions`,
+`dataset.download`, `job.orphan_reconciled`), `resource_type` /
+`resource_id`, `outcome` (`success` / `failure`), `actor_id` (the Supabase
+`sub`, null for anonymous phase-1 callers), `request_id` (matches the
+`X-Request-ID` response header of the call that caused it, and the
+`request_id` field in the server logs), `created_at`, and a free-form
+`metadata` object.
+
+Events are written in the **same database transaction** as the action they
+record, so the log cannot silently miss an entry: if the audit write fails,
+the action fails with it.
+
+**Gotcha**: events whose project was later deleted are not reachable here.
+The rows survive the delete (`project_id` goes null) but no longer belong to
+a project anyone can query by id.
+
+### GET /api/v1/projects/{project_id}/usage
+
+OpenRouter usage/cost log for one project, newest first. `api/routers/projects.py:124-146`.
+
+**Query**: `limit` (1–200, default 50), `offset` (default 0).
+**Success**: `200` `Page[UsageEventResponse]` — each row: `id`, `created_at`,
+`actor_id` (Supabase `sub`, null for anonymous phase-1 callers), `project_id`,
+`job_id` (the Celery task id — same value used for `/ws/jobs/{id}`, `null`
+for the one usage surface that isn't job-shaped: seed-upload Format
+Detection), `provider` (currently always `"openrouter"`), `model`, `stage`
+(`meta_prompt` \| `generate` \| `judge` \| `pdf_qa` \| `format_detection`),
+`prompt_tokens`, `completion_tokens`, `cost_usd` (see gotcha below),
+`outcome` (`completed` \| `failed` \| `cancelled`).
+**Errors**: `404` if the project doesn't exist **or belongs to someone
+else** — same ownership rule and same reasoning as `/activity` above: an
+empty page would itself confirm the project exists, so a non-owner gets the
+byte-identical not-found response a genuinely missing project id would
+produce, never a `403` and never an empty `200`.
+**Gotcha**: `cost_usd` is `null`, not `0`, for any row against a model
+absent from the pricing map (`api/services/model_pricing.py`) — a response
+containing any `null` `cost_usd` is a floor, not a total. One `UsageEvent`
+row is written per `(job_id, model, stage)` bucket, not per OpenRouter call
+— a single SDG run typically produces a handful of rows (one each for
+`generate`/`judge`/`meta_prompt`/etc.), not one per API call, because the
+worker aggregates token counts through an in-memory accumulator before
+writing.
+
+```json
+// 200 response
+{
+  "items": [
+    {
+      "id": "77777777-0000-0000-0000-000000000001",
+      "created_at": "2026-08-06T12:00:00Z",
+      "actor_id": "supabase-user-abc",
+      "project_id": "00000000-0000-0000-0000-000000000001",
+      "job_id": "celery-task-id",
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "stage": "generate",
+      "prompt_tokens": 12000,
+      "completion_tokens": 4500,
+      "cost_usd": "2.940000",
+      "outcome": "completed"
+    }
+  ],
+  "total": 1, "limit": 50, "offset": 0
+}
+```
 
 ---
 
@@ -546,7 +856,16 @@ Enqueue a GGUF or SafeTensors export. `api/routers/models.py:66-77`.
   `job_id`, `status=pending`, `websocket_url`.
 - **Errors**: `404` model not found; `409` artifact has no
   `lora_adapter_uri` on file (training likely never completed —
-  `api/services/model_service.py:88-101`).
+  `api/services/model_service.py:88-101`); `409` **an export is already in
+  flight** for this artifact (`export_status` is `pending` or `running`).
+  The detail names the in-flight `job_id` so you can cancel it via
+  `POST /models/{id}/export/cancel` first. A *terminal* `export_status`
+  (`completed` / `failed` / `cancelled`) does not block a fresh export —
+  re-exporting at a different quantization is a normal thing to do.
+  This guard replaces the idempotency window used by the other submit
+  endpoints: one artifact can only have one export at a time, so a
+  resource-state `409` is both stricter and more informative than a
+  replayed `202` would be.
 - **Gotcha**: `format=lora` passes request validation (it's a legal
   `ArtifactFormat` value) but the Celery worker
   (`workers/tasks/model_export.py:171`) raises `ValueError("unsupported
@@ -734,7 +1053,7 @@ training, HPO, export, evaluation) — for clients that don't want to hold a
 socket open, or a WS client's own first paint. Source:
 `api/routers/jobs.py`. See
 [`03-realtime-websocket.md`](./03-realtime-websocket.md) for the full
-`WSMessage` payload shapes and the snapshot mechanism (ADR-007).
+`WSMessage` payload shapes and the snapshot mechanism (ADR-008).
 
 ### GET /api/v1/jobs/{job_id}/progress
 
@@ -778,6 +1097,61 @@ Return the last-published progress frame for a job, validated against the
 
 // 404 response — standard ErrorResponse shape (api/core/exceptions.py)
 { "detail": "No progress frame for job celery-task-id", "code": "not_found", "extra": null }
+```
+
+---
+
+## Usage & Cost
+
+Account-level companion to the project-scoped
+[`GET /projects/{project_id}/usage`](#get-apiv1projectsproject_idusage) log
+above. Source: `api/routers/usage.py`, `api/services/usage_service.py`. See
+also [Submit gates](#submit-gates-concurrency-quotas-budget-and-the-circuit-breaker)
+above — this is the exact data the `402` budget check reads.
+
+### GET /api/v1/usage
+
+The caller's own cross-project usage/cost rollup for the current UTC
+calendar month, grouped by `(model, stage)`. `api/routers/usage.py:18-49`.
+
+- **No params.** Always scoped to the caller — `user.id` when a verified
+  token is present, `None` otherwise (phase 1 / auth disabled). There is no
+  `project_id` filter here; that's what the project-scoped log is for.
+- **Success**: `200` `UsageSummaryResponse` — `period_start`/`period_end`
+  (start of the current UTC month → now), `prompt_tokens`/
+  `completion_tokens`/`cost_usd` (grand totals across the period),
+  `items: list[UsageRollupItem]` (one entry per `(model, stage)` bucket),
+  `has_unpriced_usage` (`true` when at least one row in the period has
+  `cost_usd IS NULL` — the signal that the total above is a floor, not a
+  total).
+- **This is the exact aggregate the `402` budget check reads** —
+  `usage_service.assert_within_budget`'s per-actor check sums the identical
+  window, so a caller watching this endpoint can see a `402` coming before
+  it happens.
+- **Gotcha**: under phase 1 (`AUTH_REQUIRED=false`, no token sent),
+  `actor_id` resolves to `None`, which rolls up every anonymous-caller row
+  platform-wide rather than "your" usage specifically — there's no
+  per-caller identity to scope to until a token is sent.
+
+```json
+// 200 response
+{
+  "period_start": "2026-08-01T00:00:00Z",
+  "period_end": "2026-08-06T15:00:00Z",
+  "prompt_tokens": 84000,
+  "completion_tokens": 31000,
+  "cost_usd": "18.760000",
+  "items": [
+    {
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "stage": "generate",
+      "prompt_tokens": 60000,
+      "completion_tokens": 25000,
+      "cost_usd": "15.400000"
+    }
+  ],
+  "has_unpriced_usage": false
+}
 ```
 
 ---
@@ -847,8 +1221,22 @@ Body (`CompletionRequest`): `model`, `prompt` (string or list of strings),
 ### GET /api/v1/inference/models
 
 List models the local Ollama daemon currently has loaded (OpenAI `/models`
-shape). No params, no auth. Success: `200` `ModelDescriptorList` —
+shape). No params. Success: `200` `ModelDescriptorList` —
 `{object: "list", data: [{id, object, created, owned_by, metadata}]}`.
+
+**Owner-scoped.** Entries in our own namespace (`slm/…`, one per exported
+fine-tune) are filtered to the caller's own artifacts. Base models the
+daemon has pulled in (`llama3.2:1b`, …) carry no ownership information and
+stay listed for everyone — hiding them would only make a model picker lie
+about what the daemon can serve. An anonymous caller (no `Authorization`
+header, phase 1) gets the unfiltered list, identical to pre-auth behaviour.
+
+**Tag shape.** `id` for our models is the canonical `slm/<first-8-of-uuid>`,
+not the `slm/<8hex>:latest` the daemon reports — Ollama appends an implicit
+version on create that the DB never stores. The id in this response is
+exactly the string `model` accepts on `/chat/completions` and
+`/completions`, so a picker's value round-trips. The suffixed form is also
+accepted on those endpoints for callers that copied it out of `ollama list`.
 
 ---
 
@@ -898,32 +1286,59 @@ since it's tagged `metadata` in the OpenAPI spec.
 
 ### GET /health
 
-Liveness probe. No params, no DB check — just returns `{"status": "ok"}`
-(`api/main.py:134-136`). Not under `/api/v1`. Use this for container
-healthchecks, not as a readiness check for DB/Redis/MinIO/MLflow.
+Liveness probe. No params, no DB check — just returns `{"status": "ok"}`.
+Not under `/api/v1`, and public (no token). Use this for container
+healthchecks. Deliberately dependency-free: it decides whether a supervisor
+restarts the container, so it must never fail because something *else* is
+down. `GET /ready` is the endpoint that asks about dependencies.
+
+### GET /ready
+
+Readiness probe. Probes PostgreSQL, Redis, MinIO and the Celery worker
+concurrently, each bounded by a 3-second timeout. Not under `/api/v1`, and
+public — orchestrators and load balancers have no token to send.
+
+Success: `200` with a per-dependency breakdown.
+
+```json
+{
+  "status": "degraded",
+  "checks": {"postgres": "ok", "redis": "ok", "minio": "ok", "worker": "unavailable"}
+}
+```
+
+`status` is `ok` (everything up), `degraded` (a non-fatal dependency is
+down), or `unready`.
+
+**`503` only when PostgreSQL or Redis is unreachable** — the two the API
+cannot answer a single request without. **MinIO and the worker report
+`unavailable` on a `200`**: with MinIO down, uploads and artifact downloads
+fail but every read still works; with no worker, submits still enqueue and
+`api/services/job_reconcile.py` ends orphaned jobs rather than leaving clients
+spinning. Returning `503` for either would pull the whole API out of rotation
+and take the UI offline to report a partial outage. See
+`api/services/readiness.py` for the reasoning and
+`tests/unit/test_readiness.py` for the guard.
 
 ---
 
 ## Verification notes
 
-All 33 paths / 40 operations in `openapi.json` are covered above — the
-enumeration was cross-checked against `python3 -c "import json;
-json.load(open('openapi.json'))['paths']"` before writing this file
-(33 paths, 40 GET/POST/PATCH/DELETE operations). This count includes the
-5 job-control endpoints added alongside ADR-006/ADR-007 (`GET
-/jobs/{job_id}/progress`, and one `POST .../cancel` each for datasets,
-model export, evaluations, and trainings — the last being an alias for
-the pre-existing `DELETE /trainings/{id}`).
+`openapi.json` currently enumerates 35 paths / 42 operations (checked via
+`python3 -c "import json; d=json.load(open('openapi.json')); print(len(d['paths']))"`
+at doc-writing time). This file covers all of them, plus the 2 new usage
+endpoints documented above that **do not appear in `openapi.json` yet** —
+see discrepancy 4 below.
 
 Discrepancies found while writing this doc (not code changes — flagged for
 awareness):
 
 1. **`openapi.json` under-documents error responses.** Every operation's
    spec only lists its success code(s) plus a generic `422`. The `400`/
-   `404`/`409`/`413`/`502` paths shown above are real (`HTTPException`
-   raises in the service layer) but don't appear in the spec at all,
-   because none of the routers pass an explicit `responses=` to their
-   FastAPI decorators. If a typed client is code-genned from
+   `404`/`409`/`413`/`429`/`402`/`503`/`502` paths shown above are real
+   (`HTTPException` raises in the service layer) but don't appear in the
+   spec at all, because none of the routers pass an explicit `responses=`
+   to their FastAPI decorators. If a typed client is code-genned from
    `openapi.json`, it will not know these status codes are possible.
 2. **`api/services/training_service.py`'s module docstring is stale.** It
    says "HPO mode goes through `submit_hpo_training_job` (Phase 6 —
@@ -938,3 +1353,11 @@ awareness):
    hasn't started logging to MLflow yet (`mlflow_run_id` still null), both
    return `200` with empty series, so the frontend can render an empty
    chart without special-casing a 404.
+4. **`GET /api/v1/projects/{project_id}/usage` and `GET /api/v1/usage` are
+   real, routed endpoints** (`api/routers/projects.py`,
+   `api/routers/usage.py`, both wired in `api/main.py`) **that
+   `openapi.json` does not list at all.** The spec hasn't been regenerated
+   (`scripts/export_openapi.py`) since these were added, so a client
+   code-genned from the current `openapi.json` won't know either endpoint
+   exists. Documented above from the router/schema/service source directly,
+   same as every other endpoint in this file.

@@ -201,8 +201,14 @@ class _FakeMinio:
         body = self._store.get((bucket_name, object_name))
         if body is None:
             raise KeyError(f"fake_minio: {bucket_name}/{object_name} not found")
+
+        def _stream(chunk_size: int = 64 * 1024):
+            for i in range(0, len(body), chunk_size):
+                yield body[i : i + chunk_size]
+
         return SimpleNamespace(
             read=lambda *_a, **_k: body,
+            stream=_stream,
             close=lambda: None,
             release_conn=lambda: None,
         )

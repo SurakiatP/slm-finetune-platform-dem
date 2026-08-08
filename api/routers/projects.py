@@ -8,10 +8,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core.auth import CurrentUser, require_user
 from api.core.database import get_db
+from api.schemas.audit import AuditEventResponse
 from api.schemas.projects import ProjectCreate, ProjectResponse, ProjectUpdate
 from api.schemas.responses import Page
-from api.services import projects_service
+from api.schemas.usage import UsageEventResponse
+from api.services import audit_service, projects_service, usage_service
 
 router = APIRouter()
 
@@ -25,8 +28,9 @@ router = APIRouter()
 async def create_project(
     body: ProjectCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> ProjectResponse:
-    return await projects_service.create_project(db, body)
+    return await projects_service.create_project(db, body, user)
 
 
 @router.get(
@@ -36,12 +40,17 @@ async def create_project(
 )
 async def list_projects(
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
     external_project_id: Annotated[str | None, Query()] = None,
 ) -> Page[ProjectResponse]:
     return await projects_service.list_projects(
-        db, limit=limit, offset=offset, external_project_id=external_project_id
+        db,
+        limit=limit,
+        offset=offset,
+        external_project_id=external_project_id,
+        user=user,
     )
 
 
@@ -53,8 +62,9 @@ async def list_projects(
 async def get_project(
     project_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> ProjectResponse:
-    return await projects_service.get_project(db, project_id)
+    return await projects_service.get_project(db, project_id, user)
 
 
 @router.patch(
@@ -66,8 +76,9 @@ async def update_project(
     project_id: UUID,
     body: ProjectUpdate,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> ProjectResponse:
-    return await projects_service.update_project(db, project_id, body)
+    return await projects_service.update_project(db, project_id, body, user)
 
 
 @router.delete(
@@ -78,5 +89,58 @@ async def update_project(
 async def delete_project(
     project_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> None:
-    await projects_service.delete_project(db, project_id)
+    await projects_service.delete_project(db, project_id, user)
+
+
+@router.get(
+    "/{project_id}/activity",
+    response_model=Page[AuditEventResponse],
+    summary="Audit trail for one project (newest first)",
+)
+async def list_project_activity(
+    project_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Page[AuditEventResponse]:
+    """Every state-changing action recorded against this project.
+
+    Ownership is enforced inside `list_activity`, so this 404s for someone
+    else's project exactly like `GET /projects/{id}` does.
+
+    Events whose project was later deleted are not reachable here: the FK is
+    `ON DELETE SET NULL`, so the rows survive (deliberately — an audit log
+    that a delete can erase is not an audit log) but no longer belong to a
+    project anyone can query by id.
+    """
+    return await audit_service.list_activity(
+        db, project_id, limit=limit, offset=offset, user=user
+    )
+
+
+@router.get(
+    "/{project_id}/usage",
+    response_model=Page[UsageEventResponse],
+    summary="Usage/cost log for one project (newest first)",
+)
+async def list_project_usage(
+    project_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Page[UsageEventResponse]:
+    """Every OpenRouter usage event recorded against this project, newest first.
+
+    Ownership is enforced inside `list_project_usage` (it calls
+    `ownership.assert_project_access` before touching `usage_events` at
+    all), so this 404s for someone else's project exactly like
+    `GET /projects/{id}` and `/activity` do — never an empty page, which
+    would itself reveal that the project exists.
+    """
+    return await usage_service.list_project_usage(
+        db, project_id, limit=limit, offset=offset, user=user
+    )

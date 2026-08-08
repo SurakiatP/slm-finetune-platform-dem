@@ -15,6 +15,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import request_context
+from api.core.auth import CurrentUser
 from api.core.config import get_settings
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus, TrainingMode
@@ -27,7 +29,7 @@ from api.schemas.trainings import (
     TrainingMetricsResponse,
     TrainingResponse,
 )
-from api.services import mlflow_metrics
+from api.services import audit_service, mlflow_metrics, ownership
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 
 log = logging.getLogger(__name__)
@@ -40,6 +42,7 @@ async def list_trainings(
     status_filter: JobStatus | None,
     limit: int,
     offset: int,
+    user: CurrentUser | None = None,
 ) -> Page[TrainingResponse]:
     base = select(TrainingJob).order_by(TrainingJob.created_at.desc())
     count = select(func.count()).select_from(TrainingJob)
@@ -49,6 +52,8 @@ async def list_trainings(
     if status_filter is not None:
         base = base.where(TrainingJob.status == status_filter)
         count = count.where(TrainingJob.status == status_filter)
+    base = ownership.scope_trainings_to_owner(base, user)
+    count = ownership.scope_trainings_to_owner(count, user)
     total = (await db.execute(count)).scalar_one()
     rows = (await db.execute(base.limit(limit).offset(offset))).scalars().all()
     return Page[TrainingResponse](
@@ -59,28 +64,23 @@ async def list_trainings(
     )
 
 
-async def get_training(db: AsyncSession, training_id: UUID) -> TrainingResponse:
-    job = await db.get(TrainingJob, training_id)
-    if job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Training {training_id} not found",
-        )
+async def get_training(
+    db: AsyncSession, training_id: UUID, user: CurrentUser | None = None
+) -> TrainingResponse:
+    job = await ownership.assert_training_access(db, training_id, user)
     return TrainingResponse.model_validate(job)
 
 
-async def cancel_training(db: AsyncSession, training_id: UUID) -> dict[str, str]:
+async def cancel_training(
+    db: AsyncSession, training_id: UUID, user: CurrentUser | None = None
+) -> dict[str, str]:
     """Revoke the underlying Celery task + flip status to CANCELLED.
 
     Idempotent: cancelling an already-terminal job returns 200 with the existing
-    status. Cancelling a non-existent job returns 404.
+    status. Cancelling a non-existent job, or one belonging to another user,
+    returns 404.
     """
-    job = await db.get(TrainingJob, training_id)
-    if job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Training {training_id} not found",
-        )
+    job = await ownership.assert_training_access(db, training_id, user)
     if job.status in TERMINAL_JOB_STATUSES:
         return {"training_id": str(job.id), "status": job.status.value}
 
@@ -88,17 +88,24 @@ async def cancel_training(db: AsyncSession, training_id: UUID) -> dict[str, str]
 
     job.status = JobStatus.CANCELLED
     job.ended_at = datetime.now(timezone.utc)
+    audit_service.record(
+        db,
+        action="training.cancel",
+        resource_type="training",
+        resource_id=str(job.id),
+        project_id=job.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": job.celery_task_id},
+    )
     await db.commit()
     return {"training_id": str(job.id), "status": JobStatus.CANCELLED.value}
 
 
-async def get_mlflow_url(db: AsyncSession, training_id: UUID) -> MlflowUrlResponse:
-    job = await db.get(TrainingJob, training_id)
-    if job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Training {training_id} not found",
-        )
+async def get_mlflow_url(
+    db: AsyncSession, training_id: UUID, user: CurrentUser | None = None
+) -> MlflowUrlResponse:
+    job = await ownership.assert_training_access(db, training_id, user)
     settings = get_settings()
     url: str | None = None
     if job.mlflow_run_id and job.mlflow_experiment_id:
@@ -111,16 +118,6 @@ async def get_mlflow_url(db: AsyncSession, training_id: UUID) -> MlflowUrlRespon
         mlflow_run_id=job.mlflow_run_id,
         mlflow_url=url,
     )
-
-
-async def _load_training_or_404(db: AsyncSession, training_id: UUID) -> TrainingJob:
-    job = await db.get(TrainingJob, training_id)
-    if job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Training {training_id} not found",
-        )
-    return job
 
 
 def _to_points(rows: list[mlflow_metrics.MetricPointDC]) -> list[MetricPoint]:
@@ -147,10 +144,10 @@ def _to_points(rows: list[mlflow_metrics.MetricPointDC]) -> list[MetricPoint]:
 
 
 async def get_training_loss_history(
-    db: AsyncSession, training_id: UUID
+    db: AsyncSession, training_id: UUID, user: CurrentUser | None = None
 ) -> TrainingLossHistoryResponse:
     """Return only `train_loss` + `eval_loss` series — small payload for charts."""
-    job = await _load_training_or_404(db, training_id)
+    job = await ownership.assert_training_access(db, training_id, user)
     if not job.mlflow_run_id:
         return TrainingLossHistoryResponse(
             training_id=job.id,
@@ -181,7 +178,7 @@ async def get_training_loss_history(
 
 
 async def get_training_metrics(
-    db: AsyncSession, training_id: UUID
+    db: AsyncSession, training_id: UUID, user: CurrentUser | None = None
 ) -> TrainingMetricsResponse:
     """Return all logged metric series for the run + HPO child summary if HPO mode.
 
@@ -190,7 +187,7 @@ async def get_training_metrics(
     summarise them (final eval_loss + params, not full series — keeps payload
     bounded when n_trials is large).
     """
-    job = await _load_training_or_404(db, training_id)
+    job = await ownership.assert_training_access(db, training_id, user)
     if not job.mlflow_run_id:
         return TrainingMetricsResponse(
             training_id=job.id,

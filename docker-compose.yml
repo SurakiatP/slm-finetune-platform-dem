@@ -47,7 +47,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-slm}
       POSTGRES_DB: ${POSTGRES_DB:-slm}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       # Runs only on first init (empty volume). Creates the separate
@@ -65,7 +65,7 @@ services:
     container_name: slm-redis
     restart: unless-stopped
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -84,8 +84,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio-data:/data
     healthcheck:
@@ -148,7 +148,7 @@ services:
       - --default-artifact-root=s3://${MLFLOW_S3_BUCKET:-mlflow}/
       - --serve-artifacts
     ports:
-      - "${MLFLOW_PORT:-5000}:5000"
+      - "127.0.0.1:${MLFLOW_PORT:-5000}:5000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -176,6 +176,15 @@ services:
     environment:
       <<: *app-env
     ports:
+      # The ONLY service published beyond the host. Every other container
+      # binds 127.0.0.1 so an external port scan reaches nothing but this
+      # API (BACKEND_GAP_ANALYSIS.md P0 "Secrets และขอบเขตเครือข่าย").
+      # Loopback binding, not removal, deliberately: `scripts/
+      # deploy_pasaflow_vm.sh` hands the operator localhost URLs for the
+      # MinIO console / MLflow / Ollama, and those still work over an SSH
+      # tunnel (`ssh -L 9001:localhost:9001`). Dropping `ports:` entirely
+      # would break that workflow and force `docker compose exec` for every
+      # debugging session.
       - "${API_PORT:-8000}:8000"
     volumes:
       - ./api:/app/api
@@ -229,6 +238,11 @@ services:
       - workers.celery_app
       - worker
       - --loglevel=INFO
+      # Only the GPU queue: sdg.generate now routes to `-Q cpu` on the
+      # worker-cpu service below (see workers/celery_app.py task_routes),
+      # so this worker no longer needs to also drain the default queue.
+      - -Q
+      - gpu
       - --concurrency=1
     # GPU access uses Compose's `deploy.resources.reservations.devices`
     # (works without daemon-level nvidia runtime). The legacy
@@ -246,12 +260,66 @@ services:
         condition: service_started
     networks: [slm-net]
 
+  # CPU-only queue for `sdg.generate` (see workers/celery_app.py
+  # task_routes). SDG calls OpenRouter over HTTP and does no GPU work, so it
+  # no longer has to wait behind — or block — GPU training/export/eval jobs
+  # on the single `worker` service above.
+  #
+  # Placed AFTER `worker` deliberately: tests/unit/test_compose_port_exposure.py
+  # slices this file's text on the literal `"  worker:"` marker to isolate
+  # the `api` service block, and `"  worker-cpu:"` does not contain that
+  # substring — but appending a new service ahead of `worker` could still
+  # shift surrounding text in ways future edits don't expect. Keeping the
+  # ordering worker, then worker-cpu keeps that slice stable.
+  worker-cpu:
+    # Reuses the API image rather than building a new one: docker/api.
+    # Dockerfile already does `COPY workers ./workers` and installs the full
+    # base dependency set (celery, openai, tenacity, redis, sqlalchemy) that
+    # `workers.tasks.data_generation` needs. `torch` (and the GPU worker's
+    # CUDA toolchain) only exists in the optional `training` extra used by
+    # `docker/worker.Dockerfile`, which this queue never imports. So: no new
+    # Dockerfile, no second image build, no `build:` block here.
+    image: ghcr.io/surakiatp/slm-api:dev
+    container_name: slm-worker-cpu
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *app-env
+    volumes:
+      - ./api:/app/api
+      - ./ai_engine:/app/ai_engine
+      - ./workers:/app/workers
+    command:
+      - celery
+      - -A
+      - workers.celery_app
+      - worker
+      - --loglevel=INFO
+      - -Q
+      - cpu
+      - --concurrency=2
+    # No `ports:` — tests/unit/test_compose_port_exposure.py fails the
+    # "only `api` is externally published" guard if any other service
+    # (this one included) publishes a port. This is an internal Celery
+    # worker with nothing to serve.
+    # No GPU `deploy:` block — this queue is CPU-only by design (see the
+    # image comment above); requesting a GPU reservation here would just
+    # make the service fail to schedule on a single-GPU host it doesn't need.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [slm-net]
+
   ollama:
     image: ollama/ollama:latest
     container_name: slm-ollama
     restart: unless-stopped
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama-data:/root/.ollama
     deploy: *gpu-deploy

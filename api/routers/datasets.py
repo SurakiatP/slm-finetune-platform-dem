@@ -11,12 +11,14 @@ from fastapi import (
     File,
     Form,
     Query,
+    Request,
     UploadFile,
     status,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core.auth import CurrentUser, require_user
 from api.core.database import get_db
 from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse
 from api.schemas.enums import TaskType
@@ -28,7 +30,7 @@ from api.schemas.sdg import (
     SDGRequestWithSeed,
     SeedUploadResponse,
 )
-from api.services import datasets_service
+from api.services import datasets_service, idempotency, ownership
 from api.services.sdg_service import submit_sdg_job
 
 router = APIRouter()
@@ -42,6 +44,7 @@ router = APIRouter()
 )
 async def upload_seed_dataset(
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
     project_id: Annotated[UUID, Form(...)],
     task_type: Annotated[TaskType, Form(...)],
     file: Annotated[UploadFile, File(...)],
@@ -53,6 +56,7 @@ async def upload_seed_dataset(
         task_type=task_type,
         name=name,
         file=file,
+        user=user,
     )
 
 
@@ -64,10 +68,26 @@ async def upload_seed_dataset(
 )
 async def generate_dataset(
     body: SDGRequest,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> SDGJobAcceptedResponse:
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+) -> SDGJobAcceptedResponse | JSONResponse:
     assert isinstance(body, (SDGRequestWithSeed, SDGRequestDescriptionOnly))
-    return await submit_sdg_job(db, body)
+    body_json = body.model_dump(mode="json")
+    if (replayed := await idempotency.replay(request, user, body_json)) is not None:
+        return replayed
+    # Parent-check here rather than inside sdg_service.submit_sdg_job: that
+    # module is owned by another workstream on this branch and out of scope
+    # for this change. submit_sdg_job's own validation already rejects a
+    # `seed_dataset_id` whose project doesn't match `body.project_id` (400),
+    # so asserting ownership of the project alone is sufficient to also gate
+    # the seed dataset transitively — a caller can't point `with_seed` mode
+    # at someone else's seed without also naming that someone else's
+    # project, which this call already blocks.
+    await ownership.assert_project_access(db, body.project_id, user)
+    resp = await submit_sdg_job(db, body)
+    await idempotency.remember(request, user, body_json, resp.model_dump(mode="json"))
+    return resp
 
 
 @router.get(
@@ -77,12 +97,13 @@ async def generate_dataset(
 )
 async def list_datasets(
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
     project_id: Annotated[UUID | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Page[DatasetResponse]:
     return await datasets_service.list_datasets(
-        db, project_id=project_id, limit=limit, offset=offset
+        db, project_id=project_id, limit=limit, offset=offset, user=user
     )
 
 
@@ -94,8 +115,9 @@ async def list_datasets(
 async def get_dataset(
     dataset_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> DatasetResponse:
-    return await datasets_service.get_dataset(db, dataset_id)
+    return await datasets_service.get_dataset(db, dataset_id, user)
 
 
 @router.get(
@@ -106,9 +128,10 @@ async def get_dataset(
 async def preview_dataset(
     dataset_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
 ) -> DatasetPreviewResponse:
-    return await datasets_service.preview_dataset(db, dataset_id, limit)
+    return await datasets_service.preview_dataset(db, dataset_id, limit, user)
 
 
 @router.get(
@@ -119,8 +142,9 @@ async def preview_dataset(
 async def download_dataset(
     dataset_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> StreamingResponse:
-    return await datasets_service.download_dataset(db, dataset_id)
+    return await datasets_service.download_dataset(db, dataset_id, user)
 
 
 @router.delete(
@@ -131,8 +155,9 @@ async def download_dataset(
 async def delete_dataset(
     dataset_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> None:
-    await datasets_service.delete_dataset(db, dataset_id)
+    await datasets_service.delete_dataset(db, dataset_id, user)
 
 
 @router.post(
@@ -143,5 +168,6 @@ async def delete_dataset(
 async def cancel_dataset(
     dataset_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> dict[str, str]:
-    return await datasets_service.cancel_dataset(db, dataset_id)
+    return await datasets_service.cancel_dataset(db, dataset_id, user)

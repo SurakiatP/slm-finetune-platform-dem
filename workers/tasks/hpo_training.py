@@ -42,7 +42,9 @@ from api.models.dataset import Dataset
 from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
+from api.core import request_context
 from api.schemas.progress import HPOProgress, JobCompleted, JobFailed
+from api.services import audit_service
 from api.schemas.training import HPOConfig
 from workers.celery_app import celery_app
 from workers.progress import publish_ws_message, sync_redis_scope
@@ -51,6 +53,7 @@ from workers.storage import (
     get_minio_client,
     parse_s3_uri,
     put_directory,
+    remove_prefix,
     s3_uri,
 )
 from workers.sync_db import session_scope
@@ -84,6 +87,17 @@ def train_hpo(
 
         artifact_uri: str | None = None
         size_bytes: int = 0
+
+        # Orphan-cleanup bookkeeping, declared before the `try:` so the
+        # `except BaseException` handler can still read both. Same mechanism
+        # and same reasoning as `training.py` / `model_export.py`: the adapter
+        # goes to MinIO before the ModelArtifact row that references it is
+        # committed, so a cancel (SIGTERM → SystemExit) or a failure in that
+        # window would otherwise leave the prefix orphaned forever.
+        # `committed` additionally protects the row's terminal state from
+        # being unwound by a post-commit failure.
+        uploaded_prefix: str | None = None
+        committed = False
 
         try:
             # ---- 1. Load TrainingJob + Dataset --------------------------------
@@ -258,6 +272,10 @@ def train_hpo(
                                 final_result.adapter_dir,
                             )
                             artifact_uri = s3_uri(settings.minio_models_bucket, artifact_key)
+                            # Recorded the instant the upload lands, so the
+                            # handler knows exactly what to remove if the run
+                            # never reaches its commit.
+                            uploaded_prefix = artifact_key
                             log.info(
                                 "hpo: job=%s uploaded %d adapter files (%.1f MB) to %s",
                                 job_id,
@@ -292,6 +310,26 @@ def train_hpo(
                 row.ended_at = datetime.now(timezone.utc)
                 row.best_metric_value = best_value
                 row.best_params_json = best_params
+                audit_service.record(
+                    session,
+                    action="training.completed",
+                    resource_type="training",
+                    resource_id=str(row.id),
+                    project_id=row.project_id,
+                    actor_id=request_context.current_user_id(),
+                    request_id=request_context.current_request_id(),
+                    metadata={
+                        "job_id": job_id,
+                        "mode": "hpo",
+                        "model_artifact_id": str(artifact_id),
+                        "best_metric_value": best_value,
+                    },
+                )
+
+            # The adapter is on MinIO and the ModelArtifact row referencing it
+            # is durably committed. From here the handler must neither delete
+            # that prefix nor rewrite this run's terminal state.
+            committed = True
 
             # ---- 7. Publish JobCompleted -------------------------------------
             publish(
@@ -319,27 +357,94 @@ def train_hpo(
                 "best_params": best_params,
             }
 
-        except Exception as exc:
+        except BaseException as exc:
+            # BaseException, not Exception — see the long note on the same
+            # `except` in `workers/tasks/training.py`. A cancel arrives as a
+            # SIGTERM that billiard turns into `SystemExit`, which
+            # `except Exception` does not catch, so an HPO study cancelled
+            # mid-study published no terminal frame at all.
             log.exception("HPO task failed (job=%s)", job_id)
             try:
                 with session_scope() as session:
                     row = session.get(TrainingJob, training_uuid)
-                    if row is not None:
-                        row.status = JobStatus.FAILED
+                    # `committed` means the run finished and its row is
+                    # durably COMPLETED. A failure after that — a broken log
+                    # handler, or a cancel's SIGTERM landing in this window as
+                    # `SystemExit` — must not report a finished study as
+                    # failed. The exception is still re-raised, so Celery
+                    # records the task failure; it is the row that must stay
+                    # true. Same guard as `data_generation.py` /
+                    # `training.py` / `model_export.py`.
+                    if row is not None and not committed:
+                        # Don't clobber a CANCELLED the cancel endpoint already set.
+                        if row.status != JobStatus.CANCELLED:
+                            row.status = JobStatus.FAILED
                         row.ended_at = datetime.now(timezone.utc)
                         row.error_message = (str(exc) or repr(exc))[:4000]
+                        audit_service.record(
+                            session,
+                            action=(
+                                "training.cancelled"
+                                if row.status == JobStatus.CANCELLED
+                                else "training.failed"
+                            ),
+                            resource_type="training",
+                            resource_id=str(row.id),
+                            project_id=row.project_id,
+                            outcome="failure",
+                            actor_id=request_context.current_user_id(),
+                            request_id=request_context.current_request_id(),
+                            metadata={"job_id": job_id, "error_type": type(exc).__name__},
+                        )
+
             except Exception:  # noqa: BLE001
                 log.warning("could not persist FAILED for %s", training_id, exc_info=True)
-            try:
-                publish(
-                    JobFailed(
-                        job_id=job_id,
-                        error=str(exc) or repr(exc),
-                        error_type=type(exc).__name__,
+
+            # Remove the adapter this run uploaded but never got to reference
+            # from the DB. Gated on `committed` for the reason that matters
+            # most here: deleting a prefix a ModelArtifact row DOES point at
+            # would destroy a user's trained model. Best-effort — a MinIO
+            # error must never mask the original failure.
+            #
+            # Known limit: SIGKILL runs no handler, so this closes the
+            # cancel/failure window and not a hard kill. A sweeper would catch
+            # that but was rejected — one that lists the bucket and joins
+            # against the DB can race a job mid-upload and delete a live
+            # object.
+            if not committed and uploaded_prefix:
+                try:
+                    removed = remove_prefix(
+                        get_minio_client(),
+                        settings.minio_models_bucket,
+                        uploaded_prefix,
                     )
-                )
-            except Exception:  # noqa: BLE001
-                log.warning("failed to publish JobFailed", exc_info=True)
+                    log.info(
+                        "hpo: removed %d orphaned adapter object(s) under %s (job=%s)",
+                        removed,
+                        uploaded_prefix,
+                        job_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "could not remove orphaned adapter prefix %s",
+                        uploaded_prefix,
+                        exc_info=True,
+                    )
+
+            # Same guard as the status write above: a client that already
+            # received `JobCompleted` must never then receive `JobFailed` for
+            # the same job_id. A terminal frame is terminal.
+            if not committed:
+                try:
+                    publish(
+                        JobFailed(
+                            job_id=job_id,
+                            error=str(exc) or repr(exc),
+                            error_type=type(exc).__name__,
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    log.warning("failed to publish JobFailed", exc_info=True)
             raise
 
         finally:

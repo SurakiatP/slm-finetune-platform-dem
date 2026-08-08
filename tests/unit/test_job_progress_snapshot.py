@@ -1,4 +1,4 @@
-"""Unit tests for the job-progress snapshot (ADR-007).
+"""Unit tests for the job-progress snapshot (ADR-008).
 
 Covers the three pieces that together let a reloaded page paint immediately
 instead of waiting on the next Pub/Sub frame:
@@ -62,7 +62,7 @@ class TestSnapshotWrite:
 
         ttl = client.ttl(job_snapshot_key("job-1"))
         assert 0 < ttl <= JOB_SNAPSHOT_TTL_SECONDS
-        assert JOB_SNAPSHOT_TTL_SECONDS == 86_400, "ADR-007 fixes the snapshot TTL at 24h"
+        assert JOB_SNAPSHOT_TTL_SECONDS == 86_400, "ADR-008 fixes the snapshot TTL at 24h"
 
     def test_publish_still_happens(self, fake_redis_pubsub) -> None:
         """Snapshotting must not replace the live publish."""
@@ -74,7 +74,7 @@ class TestSnapshotWrite:
         assert b'"samples_generated":80' in payload
 
     def test_snapshot_written_before_publish(self, fake_redis_pubsub, monkeypatch) -> None:
-        """ADR-007: SET precedes PUBLISH so a client subscribing in between
+        """ADR-008: SET precedes PUBLISH so a client subscribing in between
         reads a populated key rather than an empty one."""
         client = fake_redis_pubsub.client
         order: list[str] = []
@@ -216,7 +216,7 @@ class TestRestSnapshotEndpoint:
         ids=["export", "evaluation"],
     )
     def test_new_frame_types_round_trip(self, client, snapshot_store, frame) -> None:
-        """The two WSMessageType values added by ADR-007 must survive the union."""
+        """The two WSMessageType values added by ADR-008 must survive the union."""
         snapshot_store.set(job_snapshot_key("job-x"), frame.model_dump_json())
 
         resp = client.get("/api/v1/jobs/job-x/progress")
@@ -250,7 +250,7 @@ class TestRestSnapshotEndpoint:
 
 class TestWebSocketSnapshotOnConnect:
     def test_sends_snapshot_immediately_on_connect(self, client, snapshot_store) -> None:
-        """The whole point of ADR-007: connect mid-job, paint instantly."""
+        """The whole point of ADR-008: connect mid-job, paint instantly."""
         frame = _sdg_frame(job_id="job-ws", generated=80)
         snapshot_store.set(job_snapshot_key("job-ws"), frame.model_dump_json())
 

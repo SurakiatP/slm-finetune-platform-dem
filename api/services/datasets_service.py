@@ -44,6 +44,8 @@ from ai_engine.data_gen.pdf_loader import (
     probe as pdf_probe,
 )
 from ai_engine.data_gen.constants import MAX_SEED_PDF_BYTES
+from ai_engine.data_gen.usage import STAGE_FORMAT_DETECTION
+from api.core.auth import CurrentUser
 from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
@@ -59,6 +61,8 @@ from api.schemas.enums import DatasetSource, JobStatus, TaskType
 from api.schemas.responses import Page
 from api.schemas.sdg import SeedUploadResponse
 from api.schemas.upload import FormatDetectionReport
+from api.core import request_context
+from api.services import audit_service, circuit_breaker, ownership, usage_service
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 from workers.storage import (
     get_minio_client,
@@ -84,12 +88,15 @@ async def list_datasets(
     project_id: UUID | None,
     limit: int,
     offset: int,
+    user: CurrentUser | None = None,
 ) -> Page[DatasetResponse]:
     base = select(Dataset).order_by(Dataset.created_at.desc())
     count = select(func.count()).select_from(Dataset)
     if project_id is not None:
         base = base.where(Dataset.project_id == project_id)
         count = count.where(Dataset.project_id == project_id)
+    base = ownership.scope_datasets_to_owner(base, user)
+    count = ownership.scope_datasets_to_owner(count, user)
     total = (await db.execute(count)).scalar_one()
     rows = (await db.execute(base.limit(limit).offset(offset))).scalars().all()
     return Page[DatasetResponse](
@@ -100,13 +107,10 @@ async def list_datasets(
     )
 
 
-async def get_dataset(db: AsyncSession, dataset_id: UUID) -> DatasetResponse:
-    ds = await db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {dataset_id} not found",
-        )
+async def get_dataset(
+    db: AsyncSession, dataset_id: UUID, user: CurrentUser | None = None
+) -> DatasetResponse:
+    ds = await ownership.assert_dataset_access(db, dataset_id, user)
     return DatasetResponse.model_validate(ds)
 
 
@@ -114,13 +118,9 @@ async def preview_dataset(
     db: AsyncSession,
     dataset_id: UUID,
     limit: int,
+    user: CurrentUser | None = None,
 ) -> DatasetPreviewResponse:
-    ds = await db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {dataset_id} not found",
-        )
+    ds = await ownership.assert_dataset_access(db, dataset_id, user)
     if not ds.storage_uri:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -165,13 +165,10 @@ async def preview_dataset(
     )
 
 
-async def download_dataset(db: AsyncSession, dataset_id: UUID) -> StreamingResponse:
-    ds = await db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {dataset_id} not found",
-        )
+async def download_dataset(
+    db: AsyncSession, dataset_id: UUID, user: CurrentUser | None = None
+) -> StreamingResponse:
+    ds = await ownership.assert_dataset_access(db, dataset_id, user)
     if not ds.storage_uri:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -180,6 +177,24 @@ async def download_dataset(db: AsyncSession, dataset_id: UUID) -> StreamingRespo
 
     bucket, key = parse_s3_uri(ds.storage_uri)
     filename = f"{ds.name}.jsonl"
+
+    # Data leaving the system is worth recording even though nothing else
+    # here mutates — this is the one read path where "who took a copy of
+    # what, and when" is the question an audit log exists to answer. Needs
+    # its own commit precisely because there is no mutation to ride along
+    # with, and it happens before the stream opens so a client that
+    # disconnects mid-download is still recorded as having started it.
+    audit_service.record(
+        db,
+        action="dataset.download",
+        resource_type="dataset",
+        resource_id=str(ds.id),
+        project_id=ds.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"num_samples": ds.num_samples, "size_bytes": ds.size_bytes},
+    )
+    await db.commit()
 
     async def _iter() -> AsyncIterator[bytes]:
         minio = get_minio_client()
@@ -198,13 +213,10 @@ async def download_dataset(db: AsyncSession, dataset_id: UUID) -> StreamingRespo
     )
 
 
-async def delete_dataset(db: AsyncSession, dataset_id: UUID) -> None:
-    ds = await db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {dataset_id} not found",
-        )
+async def delete_dataset(
+    db: AsyncSession, dataset_id: UUID, user: CurrentUser | None = None
+) -> None:
+    ds = await ownership.assert_dataset_access(db, dataset_id, user)
 
     # Both `training_jobs.dataset_id` and `evaluation_runs.dataset_id` are
     # NOT NULL with `ondelete=RESTRICT` — we must refuse the delete here
@@ -252,11 +264,23 @@ async def delete_dataset(db: AsyncSession, dataset_id: UUID) -> None:
                 "failed to remove pdf object for %s", dataset_id, exc_info=True
             )
 
+    audit_service.record(
+        db,
+        action="dataset.delete",
+        resource_type="dataset",
+        resource_id=str(ds.id),
+        project_id=ds.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"name": ds.name, "source": ds.source.value},
+    )
     await db.delete(ds)
     await db.commit()
 
 
-async def cancel_dataset(db: AsyncSession, dataset_id: UUID) -> dict[str, str]:
+async def cancel_dataset(
+    db: AsyncSession, dataset_id: UUID, user: CurrentUser | None = None
+) -> dict[str, str]:
     """Revoke the underlying SDG Celery task + flip status to CANCELLED.
 
     Idempotent: cancelling an already-terminal dataset returns 200 with the
@@ -265,14 +289,9 @@ async def cancel_dataset(db: AsyncSession, dataset_id: UUID) -> dict[str, str]:
     (see `_persist_jsonl_dataset` / `_persist_pdf_dataset` above), so they
     always hit the terminal-status branch and are reported as already-done
     rather than treated as a cancellable job. Cancelling a non-existent
-    dataset returns 404.
+    dataset, or one belonging to another user, returns 404.
     """
-    ds = await db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {dataset_id} not found",
-        )
+    ds = await ownership.assert_dataset_access(db, dataset_id, user)
     if ds.status in TERMINAL_JOB_STATUSES:
         return {"dataset_id": str(ds.id), "status": ds.status.value}
 
@@ -283,6 +302,16 @@ async def cancel_dataset(db: AsyncSession, dataset_id: UUID) -> dict[str, str]:
     revoke_celery_task(task_id, context=f"dataset {dataset_id}")
 
     ds.status = JobStatus.CANCELLED
+    audit_service.record(
+        db,
+        action="dataset.cancel",
+        resource_type="dataset",
+        resource_id=str(ds.id),
+        project_id=ds.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": task_id},
+    )
     await db.commit()
     return {"dataset_id": str(ds.id), "status": JobStatus.CANCELLED.value}
 
@@ -297,6 +326,7 @@ async def upload_seed_dataset(
     task_type: TaskType,
     name: str | None,
     file: UploadFile,
+    user: CurrentUser | None = None,
 ) -> SeedUploadResponse:
     """Upload + persist a JSONL/JSON or PDF (QA-only) seed file.
 
@@ -306,14 +336,13 @@ async def upload_seed_dataset(
       else  → parse JSON or JSONL; if rows aren't canonical, run Format
               Detection (LLM); persist canonicalised JSONL; record the
               FormatDetectionReport in metadata.
+
+    Parent-check: this is a create against `project_id`, so ownership is
+    asserted on the *project* (the attack that matters is seeding data into
+    someone else's project) before anything is read from `file`.
     """
     settings = get_settings()
-    project = await db.get(Project, project_id)
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project {project_id} not found",
-        )
+    project = await ownership.assert_project_access(db, project_id, user)
     if project.task_type != task_type:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -411,6 +440,7 @@ async def _upload_jsonl_seed(
         name=name,
         valid_rows=valid,
         fd_report=fd_report,
+        fd_result=fd_result,
     )
 
     return SeedUploadResponse(
@@ -477,11 +507,16 @@ async def _persist_jsonl_dataset(
     name: str | None,
     valid_rows: list[dict],
     fd_report: FormatDetectionReport,
+    fd_result: FormatDetectionResult | None = None,
 ) -> Dataset:
     """Create the Dataset row + write the canonicalised JSONL to MinIO.
 
     Returns the freshly-refreshed Dataset (so the caller can read
     ``dataset.id`` for the response). Stage 4 of the upload pipeline.
+
+    ``fd_result`` is optional only so existing direct callers/tests that
+    predate usage tracking keep working unchanged — the real upload path
+    (`_upload_jsonl_seed`) always passes it.
     """
     dataset_name = name or f"seed-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     dataset = Dataset(
@@ -502,6 +537,53 @@ async def _persist_jsonl_dataset(
     size_bytes = put_jsonl(minio, bucket, key, valid_rows)
     dataset.storage_uri = s3_uri(bucket, key)
     dataset.size_bytes = size_bytes
+    audit_service.record(
+        db,
+        action="dataset.seed_upload",
+        resource_type="dataset",
+        resource_id=str(dataset.id),
+        project_id=dataset.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"format": "jsonl", "num_samples": dataset.num_samples},
+    )
+
+    # Format Detection is the one counted OpenRouter surface that runs in
+    # the API process rather than a Celery worker (it's a single call made
+    # synchronously, via asyncio.to_thread, during this upload) — which is
+    # exactly why usage_service.record was built to accept an AsyncSession
+    # as well as a sync Session. Recorded here, inside the same
+    # transaction this function already commits below, so a seed upload
+    # either persists both the dataset and its cost, or neither.
+    #
+    # `fd_result.ran` is True on the passthrough skip paths too (no API key,
+    # LLM error, no-mapping-produced) and so cannot be the gate. The token
+    # fields are what actually distinguish a billed call: they are populated
+    # whenever the provider answered — including the "answered but produced
+    # no usable mapping" path, which costs money like any other — and left
+    # `None` only when no call reached the provider at all. Their absence
+    # therefore means no call was billed, which is not the same as a call
+    # that billed and returned zero tokens.
+    if (
+        fd_result is not None
+        and fd_result.ran
+        and fd_result.model is not None
+        and fd_result.prompt_tokens is not None
+        and fd_result.completion_tokens is not None
+    ):
+        usage_service.record(
+            db,
+            actor_id=request_context.current_user_id(),
+            project_id=dataset.project_id,
+            job_id=None,
+            provider="openrouter",
+            model=fd_result.model,
+            stage=STAGE_FORMAT_DETECTION,
+            prompt_tokens=fd_result.prompt_tokens,
+            completion_tokens=fd_result.completion_tokens,
+            outcome="completed",
+        )
+
     await db.commit()
     await db.refresh(dataset)
     return dataset
@@ -572,11 +654,24 @@ async def _run_format_detection(
             return passthrough_with_required_check(
                 rows, required_keys, notes="OPENROUTER_API_KEY not set"
             )
+        # Format Detection is a counted OpenRouter surface, so it both feeds
+        # and honours the shared circuit breaker: a provider outage seen here
+        # trips it for the SDG workers too, and an already-open breaker fails
+        # this call fast instead of burning four retries during an upload.
+        #
+        # It is deliberately NOT budget-gated. Failing a seed upload with 402
+        # because a *different* feature (SDG) exhausted the month's budget
+        # would break the product for a fraction of a cent. The call still
+        # *counts toward* the budget — its usage row is written like any
+        # other — it just is not blocked by it.
         client = OpenRouterClient(
             api_key=api_key,
             teacher_model=llm_models.FORMAT_DETECTION,
             http_referer=http_referer,
             app_title=app_title,
+            precheck=circuit_breaker.precheck,
+            on_call_failure=circuit_breaker.on_failure,
+            on_call_success=circuit_breaker.record_success,
         )
         return detect_and_rename(
             rows=rows,
@@ -729,6 +824,16 @@ async def _persist_pdf_dataset(
     meta = dict(dataset.generation_metadata or {})
     meta["pdf_uri"] = pdf_uri
     dataset.generation_metadata = meta
+    audit_service.record(
+        db,
+        action="dataset.seed_upload",
+        resource_type="dataset",
+        resource_id=str(dataset.id),
+        project_id=dataset.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"format": "pdf", "size_bytes": dataset.size_bytes},
+    )
     await db.commit()
     await db.refresh(dataset)
     return dataset, pdf_uri

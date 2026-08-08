@@ -33,8 +33,11 @@ from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
+from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus, TaskType
+from api.core import request_context
 from api.schemas.progress import EvaluationProgress, JobCompleted, JobFailed
+from api.services import audit_service
 from workers.celery_app import celery_app
 from workers.progress import publish_ws_message, sync_redis_scope
 from workers.storage import get_jsonl, get_minio_client, parse_s3_uri
@@ -47,6 +50,22 @@ log = get_task_logger(__name__)
 # suppresses per-step inner training progress across trials ("the WS firehose
 # would be too chatty"). The final row always publishes regardless of this gap.
 _PREDICT_PROGRESS_THROTTLE_SECONDS: float = 2.0
+
+
+
+def _project_id_for_run(session, row):
+    """EvaluationRun -> ModelArtifact -> TrainingJob -> Project (3 hops).
+
+    Sync session; mirrors the depth `api/services/job_ownership.py` documents.
+    Returns None rather than raising — an audit row with an unresolved project
+    is still worth keeping, and this runs inside a terminal-status write that
+    must not acquire new failure modes.
+    """
+    artifact = session.get(ModelArtifact, row.model_artifact_id)
+    if artifact is None:
+        return None
+    training_job = session.get(TrainingJob, artifact.training_job_id)
+    return training_job.project_id if training_job is not None else None
 
 
 @celery_app.task(bind=True, name="evaluation.run", max_retries=0)
@@ -65,6 +84,16 @@ def run_evaluation(
 
         def publish(msg: Any) -> None:
             publish_ws_message(redis, job_id, msg)
+
+        # Declared before the `try:` so the `except BaseException` handler can
+        # read it. Evaluation uploads nothing — it only reads the dataset — so
+        # unlike the other four tasks there is no orphaned artifact to clean
+        # up here. What this flag protects is the run's terminal state: a
+        # failure after the COMPLETED commit (a broken log handler, or a
+        # cancel's SIGTERM arriving as `SystemExit` in that window) must not
+        # rewrite a finished evaluation as failed, nor publish `JobFailed`
+        # after `JobCompleted`.
+        committed = False
 
         try:
             # ---- 1. Load context --------------------------------------------
@@ -194,6 +223,20 @@ def run_evaluation(
                 row.llm_judge_model = judge_model_resolved
                 row.status = JobStatus.COMPLETED
                 row.ended_at = datetime.now(timezone.utc)
+                audit_service.record(
+                    session,
+                    action="evaluation.completed",
+                    resource_type="evaluation",
+                    resource_id=str(row.id),
+                    project_id=_project_id_for_run(session, row),
+                    actor_id=request_context.current_user_id(),
+                    request_id=request_context.current_request_id(),
+                    metadata={"job_id": job_id, "llm_judge_score": judge_score},
+                )
+
+            # The run is durably COMPLETED. From here the handler must not
+            # rewrite its terminal state or emit a contradicting frame.
+            committed = True
 
             publish(
                 JobCompleted(
@@ -231,25 +274,48 @@ def run_evaluation(
             try:
                 with session_scope() as session:
                     row = session.get(EvaluationRun, eval_uuid)
-                    if row is not None:
+                    # Same guard as the other four tasks: `committed` means
+                    # this run already finished and its row says so. The
+                    # exception is still re-raised so Celery records the task
+                    # failure; it is the row that must stay true.
+                    if row is not None and not committed:
                         # The cancel endpoint already set CANCELLED before
                         # revoking; don't overwrite it with FAILED.
                         if row.status != JobStatus.CANCELLED:
                             row.status = JobStatus.FAILED
                         row.ended_at = datetime.now(timezone.utc)
                         row.error_message = (str(exc) or repr(exc))[:4000]
+                        audit_service.record(
+                            session,
+                            action=(
+                                "evaluation.cancelled"
+                                if row.status == JobStatus.CANCELLED
+                                else "evaluation.failed"
+                            ),
+                            resource_type="evaluation",
+                            resource_id=str(row.id),
+                            project_id=_project_id_for_run(session, row),
+                            outcome="failure",
+                            actor_id=request_context.current_user_id(),
+                            request_id=request_context.current_request_id(),
+                            metadata={"job_id": job_id, "error_type": type(exc).__name__},
+                        )
             except Exception:  # noqa: BLE001
                 log.warning("could not persist FAILED for %s", evaluation_id, exc_info=True)
-            try:
-                publish(
-                    JobFailed(
-                        job_id=job_id,
-                        error=str(exc) or repr(exc),
-                        error_type=type(exc).__name__,
+            # A client that already received `JobCompleted` must never then
+            # receive `JobFailed` for the same job_id. A terminal frame is
+            # terminal.
+            if not committed:
+                try:
+                    publish(
+                        JobFailed(
+                            job_id=job_id,
+                            error=str(exc) or repr(exc),
+                            error_type=type(exc).__name__,
+                        )
                     )
-                )
-            except Exception:  # noqa: BLE001
-                log.warning("failed to publish JobFailed", exc_info=True)
+                except Exception:  # noqa: BLE001
+                    log.warning("failed to publish JobFailed", exc_info=True)
             raise
 
 

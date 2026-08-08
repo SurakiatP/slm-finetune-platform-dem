@@ -13,6 +13,24 @@
         ],
         "summary": "Create a project",
         "operationId": "create_project_api_v1_projects_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -91,6 +109,22 @@
               ],
               "title": "External Project Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -134,6 +168,22 @@
               "format": "uuid",
               "title": "Project Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -174,6 +224,22 @@
               "type": "string",
               "format": "uuid",
               "title": "Project Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],
@@ -226,11 +292,193 @@
               "format": "uuid",
               "title": "Project Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/activity": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Audit trail for one project (newest first)",
+        "description": "Every state-changing action recorded against this project.\n\nOwnership is enforced inside `list_activity`, so this 404s for someone\nelse's project exactly like `GET /projects/{id}` does.\n\nEvents whose project was later deleted are not reachable here: the FK is\n`ON DELETE SET NULL`, so the rows survive (deliberately — an audit log\nthat a delete can erase is not an audit log) but no longer belong to a\nproject anyone can query by id.",
+        "operationId": "list_project_activity_api_v1_projects__project_id__activity_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AuditEventResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/usage": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Usage/cost log for one project (newest first)",
+        "description": "Every OpenRouter usage event recorded against this project, newest first.\n\nOwnership is enforced inside `list_project_usage` (it calls\n`ownership.assert_project_access` before touching `usage_events` at\nall), so this 404s for someone else's project exactly like\n`GET /projects/{id}` and `/activity` do — never an empty page, which\nwould itself reveal that the project exists.",
+        "operationId": "list_project_usage_api_v1_projects__project_id__usage_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_UsageEventResponse_"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -252,15 +500,33 @@
         ],
         "summary": "Upload seed examples (JSONL or JSON)",
         "operationId": "upload_seed_dataset_api_v1_datasets_upload_seed_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "multipart/form-data": {
               "schema": {
                 "$ref": "#/components/schemas/Body_upload_seed_dataset_api_v1_datasets_upload_seed_post"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "201": {
@@ -293,7 +559,26 @@
         ],
         "summary": "Generate a synthetic dataset via OpenRouter",
         "operationId": "generate_dataset_api_v1_datasets_generate_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
@@ -305,18 +590,17 @@
                     "$ref": "#/components/schemas/SDGRequestDescriptionOnly"
                   }
                 ],
-                "title": "Body",
                 "discriminator": {
                   "propertyName": "sdg_mode",
                   "mapping": {
                     "with_seed": "#/components/schemas/SDGRequestWithSeed",
                     "description_only": "#/components/schemas/SDGRequestDescriptionOnly"
                   }
-                }
+                },
+                "title": "Body"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "202": {
@@ -389,6 +673,22 @@
               "default": 0,
               "title": "Offset"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -432,6 +732,22 @@
               "format": "uuid",
               "title": "Dataset Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -472,6 +788,22 @@
               "type": "string",
               "format": "uuid",
               "title": "Dataset Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],
@@ -521,6 +853,22 @@
               "default": 20,
               "title": "Limit"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -564,6 +912,22 @@
               "format": "uuid",
               "title": "Dataset Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -599,6 +963,22 @@
               "type": "string",
               "format": "uuid",
               "title": "Dataset Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],
@@ -637,6 +1017,24 @@
         ],
         "summary": "Start a training job (manual or HPO)",
         "operationId": "start_training_api_v1_trainings_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -747,6 +1145,22 @@
               "default": 0,
               "title": "Offset"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -790,6 +1204,22 @@
               "format": "uuid",
               "title": "Training Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -830,6 +1260,22 @@
               "type": "string",
               "format": "uuid",
               "title": "Training Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],
@@ -879,6 +1325,22 @@
               "format": "uuid",
               "title": "Training Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -926,6 +1388,22 @@
               "format": "uuid",
               "title": "Training Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -969,6 +1447,22 @@
               "format": "uuid",
               "title": "Training Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -1011,6 +1505,22 @@
               "type": "string",
               "format": "uuid",
               "title": "Training Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],
@@ -1102,6 +1612,22 @@
               "default": 0,
               "title": "Offset"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -1145,6 +1671,22 @@
               "format": "uuid",
               "title": "Model Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -1187,6 +1729,22 @@
               "type": "string",
               "format": "uuid",
               "title": "Model Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],
@@ -1240,6 +1798,22 @@
               "type": "string",
               "format": "uuid",
               "title": "Model Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],
@@ -1298,6 +1872,22 @@
               "default": "gguf",
               "title": "Format"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -1324,15 +1914,33 @@
         ],
         "summary": "OpenAI-compatible chat completions (proxied to Ollama)",
         "operationId": "chat_completions_api_v1_inference_chat_completions_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ChatCompletionRequest"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -1365,15 +1973,33 @@
         ],
         "summary": "OpenAI-compatible legacy text completions",
         "operationId": "text_completions_api_v1_inference_completions_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/CompletionRequest"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -1406,6 +2032,24 @@
         ],
         "summary": "OpenAI-compatible model listing (Ollama-served)",
         "operationId": "list_inference_models_api_v1_inference_models_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1413,6 +2057,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ModelDescriptorList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1427,6 +2081,24 @@
         ],
         "summary": "Start an evaluation run",
         "operationId": "start_evaluation_api_v1_evaluations_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -1539,6 +2211,22 @@
               "default": 0,
               "title": "Offset"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -1581,6 +2269,22 @@
               "type": "string",
               "format": "uuid",
               "title": "Evaluation Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],
@@ -1625,6 +2329,22 @@
               "format": "uuid",
               "title": "Evaluation Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -1662,15 +2382,33 @@
         ],
         "summary": "Compare metrics across multiple evaluation runs",
         "operationId": "compare_evaluations_api_v1_evaluations_compare_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/EvaluationCompareRequest"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -1679,6 +2417,56 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EvaluationCompareResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/usage": {
+      "get": {
+        "tags": [
+          "usage"
+        ],
+        "summary": "Caller's own usage/cost rollup for the current calendar month",
+        "description": "The caller's cross-project usage/cost rollup since the start of the\ncurrent UTC calendar month, grouped by (model, stage).\n\n**For an authenticated caller** this is the exact aggregate\n`usage_service.assert_within_budget` checks against for the per-actor\nmonthly cap — the same number that starts turning into 402s once it\nreaches `budget_monthly_usd_per_actor`.\n\n**For an anonymous caller it is not.** Actor resolution is `user.id`\nwhen a verified token is present and `None` otherwise (phase-1 /\n`AUTH_REQUIRED=false`), and a `None` actor rolls up only the rows\nrecorded with no actor attached (`UsageEvent.actor_id IS NULL`). The\nbudget gate, meanwhile, skips the per-actor cap entirely for such a\ncaller and applies the **global** cap — so an anonymous caller can be\n402'd by a number this endpoint never showed them. Returning the global\ntotal here instead would make the two agree, but at the price of leaking\nevery other user's spend to anyone unauthenticated, which is not a\ntrade worth making.\n\nThe endpoint sits under `require_user`, so it never itself 401s an\nanonymous caller while `AUTH_REQUIRED=false`.",
+        "operationId": "get_usage_summary_api_v1_usage_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageSummaryResponse"
                 }
               }
             }
@@ -1826,6 +2614,22 @@
               "type": "string",
               "title": "Job Id"
             }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -1893,6 +2697,7 @@
           "system"
         ],
         "summary": "Liveness probe",
+        "description": "Is this process alive? Deliberately touches nothing else.\n\nA supervisor restarts the container when this fails, so it must never\ndepend on Postgres, Redis, MinIO or the worker — otherwise one dependency\nblip restarts an API that was serving fine. `/ready` is the endpoint that\nasks about dependencies.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -1905,6 +2710,30 @@
                   },
                   "type": "object",
                   "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Readiness probe",
+        "description": "Can this instance serve? Probes Postgres, Redis, MinIO and the worker.\n\n`503` only when Postgres or Redis is down — those are the two the API\ncannot answer a single request without. MinIO or a missing worker report\n`degraded` on a `200`, because the API still serves reads and still\naccepts submits; see `api/services/readiness.py` for why failing on those\nwould be the bigger outage.",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Ready Ready Get"
                 }
               }
             }
@@ -1924,6 +2753,104 @@
         ],
         "title": "ArtifactFormat",
         "description": "Supported model export formats."
+      },
+      "AuditEventResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "actor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "resource_type": {
+            "type": "string",
+            "title": "Resource Type"
+          },
+          "resource_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource Id"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "created_at",
+          "actor_id",
+          "project_id",
+          "action",
+          "resource_type",
+          "resource_id",
+          "outcome",
+          "request_id"
+        ],
+        "title": "AuditEventResponse",
+        "description": "Wire shape for an audit row.\n\nThe ORM attribute is `event_metadata` (see `api/models/audit_event.py`\nfor why `metadata` itself can't be used), but the API contract exposes\nit as `metadata` — `validation_alias` tells `model_validate(...,\nfrom_attributes=True)` to read the ORM's `event_metadata` attribute\nwhile the field itself (and therefore its JSON key) stays `metadata`."
       },
       "BaseModelInfo": {
         "properties": {
@@ -4368,6 +5295,42 @@
         ],
         "title": "ModelExportResponse"
       },
+      "Page_AuditEventResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuditEventResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 500.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "Page[AuditEventResponse]"
+      },
       "Page_DatasetResponse_": {
         "properties": {
           "items": {
@@ -4548,6 +5511,42 @@
         ],
         "title": "Page[TrainingResponse]"
       },
+      "Page_UsageEventResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UsageEventResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 500.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "Page[UsageEventResponse]"
+      },
       "ProjectCreate": {
         "properties": {
           "name": {
@@ -4645,6 +5644,17 @@
               }
             ],
             "title": "External Project Id"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
           },
           "created_at": {
             "type": "string",
@@ -5748,6 +6758,210 @@
         ],
         "title": "TrainingResponse"
       },
+      "UsageEventResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "actor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "title": "Prompt Tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "title": "Completion Tokens"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "created_at",
+          "actor_id",
+          "project_id",
+          "job_id",
+          "provider",
+          "model",
+          "stage",
+          "prompt_tokens",
+          "completion_tokens",
+          "cost_usd",
+          "outcome"
+        ],
+        "title": "UsageEventResponse",
+        "description": "Wire shape for a single usage row."
+      },
+      "UsageRollupItem": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "title": "Prompt Tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "title": "Completion Tokens"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "model",
+          "stage",
+          "prompt_tokens",
+          "completion_tokens",
+          "cost_usd"
+        ],
+        "title": "UsageRollupItem",
+        "description": "One (model, stage) bucket within a `UsageSummaryResponse`."
+      },
+      "UsageSummaryResponse": {
+        "properties": {
+          "period_start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Period Start"
+          },
+          "period_end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Period End"
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "title": "Prompt Tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "title": "Completion Tokens"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UsageRollupItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "has_unpriced_usage": {
+            "type": "boolean",
+            "title": "Has Unpriced Usage",
+            "description": "True when at least one row in this period had cost_usd IS NULL, so a consumer knows the total is a floor, not a total."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "period_start",
+          "period_end",
+          "prompt_tokens",
+          "completion_tokens",
+          "cost_usd",
+          "items",
+          "has_unpriced_usage"
+        ],
+        "title": "UsageSummaryResponse",
+        "description": "Aggregate usage/cost over a date range, broken down by model+stage."
+      },
       "ValidationError": {
         "properties": {
           "loc": {
@@ -5814,6 +7028,10 @@
     {
       "name": "evaluations",
       "description": "Per-task metrics and LLM-as-judge scoring."
+    },
+    {
+      "name": "usage",
+      "description": "OpenRouter usage/cost events and monthly rollups."
     },
     {
       "name": "jobs",

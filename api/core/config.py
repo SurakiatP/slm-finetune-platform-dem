@@ -7,10 +7,17 @@ Use `get_settings()` (cached) — never re-instantiate `Settings` ad hoc.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal, Self
 
-from pydantic import AnyUrl, Field, field_validator
+from pydantic import AnyUrl, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# Credential values shipped in `.env.example`. `cp .env.example .env` is the
+# documented Quickstart step, so these are what a deployment that never
+# changed anything is running on — the exact thing the P0 acceptance
+# criterion ("ระบบไม่สามารถเริ่มด้วย credential เริ่มต้น") is about.
+_DEFAULT_MINIO_CREDENTIAL = "minioadmin"
+_DEFAULT_DB_CREDENTIALS = ("slm", "slm")
 
 
 class Settings(BaseSettings):
@@ -22,6 +29,12 @@ class Settings(BaseSettings):
     )
 
     # ---- App ---------------------------------------------------------------
+    # Gates the credential checks below. `dev` is the default on purpose: the
+    # Quickstart is `cp .env.example .env`, and the unit suite constructs
+    # Settings with nothing but DATABASE_URL set. Enforcing unconditionally
+    # would break both, so the deployment has to *say* it is production
+    # before production rules apply.
+    environment: Literal["dev", "staging", "production"] = "dev"
     log_level: str = Field(default="INFO")
     api_port: int = Field(default=8000, ge=1, le=65535)
     # NoDecode disables pydantic-settings' default JSON decoding so the
@@ -96,6 +109,154 @@ class Settings(BaseSettings):
     # selectable in the UI). Earlier defaults `anthropic/claude-3.5-sonnet`
     # (retired) and `google/gemini-3.1-flash-lite-preview` were superseded.
     llm_judge_model: str = "qwen/qwen3-235b-a22b-2507"
+
+    # ---- Job reconciliation (orphan sweep, see api/services/job_reconcile.py)
+    # Minutes of silence (no fresh `job:{task_id}:last` snapshot, and no DB
+    # row update as a fallback) before a `pending`/`running` job whose task id
+    # is absent from Celery's active set is flipped to `failed`. Must stay
+    # comfortably above normal progress-publish cadence to avoid false
+    # positives on a healthy but slow-to-report job.
+    job_orphan_grace_minutes: int = Field(default=15, ge=1)
+
+    # ---- Auth (Supabase JWT, see api/core/auth.py) -------------------------
+    # Project URL, e.g. https://<ref>.supabase.co — the JWKS used to verify
+    # tokens lives at f"{supabase_url}/auth/v1/.well-known/jwks.json", and
+    # that URL doubles as the expected `iss` claim.
+    supabase_url: str = ""
+    # Expected `aud` claim. Supabase's default audience for authenticated
+    # end users is the literal string "authenticated".
+    supabase_jwt_audience: str = "authenticated"
+    # Optional HS256 fallback shared secret, used only for Supabase projects
+    # still on legacy symmetric signing keys. Leave unset when the project
+    # is on the newer asymmetric (JWKS) keys — which is the production path
+    # for this app, since the frontend uses the new publishable-key format.
+    supabase_jwt_secret: str = ""
+    # Phase-1 compatibility switch (see api/core/auth.py). False (default):
+    # tokens are verified when present, but a request with no Authorization
+    # header is still allowed through as anonymous — required because the
+    # current smart-model-tune frontend does not send the header yet. Flip
+    # to True once the frontend ships the header, to actually reject
+    # unauthenticated requests.
+    auth_required: bool = False
+
+    # ---- Model pricing (see api/services/model_pricing.py) -----------------
+    # JSON object of {model_id: {"prompt": usd_per_1m, "completion": usd_per_1m}}
+    # overriding/extending the built-in price map. Typed `str`, not `dict`,
+    # on purpose — a `dict[str, ...]` field would hit the same
+    # pydantic-settings JSON-pre-decode surprise documented on
+    # `api_cors_origins` above. The consuming module is responsible for
+    # parsing this string itself.
+    model_pricing_json: str = ""
+
+    # ---- Concurrency quotas (see api/services/quota.py) ---------------------
+    # Per-actor caps apply to authenticated callers only — ownership is
+    # tracked via `Project.owner_id`, and the DB has no IP address to bucket
+    # anonymous callers on. Under today's AUTH_REQUIRED=false this means the
+    # per-actor limit is inert and only the global cap is enforced; that is
+    # deliberate, and it stays that way until AUTH_REQUIRED flips. Do not
+    # paper over the gap with a Redis-per-IP side channel.
+    quota_max_gpu_jobs_per_actor: int = Field(default=1, ge=1)
+    quota_max_sdg_jobs_per_actor: int = Field(default=2, ge=1)
+    quota_max_gpu_jobs_global: int = Field(default=4, ge=1)
+    quota_max_sdg_jobs_global: int = Field(default=8, ge=1)
+    # Seconds a quota-rejected request's `Retry-After` header advises waiting.
+    quota_retry_after_seconds: int = Field(default=30, ge=1)
+
+    # ---- OpenRouter circuit breaker (see api/services/circuit_breaker.py) --
+    openrouter_breaker_failure_threshold: int = Field(default=5, ge=1)
+    openrouter_breaker_open_seconds: int = Field(default=60, ge=1)
+
+    # ---- Monthly OpenRouter budget ------------------------------------------
+    # The reset window is the *calendar* month, matching OpenRouter's own
+    # billing period. Both caps default to `None`, meaning unlimited — the
+    # feature ships dark, and a deployment opts in by setting a real number
+    # rather than the other way around.
+    budget_monthly_usd_per_actor: float | None = Field(default=None, ge=0)
+    budget_monthly_usd_global: float | None = Field(default=None, ge=0)
+
+    # ---- Production guards -------------------------------------------------
+
+    @model_validator(mode="after")
+    def _reject_default_credentials_in_production(self) -> Self:
+        """Refuse to boot a production deployment on the documented defaults.
+
+        Only the credentials that are *always* required are fatal. Notably
+        `openrouter_api_key` is NOT: SDG is its only consumer, and a
+        deployment that just serves inference on already-exported models is a
+        legitimate configuration that should not be blocked. It gets a warning
+        from `startup_warnings()` instead.
+
+        The Postgres password is not its own setting — it is embedded in
+        `database_url` — so it is checked by parsing the DSN rather than by
+        reading POSTGRES_PASSWORD, which this process never sees.
+        """
+        if self.environment != "production":
+            return self
+
+        offenders: list[str] = []
+        if self.minio_access_key == _DEFAULT_MINIO_CREDENTIAL:
+            offenders.append("MINIO_ACCESS_KEY")
+        if self.minio_secret_key == _DEFAULT_MINIO_CREDENTIAL:
+            offenders.append("MINIO_SECRET_KEY")
+        if _dsn_uses_default_credentials(self.database_url):
+            offenders.append("DATABASE_URL (still carries the example slm:slm credentials)")
+
+        if offenders:
+            raise ValueError(
+                "ENVIRONMENT=production but these still hold the values shipped in "
+                f".env.example: {', '.join(offenders)}. Set real secrets, or use "
+                "ENVIRONMENT=dev/staging if this is not a production deployment."
+            )
+        return self
+
+    def startup_warnings(self) -> list[str]:
+        """Configuration that is legal but worth shouting about at boot.
+
+        Returned rather than logged so the caller can emit them *after*
+        `configure_logging()` has run — settings are built before logging is
+        configured, so a `log.warning` in here would go out through the root
+        handler in a different format, or be swallowed entirely.
+        """
+        warnings: list[str] = []
+        if self.environment != "production":
+            return warnings
+
+        if not self.openrouter_api_key:
+            warnings.append(
+                "running in production with no OPENROUTER_API_KEY — synthetic data "
+                "generation will fail at call time. Fine for an inference-only "
+                "deployment; a mistake for any other."
+            )
+        if not self.auth_required:
+            warnings.append(
+                "running in production with AUTH_REQUIRED=false — every request is "
+                "anonymous and every row it creates has owner_id NULL, which fails "
+                "closed for everyone once the flag is flipped. This is the phase-1 "
+                "rollout state; flip it once the frontend sends Authorization headers."
+            )
+        if self.auth_required and not self.supabase_url:
+            warnings.append(
+                "AUTH_REQUIRED=true with no SUPABASE_URL — there is no JWKS to verify "
+                "against, so every authenticated request will be rejected."
+            )
+        return warnings
+
+
+def _dsn_uses_default_credentials(dsn: str) -> bool:
+    """True when `dsn`'s userinfo is still the example `slm:slm` pair.
+
+    Deliberately parses rather than substring-matching: `slm:slm` also appears
+    in the default host and database name (`@postgres:5432/slm`), so a naive
+    `"slm:slm" in dsn` would be both over- and under-eager depending on the
+    DSN's shape.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(dsn)
+    except ValueError:
+        return False
+    return (parts.username, parts.password) == _DEFAULT_DB_CREDENTIALS
 
 
 @lru_cache(maxsize=1)
