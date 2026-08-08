@@ -11,8 +11,9 @@ Layers covered:
   4. Service-level    — `record()` only `session.add()`s (no commit of its
                         own; the row survives the *caller's* commit, and is
                         gone if the caller rolls back instead), and
-                        `list_activity()` orders newest-first and 404s for
-                        a project belonging to a different user.
+                        `list_activity()` orders newest-first and 403s for
+                        an existing project belonging to a different user
+                        (404 for a project that doesn't exist — ADR-012).
 
 Runs entirely against an in-memory aiosqlite engine — no Postgres, no
 Docker. Mirrors the `@compiles(JSONB, "sqlite")` shim from
@@ -323,7 +324,9 @@ class TestListActivity:
         assert page.total == 3
         assert [i.action for i in page.items] == ["action-2", "action-1", "action-0"]
 
-    async def test_404_for_different_user(self, async_session: AsyncSession) -> None:
+    async def test_403_for_different_user(self, async_session: AsyncSession) -> None:
+        """ADR-012: an existing project owned by someone else is 403, not
+        the 404 this used to be."""
         project = await _seed_project(async_session, owner_id="user-1")
         await async_session.commit()
 
@@ -340,6 +343,17 @@ class TestListActivity:
         with pytest.raises(HTTPException) as excinfo:
             await audit_service.list_activity(
                 async_session, project.id, limit=10, offset=0, user=other_user
+            )
+        assert excinfo.value.status_code == 403
+
+    async def test_404_for_a_missing_project(self, async_session: AsyncSession) -> None:
+        """Pair for the test above: a project id that names no row at all
+        must stay 404, distinct from the 403 an existing-but-not-yours
+        project now gets."""
+        other_user = CurrentUser(id="user-2", email=None)
+        with pytest.raises(HTTPException) as excinfo:
+            await audit_service.list_activity(
+                async_session, uuid4(), limit=10, offset=0, user=other_user
             )
         assert excinfo.value.status_code == 404
 

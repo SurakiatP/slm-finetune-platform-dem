@@ -384,10 +384,11 @@ async def list_project_usage(
     """Paginated usage log for one project, newest first.
 
     `assert_project_access` runs first — before touching `usage_events` at
-    all — so a non-owner gets the same 404 they'd get probing the project
-    directly, rather than an empty (and therefore existence-revealing)
-    page. Same reasoning as `audit_service.list_activity`, which this
-    mirrors.
+    all — so a non-owner gets the same 403 they'd get probing the project
+    directly (404 if the project doesn't exist at all), rather than an
+    empty (and therefore existence-revealing) page. Same reasoning as
+    `audit_service.list_activity`, which this mirrors — see ADR-012 for why
+    that's 403 and not the 404 this used to be.
     """
     from api.services import ownership  # deferred — see the module header
 

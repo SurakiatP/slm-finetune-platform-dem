@@ -178,8 +178,9 @@ async def cancel_export(
 ) -> dict[str, str]:
     """Revoke the underlying export Celery task + flip export_status to CANCELLED.
 
-    404 if the artifact doesn't exist or belongs to another user. 409 if no
-    export was ever requested for this artifact (``export_status is None``)
+    404 if the artifact doesn't exist; 403 if it exists but belongs to
+    another user (ADR-012). 409 if no export was ever requested for this
+    artifact (``export_status is None``)
     — there is nothing to cancel, and pretending otherwise would report a
     fake CANCELLED transition for a job that was never enqueued. Idempotent
     once export_status is already terminal: returns 200 with the current
@@ -301,13 +302,18 @@ async def download_artifact(
         )
 
     # SafeTensors / LoRA — these are multi-file directories. We don't tar/zip
-    # server-side (RAM cost on large weights). Expose the URI for the client
-    # to enumerate via the MinIO API or our object-listing endpoint.
+    # server-side (RAM cost on large weights). Point the caller at the
+    # presigned multi-file listing endpoint instead of echoing the raw
+    # `s3://` URI back in the response: that URI is an internal storage
+    # address (bucket + key layout), not something a client should ever see
+    # or need — leaking it here was Wave 1b's item #4 fix. No URI in this
+    # detail message, on purpose.
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail=(
-            f"{fmt_lower} export is a multi-file directory (uri={uri}); "
-            "fetch individual objects via the MinIO API."
+            f"{fmt_lower} export is a multi-file directory; use "
+            f"GET /api/v1/models/{model_id}/download-url?format={fmt_lower} "
+            "to get a presigned URL for each file."
         ),
     )
 

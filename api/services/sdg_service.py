@@ -185,8 +185,10 @@ async def _validate_seed_dataset(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"seed dataset belongs to project {seed.project_id} but request "
-                f"is for project {project.id}"
+                # See training_service.py's twin of this message: the other
+                # project's UUID is deliberately omitted rather than echoed.
+                f"seed dataset {seed.id} belongs to a different project but "
+                f"the request is for project {project.id}"
             ),
         )
 

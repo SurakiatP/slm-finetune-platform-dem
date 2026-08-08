@@ -12,7 +12,8 @@ Layers covered:
                         no-op when both settings are `None`; per-actor cap;
                         global cap applying even to an anonymous caller.
   4. `summary_for_actor` — grouped by (model, stage), `has_unpriced_usage`.
-  5. `list_project_usage` — 404s for a non-owner before touching rows.
+  5. `list_project_usage` — 403s for a non-owner (404 for a missing
+     project) before touching rows (ADR-012).
   6. Import-surface   — must import cleanly with `jwt` blocked at the
                         meta-path, same technique as
                         `tests/unit/test_worker_import_surface.py`, since
@@ -724,7 +725,9 @@ class TestSummaryForActor:
 
 
 class TestListProjectUsage:
-    async def test_404_for_non_owner(self, async_session: AsyncSession) -> None:
+    async def test_403_for_non_owner(self, async_session: AsyncSession) -> None:
+        """ADR-012: an existing project owned by someone else is 403, not
+        the 404 this used to be."""
         project = await _seed_project(async_session, owner_id="user-1")
         await async_session.commit()
 
@@ -732,6 +735,17 @@ class TestListProjectUsage:
         with pytest.raises(HTTPException) as excinfo:
             await usage_service.list_project_usage(
                 async_session, project.id, limit=10, offset=0, user=other_user
+            )
+        assert excinfo.value.status_code == 403
+
+    async def test_404_for_a_missing_project(self, async_session: AsyncSession) -> None:
+        """Pair for the test above: a project id that names no row at all
+        must stay 404, distinct from the 403 an existing-but-not-yours
+        project now gets."""
+        other_user = CurrentUser(id="user-2", email=None)
+        with pytest.raises(HTTPException) as excinfo:
+            await usage_service.list_project_usage(
+                async_session, uuid4(), limit=10, offset=0, user=other_user
             )
         assert excinfo.value.status_code == 404
 

@@ -136,6 +136,60 @@ class TestAnonymousCallerIsCovered:
         req = _request(headers={"X-Forwarded-For": "203.0.113.7"})
         assert idempotency.actor_for(req, USER_A) == USER_A.id
 
+    async def test_single_value_xff_still_buckets_correctly(self, redis) -> None:
+        """This is exactly the shape the `edge` nginx service sends —
+        `X-Forwarded-For $remote_addr;` *overwrites* rather than appends
+        (`docker/edge.nginx.conf`), so production traffic never carries the
+        two-value XFF the tests above exercise. A naive `.split(",")[0]`
+        implementation happens to work on a single value too, so this is the
+        case where an implementation that only reads the *last* hop (also a
+        plausible-looking "fix" for XFF parsing) would still pass the
+        two-value tests above by accident but fail here."""
+        req = _request(headers={"X-Forwarded-For": "203.0.113.7"})
+        assert idempotency.client_host(req) == "203.0.113.7"
+        await idempotency.remember(req, None, BODY, {"job_id": "celery-task-1"})
+        assert await idempotency.replay(req, None, BODY) is not None
+
+    async def test_two_different_single_value_xffs_do_not_collide(self, redis) -> None:
+        one = _request(headers={"X-Forwarded-For": "203.0.113.7"})
+        two = _request(headers={"X-Forwarded-For": "198.51.100.4"})
+        assert idempotency.client_host(one) != idempotency.client_host(two)
+        await idempotency.remember(one, None, BODY, {"job_id": "celery-task-1"})
+        assert await idempotency.replay(two, None, BODY) is None
+
+    async def test_no_xff_at_all_falls_back_to_the_socket_and_shares_one_bucket(
+        self, redis
+    ) -> None:
+        """Known, deliberate failure mode — not a surprise to rediscover on
+        the box.
+
+        No `X-Forwarded-For` header is exactly the shape a misconfigured
+        `real_ip`/edge deployment produces: every request then arrives at
+        the app with `request.client.host` set to `edge`'s own container
+        address (see `_request_context_middleware`'s `client_ip` log line in
+        `api/main.py`, which exists specifically to make this visible on a
+        running box via `docker compose logs api | grep client_ip`). Two
+        *different* real-world anonymous callers that both hit the app this
+        way share the exact same dedupe bucket — caller B's identical-body
+        submit inside the 60s window gets caller A's replayed 202 instead of
+        being enqueued, silently swallowing caller B's job. This test pins
+        that consequence down as documented, expected behaviour of the
+        fallback (the alternative — failing the request when XFF is absent —
+        would take down every anonymous caller in local dev and tests, which
+        also have no XFF), not a bug to "fix" later without also fixing the
+        edge config that causes it.
+        """
+        one = _request()
+        two = _request()
+        assert idempotency.client_host(one) == idempotency.client_host(two) == "10.0.0.9"
+
+        await idempotency.remember(one, None, BODY, {"job_id": "celery-task-1"})
+        replayed = await idempotency.replay(two, None, BODY)
+        assert replayed is not None, (
+            "documented failure mode: with no XFF, distinct anonymous "
+            "callers collapse into one dedupe bucket"
+        )
+
 
 # =============================================================================
 # 3. Degradation — dedupe is an optimisation, never a failure mode

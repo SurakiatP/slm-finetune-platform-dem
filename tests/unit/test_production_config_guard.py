@@ -28,10 +28,27 @@ SAFE_DSN = "postgresql+asyncpg://appuser:s3cr3t@db.internal:5432/slm"
 DEFAULT_DSN = "postgresql+asyncpg://slm:slm@postgres:5432/slm"
 
 SAFE_MINIO = {"minio_access_key": "real-key", "minio_secret_key": "real-secret"}
+# A SUPABASE_URL that is not the shipped-blank default, so `_prod()`'s base
+# case has real auth verification material and boots cleanly.
+SAFE_SUPABASE_URL = "https://ref.supabase.co"
 
 
 def _prod(**overrides) -> Settings:
-    base = {"environment": "production", "database_url": SAFE_DSN, **SAFE_MINIO}
+    # auth_required + supabase_url are part of the SAFE baseline now, not
+    # just the credential fields: AUTH_REQUIRED=false and "auth_required
+    # with no verification material" are both fatal in production as of
+    # this guard (see TestDefaultCredentialsRefuseToBoot / TestAuthMaterial
+    # below). Every `_prod(...)` call in this file relies on this baseline
+    # being safe by default so it can override just the one field under
+    # test — a caller that wants to exercise the auth-fatal paths overrides
+    # `auth_required` / `supabase_url` / `supabase_jwt_secret` explicitly.
+    base = {
+        "environment": "production",
+        "database_url": SAFE_DSN,
+        "auth_required": True,
+        "supabase_url": SAFE_SUPABASE_URL,
+        **SAFE_MINIO,
+    }
     return Settings(**{**base, **overrides})
 
 
@@ -68,6 +85,8 @@ _FATAL = {
     "minio_access_key": {"minio_access_key": "minioadmin"},
     "minio_secret_key": {"minio_secret_key": "minioadmin"},
     "database_url": {"database_url": DEFAULT_DSN},
+    "alembic_database_url": {"alembic_database_url": DEFAULT_DSN},
+    "auth_required": {"auth_required": False},
 }
 
 
@@ -97,6 +116,28 @@ class TestDefaultCredentialsRefuseToBoot:
 
     def test_real_credentials_boot_cleanly(self) -> None:
         assert _prod().environment == "production"
+
+    def test_alembic_dsn_with_default_credentials_blocks_startup(self) -> None:
+        """`alembic_database_url` is a separate field from `database_url` —
+        a deployment could fix the async DSN and forget the sync override
+        Alembic reads, since it is optional and easy to leave stale."""
+        with pytest.raises(ValidationError) as exc:
+            _prod(alembic_database_url=DEFAULT_DSN)
+        assert "ALEMBIC_DATABASE_URL" in str(exc.value)
+
+    def test_auth_required_false_now_blocks_startup(self) -> None:
+        """This used to be `test_auth_disabled_in_production_is_a_warning_not_a_failure`,
+        which argued *for* the warning: failing here would block deploying
+        production at all until the frontend shipped Authorization headers.
+        That tradeoff has been resolved the other way — anonymous writes
+        with owner_id NULL are exactly the failure mode this guard exists to
+        catch, so blocking startup is now precisely the point, not a
+        regression to avoid."""
+        with pytest.raises(ValidationError) as exc:
+            _prod(auth_required=False)
+        message = str(exc.value)
+        assert "AUTH_REQUIRED" in message
+        assert "owner_id NULL" in message
 
 
 class TestDsnCredentialDetection:
@@ -137,18 +178,10 @@ class TestWarningsDoNotBlockStartup:
         settings = _prod(openrouter_api_key="")
         assert any("OPENROUTER_API_KEY" in w for w in settings.startup_warnings())
 
-    def test_auth_disabled_in_production_is_a_warning_not_a_failure(self) -> None:
-        """Failing here would block deploying production at all until the
-        Lovable frontend ships Authorization headers — work this repo cannot
-        do. The warning states the consequence instead."""
-        settings = _prod(auth_required=False)
-        warning = next(w for w in settings.startup_warnings() if "AUTH_REQUIRED" in w)
-        assert "owner_id NULL" in warning
-
-    def test_auth_required_without_supabase_url_is_flagged(self) -> None:
-        """A config that rejects every request while looking correct."""
-        settings = _prod(auth_required=True, supabase_url="")
-        assert any("SUPABASE_URL" in w for w in settings.startup_warnings())
+    # `test_auth_disabled_in_production_is_a_warning_not_a_failure` used to
+    # live here. AUTH_REQUIRED=false in production is fatal now — see
+    # `TestDefaultCredentialsRefuseToBoot.test_auth_required_false_now_blocks_startup`
+    # above — so there is no warning-only case for it left to test here.
 
     def test_a_fully_configured_production_is_silent(self) -> None:
         settings = _prod(
@@ -167,7 +200,92 @@ class TestWarningsDoNotBlockStartup:
 
 
 # =============================================================================
-# 4. The warnings actually reach a log
+# 4. Auth verification material — fatal vs. warning-only
+# =============================================================================
+
+
+class TestAuthMaterial:
+    """AUTH_REQUIRED=true needs *something* to verify a token against: either
+    SUPABASE_URL (JWKS / asymmetric keys) or SUPABASE_JWT_SECRET (HS256
+    fallback for legacy Supabase projects). Neither present is fatal — a
+    guaranteed 100% rejection rate is not a "legal but risky" config, it is
+    broken. Missing just SUPABASE_URL while the HS256 secret IS set is the
+    neighbouring case a naive "require supabase_url" implementation gets
+    wrong: that combination still verifies tokens, so it must stay a
+    warning, not become fatal.
+    """
+
+    def test_neither_url_nor_secret_is_fatal(self) -> None:
+        with pytest.raises(ValidationError) as exc:
+            _prod(auth_required=True, supabase_url="", supabase_jwt_secret="")
+        message = str(exc.value)
+        assert "SUPABASE_URL" in message
+        assert "SUPABASE_JWT_SECRET" in message
+
+    def test_secret_without_url_is_only_a_warning(self) -> None:
+        """The HS256 fallback path needs only the secret — SUPABASE_URL is
+        for the JWKS/asymmetric path and is not required alongside it."""
+        settings = _prod(auth_required=True, supabase_url="", supabase_jwt_secret="hs256-secret")
+        assert settings.environment == "production"  # did not raise
+        assert any("SUPABASE_URL" in w for w in settings.startup_warnings())
+
+    def test_url_without_secret_boots_silently(self) -> None:
+        """The baseline `_prod()` shape: SUPABASE_URL set, no HS256 secret
+        needed. Must be neither fatal nor a warning."""
+        settings = _prod(
+            auth_required=True,
+            supabase_url=SAFE_SUPABASE_URL,
+            supabase_jwt_secret="",
+            openrouter_api_key="sk-or-x",
+        )
+        assert settings.startup_warnings() == []
+
+
+# =============================================================================
+# 5. `minio_public_url` validation
+# =============================================================================
+
+
+class TestMinioPublicUrl:
+    def test_none_is_accepted(self) -> None:
+        assert Settings(database_url=SAFE_DSN, minio_public_url=None).minio_public_url is None
+
+    def test_a_path_component_is_rejected(self) -> None:
+        """SigV4 signs the canonical URI. A path prefix would force the edge
+        proxy to rewrite the path on the way to MinIO, which invalidates the
+        signature — hence the dedicated storage subdomain requirement."""
+        with pytest.raises(ValidationError) as exc:
+            Settings(database_url=SAFE_DSN, minio_public_url="https://host/storage")
+        assert "path" in str(exc.value).lower()
+
+    def test_explicit_default_https_port_is_rejected(self) -> None:
+        """`presign_v4` signs `host:` + `url.netloc` verbatim, but a browser
+        omits the default port when it sends the request — an explicit :443
+        would sign a Host header that never arrives, so it can never match."""
+        with pytest.raises(ValidationError) as exc:
+            Settings(database_url=SAFE_DSN, minio_public_url="https://host:443")
+        assert "port" in str(exc.value).lower()
+
+    def test_explicit_default_http_port_is_rejected(self) -> None:
+        with pytest.raises(ValidationError) as exc:
+            Settings(database_url=SAFE_DSN, minio_public_url="http://host:80")
+        assert "port" in str(exc.value).lower()
+
+    def test_non_default_port_is_accepted(self) -> None:
+        settings = Settings(database_url=SAFE_DSN, minio_public_url="https://host:9000")
+        assert settings.minio_public_url == "https://host:9000"
+
+    def test_bare_host_with_no_port_is_accepted(self) -> None:
+        settings = Settings(database_url=SAFE_DSN, minio_public_url="https://host")
+        assert settings.minio_public_url == "https://host"
+
+    def test_trailing_slash_is_stripped(self) -> None:
+        settings = Settings(database_url=SAFE_DSN, minio_public_url="https://host/")
+        assert settings.minio_public_url == "https://host"
+
+
+# =============================================================================
+# 6. The warnings actually reach a log
 # =============================================================================
 
 
@@ -184,3 +302,84 @@ def test_both_entrypoints_emit_the_warnings() -> None:
     for module in (api_main, celery_app):
         src = Path(module.__file__).read_text(encoding="utf-8")
         assert "startup_warnings()" in src, f"{module.__name__} never emits config warnings"
+
+
+class TestApiAllowedHostsEmptyMeansAllowAll:
+    """The case that actually ships, which the first draft never tested.
+
+    `TrustedHostMiddleware` is wired to `settings.api_allowed_hosts`
+    (`api/main.py`). Starlette computes `allow_any = "*" in allowed_hosts`,
+    so an empty list matches nothing and answers **400 to every request** --
+    `/health` included, which reads as a dead stack rather than a config
+    problem.
+
+    Every other test in this repo builds `Settings` with the variable
+    *absent*, where the field default `["*"]` fires and everything looks
+    fine. But `.env.example` ships a bare `API_ALLOWED_HOSTS=` line and
+    `scripts/deploy_pasaflow_vm.sh` seeds the VM's `.env` from it, so
+    "present but empty" is the production default and "absent" is only ever
+    the unit suite's shape. Textbook "the assertion sits where it passes":
+    the guard was in the branch that held and missing from its neighbour.
+    """
+
+    def test_an_empty_env_var_allows_all_rather_than_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_ALLOWED_HOSTS", "")
+        assert Settings(database_url=DEFAULT_DSN).api_allowed_hosts == ["*"]
+
+    def test_a_whitespace_only_value_also_allows_all(self) -> None:
+        """`API_ALLOWED_HOSTS=  ,  ` is a typo, not a deny-all instruction."""
+        assert Settings(database_url=DEFAULT_DSN, api_allowed_hosts="  ,  ").api_allowed_hosts == ["*"]
+
+    def test_a_real_list_is_still_honoured(self) -> None:
+        """The neighbouring case: fixing the empty case must not turn the
+        setting into a no-op that always allows everything."""
+        s = Settings(database_url=DEFAULT_DSN, api_allowed_hosts="slmpc.pasaflow.com, localhost")
+        assert s.api_allowed_hosts == ["slmpc.pasaflow.com", "localhost"]
+        assert "*" not in s.api_allowed_hosts
+
+    def test_the_value_env_example_actually_ships_serves_health(self) -> None:
+        """Ties the config file to real behaviour, which is where this broke.
+
+        Reads `API_ALLOWED_HOSTS` out of `.env.example` verbatim, feeds it to
+        `Settings`, and drives `TrustedHostMiddleware` with the result. A
+        parse-level assertion alone would not have caught the original bug's
+        consequence; this asserts the shipped value produces a served
+        request rather than a 400.
+        """
+        from pathlib import Path
+
+        from starlette.applications import Starlette
+        from starlette.middleware.trustedhost import TrustedHostMiddleware
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+        from starlette.testclient import TestClient
+
+        env_example = (Path(__file__).resolve().parents[2] / ".env.example").read_text()
+        shipped = next(
+            (
+                line.split("=", 1)[1]
+                for line in env_example.splitlines()
+                if line.startswith("API_ALLOWED_HOSTS=")
+            ),
+            None,
+        )
+        assert shipped is not None, ".env.example no longer declares API_ALLOWED_HOSTS"
+
+        hosts = Settings(database_url=DEFAULT_DSN, api_allowed_hosts=shipped).api_allowed_hosts
+        app = Starlette(routes=[Route("/health", lambda r: PlainTextResponse("ok"))])
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
+
+        # The three Hosts a real deployment must answer: the deploy script's
+        # Phase 7 curl, in-network probes, and the public hostname. (There is
+        # deliberately no compose `healthcheck:` on `api` or `edge` — only
+        # postgres/redis/minio/mlflow define one. Earlier revisions of this
+        # comment cited one that does not exist.)
+        for host in ("localhost", "api", "slmpc.pasaflow.com"):
+            r = TestClient(app, base_url=f"http://{host}").get("/health")
+            assert r.status_code == 200, (
+                f"the API_ALLOWED_HOSTS value shipped in .env.example rejects "
+                f"Host: {host} with {r.status_code}. Every request, including "
+                "the deploy script's own health check, would 400 on a fresh deploy."
+            )

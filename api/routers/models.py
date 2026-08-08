@@ -20,7 +20,10 @@ from api.schemas.artifacts import (
     ModelExportRequest,
     ModelExportResponse,
 )
+from api.schemas.download_links import ModelDownloadUrlResponse
+from api.schemas.enums import ArtifactFormat
 from api.schemas.responses import Page
+from api.services.download_links import mint_model_download_url
 from api.services.model_service import (
     cancel_export as _cancel_export,
     download_artifact,
@@ -113,3 +116,22 @@ async def download_model(
     fmt: Annotated[str, Query(alias="format")] = "gguf",
 ) -> StreamingResponse:
     return await download_artifact(db, model_id=model_id, fmt=fmt, user=user)
+
+
+@router.get(
+    "/{model_id}/download-url",
+    response_model=ModelDownloadUrlResponse,
+    summary="Mint presigned MinIO URL(s) for a previously-exported artifact",
+)
+async def get_model_download_url(
+    model_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+    fmt: Annotated[ArtifactFormat, Query(alias="format")] = ArtifactFormat.GGUF,
+) -> ModelDownloadUrlResponse:
+    # Additive alongside `GET /{model_id}/download` (the existing streaming
+    # endpoint stays) — this is the presigned-URL path that lets large
+    # artifacts bypass the API process entirely, and the only path that
+    # covers `safetensors`/`lora` (the streaming endpoint 400s on those; see
+    # `download_artifact`'s multi-file-directory branch).
+    return await mint_model_download_url(db, model_id, fmt, user)

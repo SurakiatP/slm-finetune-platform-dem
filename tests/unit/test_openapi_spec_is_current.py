@@ -20,6 +20,7 @@ compare to the file on disk, and name the exact fix in the failure message.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -108,3 +109,50 @@ def test_committed_spec_matches_the_live_app_exactly() -> None:
         f"openapi.json is out of date — top-level sections that differ: {differing}."
         f"{detail} {_REGENERATE}"
     )
+
+
+def test_the_api_reference_states_the_real_path_and_operation_count() -> None:
+    """`docs/02-api-reference.md` claims a path/operation count in its header.
+
+    That number is the first thing a frontend engineer reads to decide
+    whether the doc is trustworthy, and it had rotted twice — worse, the file
+    ended up asserting two *different* stale counts in two places (a "33
+    paths / 40 operations" header over a "35 paths / 42 operations"
+    verification note), which is the self-contradicting-document failure this
+    repo has been bitten by before. A number a human has to remember to bump
+    is a number that goes stale; this makes forgetting fail the build.
+
+    Counts the committed spec, not the live app: the two are already pinned
+    to each other by the tests above, and reading the file keeps this guard
+    meaningful even if the app fails to import for an unrelated reason.
+    """
+    spec = json.loads(SPEC_PATH.read_text(encoding="utf-8"))
+    paths = len(spec["paths"])
+    operations = sum(
+        1
+        for methods in spec["paths"].values()
+        for verb in methods
+        if verb.lower() in {"get", "post", "put", "patch", "delete", "head", "options"}
+    )
+
+    # Both files that state the count, not just the one that stated it first.
+    # `docs/README.md`'s nav table carries its own copy, and it had already
+    # drifted to a third value ("35 paths / 42 ops") while this guard watched
+    # only `02-api-reference.md` -- the same "two different stale numbers in
+    # two places" this test was written to stop, one file over.
+    for rel, pattern in (
+        ("docs/02-api-reference.md", r"\*\*(\d+) paths / (\d+) operations\*\*"),
+        ("docs/README.md", r"\((\d+) paths / (\d+) ops\)"),
+    ):
+        doc = (_REPO_ROOT / rel).read_text(encoding="utf-8")
+        m = re.search(pattern, doc)
+        assert m, (
+            f"{rel} no longer states a path/operation count matching "
+            f"{pattern!r}. If that sentence was removed deliberately, remove "
+            "its entry from this guard too — do not leave it matching nothing."
+        )
+        stated = (int(m.group(1)), int(m.group(2)))
+        assert stated == (paths, operations), (
+            f"{rel} says {stated[0]} paths / {stated[1]} operations, "
+            f"but openapi.json has {paths} / {operations}. {_REGENERATE}"
+        )

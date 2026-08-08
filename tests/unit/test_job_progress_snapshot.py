@@ -7,13 +7,24 @@ instead of waiting on the next Pub/Sub frame:
      frame at ``job:{job_id}:last`` with a 24h TTL *before* publishing it.
   2. WS      — ``/ws/jobs/{job_id}`` sends that stored frame on connect,
      before any live frame.
-  3. REST    — ``GET /api/v1/jobs/{job_id}/progress`` returns the same frame,
-     or 404 when there is nothing (or nothing valid) to return.
+  3. REST    — ``GET /api/v1/jobs/{job_id}/progress`` returns the same frame;
+     404 when there is nothing (or nothing valid) to return, or when the
+     `job_id` names no row at all; 403 when it names a row that exists but
+     belongs to another user (ADR-012 — see ``TestRestSnapshotOwnership``
+     below, which is the only class here that authenticates as a specific
+     user; every other test in this file runs with ``user=None`` and so
+     never touches the ownership branch at all).
 
 Everything runs against fakeredis — no Docker, no real broker, no GPU.
+``TestRestSnapshotOwnership`` additionally runs against an in-memory
+aiosqlite DB, since ownership resolution (unlike the redis-only snapshot
+lookup) has to walk real `Dataset`/`Project` rows.
 """
 
 from __future__ import annotations
+
+import asyncio
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -246,6 +257,120 @@ class TestRestSnapshotEndpoint:
         body = resp.json()
         assert isinstance(body, dict)
         assert body, "error body must not be empty"
+
+
+# =============================================================================
+# 3a. REST ownership split (ADR-012) — every other test in this file runs
+#     anonymously (`user=None`), which skips `api/routers/jobs.py`'s
+#     ownership branch entirely. These are the only tests that authenticate,
+#     so they're the only ones that can exercise it.
+# =============================================================================
+
+
+class TestRestSnapshotOwnership:
+    """`GET /api/v1/jobs/{job_id}/progress`, authenticated.
+
+    Kept as its own DB-backed fixture rather than reusing `client`/
+    `snapshot_store` directly: ownership resolution needs real
+    `Project`/`Dataset` rows to join through (`resolve_job_owner`), which
+    the redis-only fixtures above have no reason to carry.
+    """
+
+    @pytest.fixture
+    def owned_job(self, snapshot_store, monkeypatch: pytest.MonkeyPatch):
+        """A `TestClient` wired to both fakeredis (via `snapshot_store`,
+        already monkeypatched onto `jobs_router.get_redis_client`) and an
+        in-memory aiosqlite DB seeded with one Dataset (SDG job) owned by
+        ALICE. Yields `(client, alice, bob, job_id)`; the caller picks the
+        `state["user"]` and job id per test.
+        """
+        from sqlalchemy.dialects.postgresql import JSONB
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+        from sqlalchemy.ext.compiler import compiles
+
+        from api.core.auth import CurrentUser, require_user
+        from api.core.database import get_db
+        from api.main import app
+        from api.models.base import Base
+        from api.models.dataset import Dataset
+        from api.models.project import Project
+        from api.schemas.enums import DatasetSource, JobStatus, TaskType
+
+        @compiles(JSONB, "sqlite")
+        def _compile_jsonb_sqlite(element, compiler, **kw):  # noqa: ANN001, ANN003
+            return "JSON"
+
+        alice = CurrentUser(id="alice-sub", email="alice@example.com")
+        bob = CurrentUser(id="bob-sub", email="bob@example.com")
+        job_id = "sdg-alice-owned"
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        state = {"user": alice}
+
+        async def _setup() -> None:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            async with maker() as session:
+                project = Project(
+                    id=uuid4(), name="p", task_type=TaskType.QA, owner_id=alice.id
+                )
+                dataset = Dataset(
+                    id=uuid4(),
+                    project_id=project.id,
+                    name="d",
+                    task_type=TaskType.QA,
+                    source=DatasetSource.SDG,
+                    status=JobStatus.RUNNING,
+                    celery_task_id=job_id,
+                )
+                session.add_all([project, dataset])
+                await session.commit()
+
+        asyncio.get_event_loop_policy().new_event_loop().run_until_complete(_setup())
+
+        async def _get_db():
+            async with maker() as session:
+                yield session
+
+        app.dependency_overrides[get_db] = _get_db
+        app.dependency_overrides[require_user] = lambda: state["user"]
+        with TestClient(app) as client:
+            yield client, state, alice, bob, job_id
+        app.dependency_overrides.clear()
+
+    def test_owner_is_not_blocked_by_the_ownership_check(self, owned_job) -> None:
+        client, state, alice, _bob, job_id = owned_job
+        state["user"] = alice
+        resp = client.get(f"/api/v1/jobs/{job_id}/progress")
+        # No frame was published to redis for this job — ownership passes,
+        # then it falls through to the ordinary "no frame yet" 404. Proves
+        # the owner is NOT blocked by the ownership check (a 403 here would
+        # be the bug this test exists to catch).
+        assert resp.status_code == 404
+
+    def test_non_owner_gets_403_not_404(self, owned_job) -> None:
+        """THE pairing case for the REST job-progress endpoint (ADR-012): a
+        job that exists but belongs to someone else is 403."""
+        client, state, _alice, bob, job_id = owned_job
+        state["user"] = bob
+        resp = client.get(f"/api/v1/jobs/{job_id}/progress")
+        assert resp.status_code == 403
+
+    def test_unknown_job_id_still_gets_404(self, owned_job) -> None:
+        """Pair for the test above: a `job_id` that resolves to no row at
+        all (not just no redis frame) must stay 404, distinct from the 403
+        an existing-but-not-yours job now gets. Catches a mutation that made
+        the ownership branch 403 unconditionally, independent of
+        `resolve_job_owner.found`."""
+        client, state, _alice, bob, _job_id = owned_job
+        state["user"] = bob
+        resp = client.get(f"/api/v1/jobs/{uuid4()}/progress")
+        assert resp.status_code == 404
 
 
 class TestWebSocketSnapshotOnConnect:

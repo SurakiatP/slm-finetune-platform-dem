@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from api.core import request_context
 from api.core.auth import require_user
@@ -22,7 +23,7 @@ from api.core.config import get_settings
 from api.core.database import engine
 from api.core.exceptions import install_handlers
 from api.core.logging_config import configure_logging
-from api.services import job_reconcile, readiness
+from api.services import idempotency, job_reconcile, readiness
 from api.routers import (
     datasets,
     evaluations,
@@ -141,10 +142,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Registered after CORSMiddleware so it ends up outermost in the middleware
-# stack (Starlette wraps middleware in reverse registration order) — the
-# request id is minted/bound before CORS or anything downstream runs, and
-# the X-Request-ID response header survives every layer beneath it.
+# Host-header allowlist. Registered after CORSMiddleware (so it sits between
+# CORS and the outermost request-context middleware below — see that
+# middleware's docstring for why it must not be the outermost layer here) and
+# before `_request_context_middleware` (so a request-id is still minted and
+# the rejection still gets logged even when TrustedHostMiddleware 400s it).
+#
+# `settings.api_allowed_hosts` is owned by api/core/config.py (do not edit
+# that file from here) and defaults to `["*"]`. A production
+# `API_ALLOWED_HOSTS` MUST include `localhost`, `127.0.0.1`, and `api` — omit
+# any of those and the deploy script's Phase 7 curl (`localhost`) and in-network
+# probes get rejected with 400, which looks like the app is down when it is
+# actually this guard doing its job.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.api_allowed_hosts)
+
+
+# Registered after CORSMiddleware and TrustedHostMiddleware so it ends up
+# outermost in the middleware stack (Starlette wraps middleware in reverse
+# registration order — see `Starlette.add_middleware`, which inserts each new
+# middleware at index 0 of `user_middleware`, and `build_middleware_stack`,
+# which makes index 0 the outermost layer) — the request id is minted/bound
+# before CORS, TrustedHost, or anything downstream runs, and the
+# X-Request-ID response header survives every layer beneath it, including a
+# TrustedHostMiddleware 400. `tests/unit/test_middleware_ordering.py` asserts
+# this from `app.user_middleware` directly rather than trusting this comment.
 @app.middleware("http")
 async def _request_context_middleware(request: Request, call_next):
     # Truncated to the width of `audit_events.request_id` (String(64)).
@@ -167,6 +188,21 @@ async def _request_context_middleware(request: Request, call_next):
             return response
         finally:
             duration_ms = round((time.perf_counter() - start) * 1000, 2)
+            # Sourced from `idempotency.client_host` — the exact same function
+            # the dedupe key uses — so this log line shows the idempotency
+            # bucket a caller falls into, not just "some" address. Behind
+            # cloudflared every request arrives at `edge` from one container
+            # IP; if `real_ip`/XFF trust there is ever misconfigured,
+            # `client_host` returns that same container IP for every
+            # anonymous caller, and every one of them collapses into a single
+            # 60s dedupe bucket — user B's submit silently replays user A's
+            # 202 instead of enqueueing, swallowing a job with no error
+            # anywhere. That is invisible in CI (no edge in the loop) and
+            # invisible in a passing test suite; this field turns it into a
+            # one-command check on the box:
+            #   docker compose logs api | grep client_ip
+            # A `172.x`/`10.x` value there for varied external callers means
+            # `real_ip` is not matching and the edge config needs fixing.
             log.info(
                 "%s %s %s",
                 request.method,
@@ -177,6 +213,7 @@ async def _request_context_middleware(request: Request, call_next):
                     "path": request.url.path,
                     "status_code": status_code,
                     "duration_ms": duration_ms,
+                    "client_ip": idempotency.client_host(request),
                 },
             )
 

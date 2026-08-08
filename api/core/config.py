@@ -81,6 +81,104 @@ class Settings(BaseSettings):
     minio_models_bucket: str = "models"
     mlflow_s3_bucket: str = "mlflow"
     minio_use_ssl: bool = False
+    # Browser-facing base URL for presigned downloads, e.g.
+    # https://storage.slmpc.pasaflow.com. `minio_endpoint` above is the
+    # in-network hostname ("minio:9000"), which a browser cannot resolve and
+    # which may sit behind a port a public edge does not expose — presigned
+    # URLs minted against it point nowhere a client can reach. This must be
+    # a dedicated subdomain rather than a path prefix on the main host: see
+    # the field_validator below for why.
+    minio_public_url: str | None = None
+    # Presigned GET URL lifetime. Bounded to the range minio-py's `presign_v4`
+    # itself hard-rejects `expires` outside of (1s, 7d] — validating here
+    # gives a clear pydantic error at boot instead of a stack trace the first
+    # time someone tries to mint a link.
+    presigned_url_ttl_seconds: int = Field(default=300, ge=60, le=604800)
+    # Host header allowlist for Starlette's TrustedHostMiddleware (wired up
+    # in a later wave). NoDecode + CSV-splitting validator, same pattern as
+    # api_cors_origins above.
+    #
+    # Default is "*" (allow-all) DELIBERATELY, not an oversight: this unit
+    # suite constructs `Settings` with nothing but DATABASE_URL set, and `scripts/deploy_pasaflow_vm.sh`'s
+    # Phase 7 sanity check curls `http://localhost:${EDGE_PORT}/health` and
+    # fails the deploy on a non-200. (There is deliberately no compose
+    # `healthcheck:` on `api` or `edge` — only postgres/redis/minio/mlflow
+    # have one; earlier revisions of this comment claimed otherwise.)
+    # A restrictive default would break both. A production value MUST
+    # include `localhost`, `127.0.0.1`, and `api` — omit any of those and
+    # that Phase 7 curl gets rejected with 400, which looks like the app is
+    # down when it is actually the host guard doing its job.
+    api_allowed_hosts: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
+
+    @field_validator("api_allowed_hosts", mode="before")
+    @classmethod
+    def _split_csv_hosts(cls, v: object) -> object:
+        """CSV -> list, with **empty meaning allow-all**, not deny-all.
+
+        The empty case is the one that ships. `.env.example` carries a bare
+        `API_ALLOWED_HOSTS=` line, and `scripts/deploy_pasaflow_vm.sh` seeds
+        the VM's `.env` from it — so "the variable is present but empty" is
+        the literal production default, while "the variable is absent" (where
+        the field default fires) is only ever the unit suite's shape.
+
+        Returning `[]` here would therefore be catastrophic and silent:
+        Starlette computes `allow_any = "*" in allowed_hosts`, so an empty
+        list matches no Host at all and `TrustedHostMiddleware` answers 400
+        to **every** request — including `/health`, which makes the whole
+        stack look dead while it is in fact working perfectly. The field
+        default above, this validator, and `.env.example`'s comment all have
+        to agree on allow-all, and only this line was disagreeing.
+        """
+        if isinstance(v, str):
+            hosts = [s.strip() for s in v.split(",") if s.strip()]
+            return hosts or ["*"]
+        return v
+
+    @field_validator("minio_public_url")
+    @classmethod
+    def _validate_minio_public_url(cls, v: str | None) -> str | None:
+        if not v:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        v = v.rstrip("/")
+
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(v)
+        if parts.scheme not in ("http", "https"):
+            raise ValueError(
+                f"MINIO_PUBLIC_URL must use http:// or https://, got: {v!r}"
+            )
+        if parts.path:
+            raise ValueError(
+                "MINIO_PUBLIC_URL must not have a path component "
+                f"(got path {parts.path!r} in {v!r}). SigV4 signs the "
+                "canonical URI, so a path prefix would require the edge "
+                "proxy to rewrite the path on the way to MinIO — which "
+                "invalidates the signature. Use a dedicated storage "
+                "subdomain (e.g. https://storage.example.com) instead of a "
+                "path prefix on the main host."
+            )
+        # presign_v4 signs `host:` + `url.netloc` verbatim (minio/signer.py:275),
+        # but a browser omits a scheme's default port when it sends the
+        # request — so a URL that spells out :443 on https (or :80 on http)
+        # would sign a Host header the browser never actually sends, and the
+        # signature would never match. A non-default port (e.g. :9000) is
+        # fine and required for that exact reason: it will always be sent.
+        if (parts.scheme == "https" and parts.port == 443) or (
+            parts.scheme == "http" and parts.port == 80
+        ):
+            raise ValueError(
+                f"MINIO_PUBLIC_URL must not spell out the default port for "
+                f"its scheme (got {v!r}). presign_v4 signs the host header "
+                "verbatim including the port, but browsers omit a default "
+                "port when sending the request, so the signature would "
+                "never match. Omit the port instead (or use a non-default "
+                "port, which is safe)."
+            )
+        return v
 
     # ---- MLflow ------------------------------------------------------------
     mlflow_tracking_uri: AnyUrl = Field(default=AnyUrl("http://mlflow:5000"))
@@ -177,8 +275,20 @@ class Settings(BaseSettings):
     # ---- Production guards -------------------------------------------------
 
     @model_validator(mode="after")
-    def _reject_default_credentials_in_production(self) -> Self:
-        """Refuse to boot a production deployment on the documented defaults.
+    def _reject_unsafe_production_config(self) -> Self:
+        """Refuse to boot a production deployment on unsafe configuration.
+
+        Covers two shapes of unsafe: still-default credentials shipped in
+        `.env.example`, and settings combinations that are internally legal
+        but guarantee bad outcomes for every request (anonymous writes,
+        auth that can never verify anything).
+
+        This MUST stay a single `@model_validator`, not split by concern:
+        pydantic stops at the first `raise`, so a second validator would
+        only ever report whichever offender category it owns, hiding the
+        rest. `test_the_error_names_every_offender_at_once` encodes that one
+        boot must produce one complete list — keep it that way when adding
+        new offenders below.
 
         Only the credentials that are *always* required are fatal. Notably
         `openrouter_api_key` is NOT: SDG is its only consumer, and a
@@ -200,6 +310,33 @@ class Settings(BaseSettings):
             offenders.append("MINIO_SECRET_KEY")
         if _dsn_uses_default_credentials(self.database_url):
             offenders.append("DATABASE_URL (still carries the example slm:slm credentials)")
+        if self.alembic_database_url is not None and _dsn_uses_default_credentials(
+            self.alembic_database_url
+        ):
+            offenders.append(
+                "ALEMBIC_DATABASE_URL (still carries the example slm:slm credentials)"
+            )
+        if not self.auth_required:
+            offenders.append(
+                "AUTH_REQUIRED=false — every request would be anonymous and every row "
+                "it creates would have owner_id NULL. Back-fill existing rows with "
+                "scripts/backfill_project_owner.py, ship the frontend Authorization "
+                "header, then set AUTH_REQUIRED=true."
+            )
+        if self.auth_required and not self.supabase_url and not self.supabase_jwt_secret:
+            # Neither the JWKS path (supabase_url) nor the HS256 fallback
+            # (supabase_jwt_secret) is configured, which means there is no
+            # material to verify a token against at all — a guaranteed 100%
+            # rejection rate for every authenticated request, not a
+            # degraded-but-working state. `SUPABASE_JWT_SECRET` ships blank
+            # in .env.example, so unlike the MinIO/DB credentials above
+            # there is no default *value* to compare against here — an
+            # empty string is simply "unset".
+            offenders.append(
+                "AUTH_REQUIRED=true with neither SUPABASE_URL nor SUPABASE_JWT_SECRET "
+                "set — there is no JWKS and no HS256 fallback to verify tokens "
+                "against, so every authenticated request would be rejected."
+            )
 
         if offenders:
             raise ValueError(
@@ -227,17 +364,19 @@ class Settings(BaseSettings):
                 "generation will fail at call time. Fine for an inference-only "
                 "deployment; a mistake for any other."
             )
-        if not self.auth_required:
+        # No `auth_required=false` branch here: that combination is now
+        # fatal in `_reject_unsafe_production_config` above, so this code
+        # path is unreachable in production and would be dead-code that
+        # lies about being a warning.
+        if self.auth_required and not self.supabase_url and self.supabase_jwt_secret:
+            # This is still only a warning, not fatal: supabase_jwt_secret
+            # being set means the HS256 fallback path has what it needs to
+            # verify tokens even with no SUPABASE_URL. The fatal case (no
+            # url AND no secret) is handled above.
             warnings.append(
-                "running in production with AUTH_REQUIRED=false — every request is "
-                "anonymous and every row it creates has owner_id NULL, which fails "
-                "closed for everyone once the flag is flipped. This is the phase-1 "
-                "rollout state; flip it once the frontend sends Authorization headers."
-            )
-        if self.auth_required and not self.supabase_url:
-            warnings.append(
-                "AUTH_REQUIRED=true with no SUPABASE_URL — there is no JWKS to verify "
-                "against, so every authenticated request will be rejected."
+                "AUTH_REQUIRED=true with no SUPABASE_URL — falling back to the "
+                "HS256 SUPABASE_JWT_SECRET path. Fine for legacy Supabase "
+                "projects still on symmetric signing keys; a mistake otherwise."
             )
         return warnings
 

@@ -194,13 +194,26 @@ class TestActivityListing:
             "dataset.seed_upload",
         ]
 
-    async def test_another_user_gets_404_not_an_empty_page(self, db) -> None:
-        """404, not 403 and not []: an empty page would confirm the project
-        exists, which is the id oracle ADR-009 rules out."""
+    async def test_another_user_gets_403_not_an_empty_page(self, db) -> None:
+        """403, not []: an empty page would confirm the project exists,
+        which is exactly the id oracle a `200` with `items=[]` would create.
+        ADR-012 accepts a narrower version of that same oracle (403 vs 404
+        distinguishes existence) because the P0 acceptance criterion
+        requires 403 specifically — see `ownership.py`'s module docstring."""
         project = await self._seed(db)
         with pytest.raises(HTTPException) as exc:
             await audit_service.list_activity(
                 db, project.id, limit=50, offset=0, user=USER_B
+            )
+        assert exc.value.status_code == 403
+
+    async def test_missing_project_gets_404(self, db) -> None:
+        """Pair for the test above: a project id that names no row at all
+        must stay 404, distinct from the 403 an existing-but-not-yours
+        project now gets."""
+        with pytest.raises(HTTPException) as exc:
+            await audit_service.list_activity(
+                db, uuid4(), limit=50, offset=0, user=USER_B
             )
         assert exc.value.status_code == 404
 

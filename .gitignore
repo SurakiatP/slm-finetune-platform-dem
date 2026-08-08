@@ -99,6 +99,8 @@ docs/*
 !docs/adr/**
 !docs/runbooks/
 !docs/runbooks/**
+!docs/patches/
+!docs/patches/**
 CLAUDE.md
 API_GUIDE.md
 PHASE9_SDG_HARDENING_SPEC.md

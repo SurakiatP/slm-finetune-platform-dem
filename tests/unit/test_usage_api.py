@@ -169,10 +169,22 @@ class TestProjectUsageEndpoint:
         assert [i["stage"] for i in page.json()["items"]] == ["sdg"]
         assert page.json()["total"] == 3
 
-    def test_non_owner_gets_404_not_an_empty_page(self, client_and_data) -> None:
+    def test_non_owner_gets_403_not_an_empty_page(self, client_and_data) -> None:
+        """ADR-012: an existing project owned by someone else is 403, not
+        the 404 this used to be — a `200` with `items=[]` would leak the
+        same thing the old 404 was designed to avoid."""
         client, project_a_id, _project_b_id, state = client_and_data
         state["user"] = USER_B
         resp = client.get(f"/api/v1/projects/{project_a_id}/usage")
+        assert resp.status_code == 403
+
+    def test_missing_project_gets_404(self, client_and_data) -> None:
+        """Pair for the test above: a project id that names no row at all
+        must stay 404, distinct from the 403 an existing-but-not-yours
+        project now gets."""
+        client, _project_a_id, _project_b_id, state = client_and_data
+        state["user"] = USER_B
+        resp = client.get(f"/api/v1/projects/{uuid4()}/usage")
         assert resp.status_code == 404
 
     def test_owner_of_a_different_project_only_sees_their_own(

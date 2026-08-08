@@ -13,8 +13,33 @@ anyone subscribe to it.
 This module answers exactly that question, and nothing else: given a
 `job_id`, find the row it names (checking all four tables) and walk foreign
 keys up to the owning `Project.owner_id`. It is read-only and has no HTTP
-concerns — the caller (the WS router) decides what close code to use for
-"not found" vs. "found but not yours".
+concerns — each caller decides what status/close code to use for "not
+found" vs. "found but not yours".
+
+**ADR-012 (404→403 for owner mismatch) touches both callers of
+`resolve_job_owner`, and touches them differently — this module's own
+`JobOwnerResult(found, owner_id)` shape doesn't change at all, because it
+already carries enough information for each caller to make its own call:**
+
+  * `api/routers/jobs.py` (`GET /api/v1/jobs/{job_id}/progress`, a REST
+    endpoint) now raises 404 when `found=False` and 403 when `found=True`
+    with an owner mismatch — same split as `ownership.py`'s `assert_*_access`
+    family, since this is the REST twin of the ownership check they do.
+  * `api/routers/websocket.py` (`/ws/jobs/{job_id}`) deliberately keeps a
+    single close code (`4403`) for both cases. Two reasons, not one: (a) the
+    WS path was explicitly carved out of this round's scope — 4401/4403 are
+    unobservable to browsers today (`ws.onclose` reports `1006` for a
+    server-initiated close in most cases), so splitting them buys nothing
+    until that's fixed, tracked separately; (b) even if it were observable,
+    a close code is a curter signal than an HTTP status with a body, and
+    collapsing "unknown job" with "not yours" there was already deliberate
+    per ADR-009, independent of the REST 404-vs-403 question.
+
+If `resolve_job_owner` itself ever grew HTTP- or close-code-shaped return
+values, that would force the WS and REST paths to agree again by
+construction — which is exactly why it doesn't: returning the plain
+`(found, owner_id)` tuple is what lets the two callers diverge without this
+module having to know that they do.
 
 Ownership joins (mirrors the depths documented in the branch plan):
   • Dataset / TrainingJob         -> Project                       (1 hop)
