@@ -194,14 +194,16 @@ ENV_FILE="$REPO_DIR/.env"
 POSTGRES_DATA_DIR="$DATA_DIR/postgres"
 
 # Postgres reads POSTGRES_PASSWORD ONLY when bootstrapping an EMPTY data
-# directory (docker-entrypoint.sh in the postgres image; same story for
-# MLFLOW_DB_USER/PASSWORD via docker/postgres-init.sql, which also only runs
-# on first init). $POSTGRES_DATA_DIR being non-empty means Postgres already
-# has a real password baked into its own catalogs — writing a different
-# value into .env at that point changes the app's DSN but not the database,
-# and every service that talks to Postgres starts failing to connect. MinIO
-# has no such constraint: it reads MINIO_ROOT_USER/PASSWORD from the
-# environment on every boot, so it is always safe to (re)generate.
+# directory (docker-entrypoint.sh in the postgres image). $POSTGRES_DATA_DIR
+# being non-empty means Postgres already has a real password baked into its
+# own catalogs — writing a different value into .env at that point changes
+# the app's DSN but not the database, and every service that talks to
+# Postgres starts failing to connect. MinIO has no such constraint: it reads
+# MINIO_ROOT_USER/PASSWORD from the environment on every boot, so it is
+# always safe to (re)generate. MLFLOW_DB_PASSWORD used to share Postgres's
+# volume-state constraint (docker/postgres-init.sql only runs on first init)
+# but no longer does: Phase 5.5 below ALTERs the role to whatever .env says
+# on EVERY deploy, so it is generated whenever absent, volume state ignored.
 POSTGRES_DATA_EXISTS=0
 if [[ -d "$POSTGRES_DATA_DIR" ]] && [[ -n "$(ls -A "$POSTGRES_DATA_DIR" 2>/dev/null)" ]]; then
   POSTGRES_DATA_EXISTS=1
@@ -272,30 +274,40 @@ if [[ "$ENV_IS_NEW" -eq 1 ]]; then
   unset MINIO_PASS
   ok "MINIO_ROOT_PASSWORD generated — MinIO re-reads this from the environment on every boot"
 
-  # --- Postgres (+ mlflow's own role): only safe on a genuinely empty volume
+  # --- Postgres: only safe on a genuinely empty volume
   if [[ "$POSTGRES_DATA_EXISTS" -eq 0 ]]; then
     PG_PASS="$(gen_secret)"
-    MLFLOW_DB_PASS="$(gen_secret)"
     sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${PG_PASS}|" "$ENV_FILE"
-    if grep -q "^MLFLOW_DB_PASSWORD=" "$ENV_FILE"; then
-      sed -i "s|^MLFLOW_DB_PASSWORD=.*|MLFLOW_DB_PASSWORD=${MLFLOW_DB_PASS}|" "$ENV_FILE"
-    else
-      # Not in .env.example (compose falls back to mlflow/mlflow) — append
-      # so the pasaflow deploy still gets a real value without touching
-      # .env.example itself.
-      {
-        echo "MLFLOW_DB_USER=mlflow"
-        echo "MLFLOW_DB_PASSWORD=${MLFLOW_DB_PASS}"
-      } >> "$ENV_FILE"
-    fi
-    unset PG_PASS MLFLOW_DB_PASS
-    ok "POSTGRES_PASSWORD + MLFLOW_DB_PASSWORD generated for the empty $POSTGRES_DATA_DIR"
+    unset PG_PASS
+    ok "POSTGRES_PASSWORD generated for the empty $POSTGRES_DATA_DIR"
   else
-    warn "$POSTGRES_DATA_DIR already has data but .env was just (re)created — POSTGRES_PASSWORD / MLFLOW_DB_PASSWORD were left at the .env.example default, which almost certainly does NOT match what Postgres was actually initialised with."
+    warn "$POSTGRES_DATA_DIR already has data but .env was just (re)created — POSTGRES_PASSWORD was left at the .env.example default, which almost certainly does NOT match what Postgres was actually initialised with."
     warn "Recover the real password, or rotate it properly via docs/runbooks/secret_rotation.md (ALTER USER first, THEN .env), before this box is exposed to the internet."
   fi
 elif [[ "$POSTGRES_DATA_EXISTS" -eq 1 ]]; then
   say "$POSTGRES_DATA_DIR has data and .env already exists — POSTGRES_PASSWORD left untouched (see docs/runbooks/secret_rotation.md to rotate it properly)"
+fi
+
+# --- MLflow DB password: generated whenever ABSENT, regardless of ENV_IS_NEW
+# or volume state. Unlike POSTGRES_PASSWORD this needs no knowledge of what
+# the volume was initialised with: Phase 5.5 ALTERs the `mlflow` role to
+# match .env on every deploy, so generating here can never strand the role
+# on a stale password. This is exactly the pasaflow-box failure mode
+# (2026-08-08): its .env predated this generator, compose fell back to
+# `mlflow:mlflow`, and slm-mlflow crash-looped on auth.
+if ! grep -q "^MLFLOW_DB_PASSWORD=." "$ENV_FILE"; then
+  MLFLOW_DB_PASS="$(gen_secret)"
+  if grep -q "^MLFLOW_DB_PASSWORD=" "$ENV_FILE"; then
+    # Present but empty — substitute in place.
+    sed -i "s|^MLFLOW_DB_PASSWORD=.*|MLFLOW_DB_PASSWORD=${MLFLOW_DB_PASS}|" "$ENV_FILE"
+  else
+    # Not in .env.example (compose falls back to mlflow/mlflow) — append so
+    # the deploy gets a real value without touching .env.example itself.
+    grep -q "^MLFLOW_DB_USER=" "$ENV_FILE" || echo "MLFLOW_DB_USER=mlflow" >> "$ENV_FILE"
+    echo "MLFLOW_DB_PASSWORD=${MLFLOW_DB_PASS}" >> "$ENV_FILE"
+  fi
+  unset MLFLOW_DB_PASS
+  ok "MLFLOW_DB_PASSWORD generated — Phase 5.5 will provision the role to match"
 fi
 
 # --- OpenRouter API key (unchanged flow, now against a .env that always exists) ---
@@ -431,6 +443,85 @@ docker compose --profile tunnel pull 2>&1 | tee -a "$LOG"
 ok "images pulled"
 
 docker compose --profile tunnel up -d 2>&1 | tee -a "$LOG"
+
+# --------- Phase 5.5: MLflow role provisioning (idempotent, every deploy) ---
+# docker/postgres-init.sql only runs against an EMPTY volume (first init), so
+# an existing deployment never gets the least-privilege `mlflow` role that
+# round 3 moved MLflow onto — compose then builds `mlflow:mlflow@postgres`,
+# auth fails, and slm-mlflow crash-loops (observed on the pasaflow box
+# 2026-08-08: restarts=7, after 21h healthy on pre-round-3 code). Provision
+# the role HERE, unconditionally: create it if missing, ALTER it to the .env
+# password if not — first-init boxes, pre-round-3 boxes and password
+# rotations all converge on the same state. psql variables do not interpolate
+# inside DO $$ bodies, so the create-if-missing arm is spelled as a guarded
+# \gexec + an unconditional ALTER rather than one DO block; CREATE DATABASE
+# additionally cannot run inside any transaction, which \gexec at top level
+# (autocommit) also handles. OWNER matters: on PG15+ the `public` schema is
+# owned by `pg_database_owner`, so GRANT ALL ON DATABASE alone leaves the
+# role unable to CREATE TABLE — MLflow's migrations would still fail, just
+# later and quieter than the auth error this phase exists to fix.
+say "==== Phase 5.5: Provision MLflow's Postgres role (idempotent) ===="
+PG_USER=$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '[:space:]')
+PG_USER="${PG_USER:-slm}"
+PG_DB=$(grep -E '^POSTGRES_DB=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '[:space:]')
+PG_DB="${PG_DB:-slm}"
+MLFLOW_ROLE=$(grep -E '^MLFLOW_DB_USER=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '[:space:]')
+MLFLOW_ROLE="${MLFLOW_ROLE:-mlflow}"
+MLFLOW_DB_NAME=$(grep -E '^MLFLOW_DB=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '[:space:]')
+MLFLOW_DB_NAME="${MLFLOW_DB_NAME:-mlflow}"
+# NEVER printed, NEVER logged — passed into the container via exec -e only.
+MLFLOW_PW=$(grep -E '^MLFLOW_DB_PASSWORD=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
+
+if [[ "$MLFLOW_ROLE" == "$PG_USER" ]]; then
+  # ALTER ROLE below would rotate the APPLICATION's own password to the
+  # mlflow one and break every DATABASE_URL in the stack simultaneously.
+  warn "MLFLOW_DB_USER equals POSTGRES_USER ('$PG_USER') — skipping role provisioning; separate the roles in .env"
+elif [[ -z "$MLFLOW_PW" ]]; then
+  fail "MLFLOW_DB_PASSWORD is empty in .env — the generator above should have set it; refusing to provision a role with an empty password"
+else
+  say "Waiting for Postgres to accept connections..."
+  PG_READY=0
+  for i in $(seq 1 30); do
+    if docker compose exec -T postgres pg_isready -q -U "$PG_USER" -d "$PG_DB" 2>/dev/null; then
+      PG_READY=1
+      break
+    fi
+    sleep 2
+  done
+  [[ "$PG_READY" -eq 1 ]] || fail "Postgres not ready after 60s — cannot provision the mlflow role (migrations would fail next anyway)"
+
+  # stdout/stderr go to $LOG only (no tee): psql echoes nothing secret with
+  # -q and no -a, but keeping it off the terminal costs nothing.
+  docker compose exec -T \
+    -e MLFLOW_DB_USER="$MLFLOW_ROLE" \
+    -e MLFLOW_DB_PASSWORD="$MLFLOW_PW" \
+    -e MLFLOW_DB="$MLFLOW_DB_NAME" \
+    postgres psql -q -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 >>"$LOG" 2>&1 <<'PSQL'
+\getenv mlflow_db_user MLFLOW_DB_USER
+\getenv mlflow_db_password MLFLOW_DB_PASSWORD
+\getenv mlflow_db MLFLOW_DB
+-- Role: create-if-missing, then converge the password unconditionally.
+SELECT format('CREATE ROLE %I LOGIN', :'mlflow_db_user')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'mlflow_db_user')
+\gexec
+ALTER ROLE :"mlflow_db_user" WITH LOGIN PASSWORD :'mlflow_db_password';
+-- Database: create-if-missing (top-level \gexec = autocommit, which
+-- CREATE DATABASE requires), then converge ownership — ownership is what
+-- makes the PG15+ `public` schema writable for the role.
+SELECT format('CREATE DATABASE %I OWNER %I', :'mlflow_db', :'mlflow_db_user')
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'mlflow_db')
+\gexec
+ALTER DATABASE :"mlflow_db" OWNER TO :"mlflow_db_user";
+GRANT ALL PRIVILEGES ON DATABASE :"mlflow_db" TO :"mlflow_db_user";
+PSQL
+  ok "mlflow role + database provisioned (create-or-alter, converged to .env)"
+
+  # mlflow may be sitting in restart backoff from the pre-provisioning auth
+  # failures — force an immediate retry instead of waiting out the backoff.
+  docker compose --profile tunnel restart mlflow >>"$LOG" 2>&1
+  ok "mlflow restarted against the provisioned role"
+fi
+unset MLFLOW_PW
 
 # Wait for all 10 long-running services: postgres, redis, minio, mlflow, api,
 # edge, cloudflared, worker, worker-cpu, ollama. (`minio-init` is an 11th
