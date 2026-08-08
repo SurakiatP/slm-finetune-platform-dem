@@ -1,0 +1,29 @@
+# Prometheus scrape config for the SLM platform (M4 observability-stack).
+#
+# Bind-mounted read-only into the `prometheus` service in docker-compose.yml
+# at /etc/prometheus/prometheus.yml. Targets are addressed by compose service
+# name over `slm-net`, the same way every other in-network call in this repo
+# works (see e.g. `OLLAMA_BASE_URL: http://ollama:11434` in the `x-app-env`
+# anchor) — this file is never touched by compose's own `${...}`
+# interpolation (that only applies to docker-compose.yml itself), so nothing
+# here needs a fallback default.
+global:
+  scrape_interval: 30s
+
+scrape_configs:
+  # FastAPI app. /metrics is the conventional exposition path (Prometheus's
+  # own per-job default is also /metrics, but this is spelled out explicitly
+  # per the M4 spec rather than relying on that default going unnoticed).
+  - job_name: api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+
+  # utkuozdemir/nvidia_gpu_exporter (see docker-compose.yml's `gpu-exporter`
+  # service). Expected to be DOWN on the pasaflow prod box until a host
+  # nvidia driver bug there is fixed — see that service's comment. A down
+  # target here just shows `up == 0` in Prometheus; it does not stop this
+  # job from scraping `api` or block `docker compose up` in any way.
+  - job_name: gpu_exporter
+    static_configs:
+      - targets: ["gpu-exporter:9835"]

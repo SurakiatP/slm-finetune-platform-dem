@@ -33,7 +33,12 @@ _PUBLIC_PREFIXES = (
 # and the instance is never routed to. What it discloses is infrastructure
 # liveness ("minio: unavailable"), never user data, and an attacker who can
 # reach the API can already observe the same outage by watching requests fail.
-_PUBLIC_EXACT = {"/", "/health", "/ready", "/openapi.json", "/docs", "/redoc"}
+#
+# `/metrics` joins them for the same reason: Prometheus has no token to send
+# either, and what it discloses (queue depth, job counts, worker_gpu/
+# worker_cpu liveness) is the same class of infrastructure signal `/ready`
+# already exposes anonymously, not user data.
+_PUBLIC_EXACT = {"/", "/health", "/ready", "/metrics", "/openapi.json", "/docs", "/redoc"}
 
 _DUMMY = str(uuid4())
 

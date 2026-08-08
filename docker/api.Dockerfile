@@ -15,8 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Dependency layer — uses pyproject.toml. Reinstall only when it changes.
+# `[metrics]` pulls in prometheus_client for api/core/metrics.py's /metrics
+# exposition — API-only; the GPU worker image deliberately does not install it.
 COPY pyproject.toml README.md ./
-RUN pip install --upgrade pip && pip install -e .
+RUN pip install --upgrade pip && pip install -e ".[metrics]"
 
 # Source is bind-mounted via docker-compose for `--reload`. The COPY
 # below makes the image self-contained for non-compose runs.

@@ -12,7 +12,7 @@ changing a router.
 This is the human companion to [`openapi.json`](./openapi.json); regenerate
 that with `scripts/export_openapi.py` when the contract changes. All routes
 are mounted under `/api/v1` except `GET /health` (root-level). The spec
-currently has **39 paths / 46 operations**; this doc covers all of them.
+currently has **40 paths / 47 operations**; this doc covers all of them.
 (That count is asserted against `openapi.json` by
 `tests/unit/test_openapi_spec_is_current.py` — it had drifted twice, and this
 file previously stated two *different* stale numbers in two places.)
@@ -1497,7 +1497,7 @@ down. `GET /ready` is the endpoint that asks about dependencies.
 
 ### GET /ready
 
-Readiness probe. Probes PostgreSQL, Redis, MinIO and the Celery worker
+Readiness probe. Probes PostgreSQL, Redis, MinIO and the Celery worker fleet
 concurrently, each bounded by a 3-second timeout. Not under `/api/v1`, and
 public — orchestrators and load balancers have no token to send.
 
@@ -1506,28 +1506,93 @@ Success: `200` with a per-dependency breakdown.
 ```json
 {
   "status": "degraded",
-  "checks": {"postgres": "ok", "redis": "ok", "minio": "ok", "worker": "unavailable"}
+  "checks": {
+    "postgres": "ok",
+    "redis": "ok",
+    "minio": "ok",
+    "worker_gpu": "unavailable",
+    "worker_cpu": "ok"
+  }
 }
 ```
 
 `status` is `ok` (everything up), `degraded` (a non-fatal dependency is
 down), or `unready`.
 
+**Worker health is reported per queue** — `worker_gpu` and `worker_cpu`, not
+a single aggregate `worker` key. This is a deliberate fix for a bug found
+live in production: a plain Celery `ping()` only proves *some* node
+answered, and on this deployment the CPU-only worker answering was enough to
+report `worker: ok` straight through a total GPU outage. `worker_gpu` and
+`worker_cpu` are each derived from one `inspect(...).active_queues()`
+broadcast that names which queues each responding node actually consumes, so
+a dead GPU worker now shows up as `worker_gpu: unavailable` even while
+`worker_cpu` stays `ok`. See `docs/runbooks/metrics.md` for how these two
+keys relate to the `slm_worker_up` Prometheus gauge.
+
 **`503` only when PostgreSQL or Redis is unreachable** — the two the API
-cannot answer a single request without. **MinIO and the worker report
+cannot answer a single request without. **MinIO and both worker keys report
 `unavailable` on a `200`**: with MinIO down, uploads and artifact downloads
-fail but every read still works; with no worker, submits still enqueue and
-`api/services/job_reconcile.py` ends orphaned jobs rather than leaving clients
-spinning. Returning `503` for either would pull the whole API out of rotation
-and take the UI offline to report a partial outage. See
-`api/services/readiness.py` for the reasoning and
+fail but every read still works; with a queue unserved, submits to that
+queue still enqueue and `api/services/job_reconcile.py` ends orphaned jobs
+rather than leaving clients spinning. Returning `503` for any of these would
+pull the whole API out of rotation and take the UI offline to report a
+partial outage. See `api/services/readiness.py` for the reasoning and
 `tests/unit/test_readiness.py` for the guard.
+
+### GET /metrics
+
+Prometheus exposition endpoint (`text/plain` in Prometheus's text format).
+Not under `/api/v1`, and unauthenticated (no bearer token needed), the same
+as `/health`/`/ready` — a Prometheus scraper has no token to send, and
+nothing in the response is tenant-scoped (see below).
+
+**Not proxied through `edge`** — unlike `/health`, this does not answer at
+the public hostname. It follows the same pattern as `/docs`/`/redoc`/
+`/openapi.json`: reachable only from inside the compose network (this
+platform's own `prometheus` service scrapes it directly at `api:8000`) or
+from `127.0.0.1` on the host running the container. See
+`docs/runbooks/metrics.md` for how to reach it and Prometheus itself over
+wetty, and `docs/adr/ADR-013-metrics-prometheus.md` for the full reasoning.
+
+Response is a flat, low-cardinality snapshot — HTTP request counts/latency,
+Celery queue depth and per-queue worker liveness, job counts/durations by
+type, the OpenRouter circuit breaker state, and cumulative OpenRouter
+cost/token totals by model/stage/outcome. **No metric ever carries a
+`project`/`actor`/`user`/`job_id` label** — the complete allowed label-name
+set is `route, method, status_class, queue, type, stage, model, outcome`,
+enforced by `tests/unit/test_metrics_registry.py`. Per-project numbers are
+served by [`GET /usage`](#get-apiv1usage) and
+[`GET /projects/{project_id}/usage`](#get-apiv1projectsproject_idusage)
+instead, both authenticated and ownership-checked — this endpoint is not a
+substitute for either.
+
+Every worker/job number here is derived fresh at scrape time from Postgres
+and Redis (`api/services/metrics_sources.py`), never accumulated inside a
+Celery worker process — the worker recycles after every task
+(`worker_max_tasks_per_child=1`), so nothing kept in-process there would
+survive to the next scrape. Consequently, the worker image does not install
+`prometheus_client` at all (`tests/unit/test_worker_import_surface.py`
+guards this the same way it guards PyJWT).
+
+Example (abbreviated):
+
+```
+# HELP slm_queue_depth Number of tasks currently queued, per Celery queue.
+# TYPE slm_queue_depth gauge
+slm_queue_depth{queue="cpu"} 0.0
+slm_queue_depth{queue="gpu"} 1.0
+# HELP slm_worker_up Whether at least one worker is consuming from a queue (1) or not (0).
+# TYPE slm_worker_up gauge
+slm_worker_up{queue="cpu"} 1.0
+slm_worker_up{queue="gpu"} 0.0
+```
 
 ---
 
 ## Verification notes
 
-`openapi.json` currently enumerates 39 paths / 46 operations, and
+`openapi.json` currently enumerates 40 paths / 47 operations, and
 `tests/unit/test_openapi_spec_is_current.py` now asserts that the count stated
 at the top of this file matches it — regenerate with
 `python scripts/export_openapi.py` and update that one number when routes

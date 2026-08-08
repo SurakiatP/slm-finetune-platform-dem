@@ -54,7 +54,12 @@ PUBLIC_SERVICES: set[str] = set()
 # Services that must be loopback-bound (have a `ports:` block, every mapping
 # prefixed `127.0.0.1:`). `api` and `edge` joined this list in round 3 — both
 # used to be (or, for `edge`, would otherwise default to) publicly bound.
-MUST_BE_INTERNAL = {"postgres", "redis", "minio", "mlflow", "ollama", "api", "edge"}
+# `prometheus` and `gpu-exporter` joined in M4 (observability-stack) — both
+# publish a loopback debugging port the same way `mlflow`/`ollama` do.
+MUST_BE_INTERNAL = {
+    "postgres", "redis", "minio", "mlflow", "ollama", "api", "edge",
+    "prometheus", "gpu-exporter",
+}
 
 # Services that must carry NO `ports:` block at all — not even a loopback
 # one. Distinct from MUST_BE_INTERNAL: these have nothing worth debugging
