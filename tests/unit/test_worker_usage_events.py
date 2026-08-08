@@ -419,7 +419,11 @@ class TestUsageEventsBudgetExceeded:
         # trait, out of this task's edit scope — assert on the message text
         # instead of the exact exception type.
         assert isinstance(result.result, RuntimeError)
-        assert "SDG budget exceeded" in str(result.result)
+        # "OpenRouter", not "SDG": the same accumulator now caps the
+        # evaluation task's LLM judge too (2026-08-08), so a message naming
+        # one pipeline would send an operator looking in the wrong place.
+        # The class is still `SDGBudgetExceededError` for import stability.
+        assert "OpenRouter budget exceeded" in str(result.result)
 
         session = sync_sessionmaker()
         try:
@@ -427,8 +431,8 @@ class TestUsageEventsBudgetExceeded:
             assert ds is not None
             assert ds.status == JobStatus.FAILED
             assert ds.error_message
-            # `SDGBudgetExceededError.__str__` reads "SDG budget exceeded:
-            # spent $X of $Y remaining budget" — that's what lands in
+            # `SDGBudgetExceededError.__str__` reads "OpenRouter budget
+            # exceeded: spent $X of $Y remaining budget" — that's what lands in
             # `error_message` (`str(exc) or repr(exc)`), so the acceptance
             # criterion ("SDGBudgetExceededError in error_message") is
             # checked both by the error-message text and, more precisely,
