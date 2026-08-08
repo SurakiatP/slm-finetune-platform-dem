@@ -421,9 +421,24 @@ services:
   # profile, like `cloudflared` above — a plain `docker compose up` must
   # never start it. It publishes no `ports:` at all (nothing listens; see
   # docker/frontend.Dockerfile), so it needs no loopback binding either,
-  # unlike `edge`. Usage:
-  #   docker compose --profile build-spa run --rm frontend-build
-  #   # then point SPA_DIST_DIR at the same host path and start `edge` normally
+  # unlike `edge`.
+  #
+  # The default here is `./frontend/dist` (gitignored), NOT `edge`'s
+  # `./docker/spa-placeholder`. This is the only service that mounts the SPA
+  # directory WRITABLE, and its entrypoint is `cp -r /dist/. /out/` — so
+  # defaulting it to the placeholder meant running the usage line below,
+  # verbatim, silently overwrote a committed file in the working tree.
+  #
+  # It deliberately does NOT use `${SPA_DIST_DIR:?...}` to force the operator
+  # to set it. Compose interpolates the whole file before it selects services
+  # or profiles, and treats `:?` as an error on an empty value too — so a `:?`
+  # here would break `docker compose up/build/config/ps` for everyone,
+  # including people who never touch this profile. That exact mistake was
+  # already made once with CLOUDFLARE_TUNNEL_ID; see the `cloudflared` note.
+  #
+  # Usage:
+  #   SPA_DIST_DIR=./frontend/dist docker compose --profile build-spa run --rm frontend-build
+  #   # then start `edge` with the same SPA_DIST_DIR so it serves what was built
   frontend-build:
     build:
       context: .
@@ -431,7 +446,7 @@ services:
     container_name: slm-frontend-build
     profiles: ["build-spa"]
     volumes:
-      - ${SPA_DIST_DIR:-./docker/spa-placeholder}:/out
+      - ${SPA_DIST_DIR:-./frontend/dist}:/out
     networks: [slm-net]
 
   ollama:
