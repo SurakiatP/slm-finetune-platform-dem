@@ -166,21 +166,39 @@ def test_real_app_resolves_a_nested_router_route() -> None:
     scanned `app.routes` one level deep and silently mapped nothing past the
     8 top-level routes (`/`, `/health`, `/ready`, `/metrics`, docs) —
     collapsing every `/api/v1/*` operation onto `route="unmatched"`.
+
+    Deliberately does NOT dispatch a request through `api.main.app` — it
+    resolves against the endpoint map instead. An earlier version of this
+    test called `_matched_scope(real_app, ...)`, i.e. ran a real ASGI
+    request through the production app inside a throwaway `anyio.run()`
+    loop. That passed locally and on this file alone, but poisoned
+    `tests/unit/test_ws_auth.py` when the whole suite ran **inside the api
+    container** — where `DATABASE_URL` points at a real Postgres, so
+    touching the app binds its global async engine to an event loop that is
+    dead by the time a later test uses it. Found on the box, never locally:
+    the laptop's dummy DSN fails fast enough to leave nothing bound.
+    End-to-end dispatch through the real app is still covered, in the one
+    place it belongs — `tests/unit/test_metrics_endpoint.py::
+    test_a_nested_router_request_is_observed_with_its_real_template`, which
+    uses `TestClient` and manages its own loop.
     """
+    from api.core.metrics import _build_endpoint_map
     from api.main import app as real_app
 
     # `/api/v1/tasks` (api/routers/tasks_meta.py) is mounted via
-    # `include_router()` like every other business route, but — unlike
-    # `/api/v1/projects/{id}` — has no auth/DB dependency, so running a real
-    # request through it here needs no database connection.
-    raw_path = "/api/v1/tasks"
-    scope = _matched_scope(real_app, raw_path)
-
-    assert scope.get("endpoint") is not None, (
-        "Starlette failed to match a real router route — fixture or app wiring "
-        "changed; this test can't tell resolve_route_label apart from a broken match"
+    # `include_router()` like every other business route.
+    mapping = _build_endpoint_map(real_app)
+    templates = set(mapping.values())
+    assert "/api/v1/tasks" in templates, (
+        "the real app's endpoint map has no /api/v1/tasks template — every "
+        "include_router()-mounted route would resolve to 'unmatched'"
     )
-    assert resolve_route_label(scope, real_app) == "/api/v1/tasks"
+
+    # And the lookup path itself: feed the endpoint the router really holds
+    # (as `scope["endpoint"]` would be at request time) back through the
+    # public resolver.
+    endpoint = next(ep for ep, tpl in mapping.items() if tpl == "/api/v1/tasks")
+    assert resolve_route_label({"endpoint": endpoint}, real_app) == "/api/v1/tasks"
 
 
 def test_two_levels_of_include_router_both_resolve() -> None:
