@@ -516,6 +516,28 @@ GRANT ALL PRIVILEGES ON DATABASE :"mlflow_db" TO :"mlflow_db_user";
 PSQL
   ok "mlflow role + database provisioned (create-or-alter, converged to .env)"
 
+  # Converge OBJECT ownership too. A box where MLflow previously ran as
+  # ${POSTGRES_USER} (any pre-round-3 deployment) has every table in the
+  # mlflow database owned by that role, and the fresh `mlflow` role hits
+  # `InsufficientPrivilege: permission denied for table alembic_version`
+  # the moment auth starts working — proven live on the pasaflow box
+  # 2026-08-08 (19 slm-owned tables). ALTER DATABASE OWNER above does NOT
+  # cascade to existing objects. Deliberately NOT `REASSIGN OWNED BY`:
+  # that also transfers ownership of *shared* objects — including the
+  # application database itself.
+  docker compose exec -T \
+    -e MLFLOW_DB_USER="$MLFLOW_ROLE" \
+    postgres psql -q -U "$PG_USER" -d "$MLFLOW_DB_NAME" -v ON_ERROR_STOP=1 >>"$LOG" 2>&1 <<'PSQL_OWN'
+\getenv mlflow_db_user MLFLOW_DB_USER
+SELECT format('ALTER TABLE public.%I OWNER TO %I', tablename, :'mlflow_db_user')
+FROM pg_tables WHERE schemaname = 'public' AND tableowner <> :'mlflow_db_user'
+\gexec
+SELECT format('ALTER SEQUENCE public.%I OWNER TO %I', sequencename, :'mlflow_db_user')
+FROM pg_sequences WHERE schemaname = 'public' AND sequenceowner <> :'mlflow_db_user'
+\gexec
+PSQL_OWN
+  ok "existing mlflow-db objects re-owned to the mlflow role (no-op on a fresh box)"
+
   # mlflow may be sitting in restart backoff from the pre-provisioning auth
   # failures — force an immediate retry instead of waiting out the backoff.
   docker compose --profile tunnel restart mlflow >>"$LOG" 2>&1
