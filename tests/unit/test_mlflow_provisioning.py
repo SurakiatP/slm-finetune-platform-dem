@@ -96,13 +96,17 @@ def test_mlflow_password_generation_is_not_gated_on_volume_state() -> None:
     )
 
 
-def _provisioning_heredoc() -> str:
+def _heredoc(delim: str) -> str:
     lines = _script_lines()
-    open_line = _find_line(lines, "<<'PSQL'")
-    close_hits = [i for i, line in enumerate(lines) if line.strip() == "PSQL"]
-    assert close_hits, "provisioning heredoc never closes"
+    open_line = _find_line(lines, f"<<'{delim}'")
+    close_hits = [i for i, line in enumerate(lines) if line.strip() == delim]
+    assert close_hits, f"{delim} heredoc never closes"
     close_line = next(i for i in close_hits if i > open_line)
     return "\n".join(lines[open_line + 1 : close_line])
+
+
+def _provisioning_heredoc() -> str:
+    return _heredoc("PSQL")
 
 
 def test_provisioning_is_create_or_alter_for_both_role_and_database() -> None:
@@ -138,13 +142,7 @@ def test_provisioning_passes_secrets_via_env_not_shell_interpolation() -> None:
     `exec -e` + \\getenv only (same channel postgres-init.sql uses)."""
     lines = _script_lines()
     _find_line(lines, "<<'PSQL'")  # asserts quoted form, exactly once
-    exec_region_start = _find_line(lines, "docker compose exec -T \\")
-    region = "\n".join(lines[exec_region_start : exec_region_start + 6])
-    assert '-e MLFLOW_DB_PASSWORD="$MLFLOW_PW"' in region, (
-        "the provisioning exec no longer passes MLFLOW_DB_PASSWORD via -e; "
-        "\\getenv inside the heredoc reads the container process env, so "
-        "without this the ALTER ROLE sets an empty or stale password"
-    )
+    _find_line(lines, '-e MLFLOW_DB_PASSWORD="$MLFLOW_PW"')  # env channel, exactly once
 
 
 def test_provisioning_refuses_to_alter_the_application_role() -> None:
@@ -161,6 +159,32 @@ def test_provisioning_refuses_to_alter_the_application_role() -> None:
         "the MLFLOW_DB_USER==POSTGRES_USER guard no longer encloses the psql "
         "provisioning call — the dangerous ALTER can now run for the app role"
     )
+
+
+def test_provisioning_converges_existing_object_ownership() -> None:
+    """ALTER DATABASE OWNER does not cascade: a box where MLflow previously
+    ran as POSTGRES_USER has every table owned by that role, and the fresh
+    `mlflow` role dies on `permission denied for table alembic_version` the
+    moment auth works — proven live on the pasaflow box 2026-08-08 (19
+    slm-owned tables). The PSQL_OWN heredoc must enumerate and re-own tables
+    AND sequences; and it must never be spelled as REASSIGN OWNED BY, which
+    also transfers shared objects (the application database included)."""
+    sql = _heredoc("PSQL_OWN")
+    assert re.search(
+        r"ALTER TABLE public\.%I OWNER TO %I.*?FROM pg_tables", sql, re.S
+    ), "table re-owning enumeration is gone — pre-round-3 boxes crash-loop again"
+    assert re.search(
+        r"ALTER SEQUENCE public\.%I OWNER TO %I.*?FROM pg_sequences", sql, re.S
+    ), "sequence re-owning enumeration is gone"
+    lines = _script_lines()
+    whole = "\n".join(lines)
+    assert "REASSIGN OWNED" not in whole.replace("NOT `REASSIGN OWNED BY`", ""), (
+        "someone 'simplified' the ownership transfer to REASSIGN OWNED BY — "
+        "that also transfers ownership of the application database itself"
+    )
+    # The ownership pass must run against the MLFLOW database, not the app DB.
+    own_exec = _find_line(lines, 'psql -q -U "$PG_USER" -d "$MLFLOW_DB_NAME"')
+    assert own_exec, "ownership pass no longer targets the mlflow database"
 
 
 def test_init_sql_creates_role_first_and_database_with_owner() -> None:
