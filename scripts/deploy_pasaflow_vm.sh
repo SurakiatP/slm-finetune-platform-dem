@@ -123,10 +123,10 @@ ok "egress to github/dockerhub/openrouter OK"
 
 # --------- Phase 1: Setup data directories ----------------------------------
 say "==== Phase 1: Data directories under $DATA_DIR ===="
-for sub in postgres redis minio ollama hf-cache; do
+for sub in postgres redis minio ollama hf-cache prometheus; do
   mkdir -p "$DATA_DIR/$sub"
 done
-ok "5 data subdirs ready (postgres, redis, minio, ollama, hf-cache)"
+ok "6 data subdirs ready (postgres, redis, minio, ollama, hf-cache, prometheus)"
 
 # --------- Phase 2: Clone or update repo ------------------------------------
 say "==== Phase 2: Repo at $REPO_DIR ===="
@@ -185,6 +185,12 @@ volumes:
       type: none
       o: bind
       device: $DATA_DIR/hf-cache
+  prometheus-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: $DATA_DIR/prometheus
 EOF
 ok "override.yml written ($(wc -l < "$REPO_DIR/docker-compose.override.yml") lines)"
 
@@ -545,19 +551,26 @@ PSQL_OWN
 fi
 unset MLFLOW_PW
 
-# Wait for all 10 long-running services: postgres, redis, minio, mlflow, api,
-# edge, cloudflared, worker, worker-cpu, ollama. (`minio-init` is an 11th
-# compose service but is a one-shot job — `depends_on: service_completed_
-# successfully` — that exits after seeding buckets, so it never shows
-# "running" and is deliberately not counted here.) This was 7 before the
-# round-3 edge/cloudflared/worker-cpu split; counting only 7 now would
-# report success while 3 real services are still starting.
+# Wait for all 11 long-running services: postgres, redis, minio, mlflow, api,
+# edge, cloudflared, worker, worker-cpu, ollama, prometheus. (`minio-init` is
+# a 12th compose service but is a one-shot job — `depends_on: service_
+# completed_successfully` — that exits after seeding buckets, so it never
+# shows "running" and is deliberately not counted here.) This was 7 before
+# the round-3 edge/cloudflared/worker-cpu split, then 10 before M4 added
+# `prometheus`; counting a stale number would report success while a real
+# service is still starting.
+#
+# `gpu-exporter` (M4) is ALSO deliberately not counted here, but for a
+# different reason than minio-init: it is expected to stay DOWN on this host
+# until a host nvidia driver bug is fixed (see docker-compose.yml's
+# `gpu-exporter` comment), so requiring it "running" would make this wait
+# loop time out on every single deploy to this box.
 say "Waiting for stack to be healthy (up to 3 min)..."
 for i in $(seq 1 36); do
   STATE=$(docker compose --profile tunnel ps --format json 2>/dev/null || true)
   UP=$(echo "$STATE" | grep -c '"State":"running"' || true)
-  if [[ "$UP" -ge 10 ]]; then
-    ok "$UP/10 containers running"
+  if [[ "$UP" -ge 11 ]]; then
+    ok "$UP/11 containers running"
     break
   fi
   sleep 5
@@ -627,7 +640,7 @@ cat <<EOF | tee -a "$LOG"
 ✅ SLM platform deployed on pporkaew-3090
 
   Repo:        $REPO_DIR @ $HEAD_SHA ($BRANCH)
-  Data:        $DATA_DIR (postgres, redis, minio, ollama, hf-cache)
+  Data:        $DATA_DIR (postgres, redis, minio, ollama, hf-cache, prometheus)
   GPU:         $GPU_NAME ($GPU_VRAM)
   Ollama base: $OLLAMA_MODEL
 

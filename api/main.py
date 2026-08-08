@@ -17,13 +17,13 @@ from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from api.core import request_context
+from api.core import metrics, request_context
 from api.core.auth import require_user
 from api.core.config import get_settings
 from api.core.database import engine
 from api.core.exceptions import install_handlers
 from api.core.logging_config import configure_logging
-from api.services import idempotency, job_reconcile, readiness
+from api.services import idempotency, job_reconcile, metrics_export, readiness
 from api.routers import (
     datasets,
     evaluations,
@@ -187,7 +187,23 @@ async def _request_context_middleware(request: Request, call_next):
             response.headers["X-Request-ID"] = request_id
             return response
         finally:
-            duration_ms = round((time.perf_counter() - start) * 1000, 2)
+            elapsed_seconds = time.perf_counter() - start
+            duration_ms = round(elapsed_seconds * 1000, 2)
+            # Prometheus HTTP instrumentation lives here — inside the existing
+            # outermost middleware — rather than as a second `@app.middleware`
+            # layer. `Starlette.add_middleware` (and this decorator) both
+            # `insert(0, ...)`, so any *new* middleware registered would become
+            # the new outermost layer and break
+            # `test_request_context_middleware_is_outermost`. `status_code`
+            # is already 500 by default and only overwritten on the success
+            # path above, so a `call_next` that raises is recorded as a 500
+            # here too, same as the log line below it.
+            metrics.observe_http(
+                metrics.resolve_route_label(request.scope, app),
+                request.method,
+                status_code,
+                elapsed_seconds,
+            )
             # Sourced from `idempotency.client_host` — the exact same function
             # the dedupe key uses — so this log line shows the idempotency
             # bucket a caller falls into, not just "some" address. Behind
@@ -293,15 +309,40 @@ async def health() -> dict[str, str]:
 
 @app.get("/ready", tags=["system"], summary="Readiness probe")
 async def ready(response: Response) -> dict[str, object]:
-    """Can this instance serve? Probes Postgres, Redis, MinIO and the worker.
+    """Can this instance serve? Probes Postgres, Redis, MinIO, and the
+    worker_gpu / worker_cpu queues.
 
     `503` only when Postgres or Redis is down — those are the two the API
-    cannot answer a single request without. MinIO or a missing worker report
-    `degraded` on a `200`, because the API still serves reads and still
-    accepts submits; see `api/services/readiness.py` for why failing on those
-    would be the bigger outage.
+    cannot answer a single request without. MinIO or a missing worker_gpu /
+    worker_cpu consumer reports `degraded` on a `200`, because the API still
+    serves reads and still accepts submits; see `api/services/readiness.py`
+    for why failing on those would be the bigger outage.
     """
     report = await readiness.check()
     if not report.ready:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return report.as_dict()
+
+
+@app.get("/metrics", tags=["system"], summary="Prometheus scrape endpoint")
+async def metrics_endpoint() -> Response:
+    """Prometheus text-exposition snapshot of this process and the worker fleet.
+
+    No auth dependency — same reasoning as `/health` and `/ready`: a
+    Prometheus scraper has no token to send, so requiring one would mean the
+    scrape always fails and this instance is invisible to monitoring.
+    Refreshes the scrape-time gauges (queue depth, worker_gpu/worker_cpu, job
+    counts, OpenRouter usage) via `metrics_export.refresh()` before
+    rendering. `refresh()` is contractually not allowed to raise (see its own
+    docstring) — this `try`/`except` is a second, belt-and-braces layer on
+    top of that contract, same reasoning `refresh()` itself already applies
+    one layer down: an observability endpoint 500ing because one gauge
+    source is down would be strictly worse than serving the exposition
+    format with that gauge left at its last known value.
+    """
+    try:
+        await metrics_export.refresh()
+    except Exception:
+        log.warning("GET /metrics: refresh() raised, serving last known gauge state", exc_info=True)
+    body, content_type = metrics.render()
+    return Response(content=body, media_type=content_type)

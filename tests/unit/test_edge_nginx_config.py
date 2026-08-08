@@ -580,12 +580,15 @@ def test_the_storage_vhost_has_its_own_dedicated_hostname() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/ready"])
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/ready", "/metrics"])
 def test_the_api_docs_and_ready_are_not_proxied(path: str) -> None:
     """`api/main.py` serves these without auth. Under a public-internet
     threat model the spec is a map of every endpoint including the ones just
     added, so decision #12 keeps them off the edge — reachable via
     `docker compose exec` and from the committed `openapi.json` instead.
+    `/metrics` (new this round) is internal-only for the same reason: it is
+    unauthenticated and exposes internal counters to anyone on the public
+    internet.
 
     This existed only as a comment in the conf. A comment does not fail CI
     when someone adds `location /docs { proxy_pass http://api:8000; }`,
@@ -594,7 +597,7 @@ def test_the_api_docs_and_ready_are_not_proxied(path: str) -> None:
     for selector, block in _app_proxy_locations():
         assert not selector.rstrip("/").endswith(path.rstrip("/")), (
             f"{path} is proxied through the edge (location {selector!r}). "
-            "Decision #12 keeps the interactive docs and /ready off the "
-            "public surface; if that changed, update ADR-011 and this test "
-            "together."
+            "Decision #12 keeps the interactive docs, /ready, and /metrics "
+            "off the public surface; if that changed, update ADR-011 and "
+            "this test together."
         )

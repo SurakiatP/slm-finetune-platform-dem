@@ -2850,7 +2850,7 @@
           "system"
         ],
         "summary": "Readiness probe",
-        "description": "Can this instance serve? Probes Postgres, Redis, MinIO and the worker.\n\n`503` only when Postgres or Redis is down — those are the two the API\ncannot answer a single request without. MinIO or a missing worker report\n`degraded` on a `200`, because the API still serves reads and still\naccepts submits; see `api/services/readiness.py` for why failing on those\nwould be the bigger outage.",
+        "description": "Can this instance serve? Probes Postgres, Redis, MinIO, and the\nworker_gpu / worker_cpu queues.\n\n`503` only when Postgres or Redis is down — those are the two the API\ncannot answer a single request without. MinIO or a missing worker_gpu /\nworker_cpu consumer reports `degraded` on a `200`, because the API still\nserves reads and still accepts submits; see `api/services/readiness.py`\nfor why failing on those would be the bigger outage.",
         "operationId": "ready_ready_get",
         "responses": {
           "200": {
@@ -2862,6 +2862,26 @@
                   "type": "object",
                   "title": "Response Ready Ready Get"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Prometheus scrape endpoint",
+        "description": "Prometheus text-exposition snapshot of this process and the worker fleet.\n\nNo auth dependency — same reasoning as `/health` and `/ready`: a\nPrometheus scraper has no token to send, so requiring one would mean the\nscrape always fails and this instance is invisible to monitoring.\nRefreshes the scrape-time gauges (queue depth, worker_gpu/worker_cpu, job\ncounts, OpenRouter usage) via `metrics_export.refresh()` before\nrendering. `refresh()` is contractually not allowed to raise (see its own\ndocstring) — this `try`/`except` is a second, belt-and-braces layer on\ntop of that contract, same reasoning `refresh()` itself already applies\none layer down: an observability endpoint 500ing because one gauge\nsource is down would be strictly worse than serving the exposition\nformat with that gauge left at its last known value.",
+        "operationId": "metrics_endpoint_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           }
