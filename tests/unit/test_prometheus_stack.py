@@ -38,6 +38,34 @@ _SCRIPT_PATH = _REPO_ROOT / "scripts" / "deploy_pasaflow_vm.sh"
 _ONE_SHOT_SERVICES = {"minio-init"}
 _UNCOUNTED_SERVICES = {"gpu-exporter"}
 
+# The profile a deploy actually enables — `scripts/deploy_pasaflow_vm.sh`
+# passes `--profile tunnel` on every service-selecting invocation (enforced by
+# tests/unit/test_compose_port_exposure.py).
+_DEPLOY_PROFILE = "tunnel"
+
+
+def _profile_gated_out(compose: dict) -> set[str]:
+    """Services a `--profile tunnel` deploy never starts, derived from compose.
+
+    A service with no `profiles:` always starts; one listing `tunnel` starts
+    because the deploy enables that profile (this is `cloudflared`, which DOES
+    count toward the healthy-wait). Anything gated behind a DIFFERENT profile
+    is simply absent from the deploy's service set and must not be counted.
+
+    Derived rather than hardcoded because `feat/web-ui` carries an extra
+    `frontend-build` service (`profiles: ["build-spa"]`) that `dev` does not.
+    A literal exclusion set would have to differ between the two branches —
+    and backend test paths are required to stay byte-identical across them,
+    so the difference has to live in logic that reads the compose file, not
+    in a constant.
+    """
+    gated: set[str] = set()
+    for name, spec in compose["services"].items():
+        profiles = (spec or {}).get("profiles") or []
+        if profiles and _DEPLOY_PROFILE not in profiles:
+            gated.add(name)
+    return gated
+
 
 def _prometheus_config() -> dict:
     assert _PROM_CONFIG_PATH.exists(), "docker/prometheus/prometheus.yml does not exist"
@@ -259,7 +287,8 @@ def test_prometheus_data_directory_created_in_phase_1() -> None:
 
 def test_healthy_wait_count_matches_long_running_service_count() -> None:
     all_services = set(_COMPOSE["services"])
-    expected = len(all_services - _ONE_SHOT_SERVICES - _UNCOUNTED_SERVICES)
+    gated_out = _profile_gated_out(_COMPOSE)
+    expected = len(all_services - _ONE_SHOT_SERVICES - _UNCOUNTED_SERVICES - gated_out)
 
     lines = _script_lines()
     ge_hits = [i for i, line in enumerate(lines) if '"$UP" -ge' in line]
@@ -272,7 +301,8 @@ def test_healthy_wait_count_matches_long_running_service_count() -> None:
         f"deploy script waits for -ge {ge_match.group(1)} containers, but "
         f"{expected} compose services are long-running (total "
         f"{len(all_services)} minus one-shot {sorted(_ONE_SHOT_SERVICES)} minus "
-        f"deliberately-uncounted {sorted(_UNCOUNTED_SERVICES)}). Update the "
+        f"deliberately-uncounted {sorted(_UNCOUNTED_SERVICES)} minus "
+        f"profile-gated-out {sorted(gated_out)}). Update the "
         "literal (and its paired ok()/N message) if a service was added or "
         "removed, or add it to _ONE_SHOT_SERVICES/_UNCOUNTED_SERVICES here if "
         "that's why it should not count."
