@@ -19,15 +19,23 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-# Canonical SDG pipeline stage strings. Every caller (generator, judge,
-# meta-prompter, format detector, PDF/QA path) must import these rather than
-# re-spelling the literal, so a typo in one layer can't silently create a
-# second, unmerged usage bucket for what should be the same stage.
+# Canonical OpenRouter-spend stage strings. Every caller (generator, judge,
+# meta-prompter, format detector, PDF/QA path, evaluation's LLM judge) must
+# import these rather than re-spelling the literal, so a typo in one layer
+# can't silently create a second, unmerged usage bucket for what should be
+# the same stage.
 STAGE_META_PROMPT = "meta_prompt"
 STAGE_GENERATE = "generate"
 STAGE_JUDGE = "judge"
 STAGE_PDF_QA = "pdf_qa"
 STAGE_FORMAT_DETECTION = "format_detection"
+# The evaluation run's LLM judge — deliberately NOT `STAGE_JUDGE`, which is
+# the SDG generator's own quality judge. They are different pipelines with
+# different cost profiles (SDG judges each generated row once during
+# generation; evaluation judges each eval row against a trained model), and
+# collapsing them into one bucket would make `GET /usage` unable to answer
+# "what did evaluation cost me" at all.
+STAGE_EVAL_JUDGE = "eval_judge"
 
 
 @dataclass(frozen=True)
@@ -41,13 +49,20 @@ class UsageEntry:
 
 
 class SDGBudgetExceededError(RuntimeError):
-    """Raised by `UsageAccumulator.check_budget()` once spend reaches the limit."""
+    """Raised by `UsageAccumulator.check_budget()` once spend reaches the limit.
+
+    The `SDG` in the name is historical — this accumulator now also caps the
+    evaluation run's LLM judge (`STAGE_EVAL_JUDGE`). The class name is kept
+    for import stability; the message deliberately is not, because an
+    operator reading "SDG budget exceeded" on a *cancelled evaluation* would
+    go looking in the wrong pipeline.
+    """
 
     def __init__(self, spent_usd: float, budget_remaining_usd: float) -> None:
         self.spent_usd = spent_usd
         self.budget_remaining_usd = budget_remaining_usd
         super().__init__(
-            f"SDG budget exceeded: spent ${spent_usd:.4f} of "
+            f"OpenRouter budget exceeded: spent ${spent_usd:.4f} of "
             f"${budget_remaining_usd:.4f} remaining budget"
         )
 
@@ -180,6 +195,7 @@ __all__ = [
     "STAGE_JUDGE",
     "STAGE_PDF_QA",
     "STAGE_FORMAT_DETECTION",
+    "STAGE_EVAL_JUDGE",
     "UsageEntry",
     "SDGBudgetExceededError",
     "UsageAccumulator",

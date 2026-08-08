@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass
 
 from ai_engine.data_gen.openrouter_client import OpenRouterClient
+from ai_engine.data_gen.usage import STAGE_EVAL_JUDGE, UsageAccumulator
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ def judge_rows(
     expected: list[str],
     predicted: list[str],
     temperature: float = 0.0,
+    usage: UsageAccumulator | None = None,
 ) -> JudgeBatchResult:
     """Score `predicted` answers against `expected`, one OpenRouter call per row.
 
@@ -68,6 +70,12 @@ def judge_rows(
         expected: gold answers.
         predicted: model outputs.
         temperature: 0.0 for deterministic grading (recommended).
+        usage: optional accumulator. Passed *in* rather than returned on
+            `JudgeBatchResult` for the same reason SDG threads one into
+            `generate()`: a run that raises never returns a result, and the
+            tokens it burned before raising still have to be billed. With
+            `None` the judge simply runs unmetered (the pre-2026-08-08
+            behaviour, kept for callers that have no accumulator).
 
     Returns:
         `JudgeBatchResult` — per-row scores, mean across **successful** rows
@@ -89,11 +97,18 @@ def judge_rows(
             expected=exp,
             predicted=pred,
             temperature=temperature,
+            usage=usage,
         )
         if row is None:
             skipped += 1
         else:
             rows.append(row)
+        # Budget is checked per row, after that row's tokens are recorded —
+        # the same "cap spend as it happens, not once at submit" reasoning
+        # `UsageAccumulator.check_budget` documents. A 500-row judge pass is
+        # exactly the shape of run a submit-only check cannot stop.
+        if usage is not None:
+            usage.check_budget()
 
     return JudgeBatchResult(
         rows=rows,
@@ -121,6 +136,7 @@ def _judge_one_row(
     expected: str,
     predicted: str,
     temperature: float,
+    usage: UsageAccumulator | None = None,
 ) -> JudgeRowResult | None:
     """Judge a single row; ``None`` on any OpenRouter / parse failure."""
     prompt = _build_judge_user_prompt(question, expected, predicted)
@@ -132,6 +148,19 @@ def _judge_one_row(
             model=judge_model,
             response_format={"type": "json_object"},
         )
+        # Record BEFORE parsing, deliberately. A row whose JSON fails to
+        # parse is `skipped` for scoring purposes but was still a paid
+        # OpenRouter call — billing it only on the parse-success path would
+        # under-report exactly the runs that go wrong. `chat.model` (not
+        # `judge_model`) because OpenRouter may serve a different concrete
+        # model than the one requested.
+        if usage is not None:
+            usage.add(
+                chat.model,
+                STAGE_EVAL_JUDGE,
+                chat.prompt_tokens,
+                chat.completion_tokens,
+            )
         score, reason = _parse_judge_response(chat.content)
         return JudgeRowResult(score=score, reason=reason)
     except Exception as exc:  # noqa: BLE001

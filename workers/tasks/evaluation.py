@@ -37,7 +37,8 @@ from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus, TaskType
 from api.core import request_context
 from api.schemas.progress import EvaluationProgress, JobCompleted, JobFailed
-from api.services import audit_service
+from ai_engine.data_gen.usage import UsageAccumulator
+from api.services import audit_service, model_pricing, usage_service
 from workers.celery_app import celery_app
 from workers.progress import publish_ws_message, sync_redis_scope
 from workers.storage import get_jsonl, get_minio_client, parse_s3_uri
@@ -94,6 +95,42 @@ def run_evaluation(
         # rewrite a finished evaluation as failed, nor publish `JobFailed`
         # after `JobCompleted`.
         committed = False
+
+        # Second flag, same shape as `data_generation.py`'s: "this run's
+        # OpenRouter spend has already been written to `usage_events`".
+        # Without it the failure handler would bill a cancelled-after-commit
+        # run twice, and a double row inflates the actor's monthly spend and
+        # trips their budget cap early.
+        usage_recorded = False
+
+        # Resolve the judge model here, not just inside `_apply_llm_judge`,
+        # because its price has to be in the map before the first call.
+        # Same hexagonal constraint as SDG: `ai_engine` must never learn
+        # about `api.core.config`, so pricing is looked up here and handed
+        # in. A model absent from the map is simply unpriced, and the
+        # accumulator's `has_unpriced_usage` is how that surfaces — which
+        # also covers OpenRouter serving a different concrete model than
+        # the one requested.
+        actor_id = request_context.current_user_id()
+        judge_model_resolved_for_pricing = judge_model or settings.llm_judge_model
+        prices: dict[str, tuple[float, float]] = {}
+        judge_price = model_pricing.price_for(judge_model_resolved_for_pricing)
+        if judge_price is not None:
+            prices[judge_model_resolved_for_pricing] = judge_price
+
+        with session_scope() as session:
+            budget_remaining_usd = usage_service.remaining_budget_usd_sync(
+                session, actor_id=actor_id, settings=settings
+            )
+
+        # Built before `try:` and passed INTO the judge rather than returned
+        # from it — a judge pass that raises at row 400 of 500 never returns
+        # a result, but those 400 rows were paid for and must still be
+        # billed. Until 2026-08-08 evaluation spent OpenRouter money that was
+        # counted nowhere and protected by no breaker; this is that hole.
+        usage = UsageAccumulator(
+            prices=prices, budget_remaining_usd=budget_remaining_usd
+        )
 
         try:
             # ---- 1. Load context --------------------------------------------
@@ -211,6 +248,7 @@ def run_evaluation(
                 expected=expected,
                 predicted=predicted,
                 metrics=metrics,
+                usage=usage,
             )
 
             # ---- 6. Persist + 7. Publish completion ------------------------
@@ -223,12 +261,32 @@ def run_evaluation(
                 row.llm_judge_model = judge_model_resolved
                 row.status = JobStatus.COMPLETED
                 row.ended_at = datetime.now(timezone.utc)
+                eval_project_id = _project_id_for_run(session, row)
+                # Same transaction as the status flip, like the audit row
+                # below it: if billing fails the run does not silently
+                # report success having spent unbilled money.
+                usage_service.record_run(
+                    session,
+                    usage.entries(),
+                    actor_id=actor_id,
+                    project_id=eval_project_id,
+                    job_id=job_id,
+                    outcome="completed",
+                    provider="openrouter",
+                )
+                usage_recorded = True
+                if usage.has_unpriced_usage:
+                    log.warning(
+                        "eval usage has unpriced model(s): job=%s evaluation=%s",
+                        job_id,
+                        evaluation_id,
+                    )
                 audit_service.record(
                     session,
                     action="evaluation.completed",
                     resource_type="evaluation",
                     resource_id=str(row.id),
-                    project_id=_project_id_for_run(session, row),
+                    project_id=eval_project_id,
                     actor_id=request_context.current_user_id(),
                     request_id=request_context.current_request_id(),
                     metadata={"job_id": job_id, "llm_judge_score": judge_score},
@@ -300,6 +358,33 @@ def run_evaluation(
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )
+                    # Bill on EVERY terminal outcome, not just success — a run
+                    # cancelled after 400 judged rows is precisely what a
+                    # budget has to count. Gated on `usage_recorded` so a
+                    # failure landing after the COMPLETED commit can't write
+                    # the same spend twice. Outside the `not committed` branch
+                    # above on purpose: the row's status is already correct in
+                    # that case, but the spend may still be unbilled if the
+                    # crash happened between the two.
+                    if not usage_recorded:
+                        usage_service.record_run(
+                            session,
+                            usage.entries(),
+                            actor_id=actor_id,
+                            project_id=(
+                                _project_id_for_run(session, row)
+                                if row is not None
+                                else None
+                            ),
+                            job_id=job_id,
+                            outcome=(
+                                "cancelled"
+                                if (row is not None and row.status == JobStatus.CANCELLED)
+                                else "failed"
+                            ),
+                            provider="openrouter",
+                        )
+                        usage_recorded = True
             except Exception:  # noqa: BLE001
                 log.warning("could not persist FAILED for %s", evaluation_id, exc_info=True)
             # A client that already received `JobCompleted` must never then
@@ -367,12 +452,19 @@ def _apply_llm_judge(
     expected: list[str],
     predicted: list[str],
     metrics: dict[str, Any],
+    usage: Any = None,
 ) -> tuple[float | None, str | None]:
     """Run optional LLM-as-judge over (questions, expected, predicted).
 
     Mutates ``metrics`` in-place to add either ``llm_judge_notes`` (for
     classification, where the closed-set rule-based metrics are the right tool)
     or ``llm_judge_skipped_rows`` (for QA/tool-calling actually judged).
+
+    ``usage`` is an ``ai_engine.data_gen.usage.UsageAccumulator`` (typed
+    ``Any`` only to keep this module's imports lazy, like the client above).
+    It is mutated in place, so the caller can bill whatever was spent even
+    when this function raises part-way through — which is the entire point:
+    a judge pass cancelled at row 400 of 500 still cost real money.
 
     Returns ``(score, model)`` — both ``None`` when judge wasn't applied.
     """
@@ -396,6 +488,7 @@ def _apply_llm_judge(
         questions=questions,
         expected=expected,
         predicted=predicted,
+        usage=usage,
     )
     metrics["llm_judge_skipped_rows"] = jb.skipped
     return jb.mean_score, judge_model_resolved
@@ -409,14 +502,28 @@ def _build_judge_client(settings: Any, judge_model: str) -> Any:
     client wiring. Returns ``Any`` to keep the import lazy — pulling
     ``OpenRouterClient`` at module scope would force the openai SDK to load
     even on Celery tasks that never run the judge.
+
+    The three breaker hooks are the same set `data_generation.py` passes,
+    and they were missing here until 2026-08-08: evaluation was the one
+    OpenRouter caller in the codebase that could keep hammering a provider
+    already known to be down, and whose failures counted toward nothing.
+    `precheck` fails fast against an open breaker; `on_call_failure` is what
+    trips it; `record_success` is what lets it close again (round 2 shipped
+    that hook dead — see the circuit-breaker row in TASK_TRACKER.md — so
+    wiring all three, not two, is deliberate).
     """
     from ai_engine.data_gen.openrouter_client import OpenRouterClient
+
+    from api.services import circuit_breaker
 
     return OpenRouterClient(
         api_key=settings.openrouter_api_key,
         teacher_model=judge_model,
         http_referer=settings.openrouter_http_referer,
         app_title=settings.openrouter_app_title,
+        precheck=circuit_breaker.precheck,
+        on_call_failure=circuit_breaker.on_failure,
+        on_call_success=circuit_breaker.record_success,
     )
 
 

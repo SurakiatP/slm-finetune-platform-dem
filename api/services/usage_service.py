@@ -36,7 +36,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -223,6 +223,39 @@ def global_monthly_spend_usd_sync(session: Session) -> Decimal:
     """Sync twin of `global_monthly_spend_usd` — used by the Celery worker."""
     result = session.execute(_monthly_spend_stmt(actor_id=None))
     return _to_decimal(result.scalar_one())
+
+
+def remaining_budget_usd_sync(
+    session: Session, *, actor_id: str | None, settings: Any
+) -> float | None:
+    """Headroom left this month: the tighter of the per-actor and global caps.
+
+    `None` means unlimited (neither cap configured). Computed once at task
+    start and handed to `UsageAccumulator(budget_remaining_usd=...)`, which
+    then enforces it against accumulating tokens — the DB is not re-queried
+    mid-run.
+
+    Extracted from `workers/tasks/data_generation.py` when the evaluation
+    task needed the identical calculation (2026-08-08). Two copies of a
+    money ceiling is one copy too many: the SDG original and an eval clone
+    would have drifted the first time either cap changed shape.
+
+    `settings` is a parameter, NOT a `get_settings()` call inside this
+    function — and that is load-bearing. Each Celery task resolves settings
+    once at entry and its tests monkeypatch *that module's* `get_settings`;
+    a hidden global read here would silently ignore the caller's settings
+    and un-cap the budget. Caught by
+    `test_worker_usage_events.py::test_budget_exceeded_fails_run_and_still_writes_usage`
+    the first time this helper read the global itself.
+    """
+    remaining: list[float] = []
+    if actor_id is not None and settings.budget_monthly_usd_per_actor is not None:
+        spent = monthly_spend_usd_sync(session, actor_id=actor_id)
+        remaining.append(float(settings.budget_monthly_usd_per_actor) - float(spent))
+    if settings.budget_monthly_usd_global is not None:
+        spent_global = global_monthly_spend_usd_sync(session)
+        remaining.append(float(settings.budget_monthly_usd_global) - float(spent_global))
+    return min(remaining) if remaining else None
 
 
 # =============================================================================

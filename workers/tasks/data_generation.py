@@ -108,20 +108,11 @@ def generate_synthetic_data(
         # once at task start — not re-checked against the DB again mid-run;
         # `UsageAccumulator.check_budget()` enforces the ceiling against
         # this fixed number as tokens accumulate. `None` when both caps are
-        # unset (unlimited).
-        remaining_candidates: list[float] = []
-        if actor_id is not None and settings.budget_monthly_usd_per_actor is not None:
-            actor_spent = usage_service.monthly_spend_usd_sync(session, actor_id=actor_id)
-            remaining_candidates.append(
-                float(settings.budget_monthly_usd_per_actor) - float(actor_spent)
-            )
-        if settings.budget_monthly_usd_global is not None:
-            global_spent = usage_service.global_monthly_spend_usd_sync(session)
-            remaining_candidates.append(
-                float(settings.budget_monthly_usd_global) - float(global_spent)
-            )
-        if remaining_candidates:
-            budget_remaining_usd = min(remaining_candidates)
+        # unset (unlimited). Shared with the evaluation task, which needs
+        # the identical calculation for its LLM judge.
+        budget_remaining_usd = usage_service.remaining_budget_usd_sync(
+            session, actor_id=actor_id, settings=settings
+        )
 
     usage = UsageAccumulator(prices=prices, budget_remaining_usd=budget_remaining_usd)
     # Every MinIO key written by this run, appended the instant `put_jsonl`
