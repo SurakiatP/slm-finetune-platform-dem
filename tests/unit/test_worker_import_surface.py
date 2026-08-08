@@ -22,6 +22,12 @@ which is the closest in-repo approximation of the worker image's site-packages.
 The parametrized shape matches the house guards in
 tests/unit/test_worker_progress_frames.py: adding a task module to the tuple
 extends the check for free.
+
+M1 ("metrics-core") added a second dependency the worker image must never
+see: `prometheus_client`, imported by `api/core/metrics.py`. Same failure
+mode (an API-only package reachable from a worker-boot module crash-loops
+the GPU worker), same fix shape — a parallel import-hook block against the
+same `_WORKER_BOOT_MODULES` tuple, further down this file.
 """
 
 from __future__ import annotations
@@ -77,10 +83,47 @@ import {module}
 print("IMPORTED")
 """
 
+# Same shape as the PyJWT hook above, for prometheus_client. api/core/metrics.py
+# is an API-only module (pyproject.toml's `[metrics]` extra, installed in
+# docker/api.Dockerfile but never docker/worker.Dockerfile) — a worker-boot
+# module that imports it, directly or transitively, would crash-loop the GPU
+# worker container the same way a stray `import jwt` did.
+_BLOCK_PROMETHEUS_CLIENT_AND_IMPORT = """
+import sys, importlib.abc
+
+
+class _NoPrometheusClient(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path, target=None):
+        if name == "prometheus_client" or name.startswith("prometheus_client."):
+            raise ModuleNotFoundError(
+                "No module named 'prometheus_client' (simulating the worker image)"
+            )
+        return None
+
+
+sys.meta_path.insert(0, _NoPrometheusClient())
+import {module}
+print("IMPORTED")
+"""
+
 
 def _import_without_pyjwt(module: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-c", _BLOCK_JWT_AND_IMPORT.format(module=module)],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={
+            **_child_env(),
+            "DATABASE_URL": "postgresql+asyncpg://test:test@localhost:5432/test_unused",
+        },
+    )
+
+
+def _import_without_prometheus_client(module: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-c", _BLOCK_PROMETHEUS_CLIENT_AND_IMPORT.format(module=module)],
         cwd=_REPO_ROOT,
         capture_output=True,
         text=True,
@@ -153,4 +196,19 @@ def test_usage_service_read_path_still_enforces_ownership() -> None:
     assert "from api.services import ownership" in body, (
         "the deferred import must live inside list_project_usage, not at "
         "module scope"
+    )
+
+
+@pytest.mark.parametrize("module", _WORKER_BOOT_MODULES)
+def test_worker_module_imports_without_prometheus_client(module: str) -> None:
+    """api/core/metrics.py (M1) is an API-only module — prometheus_client
+    lives in pyproject.toml's `[metrics]` extra, installed by
+    docker/api.Dockerfile but deliberately not docker/worker.Dockerfile. No
+    worker-boot module may import it, directly or transitively, or the GPU
+    worker container crash-loops the same way it did for a stray `import
+    jwt`."""
+    result = _import_without_prometheus_client(module)
+    assert "IMPORTED" in result.stdout, (
+        f"{module} cannot be imported in the worker image "
+        f"(prometheus_client missing).\nstderr:\n{result.stderr}"
     )

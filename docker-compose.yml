@@ -426,12 +426,52 @@ services:
     deploy: *gpu-deploy
     networks: [slm-net]
 
+  # M4 observability-stack. Scrapes `api` (see docker/prometheus/
+  # prometheus.yml's `api` job) and `gpu-exporter` below. Loopback-bound like
+  # everything else — see tests/unit/test_compose_port_exposure.py.
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    container_name: slm-prometheus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    networks: [slm-net]
+
+  # nvidia_gpu_exporter — GPU utilization/memory/temperature metrics for
+  # Prometheus, scraped via the `gpu_exporter` job in docker/prometheus/
+  # prometheus.yml. Uses the same GPU reservation pattern as `worker` and
+  # `ollama` above (`*gpu-deploy`).
+  #
+  # KNOWN, EXPECTED STATE: this container is expected to stay DOWN on the
+  # pasaflow prod box until a host-level nvidia driver bug there is fixed —
+  # see WORKING_LOG.md. That is why nothing in this compose file
+  # `depends_on` it and nothing gates its own health on this service's
+  # health: a crash-looping `gpu-exporter` (restart: unless-stopped) must
+  # never prevent `docker compose up` from bringing up the rest of the
+  # stack, and no other service's `depends_on` may ever be pointed at it —
+  # see tests/unit/test_prometheus_stack.py's depends_on guard.
+  gpu-exporter:
+    image: utkuozdemir/nvidia_gpu_exporter:1.13.1
+    container_name: slm-gpu-exporter
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${GPU_EXPORTER_PORT:-9835}:9835"
+    deploy: *gpu-deploy
+    networks: [slm-net]
+
 volumes:
   postgres-data:
   redis-data:
   minio-data:
   ollama-data:
   hf-cache:
+  prometheus-data:
 
 networks:
   slm-net:

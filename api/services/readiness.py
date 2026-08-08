@@ -13,14 +13,23 @@ probe takes down a system it was meant to protect:
     carries both the job snapshots and the Celery broker. Without either, this
     instance genuinely cannot serve, so the probe fails with 503 and a load
     balancer should route away from it.
-  * **MinIO and the worker are reported but not fatal.** With MinIO down,
-    uploads and artifact downloads fail but everything else — listing
+  * **MinIO and the worker queues are reported but not fatal.** With MinIO
+    down, uploads and artifact downloads fail but everything else — listing
     projects, reading datasets, progress snapshots — still works. With no
-    worker, submits still enqueue and `api/services/job_reconcile.py` now ends
-    orphaned jobs properly rather than leaving them spinning. Returning 503
-    for either would pull the whole API out of rotation and take the UI down
-    with it, which is strictly worse than serving in a degraded state that the
-    response body names explicitly.
+    worker on a queue, submits still enqueue and
+    `api/services/job_reconcile.py` now ends orphaned jobs properly rather
+    than leaving them spinning. Returning 503 for either would pull the whole
+    API out of rotation and take the UI down with it, which is strictly worse
+    than serving in a degraded state that the response body names explicitly.
+
+Worker health is reported **per queue** (`worker_gpu`, `worker_cpu`), not as
+one aggregate `worker` check. A plain Celery `ping()` only proves *some* node
+answered — on this deployment a CPU-only worker answers pings just fine while
+the GPU worker is dead, so the old aggregate check reported `worker: ok`
+straight through a GPU outage (proven live on the prod box). Calling
+`inspect(...).active_queues()` instead names which queues each node actually
+consumes, so a dead GPU worker shows up as `worker_gpu: unavailable` even
+while `worker_cpu` stays healthy.
 
 Every probe is bounded and failure-isolated: one slow dependency must not make
 the readiness endpoint itself the outage.
@@ -45,7 +54,7 @@ log = logging.getLogger("api.readiness")
 # probe on a 5-10s interval never overlaps itself.
 PROBE_TIMEOUT_SECONDS = 3.0
 
-# The window `_probe_worker` gives Celery's `inspect` to collect ping replies.
+# The window `probe_worker_queues` gives Celery's `inspect` to collect replies.
 # Half the outer bound, not `outer - 0.5`, and that difference was a live bug:
 # `inspect` does NOT return as soon as replies arrive — it waits out its entire
 # window, then adds broadcast and deserialisation cost. Measured on a
@@ -64,6 +73,12 @@ WORKER_PROBE_TIMEOUT_SECONDS = PROBE_TIMEOUT_SECONDS / 2
 
 # Dependencies this instance cannot serve a single request without.
 REQUIRED = ("postgres", "redis")
+
+# The queues a Celery worker can register for. `probe_worker_queues` reports
+# one verdict per entry here (`worker_gpu`, `worker_cpu`) instead of a single
+# aggregate `worker` check — see the module docstring for why an aggregate
+# ping hides a dead GPU worker behind a healthy CPU one.
+WORKER_QUEUES = ("gpu", "cpu")
 
 OK = "ok"
 UNAVAILABLE = "unavailable"
@@ -134,25 +149,66 @@ async def _probe_minio() -> None:
     await asyncio.to_thread(client.bucket_exists, settings.minio_datasets_bucket)
 
 
-async def _probe_worker() -> None:
+async def probe_worker_queues() -> dict[str, bool]:
+    """Report, per queue in `WORKER_QUEUES`, whether some worker serves it.
+
+    ONE `inspect(...).active_queues()` broadcast covers every queue — never
+    one broadcast per queue, which would multiply the same overhead
+    `WORKER_PROBE_TIMEOUT_SECONDS` already has to budget for. Public (no
+    leading underscore) and side-effect-free on failure — it returns
+    all-`False` rather than raising when nobody answers, so callers other
+    than `/ready` (a metrics adapter reuses this) don't each need their own
+    try/except around a broker hiccup.
+    """
     from workers.celery_app import celery_app
 
     # See `WORKER_PROBE_TIMEOUT_SECONDS` for why this is proportional to the
     # outer bound rather than a fixed subtraction from it.
     inspector = celery_app.control.inspect(timeout=WORKER_PROBE_TIMEOUT_SECONDS)
-    # Blocking broadcast — same reason `job_reconcile` offloads it. `ping()`
-    # returns None when nobody answers, which is exactly the case this probe
-    # exists to surface, so it is turned into a failure explicitly.
-    replies = await asyncio.to_thread(inspector.ping)
-    if not replies:
-        raise RuntimeError("no celery worker answered ping")
+    # Blocking broadcast — same reason `job_reconcile` offloads it.
+    # `active_queues()` returns `{hostname: [queue_info, ...]}`, or `None`
+    # when nobody answers (no workers, or a broker issue) — exactly the case
+    # this probe exists to surface, so it becomes "every queue unserved"
+    # rather than an exception.
+    replies: dict[str, list[dict[str, Any]]] | None = await asyncio.to_thread(
+        inspector.active_queues
+    )
+    served: set[str] = set()
+    for queue_infos in (replies or {}).values():
+        for queue_info in queue_infos or ():
+            name = queue_info.get("name")
+            if name:
+                served.add(name)
+    return {queue: queue in served for queue in WORKER_QUEUES}
+
+
+async def _guard_worker_queues() -> dict[str, str]:
+    """`_guard`'s isolation, applied to `probe_worker_queues` as a unit.
+
+    A timeout or an unexpected exception here means we learned nothing about
+    *any* queue, so every `worker_*` key is reported unavailable together —
+    `probe_worker_queues` itself already turns "nobody answered" into
+    all-`False` without raising, so this only catches the hang/error case.
+    """
+    try:
+        served = await asyncio.wait_for(
+            probe_worker_queues(), timeout=PROBE_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        log.warning(
+            "readiness: worker queue probe timed out after %ss", PROBE_TIMEOUT_SECONDS
+        )
+        served = dict.fromkeys(WORKER_QUEUES, False)
+    except Exception:  # deliberately broad — see `_guard`
+        log.warning("readiness: worker queue probe failed", exc_info=True)
+        served = dict.fromkeys(WORKER_QUEUES, False)
+    return {f"worker_{queue}": (OK if ok else UNAVAILABLE) for queue, ok in served.items()}
 
 
 _PROBES = {
     "postgres": _probe_postgres,
     "redis": _probe_redis,
     "minio": _probe_minio,
-    "worker": _probe_worker,
 }
 
 
@@ -160,13 +216,25 @@ async def check() -> ReadinessReport:
     """Probe every dependency concurrently and report per-dependency status.
 
     Concurrent, not sequential: run in series the endpoint's worst case is the
-    sum of four timeouts, and a readiness probe that takes 12 seconds is
-    indistinguishable from a hung one.
+    sum of the timeouts, and a readiness probe that takes several seconds is
+    indistinguishable from a hung one. The worker queues are probed as one
+    unit alongside `_PROBES` — a single `_guard_worker_queues()` call, not one
+    per queue — so the whole check still issues exactly one Celery broadcast.
     """
-    results = await asyncio.gather(
-        *(_guard(name, probe) for name, probe in _PROBES.items())
+    *probe_results, worker_results = await asyncio.gather(
+        *(_guard(name, probe) for name, probe in _PROBES.items()),
+        _guard_worker_queues(),
     )
-    return ReadinessReport(checks=dict(results))
+    checks = dict(probe_results)
+    checks.update(worker_results)
+    return ReadinessReport(checks=checks)
 
 
-__all__ = ["PROBE_TIMEOUT_SECONDS", "REQUIRED", "ReadinessReport", "check"]
+__all__ = [
+    "PROBE_TIMEOUT_SECONDS",
+    "REQUIRED",
+    "WORKER_QUEUES",
+    "ReadinessReport",
+    "check",
+    "probe_worker_queues",
+]

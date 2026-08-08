@@ -86,3 +86,35 @@ class TestMiddlewareOrdering:
 
         entry = next(m for m in app.user_middleware if m.cls is TrustedHostMiddleware)
         assert entry.kwargs.get("allowed_hosts") == get_settings().api_allowed_hosts
+
+    # ---- M8: HTTP metrics instrumentation lives inside the existing outer
+    # middleware, not as a new registered layer -------------------------------
+
+    def test_request_context_middleware_is_still_outermost_after_metrics_wiring(
+        self,
+    ) -> None:
+        """Mutation check for the M8 change specifically: if the
+        `metrics.observe_http(...)` call added to `_request_context_middleware`
+        had instead been shipped as a second `@app.middleware("http")`
+        (or a second `app.add_middleware(...)` call), Starlette's `insert(0,
+        ...)` would make *that* the new outermost layer and this goes red —
+        same assertion as `test_request_context_middleware_is_outermost`
+        above, restated here so an M8 regression fails under a name that
+        names the change, not just the invariant."""
+        assert app.user_middleware, "no middleware registered at all"
+        outermost = app.user_middleware[0]
+        assert outermost.cls is BaseHTTPMiddleware
+        assert outermost.kwargs.get("dispatch") is _request_context_middleware
+
+    def test_middleware_count_did_not_grow_from_metrics_wiring(self) -> None:
+        """HTTP instrumentation was added *inside* `_request_context_middleware`
+        (a function body edit), so the number of registered middleware layers
+        must be exactly what it was before M8: CORS, TrustedHost, and the one
+        request-context `BaseHTTPMiddleware` — three, not four."""
+        assert len(app.user_middleware) == 3, (
+            f"expected exactly 3 registered middleware layers (CORS, "
+            f"TrustedHost, request-context), got {len(app.user_middleware)}: "
+            f"{[m.cls.__name__ for m in app.user_middleware]}. HTTP metrics "
+            "must be wired inside the existing request-context middleware, "
+            "never as a new app.middleware(...)/add_middleware(...) layer."
+        )

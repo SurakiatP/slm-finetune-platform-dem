@@ -70,6 +70,14 @@ eval = [
     "scikit-learn>=1.6.0",
     "deepeval>=2.0.9",
 ]
+# API-only Prometheus exposition (api/core/metrics.py). Deliberately its own
+# extra rather than a base dep: the GPU worker image (docker/worker.Dockerfile)
+# must genuinely lack prometheus_client, and tests/unit/test_worker_import_surface.py
+# asserts that a worker-boot module can't import it, the same way it asserts
+# PyJWT can't reach the worker.
+metrics = [
+    "prometheus-client>=0.21",
+]
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
@@ -105,6 +113,9 @@ dev = [
     # and a security guard must not stop running because an unrelated
     # dependency dropped it.
     "pyyaml>=6.0",
+    # tests/unit/test_metrics_registry.py exercises api/core/metrics.py
+    # directly, so pytest needs it even though it's not a base dep.
+    "prometheus-client>=0.21",
 ]
 
 [project.urls]
