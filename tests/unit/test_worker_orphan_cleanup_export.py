@@ -35,6 +35,7 @@ isn't what's under test here.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import types
@@ -48,6 +49,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 
+from api.core.redis_client import job_snapshot_key
+from api.models.audit_event import AuditEvent
 from api.models.base import Base
 from api.models.model_artifact import ModelArtifact
 from api.models.project import Project
@@ -174,7 +177,50 @@ def _install_worker_patches(
     return export_module
 
 
-def _seed_project_job_artifact(sync_sessionmaker, *, project_id, training_id, artifact_id):
+def _install_worker_patches_no_unsloth(
+    monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub, ollama_calls: dict
+):
+    """Same as `_install_worker_patches` but WITHOUT injecting a fake
+    `unsloth` module — used by the start-check test, which must prove that
+    a job cancelled before this worker ever picked it up exits before the
+    deferred ``from unsloth import FastLanguageModel`` (a module not
+    installed in this test environment) is ever reached."""
+    import workers.tasks.model_export as export_module
+
+    @contextmanager
+    def _fake_session_scope():
+        session = sync_sessionmaker()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    @contextmanager
+    def _fake_redis_scope():
+        yield fake_redis_pubsub.client
+
+    monkeypatch.setattr(export_module, "session_scope", _fake_session_scope)
+    monkeypatch.setattr(export_module, "sync_redis_scope", _fake_redis_scope)
+    monkeypatch.setattr(export_module, "get_minio_client", lambda: fake_minio)
+    monkeypatch.setattr(export_module, "_quantize_merged_to_gguf", _fake_quantize_merged_to_gguf)
+    monkeypatch.setattr(export_module, "OllamaClient", _make_fake_ollama_client(ollama_calls))
+    return export_module
+
+
+def _frame_types(fake_redis_pubsub) -> list[str]:
+    """Ordered list of `type` fields from every message published on
+    `fake_redis_pubsub.published` — same shape `test_worker_usage_events.py`
+    inlines per-call; pulled out here since two tests below need it."""
+    return [json.loads(message)["type"] for _channel, message in fake_redis_pubsub.published]
+
+
+def _seed_project_job_artifact(
+    sync_sessionmaker, *, project_id, training_id, artifact_id, export_status=None
+):
     session = sync_sessionmaker()
     try:
         project = Project(id=project_id, name="proj", task_type=TaskType.QA)
@@ -195,6 +241,7 @@ def _seed_project_job_artifact(sync_sessionmaker, *, project_id, training_id, ar
             name="artifact",
             base_model=BASE_MODEL,
             lora_adapter_uri=f"s3://models/adapters/{training_id}",
+            export_status=export_status,
         )
         session.add(artifact)
         session.commit()
@@ -495,3 +542,183 @@ class TestPostCommitFailureDoesNotDeleteLiveArtifactOrTag:
                 f"a durably-committed COMPLETED export was unwound to {art.export_status}"
             )
             assert art.export_error_message is None
+
+
+# =============================================================================
+# 6. Zombie-cancel — START-CHECK: cancelled while queued, no worker ever ran it
+#
+# A job cancelled while it's still queued (no worker has picked it up yet)
+# gets `export_status=CANCELLED` written by the cancel endpoint immediately —
+# there's no running task to revoke. If a worker later dequeues it anyway,
+# the old code would blindly flip RUNNING and re-do the whole export,
+# clobbering CANCELLED back to COMPLETED. `_mark_export_running` now checks
+# for that at context-load and returns False instead of flipping RUNNING,
+# and `export_model` exits immediately on that — crucially, BEFORE the
+# deferred `from unsloth import FastLanguageModel`, so no heavy work (model
+# load, GGUF conversion, MinIO upload, Ollama registration) ever starts.
+# =============================================================================
+
+
+class TestStartCheckSkipsAlreadyCancelledExport:
+    def test_cancelled_before_worker_picks_it_up_short_circuits_before_unsloth_import(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        ollama_calls: dict = {}
+        # Deliberately the "no unsloth" installer: the real `unsloth` package
+        # is not installed in this environment, so if `export_model` reached
+        # `from unsloth import FastLanguageModel` this test would blow up
+        # with `ModuleNotFoundError` instead of passing — that failure mode
+        # IS the proof that the start-check exits early enough.
+        export_module = _install_worker_patches_no_unsloth(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub, ollama_calls
+        )
+        project_id, training_id, artifact_id = uuid4(), uuid4(), uuid4()
+        _seed_project_job_artifact(
+            sync_sessionmaker,
+            project_id=project_id,
+            training_id=training_id,
+            artifact_id=artifact_id,
+            export_status=JobStatus.CANCELLED,
+        )
+        _seed_adapter_files(fake_minio, training_id=training_id)
+
+        result = export_module.export_model.apply(
+            kwargs={"artifact_id": str(artifact_id), "format": "gguf"}
+        )
+        assert result.successful(), f"task raised: {result.result!r}"
+        assert result.result == {
+            "status": "cancelled",
+            "artifact_id": str(artifact_id),
+            "format": "gguf",
+        }
+
+        session = sync_sessionmaker()
+        try:
+            artifact = session.get(ModelArtifact, artifact_id)
+            assert artifact.export_status == JobStatus.CANCELLED, (
+                "the start-check must not flip a pre-cancelled row to RUNNING/COMPLETED"
+            )
+        finally:
+            session.close()
+
+        objects = _export_objects(fake_minio, artifact_id)
+        assert objects == [], (
+            f"a start-checked cancel must never upload anything to MinIO: {objects}"
+        )
+        assert not ollama_calls.get("created"), (
+            "a start-checked cancel must never register with Ollama"
+        )
+
+        types = _frame_types(fake_redis_pubsub)
+        assert types == ["failed"], f"expected exactly one cancelled frame, got {types}"
+
+        snapshot = fake_redis_pubsub.client.get(job_snapshot_key(result.id))
+        assert snapshot is not None
+        snap = json.loads(snapshot)
+        assert snap["type"] == "failed"
+        assert snap["error_type"] == "Cancelled"
+
+
+# =============================================================================
+# 7. Zombie-cancel — COMPLETED-GUARD (discard path): cancelled between the
+#    GGUF upload and the terminal commit, WITHOUT an exception being raised.
+#
+# The existing cancel tests above (#2) all drive the cancel via a raised
+# `SystemExit`, which the `except BaseException` handler catches. But the
+# cancel endpoint flips `export_status=CANCELLED` in its own transaction and
+# only THEN revokes the task — so there's a window where the row is already
+# CANCELLED but the running task hasn't been signalled yet and keeps
+# executing normally, straight into `_persist_export_uris`. That helper must
+# notice CANCELLED on its own (no exception involved) and return False so the
+# caller can discard the just-uploaded GGUF/Ollama tag instead of writing
+# COMPLETED over a CANCELLED row.
+# =============================================================================
+
+
+class TestCompletedGuardDiscardsWithoutException:
+    def test_cancel_flips_between_upload_and_commit_without_raising(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        ollama_calls: dict = {}
+        export_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub, ollama_calls
+        )
+        project_id, training_id, artifact_id = uuid4(), uuid4(), uuid4()
+        _seed_project_job_artifact(
+            sync_sessionmaker, project_id=project_id, training_id=training_id, artifact_id=artifact_id
+        )
+        _seed_adapter_files(fake_minio, training_id=training_id)
+
+        real_s3_uri = export_module.s3_uri
+
+        def _flip_to_cancelled_then_return(bucket, key_prefix):
+            # Seam: `s3_uri` is called right after `uploaded_prefixes.append`
+            # for the just-uploaded GGUF prefix — i.e. exactly the window the
+            # discard path exists for. Flips the row to CANCELLED (mirroring
+            # the cancel endpoint's own transaction) and returns normally, no
+            # exception — the discard path must be reached WITHOUT going
+            # through `except BaseException`.
+            session = sync_sessionmaker()
+            try:
+                artifact = session.get(ModelArtifact, artifact_id)
+                artifact.export_status = JobStatus.CANCELLED
+                session.commit()
+            finally:
+                session.close()
+            return real_s3_uri(bucket, key_prefix)
+
+        monkeypatch.setattr(export_module, "s3_uri", _flip_to_cancelled_then_return)
+
+        result = export_module.export_model.apply(
+            kwargs={"artifact_id": str(artifact_id), "format": "gguf"}
+        )
+        assert result.successful(), f"task raised: {result.result!r}"
+        assert result.result == {
+            "status": "cancelled",
+            "artifact_id": str(artifact_id),
+            "format": "gguf",
+        }
+
+        assert ollama_calls.get("created"), (
+            "sanity: ollama registration must have happened before the flip"
+        )
+        assert ollama_calls.get("deleted") == ollama_calls.get("created"), (
+            "the discard path must delete every ollama tag it registered"
+        )
+
+        objects = _export_objects(fake_minio, artifact_id)
+        assert objects == [], (
+            f"the discard path must not leave an orphaned GGUF prefix: {objects}"
+        )
+
+        session = sync_sessionmaker()
+        try:
+            artifact = session.get(ModelArtifact, artifact_id)
+            assert artifact.export_status == JobStatus.CANCELLED
+            assert artifact.gguf_uri is None, "discard must skip the URI write"
+            assert artifact.ollama_model_tag is None, "discard must skip the tag write"
+            assert artifact.export_error_message is None, (
+                "discard must not touch export_error_message"
+            )
+
+            completed_events = (
+                session.query(AuditEvent)
+                .filter(AuditEvent.resource_id == str(artifact_id))
+                .filter(AuditEvent.action == "export.completed")
+                .all()
+            )
+            assert completed_events == [], (
+                "discard must skip the export.completed audit row entirely"
+            )
+        finally:
+            session.close()
+
+        types = _frame_types(fake_redis_pubsub)
+        assert "completed" not in types, "discard must never publish JobCompleted"
+        assert types[-1] == "failed", f"expected the terminal frame to be the cancelled one: {types}"
+
+        snapshot = fake_redis_pubsub.client.get(job_snapshot_key(result.id))
+        assert snapshot is not None
+        snap = json.loads(snapshot)
+        assert snap["type"] == "failed"
+        assert snap["error_type"] == "Cancelled"

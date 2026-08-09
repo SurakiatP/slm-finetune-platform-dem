@@ -46,6 +46,10 @@ from workers.sync_db import session_scope
 
 log = get_task_logger(__name__)
 
+
+def _cancelled_frame(job_id: str) -> JobFailed:
+    return JobFailed(job_id=job_id, error="job was cancelled", error_type="Cancelled")
+
 # Minimum seconds between `EvaluationProgress(phase="predicting")` frames.
 # Publishing once per row would flood the WS the same way `hpo_training.py:184-186`
 # suppresses per-step inner training progress across trials ("the WS firehose
@@ -138,28 +142,51 @@ def run_evaluation(
                 ev = session.get(EvaluationRun, eval_uuid)
                 if ev is None:
                     raise RuntimeError(f"EvaluationRun {evaluation_id} not found")
-                artifact = session.get(ModelArtifact, ev.model_artifact_id)
-                dataset = session.get(Dataset, ev.dataset_id)
-                if artifact is None or dataset is None:
-                    raise RuntimeError("evaluation: missing artifact or dataset")
-                if not artifact.ollama_model_tag:
-                    raise RuntimeError(
-                        f"Artifact {artifact.id} has no ollama_model_tag — "
-                        "export to GGUF first"
-                    )
-                if not dataset.storage_uri:
-                    raise RuntimeError(
-                        f"Dataset {dataset.id} has no storage_uri (not yet generated)"
-                    )
 
-                ollama_tag = artifact.ollama_model_tag
-                dataset_uri = dataset.storage_uri
-                task_type = dataset.task_type
-                tool_definitions = _extract_tool_definitions(dataset.generation_metadata)
-                classification_labels = _extract_labels(dataset.generation_metadata)
+                if ev.status == JobStatus.CANCELLED:
+                    # Row was already CANCELLED at context-load time (the
+                    # cancel endpoint won the race before this task ever
+                    # picked up work) — no RUNNING flip happens, and none of
+                    # the artifact/dataset validation below runs either: a
+                    # cancelled zombie whose artifact was since deleted must
+                    # still exit cleanly, not FAILED.
+                    cancelled_at_start = True
+                else:
+                    cancelled_at_start = False
+                    artifact = session.get(ModelArtifact, ev.model_artifact_id)
+                    dataset = session.get(Dataset, ev.dataset_id)
+                    if artifact is None or dataset is None:
+                        raise RuntimeError("evaluation: missing artifact or dataset")
+                    if not artifact.ollama_model_tag:
+                        raise RuntimeError(
+                            f"Artifact {artifact.id} has no ollama_model_tag — "
+                            "export to GGUF first"
+                        )
+                    if not dataset.storage_uri:
+                        raise RuntimeError(
+                            f"Dataset {dataset.id} has no storage_uri (not yet generated)"
+                        )
 
-                ev.status = JobStatus.RUNNING
-                ev.started_at = datetime.now(timezone.utc)
+                    ollama_tag = artifact.ollama_model_tag
+                    dataset_uri = dataset.storage_uri
+                    task_type = dataset.task_type
+                    tool_definitions = _extract_tool_definitions(dataset.generation_metadata)
+                    classification_labels = _extract_labels(dataset.generation_metadata)
+
+                    ev.status = JobStatus.RUNNING
+                    ev.started_at = datetime.now(timezone.utc)
+
+            if cancelled_at_start:
+                # Nothing was spent on this path — no usage row to record.
+                try:
+                    publish(_cancelled_frame(job_id))
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "eval: job=%s failed to publish cancelled-at-start frame",
+                        job_id,
+                        exc_info=True,
+                    )
+                return {"status": "cancelled", "evaluation_id": evaluation_id}
 
             # ---- 2. Pull rows -----------------------------------------------
             log.info(
@@ -256,45 +283,83 @@ def run_evaluation(
                 row = session.get(EvaluationRun, eval_uuid)
                 if row is None:
                     raise RuntimeError(f"EvaluationRun {evaluation_id} disappeared")
-                row.metrics_json = metrics
-                row.llm_judge_score = judge_score
-                row.llm_judge_model = judge_model_resolved
-                row.status = JobStatus.COMPLETED
-                row.ended_at = datetime.now(timezone.utc)
                 eval_project_id = _project_id_for_run(session, row)
-                # Same transaction as the status flip, like the audit row
-                # below it: if billing fails the run does not silently
-                # report success having spent unbilled money.
-                usage_service.record_run(
-                    session,
-                    usage.entries(),
-                    actor_id=actor_id,
-                    project_id=eval_project_id,
-                    job_id=job_id,
-                    outcome="completed",
-                    provider="openrouter",
-                )
-                usage_recorded = True
-                if usage.has_unpriced_usage:
-                    log.warning(
-                        "eval usage has unpriced model(s): job=%s evaluation=%s",
-                        job_id,
-                        evaluation_id,
-                    )
-                audit_service.record(
-                    session,
-                    action="evaluation.completed",
-                    resource_type="evaluation",
-                    resource_id=str(row.id),
-                    project_id=eval_project_id,
-                    actor_id=request_context.current_user_id(),
-                    request_id=request_context.current_request_id(),
-                    metadata={"job_id": job_id, "llm_judge_score": judge_score},
-                )
 
-            # The run is durably COMPLETED. From here the handler must not
-            # rewrite its terminal state or emit a contradicting frame.
+                if row.status == JobStatus.CANCELLED:
+                    # Cancelled while this task was predicting/judging — the
+                    # cancel endpoint already wrote CANCELLED, so the
+                    # terminal-success writes below (metrics/judge fields/
+                    # COMPLETED/ended_at, and the evaluation.completed audit)
+                    # must be discarded rather than overwrite it. The judge
+                    # may still have spent real OpenRouter money, and the
+                    # `except BaseException` handler never runs on this path
+                    # (no exception was raised) — bill it here or it is
+                    # billed nowhere, which is the whole point of the
+                    # usage-on-every-terminal-outcome invariant.
+                    cancelled_at_persist = True
+                    usage_service.record_run(
+                        session,
+                        usage.entries(),
+                        actor_id=actor_id,
+                        project_id=eval_project_id,
+                        job_id=job_id,
+                        outcome="cancelled",
+                        provider="openrouter",
+                    )
+                    usage_recorded = True
+                else:
+                    cancelled_at_persist = False
+                    row.metrics_json = metrics
+                    row.llm_judge_score = judge_score
+                    row.llm_judge_model = judge_model_resolved
+                    row.status = JobStatus.COMPLETED
+                    row.ended_at = datetime.now(timezone.utc)
+                    # Same transaction as the status flip, like the audit row
+                    # below it: if billing fails the run does not silently
+                    # report success having spent unbilled money.
+                    usage_service.record_run(
+                        session,
+                        usage.entries(),
+                        actor_id=actor_id,
+                        project_id=eval_project_id,
+                        job_id=job_id,
+                        outcome="completed",
+                        provider="openrouter",
+                    )
+                    usage_recorded = True
+                    if usage.has_unpriced_usage:
+                        log.warning(
+                            "eval usage has unpriced model(s): job=%s evaluation=%s",
+                            job_id,
+                            evaluation_id,
+                        )
+                    audit_service.record(
+                        session,
+                        action="evaluation.completed",
+                        resource_type="evaluation",
+                        resource_id=str(row.id),
+                        project_id=eval_project_id,
+                        actor_id=request_context.current_user_id(),
+                        request_id=request_context.current_request_id(),
+                        metadata={"job_id": job_id, "llm_judge_score": judge_score},
+                    )
+
+            # The run is durably terminal (COMPLETED, or discarded in favor
+            # of the CANCELLED the cancel endpoint already wrote). From here
+            # the handler must not rewrite its terminal state or emit a
+            # contradicting frame.
             committed = True
+
+            if cancelled_at_persist:
+                try:
+                    publish(_cancelled_frame(job_id))
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "eval: job=%s failed to publish cancelled frame",
+                        job_id,
+                        exc_info=True,
+                    )
+                return {"status": "cancelled", "evaluation_id": evaluation_id}
 
             publish(
                 JobCompleted(

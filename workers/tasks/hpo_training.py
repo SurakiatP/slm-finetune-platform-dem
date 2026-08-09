@@ -101,32 +101,50 @@ def train_hpo(
 
         try:
             # ---- 1. Load TrainingJob + Dataset --------------------------------
+            # A job cancelled while still queued (no worker ever picked it up)
+            # reaches this line with status already CANCELLED. Without this
+            # check the block below would flip it to RUNNING and a later
+            # COMPLETED would clobber the cancel. Zombie-cancel guard 1/2 —
+            # see the matching guard in section 6b below.
+            cancelled_at_start = False
             with session_scope() as session:
                 job = session.get(TrainingJob, training_uuid)
                 if job is None:
                     raise RuntimeError(f"TrainingJob {training_id} not found")
-                if job.mode.value != "hpo":
-                    raise RuntimeError(
-                        f"train.hpo called on job with mode={job.mode.value}"
+                if job.status == JobStatus.CANCELLED:
+                    cancelled_at_start = True
+                else:
+                    if job.mode.value != "hpo":
+                        raise RuntimeError(
+                            f"train.hpo called on job with mode={job.mode.value}"
+                        )
+
+                    dataset = session.get(Dataset, job.dataset_id)
+                    if dataset is None:
+                        raise RuntimeError(f"Dataset {job.dataset_id} not found")
+                    if not dataset.storage_uri:
+                        raise RuntimeError(
+                            f"Dataset {dataset.id} has no storage_uri — generation may have failed"
+                        )
+
+                    base_model = job.base_model
+                    hpo_config = HPOConfig.model_validate(job.config_json)
+                    task_type = dataset.task_type
+                    tool_definitions = _extract_tool_definitions(dataset.generation_metadata)
+                    dataset_uri = dataset.storage_uri
+                    training_name = job.training_name or f"hpo-{job_id[:8]}"
+
+                    job.status = JobStatus.RUNNING
+                    job.started_at = datetime.now(timezone.utc)
+
+            if cancelled_at_start:
+                try:
+                    publish(_cancelled_frame(job_id))
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "failed to publish cancelled frame for %s", training_id, exc_info=True
                     )
-
-                dataset = session.get(Dataset, job.dataset_id)
-                if dataset is None:
-                    raise RuntimeError(f"Dataset {job.dataset_id} not found")
-                if not dataset.storage_uri:
-                    raise RuntimeError(
-                        f"Dataset {dataset.id} has no storage_uri — generation may have failed"
-                    )
-
-                base_model = job.base_model
-                hpo_config = HPOConfig.model_validate(job.config_json)
-                task_type = dataset.task_type
-                tool_definitions = _extract_tool_definitions(dataset.generation_metadata)
-                dataset_uri = dataset.storage_uri
-                training_name = job.training_name or f"hpo-{job_id[:8]}"
-
-                job.status = JobStatus.RUNNING
-                job.started_at = datetime.now(timezone.utc)
+                return {"status": "cancelled", "training_id": training_id}
 
             # ---- 2. Pull rows --------------------------------------------------
             log.info("hpo: job=%s loading dataset %s", job_id, dataset_uri)
@@ -290,41 +308,84 @@ def train_hpo(
 
             # ---- 6b. Persist ModelArtifact + outcome on TrainingJob -----------
             artifact_id: UUID | None = None
+            # Zombie-cancel guard 2/2: the row may have been cancelled while
+            # this run was mid-study/mid-retrain (worker was still alive, so
+            # guard 1/2 above didn't fire). Discard the just-trained adapter's
+            # result instead of overwriting CANCELLED with COMPLETED.
+            discarded = False
             with session_scope() as session:
                 row = session.get(TrainingJob, training_uuid)
                 if row is None:
                     raise RuntimeError(f"TrainingJob {training_id} disappeared mid-run")
-                artifact = ModelArtifact(
-                    training_job_id=row.id,
-                    name=training_name,
-                    base_model=base_model,
-                    mlflow_run_id=row.mlflow_run_id,
-                    lora_adapter_uri=artifact_uri,
-                    size_mb=round(size_bytes / (1024 * 1024), 2),
-                )
-                session.add(artifact)
-                session.flush()
-                artifact_id = artifact.id
+                if row.status == JobStatus.CANCELLED:
+                    discarded = True
+                else:
+                    artifact = ModelArtifact(
+                        training_job_id=row.id,
+                        name=training_name,
+                        base_model=base_model,
+                        mlflow_run_id=row.mlflow_run_id,
+                        lora_adapter_uri=artifact_uri,
+                        size_mb=round(size_bytes / (1024 * 1024), 2),
+                    )
+                    session.add(artifact)
+                    session.flush()
+                    artifact_id = artifact.id
 
-                row.status = JobStatus.COMPLETED
-                row.ended_at = datetime.now(timezone.utc)
-                row.best_metric_value = best_value
-                row.best_params_json = best_params
-                audit_service.record(
-                    session,
-                    action="training.completed",
-                    resource_type="training",
-                    resource_id=str(row.id),
-                    project_id=row.project_id,
-                    actor_id=request_context.current_user_id(),
-                    request_id=request_context.current_request_id(),
-                    metadata={
-                        "job_id": job_id,
-                        "mode": "hpo",
-                        "model_artifact_id": str(artifact_id),
-                        "best_metric_value": best_value,
-                    },
-                )
+                    row.status = JobStatus.COMPLETED
+                    row.ended_at = datetime.now(timezone.utc)
+                    row.best_metric_value = best_value
+                    row.best_params_json = best_params
+                    audit_service.record(
+                        session,
+                        action="training.completed",
+                        resource_type="training",
+                        resource_id=str(row.id),
+                        project_id=row.project_id,
+                        actor_id=request_context.current_user_id(),
+                        request_id=request_context.current_request_id(),
+                        metadata={
+                            "job_id": job_id,
+                            "mode": "hpo",
+                            "model_artifact_id": str(artifact_id),
+                            "best_metric_value": best_value,
+                        },
+                    )
+
+            if discarded:
+                # No ModelArtifact row was ever created, so nothing durable
+                # references the just-uploaded adapter — same reasoning as
+                # `committed` on the failure path: flip it True so the
+                # `except BaseException` handler (which never fires on this
+                # return path) and any future writer treat the run as final.
+                committed = True
+                if uploaded_prefix:
+                    try:
+                        removed = remove_prefix(
+                            get_minio_client(),
+                            settings.minio_models_bucket,
+                            uploaded_prefix,
+                        )
+                        log.info(
+                            "hpo: removed %d orphaned adapter object(s) under %s "
+                            "(job=%s) — job was cancelled",
+                            removed,
+                            uploaded_prefix,
+                            job_id,
+                        )
+                    except Exception:  # noqa: BLE001
+                        log.warning(
+                            "could not remove orphaned adapter prefix %s",
+                            uploaded_prefix,
+                            exc_info=True,
+                        )
+                try:
+                    publish(_cancelled_frame(job_id))
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "failed to publish cancelled frame for %s", training_id, exc_info=True
+                    )
+                return {"status": "cancelled", "training_id": training_id}
 
             # The adapter is on MinIO and the ModelArtifact row referencing it
             # is durably committed. From here the handler must neither delete
@@ -452,6 +513,10 @@ def train_hpo(
 
 
 # ---- helpers ---------------------------------------------------------------
+
+
+def _cancelled_frame(job_id: str) -> JobFailed:
+    return JobFailed(job_id=job_id, error="job was cancelled", error_type="Cancelled")
 
 
 def _build_sampler(optuna_mod: Any, name: str) -> Any:

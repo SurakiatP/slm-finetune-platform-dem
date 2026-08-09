@@ -99,20 +99,38 @@ def generate_synthetic_data(
     # run that raises never returns a result, and that handler must still
     # be able to read what was spent in order to bill it.
     budget_remaining_usd: float | None = None
+    cancelled_before_start = False
     with session_scope() as session:
         ds = session.get(Dataset, parent_uuid)
-        if ds is not None:
-            ds.status = JobStatus.RUNNING
+        cancelled_before_start = ds is not None and ds.status == JobStatus.CANCELLED
+        if not cancelled_before_start:
+            if ds is not None:
+                ds.status = JobStatus.RUNNING
 
-        # Tighter of the per-actor and global remaining budget, computed
-        # once at task start — not re-checked against the DB again mid-run;
-        # `UsageAccumulator.check_budget()` enforces the ceiling against
-        # this fixed number as tokens accumulate. `None` when both caps are
-        # unset (unlimited). Shared with the evaluation task, which needs
-        # the identical calculation for its LLM judge.
-        budget_remaining_usd = usage_service.remaining_budget_usd_sync(
-            session, actor_id=actor_id, settings=settings
-        )
+            # Tighter of the per-actor and global remaining budget, computed
+            # once at task start — not re-checked against the DB again mid-run;
+            # `UsageAccumulator.check_budget()` enforces the ceiling against
+            # this fixed number as tokens accumulate. `None` when both caps are
+            # unset (unlimited). Shared with the evaluation task, which needs
+            # the identical calculation for its LLM judge.
+            budget_remaining_usd = usage_service.remaining_budget_usd_sync(
+                session, actor_id=actor_id, settings=settings
+            )
+
+    if cancelled_before_start:
+        # Cancelled while still queued — no worker ever flipped it to
+        # RUNNING, so there is no work to do and nothing to undo. The
+        # task's own `sync_redis_scope()` doesn't open until further
+        # below, so this branch opens its own short-lived one just to
+        # announce the terminal frame before returning.
+        with sync_redis_scope() as redis:
+            try:
+                publish_ws_message(redis, job_id, _cancelled_frame(job_id))
+            except Exception:  # noqa: BLE001 — announcement only
+                log.warning(
+                    "failed to publish JobFailed(cancelled) message", exc_info=True
+                )
+        return {"status": "cancelled", "dataset_id": dataset_id}
 
     usage = UsageAccumulator(prices=prices, budget_remaining_usd=budget_remaining_usd)
     # Every MinIO key written by this run, appended the instant `put_jsonl`
@@ -230,87 +248,146 @@ def generate_synthetic_data(
                 uploaded_keys.append(holdout_key)
                 holdout_uri = s3_uri(bucket, holdout_key)
 
+            discarded_as_cancelled = False
             with session_scope() as session:
                 parent = session.get(Dataset, parent_uuid)
                 if parent is None:
                     raise RuntimeError(
                         f"Dataset {dataset_id} disappeared mid-generation"
                     )
-                parent.num_samples = len(train_rows)
-                parent.storage_uri = train_uri
-                parent.size_bytes = train_size
-                parent.status = JobStatus.COMPLETED
-                audit_service.record(
-                    session,
-                    action="sdg.completed",
-                    resource_type="dataset",
-                    resource_id=str(parent.id),
-                    project_id=parent.project_id,
-                    actor_id=request_context.current_user_id(),
-                    request_id=request_context.current_request_id(),
-                    metadata={"job_id": job_id, "num_samples": parent.num_samples},
-                )
-                # Usage must be written on every terminal outcome — completed,
-                # failed AND cancelled — because the tokens were burned either
-                # way. This is the success leg; the failure/cancel leg mirrors
-                # it in the `except BaseException` handler below.
-                usage_service.record_run(
-                    session,
-                    usage.entries(),
-                    actor_id=actor_id,
-                    project_id=parent.project_id,
-                    job_id=job_id,
-                    outcome="completed",
-                    provider="openrouter",
-                )
-                if usage.has_unpriced_usage:
-                    # A model in use is missing from the pricing map, so the
-                    # recorded cost is a floor, not a total.
-                    log.warning(
-                        "SDG usage has unpriced model(s): job=%s dataset=%s",
-                        job_id,
-                        dataset_id,
-                    )
-                parent_meta = dict(parent.generation_metadata or {})
-                parent_meta.update(
-                    {
-                        "completed_at": datetime.now(timezone.utc).isoformat(),
-                        "rejected_count": result.rejected_count,
-                        "duplicate_count": result.duplicate_count,
-                        "judge_rejected_count": result.judge_rejected_count,
-                        "judge_parse_failures": result.judge_parse_failures,
-                        "api_calls": result.api_calls,
-                        "holdout_size_requested": holdout_size,
-                        "holdout_size_actual": len(holdout_rows),
-                        "role": "train",
-                        "holdout_dataset_id": (
-                            str(holdout_uuid) if holdout_uuid else None
-                        ),
-                    }
-                )
-                parent.generation_metadata = parent_meta
-
-                if holdout_uuid is not None:
-                    child = Dataset(
-                        id=holdout_uuid,
+                if parent.status == JobStatus.CANCELLED:
+                    # Cancelled after the start-check above already passed:
+                    # the cancel endpoint flipped this row to CANCELLED and
+                    # revoked the task, but the SIGTERM-turned-SystemExit
+                    # lost the race with this commit window. Discard every
+                    # write below — no COMPLETED flip, no sdg.completed
+                    # audit, no metadata update, no holdout Dataset row —
+                    # CANCELLED is the accurate terminal state and must not
+                    # be clobbered back to COMPLETED. Usage must still be
+                    # recorded, since the tokens were burned either way and
+                    # the `except BaseException` handler never runs on this
+                    # path (we return normally below).
+                    discarded_as_cancelled = True
+                    usage_service.record_run(
+                        session,
+                        usage.entries(),
+                        actor_id=actor_id,
                         project_id=parent.project_id,
-                        name=f"{parent.name}-holdout",
-                        task_type=parent.task_type,
-                        source=DatasetSource.SDG,
-                        num_samples=len(holdout_rows),
-                        storage_uri=holdout_uri,
-                        size_bytes=holdout_size_bytes,
-                        parent_dataset_id=parent.id,
-                        status=JobStatus.COMPLETED,
-                        generation_metadata={
-                            "role": "holdout",
-                            "parent_dataset_id": str(parent.id),
-                            "sdg_mode": request.sdg_mode.value,
-                            "task_description": request.task_description,
-                            "completed_at": datetime.now(timezone.utc).isoformat(),
-                        },
+                        job_id=job_id,
+                        outcome="cancelled",
+                        provider="openrouter",
                     )
-                    session.add(child)
+                else:
+                    parent.num_samples = len(train_rows)
+                    parent.storage_uri = train_uri
+                    parent.size_bytes = train_size
+                    parent.status = JobStatus.COMPLETED
+                    audit_service.record(
+                        session,
+                        action="sdg.completed",
+                        resource_type="dataset",
+                        resource_id=str(parent.id),
+                        project_id=parent.project_id,
+                        actor_id=request_context.current_user_id(),
+                        request_id=request_context.current_request_id(),
+                        metadata={"job_id": job_id, "num_samples": parent.num_samples},
+                    )
+                    # Usage must be written on every terminal outcome — completed,
+                    # failed AND cancelled — because the tokens were burned either
+                    # way. This is the success leg; the failure/cancel leg mirrors
+                    # it in the `except BaseException` handler below.
+                    usage_service.record_run(
+                        session,
+                        usage.entries(),
+                        actor_id=actor_id,
+                        project_id=parent.project_id,
+                        job_id=job_id,
+                        outcome="completed",
+                        provider="openrouter",
+                    )
+                    if usage.has_unpriced_usage:
+                        # A model in use is missing from the pricing map, so the
+                        # recorded cost is a floor, not a total.
+                        log.warning(
+                            "SDG usage has unpriced model(s): job=%s dataset=%s",
+                            job_id,
+                            dataset_id,
+                        )
+                    parent_meta = dict(parent.generation_metadata or {})
+                    parent_meta.update(
+                        {
+                            "completed_at": datetime.now(timezone.utc).isoformat(),
+                            "rejected_count": result.rejected_count,
+                            "duplicate_count": result.duplicate_count,
+                            "judge_rejected_count": result.judge_rejected_count,
+                            "judge_parse_failures": result.judge_parse_failures,
+                            "api_calls": result.api_calls,
+                            "holdout_size_requested": holdout_size,
+                            "holdout_size_actual": len(holdout_rows),
+                            "role": "train",
+                            "holdout_dataset_id": (
+                                str(holdout_uuid) if holdout_uuid else None
+                            ),
+                        }
+                    )
+                    parent.generation_metadata = parent_meta
+
+                    if holdout_uuid is not None:
+                        child = Dataset(
+                            id=holdout_uuid,
+                            project_id=parent.project_id,
+                            name=f"{parent.name}-holdout",
+                            task_type=parent.task_type,
+                            source=DatasetSource.SDG,
+                            num_samples=len(holdout_rows),
+                            storage_uri=holdout_uri,
+                            size_bytes=holdout_size_bytes,
+                            parent_dataset_id=parent.id,
+                            status=JobStatus.COMPLETED,
+                            generation_metadata={
+                                "role": "holdout",
+                                "parent_dataset_id": str(parent.id),
+                                "sdg_mode": request.sdg_mode.value,
+                                "task_description": request.task_description,
+                                "completed_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                        session.add(child)
+
+            if discarded_as_cancelled:
+                # The commit above never durably referenced `uploaded_keys`
+                # (the DB row stayed CANCELLED, not COMPLETED), so they are
+                # orphans exactly like the `except BaseException` handler's
+                # discard case — same cleanup shape, mirrored here.
+                committed = True
+                try:
+                    cleanup_minio = get_minio_client()
+                    cleanup_bucket = settings.minio_datasets_bucket
+                    for key in uploaded_keys:
+                        try:
+                            remove_object(cleanup_minio, cleanup_bucket, key)
+                        except Exception:  # noqa: BLE001 — best-effort, never mask original outcome
+                            log.warning(
+                                "failed to remove orphaned SDG object %s/%s (job=%s)",
+                                cleanup_bucket,
+                                key,
+                                job_id,
+                                exc_info=True,
+                            )
+                except Exception:  # noqa: BLE001 — best-effort, never mask original outcome
+                    log.warning(
+                        "could not obtain MinIO client for SDG orphan cleanup (job=%s)",
+                        job_id,
+                        exc_info=True,
+                    )
+
+                try:
+                    publish_ws_message(redis, job_id, _cancelled_frame(job_id))
+                except Exception:  # noqa: BLE001 — announcement only
+                    log.warning(
+                        "failed to publish JobFailed(cancelled) message", exc_info=True
+                    )
+                return {"status": "cancelled", "dataset_id": dataset_id}
 
             # The `Dataset` row(s) above just committed, durably referencing
             # every key in `uploaded_keys` (`train_uri` on `parent`, and
@@ -535,6 +612,10 @@ def generate_synthetic_data(
 
 
 # ---- helpers --------------------------------------------------------------
+
+
+def _cancelled_frame(job_id: str) -> JobFailed:
+    return JobFailed(job_id=job_id, error="job was cancelled", error_type="Cancelled")
 
 
 async def _run_generator(
