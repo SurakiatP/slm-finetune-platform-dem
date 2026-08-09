@@ -14,12 +14,24 @@ So these tests deliberately do NOT set the context themselves. They drive
 the production entry points (`ownership.assert_*_access`, Celery's
 publish/prerun signals) and then read the context back. A test that binds
 the value it is about to assert on would reproduce the original bug.
+
+Round two of the same lesson (pasaflow box, 2026-08-09): the tests above
+were still one context short. `BaseHTTPMiddleware` runs `call_next` in a
+separate anyio task, so a contextvar bound inside the endpoint never
+reaches the middleware frame that emits the access-log line — every
+assertion here passed while the deployed access log carried no
+`project_id`. The "task boundary" section below therefore asserts across
+a real task split and into a real emitted `LogRecord`, through the real
+`_request_context_middleware`, because that is exactly the surface the
+first version of this file did not cover.
 """
 
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
+import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -220,6 +232,160 @@ def test_worker_prerun_clears_the_project_when_the_header_is_absent() -> None:
 
     ca._bind_request_context(task_id="job-2", task=_Task())
     assert request_context.current_project_id() is None
+
+
+# ---- the task boundary -------------------------------------------------------
+#
+# `asyncio.create_task` copies the parent context at creation, exactly like
+# the anyio task `BaseHTTPMiddleware` spawns for `call_next` — so these
+# tests reproduce the production topology (bind in child, read in parent)
+# without standing up Starlette internals.
+
+
+@pytest.mark.asyncio
+async def test_bind_inside_a_child_task_reaches_the_parent_snapshot() -> None:
+    """The mechanism the deployed access log proved missing: with a log
+    scope bound (as the middleware does before `call_next`), a
+    `set_project_id` inside the child task must be visible to the parent
+    frame's `snapshot()` and getters."""
+    project_id = str(uuid4())
+
+    async def endpoint() -> None:
+        request_context.set_project_id(project_id)
+
+    with request_context.request_log_scope():
+        await asyncio.create_task(endpoint())
+        assert request_context.snapshot().get("project_id") == project_id, (
+            "a project bound inside the endpoint's task did not reach the "
+            "parent snapshot — the access-log line is project-less again"
+        )
+        assert request_context.current_project_id() == project_id
+
+
+@pytest.mark.asyncio
+async def test_without_a_scope_the_task_boundary_swallows_the_bind() -> None:
+    """Non-vacuity backstop for the test above: contextvars alone do NOT
+    cross the task boundary. If this ever fails, task context semantics
+    changed and the scope test proves nothing."""
+
+    async def endpoint() -> None:
+        request_context.set_project_id("p-child-only")
+
+    await asyncio.create_task(endpoint())
+    assert request_context.snapshot().get("project_id") is None
+
+
+class _CaptureHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+def _middleware_test_app():
+    """A fresh FastAPI app running the REAL `_request_context_middleware`.
+
+    Deliberately not `api.main.app` itself: dispatching real requests
+    through the full app in-process previously bound the global async DB
+    engine to a throwaway event loop and broke unrelated tests in the
+    container run (see `42e5cf6`). These endpoints touch no DB; the
+    middleware function is the production object, so removing
+    `request_log_scope()` from `api/main.py` fails this test.
+    """
+    from fastapi import FastAPI
+
+    from api import main as api_main
+
+    app = FastAPI()
+
+    @app.get("/with-project")
+    async def with_project() -> dict:
+        # Both setters that production calls inside the endpoint task:
+        # `ownership._bind_log_project` and `auth`'s `set_user_id`
+        # (api/core/auth.py) — user_id had the exact same boundary bug.
+        request_context.set_project_id("p-e2e")
+        request_context.set_user_id("u-e2e")
+        return {"ok": True}
+
+    @app.get("/without-project")
+    async def without_project() -> dict:
+        return {"ok": True}
+
+    app.middleware("http")(api_main._request_context_middleware)
+    return app
+
+
+async def _drive(app, paths: list[str]) -> list[logging.LogRecord]:
+    """Request each path and return the access-log records, one per path."""
+    import httpx
+
+    from api.core.logging_config import RequestContextFilter
+
+    handler = _CaptureHandler()
+    handler.addFilter(RequestContextFilter())
+    api_logger = logging.getLogger("api")
+    old_level = api_logger.level
+    api_logger.addHandler(handler)
+    api_logger.setLevel(logging.INFO)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            for path in paths:
+                response = await client.get(path)
+                assert response.status_code == 200
+    finally:
+        api_logger.removeHandler(handler)
+        api_logger.setLevel(old_level)
+
+    records = []
+    for path in paths:
+        matches = [r for r in handler.records if getattr(r, "path", None) == path]
+        assert len(matches) == 1, (
+            f"expected exactly one access-log record for {path}, got "
+            f"{len(matches)} — the capture is broken, not the middleware"
+        )
+        records.append(matches[0])
+    return records
+
+
+@pytest.mark.asyncio
+async def test_project_id_reaches_the_real_access_log_record() -> None:
+    """The assertion the deployed box falsified on 2026-08-09: the
+    middleware's own `log.info` line — emitted on the parent side of the
+    task split — must carry the project the endpoint bound."""
+    (record,) = await _drive(_middleware_test_app(), ["/with-project"])
+    assert getattr(record, "project_id", None) == "p-e2e", (
+        "the access-log record has no project_id — the middleware is not "
+        "opening a request_log_scope around call_next"
+    )
+    assert getattr(record, "request_id", None), (
+        "request_id vanished from the access log — the fix regressed the "
+        "part that already worked"
+    )
+    assert getattr(record, "user_id", None) == "u-e2e", (
+        "the access-log record has no user_id — auth's set_user_id "
+        "(api/core/auth.py) crosses the same task boundary and was silently "
+        "lost the same way project_id was"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_projectless_request_does_not_inherit_the_previous_ones() -> None:
+    """Each request gets a fresh scope dict: a request that resolves no
+    project must not carry the previous request's — the failure mode of a
+    module-global dict instead of a per-request one."""
+    first, second = await _drive(
+        _middleware_test_app(), ["/with-project", "/without-project"]
+    )
+    assert getattr(first, "project_id", None) == "p-e2e"
+    assert not hasattr(second, "project_id"), (
+        "a projectless request logged the previous request's project_id — "
+        "the log scope is being shared across requests"
+    )
 
 
 # ---- end-to-end into a log record --------------------------------------------
