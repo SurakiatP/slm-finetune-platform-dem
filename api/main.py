@@ -180,7 +180,11 @@ async def _request_context_middleware(request: Request, call_next):
     request.state.request_id = request_id
     start = time.perf_counter()
     status_code = 500
-    with request_context.bound(request_id=request_id):
+    # `request_log_scope()` must wrap `call_next`: BaseHTTPMiddleware runs the
+    # endpoint in a separate anyio task, so contextvars set there (e.g.
+    # `ownership._bind_log_project`) never reach this frame — the shared
+    # scope dict is the only channel back into the access-log line below.
+    with request_context.bound(request_id=request_id), request_context.request_log_scope():
         try:
             response = await call_next(request)
             status_code = response.status_code
