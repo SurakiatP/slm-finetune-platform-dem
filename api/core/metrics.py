@@ -71,6 +71,18 @@ slm_worker_up = Gauge(
     registry=_REGISTRY,
 )
 
+# ---- Dependencies ---------------------------------------------------------
+
+# Reuses `api/services/readiness.py`'s own `_PROBES` (via `probe_dependencies()`)
+# rather than a second hand-rolled set of dependency checks — see ADR-013's
+# alerting-decisions section. Currently `postgres`, `redis`, `minio`.
+slm_dependency_up = Gauge(
+    "slm_dependency_up",
+    "Whether a backing dependency answered its readiness probe (1) or not (0).",
+    ["dependency"],
+    registry=_REGISTRY,
+)
+
 # ---- Jobs ---------------------------------------------------------------
 
 slm_jobs = Gauge(
@@ -91,6 +103,18 @@ slm_job_duration_seconds_max = Gauge(
     "slm_job_duration_seconds_max",
     "Max job duration in seconds, by job type.",
     ["type"],
+    registry=_REGISTRY,
+)
+
+# `error_type` is a closed whitelist (`api/services/metrics_sources.ERROR_TYPES`:
+# oom, provider, storage, cancelled, orphaned, other), classified scrape-time
+# from free-text `error_message` columns — never a raw exception class name,
+# which would be unbounded cardinality on a label. See ADR-013's alerting
+# decisions section.
+slm_job_failures = Gauge(
+    "slm_job_failures",
+    "Failed job count snapshot, by job type and classified error type.",
+    ["type", "error_type"],
     registry=_REGISTRY,
 )
 

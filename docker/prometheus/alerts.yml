@@ -1,0 +1,185 @@
+# Prometheus alerting rules for the SLM platform (M4 observability-stack,
+# round 4 / item 8 — "alerting rules gap").
+#
+# RULES ONLY. NO ALERTMANAGER. This deployment has no notification channel
+# (no ingress, no SMTP, no Slack webhook) to route an alert to — a router
+# with nowhere to send anything is only extra failure surface, not extra
+# safety. Alerts are observed by polling Prometheus's own HTTP API directly:
+#
+#   curl -s http://localhost:9090/api/v1/alerts   # currently firing/pending
+#   curl -s http://localhost:9090/api/v1/rules    # rule definitions + state
+#
+# (see docs/runbooks/metrics.md for how to reach either endpoint on the
+# pasaflow box — no SSH tunnel, wetty + curl from inside the VM only).
+#
+# Bind-mounted read-only into the `prometheus` service in docker-compose.yml
+# at /etc/prometheus/alerts.yml, referenced by `rule_files:` in
+# docker/prometheus/prometheus.yml.
+#
+# THRESHOLDS: every number below is a literal, first-guess value with an
+# inline comment justifying it — there is no real production baseline yet
+# to derive them from. Expect to retune all six once the pasaflow box has
+# run long enough to know what "normal" looks like.
+#
+# CAVEAT 1 — snapshot-count metrics can look like counter resets:
+# `slm_jobs{outcome="failed"}` (used by RepeatedTaskFailures) and
+# `slm_job_failures` (used by GpuOom) are both snapshot row-COUNTS re-derived
+# fresh at every scrape (`SELECT ... GROUP BY status`-style queries), not
+# monotonic counters. Anything that makes the underlying row count DROP —
+# cascade-hard-deleting a project or dataset, or retrying an export (which
+# clears `export_error_message`) — makes the exported value go down between
+# scrapes. PromQL's `increase()` interprets any decrease as a counter reset
+# and adds the whole post-reset value back in, so RepeatedTaskFailures and
+# GpuOom can transiently over-fire right after a delete/retry even though no
+# new failure actually happened. This is a false-positive-only failure mode
+# (it can never mask a real failure) and, per the no-Alertmanager decision
+# above, nobody is paged by it — but it is a real, known gap, written down
+# here rather than left to be rediscovered during an incident.
+#
+# CAVEAT 2 — increase() extrapolates to the window edges, not just between
+# observed samples, so its output is an *approximation* of the raw event
+# count, not an exact one. E.g. 2 genuine failures inside the window can
+# evaluate to ~2.4. Thresholds that look like clean integers (">= 3", ">= 1")
+# are therefore approximate trigger points, not exact counts — do not read
+# a firing alert as "exactly N events happened."
+groups:
+  - name: slm-platform-alerts
+    rules:
+      # --- WorkerDown -----------------------------------------------------
+      # On the target box slm_worker_up{queue="gpu"} is genuinely 0 right
+      # now (a host nvidia driver bug blocks the GPU containers — see
+      # docs/runbooks/metrics.md and WORKING_LOG.md), so this alert is
+      # expected to fire immediately on deploy for queue="gpu". That is
+      # correct behaviour, not a false positive: it is exactly the
+      # "GPU jobs cannot run right now" fact the metric exists to surface.
+      - alert: WorkerDown
+        expr: slm_worker_up == 0
+        # 2m: long enough to ride out a worker restart/reconnect blip
+        # without paging on nothing; short enough that a genuine outage is
+        # caught quickly. First guess — retune once real restart-blip
+        # durations are known.
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No worker consuming queue {{ $labels.queue }}"
+          description: >-
+            slm_worker_up{queue="{{ $labels.queue }}"} has been 0 for at
+            least 2 minutes — no Celery worker node is currently consuming
+            this queue, so jobs routed to it cannot run. See
+            docs/runbooks/metrics.md for what this metric means and how to
+            check it, and note that queue="gpu" is expected to be down on
+            the pasaflow box until its host nvidia driver bug is fixed.
+
+      # --- QueueBackedUp ---------------------------------------------------
+      - alert: QueueBackedUp
+        expr: slm_queue_depth > 10
+        # 10 tasks: a first guess at "more queued than a single worker
+        # plausibly drains in one training/eval cycle" for this platform's
+        # scale (RTX 3060 12GB, one box). 15m: long enough that a normal
+        # short burst (e.g. several datasets queued back-to-back) drains
+        # before paging, short enough to still catch real backlog growth
+        # same-session. Retune both once real queue-depth baselines exist.
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue {{ $labels.queue }} backed up ({{ $value }} pending)"
+          description: >-
+            slm_queue_depth{queue="{{ $labels.queue }}"} has been above 10
+            for at least 15 minutes — tasks are queuing faster than they are
+            being drained. See docs/runbooks/metrics.md for what this metric
+            means and how to check current worker/queue state.
+
+      # --- DependencyDown ---------------------------------------------------
+      # Covers "storage error": slm_dependency_up (api/core/metrics.py) is
+      # fed by the same postgres/redis/minio probes /ready itself runs
+      # (readiness.probe_dependencies), so this alert and the readiness
+      # endpoint can never disagree about whether MinIO is reachable.
+      - alert: DependencyDown
+        expr: slm_dependency_up == 0
+        # 2m: same reasoning as WorkerDown — ride out a brief reconnect
+        # blip, still catch a real outage quickly. First guess.
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Dependency {{ $labels.dependency }} is down"
+          description: >-
+            slm_dependency_up{dependency="{{ $labels.dependency }}"} has
+            been 0 for at least 2 minutes — this dependency (e.g. Postgres,
+            Redis, MinIO/storage) is failing its check. See
+            docs/runbooks/metrics.md for what this metric means and how to
+            check it.
+
+      # --- RepeatedTaskFailures ---------------------------------------------
+      - alert: RepeatedTaskFailures
+        expr: increase(slm_jobs{outcome="failed"}[30m]) >= 3
+        # >= 3 in 30m: a first guess at "a pattern, not bad luck". One or
+        # two failures in half an hour is ordinary on a single-GPU box
+        # (a cancelled run, a bad seed file); three starts to look like
+        # something systemic. No `for:` — the window IS the duration.
+        # Retune once real baselines exist. See CAVEAT 1 above: this is a
+        # snapshot row count, so a delete can read as a counter reset.
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} failed jobs in the last 30m"
+          description: >-
+            increase(slm_jobs{outcome="failed"}[30m]) reached >= 3 — a first
+            guess at "more than isolated/incidental" failures for this
+            platform's job volume. See CAVEAT 1 at the top of this file:
+            slm_jobs is a snapshot row-count, not a true counter, so a
+            cascade delete or an export retry can make this over-fire
+            without a new real failure. See CAVEAT 2: increase() is an
+            edge-extrapolated approximation, not an exact event count. See
+            docs/runbooks/metrics.md for what slm_jobs means.
+
+      # --- GpuOom -------------------------------------------------------------
+      # slm_job_failures (api/core/metrics.py) buckets failed jobs by an
+      # error_type classified at scrape time from the free-text
+      # error_message columns — see metrics_sources.classify_error and
+      # ADR-013 §7c/d for why there is no error_type column in the DB.
+      # NOTE: the `oom` bucket matches "out of memory" anywhere in the
+      # message, so a host/CPU OOM-killer death would also fire this alert
+      # despite its name. Check the failing job's type before assuming GPU.
+      - alert: GpuOom
+        expr: increase(slm_job_failures{error_type="oom"}[1h]) >= 1
+        # >= 1: any GPU out-of-memory failure is worth surfacing on this
+        # single RTX 3060 12GB box — there is no "acceptable" OOM rate here.
+        # First guess, in case OOM noise turns out to need debouncing later.
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU out-of-memory failure detected"
+          description: >-
+            increase(slm_job_failures{error_type="oom"}[1h]) reached >= 1.
+            See CAVEAT 1 at the top of this file: slm_job_failures is a
+            snapshot row-count, not a true counter, so a cascade delete or
+            an export retry can make this over-fire without a new real
+            failure. See CAVEAT 2: increase() is an edge-extrapolated
+            approximation, not an exact event count. See
+            docs/runbooks/metrics.md for related metrics.
+
+      # --- CostAnomaly -----------------------------------------------------
+      # The sum() is required: without it, this expression evaluates
+      # per (model, stage, outcome) series — i.e. "one model/stage burned
+      # $5/h" — which is not what a platform-wide cost anomaly means. Do
+      # not remove it; that is a silent semantic change, not an error, and
+      # the test suite guards specifically for its presence.
+      - alert: CostAnomaly
+        expr: sum(increase(slm_openrouter_cost_usd_total[1h])) > 5
+        # $5/h: a first guess at a platform-wide spend rate that is clearly
+        # abnormal for OpenRouter SDG usage at this project's scale. Retune
+        # once real spend baselines exist.
+        labels:
+          severity: warning
+        annotations:
+          summary: "OpenRouter spend anomaly: ${{ $value }}/h"
+          description: >-
+            sum(increase(slm_openrouter_cost_usd_total[1h])) exceeded $5 —
+            platform-wide OpenRouter spend over the trailing hour is above
+            the first-guess threshold. See CAVEAT 2 at the top of this
+            file: increase() is an edge-extrapolated approximation. See
+            docs/runbooks/metrics.md for what slm_openrouter_cost_usd_total
+            means and how to check it.

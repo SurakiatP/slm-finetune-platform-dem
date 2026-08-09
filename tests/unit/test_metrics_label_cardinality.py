@@ -58,6 +58,8 @@ _ALLOWED_LABELS = {
     "stage",
     "model",
     "outcome",
+    "dependency",
+    "error_type",
 }
 
 # Per-tenant/per-entity names that must never appear on any metric, per
@@ -139,7 +141,7 @@ def _adr_allowed_label_block() -> str:
     text = _ADR_PATH.read_text(encoding="utf-8")
     # ADR-013 Decision 3 spells the allowed set as a single fenced block:
     #     ```
-    #     route, method, status_class, queue, type, stage, model, outcome
+    #     route, method, status_class, queue, type, stage, model, outcome, dependency, error_type
     #     ```
     # Matched by content (contains "route" and "outcome"), not by position,
     # so this survives the ADR gaining other fenced blocks elsewhere.

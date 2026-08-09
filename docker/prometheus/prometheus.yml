@@ -10,6 +10,14 @@
 global:
   scrape_interval: 30s
 
+# Alerting rules only — no `alerting:` block, no Alertmanager target. This
+# deployment has no notification channel to route an alert to (no ingress,
+# no SMTP/Slack), so alerts are observed directly via Prometheus's own
+# /api/v1/alerts and /api/v1/rules rather than routed anywhere. See
+# docker/prometheus/alerts.yml's own header for the full reasoning.
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   # FastAPI app. /metrics is the conventional exposition path (Prometheus's
   # own per-job default is also /metrics, but this is spelled out explicitly
