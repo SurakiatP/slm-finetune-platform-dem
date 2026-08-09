@@ -77,6 +77,24 @@ _JOB_TYPES = ("dataset", "training", "evaluation", "export")
 _DURATION_WINDOW_HOURS = 24
 _DURATION_ROW_LIMIT = 5000
 
+# Explicit cap on rows scanned per type in `job_failure_counts()`, same
+# reasoning as `_DURATION_ROW_LIMIT` above: a pathological backlog of failed
+# rows must not turn a scrape into an unbounded table scan.
+_FAILURE_ROW_LIMIT = 5000
+
+# CLOSED whitelist for the `error_type` label `job_failure_counts()` produces.
+# This is deliberately NOT "whatever the exception class name happens to be":
+# `error_type` is destined to become a Prometheus label on a future
+# `slm_job_failures{type,error_type}` gauge (see ADR-013), and a label
+# populated from raw exception class names is unbounded cardinality — every
+# new exception type ever raised (including third-party ones from
+# dependencies nobody here controls) would mint a brand-new time series
+# forever. A fixed, hand-maintained set of buckets is the same closed-label
+# philosophy ADR-013 already applies to the `type`/`stage`/`outcome` labels
+# on the rest of this module's readers, just applied to error causes instead
+# of job types.
+ERROR_TYPES = ("oom", "provider", "storage", "cancelled", "orphaned", "other")
+
 # BreakerState string -> the small integer code metrics need (gauges can't
 # carry a string value). Order matches the module docstring's own
 # 0=closed/1=half_open/2=open contract.
@@ -145,6 +163,145 @@ async def job_counts() -> dict[tuple[str, str], int]:
         return counts
     except Exception:
         log.warning("metrics_sources.job_counts failed, degrading to empty", exc_info=True)
+        return {}
+
+
+def classify_error(status: object, message: str | None) -> str:
+    """Bucket one (status, error text) pair into a member of `ERROR_TYPES`.
+
+    Pure and total: every code path below returns a literal drawn from
+    `ERROR_TYPES`, so the return value is provably a member of the whitelist
+    no matter what garbage `status`/`message` this is called with — callers
+    never need to re-validate the result.
+
+    **`status` is checked first, before any text matching, and a CANCELLED
+    status short-circuits straight to `"cancelled"` regardless of what
+    `message` says.** This is not a style choice: `api/services/job_control.py`
+    documents that a cancelled task's `SystemExit` (from the SIGTERM a revoke
+    call sends) is caught by the task's `except BaseException` handler and
+    stored verbatim as `error_message`, and that message is the *literal
+    string* `"-241"` (`sys.exit(-(256 - 15))`) — it carries no human-readable
+    signature at all. Every task handler guards
+    `if row.status != JobStatus.CANCELLED: row.status = JobStatus.FAILED`
+    before overwriting the error text, so a cancelled row's `status` reliably
+    stays CANCELLED even though its `error_message` is meaningless. Matching
+    text first would send every one of these rows to `"other"`, silently
+    hiding "how many jobs were cancelled" behind a bucket meant for genuinely
+    unclassified failures.
+
+    Signature order below (text-matching, once CANCELLED is ruled out):
+
+    1. `"orphaned"` — `api/services/job_reconcile.py` writes a free-text
+       sentence containing "No worker is executing this job" into the error
+       column for a swept orphan (see `reconcile_once`'s `error = f"No
+       worker is executing this job..."`). This is deliberately NOT a match
+       on `"OrphanedJob"` — that string is `job_reconcile._ERROR_TYPE`, which
+       only ever travels in the transient WebSocket `JobFailed` frame
+       (`error_type="OrphanedJob"`); it is never what lands in the DB
+       column, so matching the class-name-shaped string would match zero
+       real rows.
+    2. `"oom"` — GPU out-of-memory. No code in this repo raises this itself
+       (see `ai_engine/training/*`); it always comes straight from
+       PyTorch/CUDA (`torch.cuda.OutOfMemoryError: CUDA out of memory. ...`),
+       hence matching on the vendor's own text rather than a repo-local
+       constant.
+    3. `"provider"` — OpenRouter/Ollama call failures: circuit breaker trips
+       (`api/services/circuit_breaker.py`'s `CircuitOpenError`: "OpenRouter
+       circuit breaker open; retry after ...s"), the SDG budget cap
+       (`ai_engine/data_gen/usage.py`'s `SDGBudgetExceededError`: "OpenRouter
+       budget exceeded: spent $... of $... remaining budget" — this message
+       text was changed recently; matching the current "OpenRouter budget
+       exceeded" wording, not the older "SDG budget exceeded" this class's
+       own docstring calls out as deliberately abandoned), Ollama daemon
+       failures (`workers/ollama_client.py`'s `OllamaError`: "ollama {op}
+       failed: ..."), and provider-side rate limiting.
+    4. `"storage"` — MinIO/S3 failures: `minio-py`'s own `S3Error` text
+       always includes "bucket_name:", connection failures to the in-network
+       endpoint mention "minio:9000" verbatim, and this module's own
+       `workers/storage.py::parse_s3_uri` raises `ValueError`s that all start
+       "s3 URI ...".
+    5. anything else -> `"other"`.
+
+    Note the shared reason all of this matches message *text*: every task
+    handler stores `(str(exc) or repr(exc))[:4000]`, never the exception's
+    class name, so `type(exc).__name__` is normally absent from the column
+    entirely — matching on class names would silently match nothing.
+    """
+    status_value = str(getattr(status, "value", status) or "").strip().lower()
+    if status_value == JobStatus.CANCELLED.value:
+        return "cancelled"
+
+    # `str(message)` rather than an `isinstance` guard: the DB column is
+    # typed `str | None` in production, but this function is intentionally
+    # total over *any* input (see docstring) rather than trusting callers —
+    # coercing means a stray non-string value degrades to a text match
+    # attempt instead of raising out of a fail-soft reader.
+    text = "" if message is None else str(message).lower()
+
+    if "no worker is executing this job" in text:
+        return "orphaned"
+    if "out of memory" in text or "outofmemoryerror" in text:
+        return "oom"
+    if any(sig in text for sig in ("openrouter", "ollama", "rate limit", "rate-limit")):
+        return "provider"
+    if any(sig in text for sig in ("minio", "s3", "bucket")):
+        return "storage"
+    return "other"
+
+
+async def job_failure_counts() -> dict[tuple[str, str], int]:
+    """Grouped counts per (type, error_type), zero-filled to all
+    `len(_JOB_TYPES) * len(ERROR_TYPES)` (4 x 6 = 24) pairs so a series never
+    silently disappears — same zero-fill rationale as `job_counts()` above,
+    applied to the future `slm_job_failures{type,error_type}` gauge this
+    feeds.
+
+    Deliberately filters on the error column being non-null, NOT on status
+    being FAILED/CANCELLED: `ModelArtifact.export_error_message` is the only
+    one of the four error columns ever cleared on a later success (see
+    `workers/tasks/model_export.py`'s `export_error_message = None  # clear
+    stale failure on retry`) — `Dataset`/`TrainingJob`/`EvaluationRun` carry
+    no such reset, so a row that failed once and later succeeded on retry can
+    still have a non-null `error_message` sitting next to a COMPLETED status.
+    That row is still evidence a failure of some `error_type` happened on
+    this platform, which is exactly what this reader exists to count, so it
+    is included regardless of the row's current status. (`classify_error`
+    still special-cases CANCELLED via `status`, independent of this filter.)
+
+    No `EXTRACT`/SQL-side classification: `classify_error` needs the message
+    text in Python, so each type's rows are fetched (capped at
+    `_FAILURE_ROW_LIMIT`, mirroring `job_durations()`'s row cap) and
+    classified client-side rather than grouped in the database.
+    """
+    try:
+        counts: dict[tuple[str, str], int] = {
+            (job_type, error_type): 0 for job_type in _JOB_TYPES for error_type in ERROR_TYPES
+        }
+        async with AsyncSessionLocal() as session:
+            for job_type, status_col, error_col in (
+                ("dataset", Dataset.status, Dataset.error_message),
+                ("training", TrainingJob.status, TrainingJob.error_message),
+                ("evaluation", EvaluationRun.status, EvaluationRun.error_message),
+            ):
+                stmt = (
+                    select(status_col, error_col)
+                    .where(error_col.is_not(None))
+                    .limit(_FAILURE_ROW_LIMIT)
+                )
+                for status, message in (await session.execute(stmt)).all():
+                    counts[(job_type, classify_error(status, message))] += 1
+
+            export_stmt = (
+                select(ModelArtifact.export_status, ModelArtifact.export_error_message)
+                .where(ModelArtifact.export_error_message.is_not(None))
+                .limit(_FAILURE_ROW_LIMIT)
+            )
+            for status, message in (await session.execute(export_stmt)).all():
+                counts[("export", classify_error(status, message))] += 1
+
+        return counts
+    except Exception:
+        log.warning("metrics_sources.job_failure_counts failed, degrading to empty", exc_info=True)
         return {}
 
 
@@ -307,10 +464,13 @@ async def usage_totals() -> dict[tuple[str, str, str], dict[str, float | int]]:
 
 
 __all__ = [
+    "ERROR_TYPES",
     "QUEUES",
     "breaker_state",
+    "classify_error",
     "job_counts",
     "job_durations",
+    "job_failure_counts",
     "queue_depths",
     "usage_totals",
 ]

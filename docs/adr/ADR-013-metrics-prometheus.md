@@ -96,7 +96,7 @@ No metric in `api/core/metrics.py` ever carries a `project`, `actor`,
 metric is allowed to use is:
 
 ```
-route, method, status_class, queue, type, stage, model, outcome
+route, method, status_class, queue, type, stage, model, outcome, dependency, error_type
 ```
 
 `tests/unit/test_metrics_registry.py`
@@ -186,6 +186,122 @@ before this round.
 sibling of the same fact `worker_gpu`/`worker_cpu` report synchronously on
 `/ready` — both are ultimately backed by the same `probe_worker_queues()`
 call. See `docs/runbooks/metrics.md` for exactly how the two relate.
+
+### 7. Alerting: Prometheus rules only (no Alertmanager), two new gauges reusing existing sources, a closed `error_type` label
+
+Round 4 item 8 ("alerting") builds directly on this ADR's scope statement in
+Context ("stand up the thing item 8 depends on"). Six rules now live in
+`docker/prometheus/alerts.yml` (`WorkerDown`, `QueueBackedUp`,
+`DependencyDown`, `RepeatedTaskFailures`, `GpuOom`, `CostAnomaly`). The
+decisions below cover what that required of this ADR's label set and of
+`api/core/metrics.py`.
+
+**(a) Prometheus rule evaluation only — no Alertmanager.** This deployment
+has no notification channel of any kind: no external ingress for a webhook
+receiver, no SMTP relay, no Slack app. Standing up Alertmanager would mean
+running a router with nowhere to route anything — pure additional failure
+surface (one more container to keep alive, one more config to misconfigure)
+for zero delivered value. Alerts are observed by polling Prometheus's own
+HTTP API directly — `GET /api/v1/alerts` for currently firing/pending state,
+`GET /api/v1/rules` for rule definitions — the same "reachable from inside
+the compose network or from the box itself" access pattern Decision 4
+already established for `/metrics` and `/ready`. Revisit once a real
+notification channel exists to route to; until then, Alertmanager would be
+solving a problem this deployment doesn't have.
+
+**(b) `slm_dependency_up{dependency}` reuses `/ready`'s own probes, not a
+second set.** `api/services/readiness.py` now exports
+`probe_dependencies() -> dict[str, bool]`, which runs the exact same
+`_PROBES` dict (`postgres`, `redis`, `minio`) that `check()` already gathers
+for `/ready`, guarded the same way (`PROBE_TIMEOUT_SECONDS`, fail-soft to
+`False` on timeout/exception — see that module's docstring). The metrics
+adapter (`api/services/metrics_export.py`) calls `probe_dependencies()`
+directly rather than growing its own second gather over dependency clients.
+This is the same reuse principle Decision 6 already applied to
+`probe_worker_queues()` for `slm_worker_up`: a metric and a synchronous
+health endpoint reading from two independently-written probes is exactly
+how the two quietly drift apart the first time one of them changes.
+
+**(c) `slm_job_failures{type,error_type}` is scrape-time classification of
+existing free-text columns — no migration, no new column, no task-handler
+edits.** `api/services/metrics_sources.py` now exports `classify_error()`
+and `job_failure_counts()`, which read the same `error_message` /
+`export_error_message` text columns `job_counts()` already reads statuses
+from, and bucket each row into `ERROR_TYPES` by text-matching known
+signatures (OpenRouter/Ollama/rate-limit text -> `provider`, MinIO/S3/bucket
+text -> `storage`, CUDA OOM text -> `oom`, `job_reconcile`'s orphan sentence
+-> `orphaned`, `CANCELLED` status -> `cancelled`, else `other`) — see that
+function's own docstring for the exact signatures and why status is checked
+before text (a cancelled task's stored `error_message` is the meaningless
+literal `"-241"`). None of the five task error handlers that write these
+columns (`workers/tasks/*.py`) were touched to add this — classification is
+entirely a read-side concern, the same "derive at scrape time from what
+already durably exists" philosophy Decision 2 applies to every other
+metric in this file.
+
+**(d) `error_type` is a closed six-value whitelist, never a raw exception
+class name.** `ERROR_TYPES = ("oom", "provider", "storage", "cancelled",
+"orphaned", "other")` is hand-maintained, not derived from
+`type(exc).__name__`. This is the same cardinality reasoning Decision 3
+already applies to the rest of this file's labels, extended to error
+causes: a label populated from exception class names is unbounded — every
+new exception type ever raised, including third-party ones from
+dependencies nobody here controls, would mint a brand-new time series
+forever. `other` is the deliberate catch-all for anything that doesn't
+match a known signature, keeping the set closed regardless of what shows up
+in an `error_message` column in the future.
+
+**(e) The allowed label set grows 8 -> 10.** `dependency` (on
+`slm_dependency_up`) and `error_type` (on `slm_job_failures`) join the set
+in Decision 3:
+
+```promql
+route, method, status_class, queue, type, stage, model, outcome, dependency, error_type
+```
+
+`tests/unit/test_metrics_registry.py` and
+`tests/unit/test_metrics_label_cardinality.py` both enforce this set
+independently (see the latter's module docstring for why there are two
+guards), and `test_metrics_label_cardinality.py` additionally cross-checks
+this fenced block against both.
+
+**(f) Alert thresholds are literal constants in `alerts.yml`, each with an
+inline comment.** There is no production baseline yet to derive them from
+(this is the first deploy with alerting at all), so every threshold below is
+a documented first guess, not a tuned value:
+
+| Alert | Threshold | Rationale (see `alerts.yml` for the full comment) |
+|---|---|---|
+| `WorkerDown` | `slm_worker_up == 0` for 2m | ride out a restart/reconnect blip |
+| `QueueBackedUp` | `slm_queue_depth > 10` for 15m | more than one worker plausibly drains in one cycle, on this platform's scale |
+| `DependencyDown` | `slm_dependency_up == 0` for 2m | same blip-tolerance reasoning as `WorkerDown` |
+| `RepeatedTaskFailures` | `increase(slm_jobs{outcome="failed"}[30m]) >= 3` | more than isolated/incidental failures |
+| `GpuOom` | `increase(slm_job_failures{error_type="oom"}[1h]) >= 1` | no "acceptable" OOM rate on a single RTX 3060 12GB box |
+| `CostAnomaly` | `sum(increase(slm_openrouter_cost_usd_total[1h])) > 5` | clearly-abnormal platform-wide spend rate at this project's scale |
+
+Expect to retune all six once the pasaflow box has run long enough under
+real traffic to know what "normal" looks like for each.
+
+**Caveat — snapshot-count metrics can look like counter resets to
+`increase()`.** `slm_jobs{outcome="failed"}` (Decision 2, feeding
+`RepeatedTaskFailures`) and `slm_job_failures{type,error_type}` (this
+section, feeding `GpuOom`) are both snapshot row-`COUNT`s re-derived fresh
+on every scrape, not monotonic counters. Anything that makes the underlying
+row count drop between scrapes — cascade-deleting a project or dataset, or
+retrying an export (which clears `ModelArtifact.export_error_message`, see
+`workers/tasks/model_export.py`) — makes the exported value go down.
+PromQL's `increase()` interprets any decrease within its window as a
+counter reset and adds the whole post-reset value back in on top of the
+real increase, so `RepeatedTaskFailures` and `GpuOom` can transiently
+over-fire right after a delete/retry even though no new failure actually
+happened. This is a **false-positive-only** failure mode — it can never
+mask a real failure by under-counting — and per Decision (a) above, nobody
+is paged by either alert firing (no Alertmanager, no notification channel),
+so the practical impact is limited to a rule showing `pending`/`firing` in
+`GET /api/v1/alerts` without a corresponding real incident. Recorded here
+rather than left to be rediscovered during the next cascade-delete: see
+`docker/prometheus/alerts.yml`'s own "CAVEAT 1" comment for the
+byte-for-byte-same explanation kept next to the rules themselves.
 
 ## Consequences
 

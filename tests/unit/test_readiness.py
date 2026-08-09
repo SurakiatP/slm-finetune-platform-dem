@@ -418,3 +418,70 @@ class TestWorkerProbeFitsInsideItsOwnBound:
             "reported unavailable — the margin is too thin again"
         )
         assert report.checks["worker_cpu"] == readiness.OK
+
+
+# =============================================================================
+# 5. `probe_dependencies` — the reusable probe behind `slm_dependency_up`
+# =============================================================================
+
+
+class TestProbeDependencies:
+    """`probe_dependencies` is what a later `slm_dependency_up{dependency}`
+    Prometheus gauge calls directly, mirroring how a metrics adapter already
+    reuses `probe_worker_queues` (see its docstring). `check()` now consumes
+    this function too instead of keeping its own separate gather over
+    `_PROBES`, so the gauge and the `/ready` verdict share one code path and
+    cannot disagree — `test_agrees_with_check_for_every_dependency` below is
+    the guard on that."""
+
+    async def test_covers_every_entry_in_probes(self) -> None:
+        """Non-vacuity first: an empty `_PROBES` would make the set equality
+        below pass trivially without proving `probe_dependencies` actually
+        reads it."""
+        assert readiness._PROBES
+        assert set(await readiness.probe_dependencies()) == set(readiness._PROBES)
+
+    async def test_a_raising_probe_reports_false_not_an_exception(
+        self, monkeypatch
+    ) -> None:
+        async def explode() -> None:
+            raise ConnectionError("simulated outage")
+
+        async def fine() -> None:
+            return None
+
+        monkeypatch.setattr(
+            readiness, "_PROBES", {"postgres": fine, "redis": fine, "minio": explode}
+        )
+        result = await readiness.probe_dependencies()
+        assert result == {"postgres": True, "redis": True, "minio": False}
+
+    async def test_a_hanging_probe_reports_false_within_the_timeout(
+        self, monkeypatch
+    ) -> None:
+        async def hang() -> None:
+            await asyncio.sleep(3600)
+
+        async def fine() -> None:
+            return None
+
+        monkeypatch.setattr(readiness, "PROBE_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(
+            readiness, "_PROBES", {"postgres": fine, "redis": fine, "minio": hang}
+        )
+        result = await asyncio.wait_for(readiness.probe_dependencies(), timeout=5)
+        assert result == {"postgres": True, "redis": True, "minio": False}
+
+    async def test_agrees_with_check_for_every_dependency(self, monkeypatch) -> None:
+        """THE ANTI-DRIFT TEST. `check()`'s per-dependency verdict and
+        `probe_dependencies()`'s boolean must agree for every key under the
+        same `_PROBES` — this is the entire reason `check()` was refactored
+        to consume `probe_dependencies()` rather than gathering over
+        `_PROBES` a second time. If a future edit reintroduces a second
+        gather that quietly diverges, this is what catches it."""
+        _fake_probes(monkeypatch, postgres=True, redis=True, minio=False)
+        report = await readiness.check()
+        deps = await readiness.probe_dependencies()
+        assert deps.keys() == readiness._PROBES.keys()
+        for name, ok in deps.items():
+            assert (report.checks[name] == readiness.OK) == ok
