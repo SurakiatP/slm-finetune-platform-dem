@@ -28,8 +28,17 @@ from pathlib import Path
 import pytest
 
 _REPO = Path(__file__).resolve().parents[2]
-_DOC = _REPO / "docs" / "patches" / "smart-model-tune-unused-endpoints.md"
+_PATCHES = _REPO / "docs" / "patches"
+_DOC = _PATCHES / "smart-model-tune-unused-endpoints.md"
 _SPEC = _REPO / "openapi.json"
+
+# Every handoff doc that cites live API routes. `smart-model-tune-HANDOFF.md`
+# is the cover document actually sent to the external team, and it tells them
+# in writing that a guard test keeps these files true — so it has to be in
+# here, or that sentence is a lie. `smart-model-tune-auth.md` is deliberately
+# NOT listed: it documents a future `AUTH_REQUIRED=true` world and cites
+# frontend source lines, not Engine routes.
+_ROUTE_CITING_DOCS = [_DOC, _PATCHES / "smart-model-tune-HANDOFF.md"]
 
 # Path parameters are spelled with the real placeholder in the spec
 # (`{dataset_id}`) but sometimes generically in prose (`{id}`). Normalise
@@ -57,31 +66,46 @@ def _doc_text() -> str:
     return _DOC.read_text(encoding="utf-8")
 
 
-def _cited_paths() -> list[str]:
-    """Every `/api/v1/...` route mentioned anywhere in the doc.
+def _routes_in(path: Path) -> list[str]:
+    """Every `/api/v1/...` route mentioned anywhere in one doc.
 
     Trailing punctuation and markdown table pipes are stripped; query
     strings are dropped (`?project_id=` is not part of the route).
     """
-    raw = re.findall(r"/api/v1/[A-Za-z0-9_{}/-]*", _doc_text())
+    assert path.exists(), (
+        f"{path.name} is listed in _ROUTE_CITING_DOCS but does not exist — "
+        "either it was deleted (remove it from the list deliberately) or "
+        "renamed; a missing file must not silently drop its guards"
+    )
+    raw = re.findall(r"/api/v1/[A-Za-z0-9_{}/-]*", path.read_text(encoding="utf-8"))
     cited = []
     for hit in raw:
         route = hit.split("?")[0].rstrip("/.,`|")
         if route and route != "/api/v1":
             cited.append(route)
     assert cited, (
-        "no /api/v1 routes found in the handoff doc — either the doc was "
+        f"no /api/v1 routes found in {path.name} — either the doc was "
         "rewritten into a different shape or this parser broke; an "
         "enumeration over nothing passes vacuously"
     )
     return sorted(set(cited))
 
 
-@pytest.mark.parametrize("route", _cited_paths())
-def test_every_endpoint_the_handoff_doc_cites_exists(route: str) -> None:
-    """One test per cited route, so a failure names the exact broken line."""
+def _cited_paths() -> list[tuple[str, str]]:
+    """(doc name, route) for every route cited across all handoff docs."""
+    pairs = [(p.name, r) for p in _ROUTE_CITING_DOCS for r in _routes_in(p)]
+    assert len({name for name, _ in pairs}) == len(_ROUTE_CITING_DOCS), (
+        "at least one handoff doc contributed no routes — see _routes_in's "
+        "own backstop; this cross-check catches a doc silently dropping out"
+    )
+    return sorted(set(pairs))
+
+
+@pytest.mark.parametrize("doc_name,route", _cited_paths())
+def test_every_endpoint_the_handoff_docs_cite_exists(doc_name: str, route: str) -> None:
+    """One test per (doc, route), so a failure names the exact broken line."""
     assert _normalise(route) in _spec_paths(), (
-        f"the handoff doc tells the smart-model-tune team to call `{route}`, "
+        f"{doc_name} tells the smart-model-tune team to call `{route}`, "
         f"which is not in openapi.json. Either the route was renamed (fix the "
         f"doc — an external team is reading it as fact) or openapi.json is "
         f"stale (regenerate it with scripts/export_openapi.py)."
@@ -220,9 +244,29 @@ def test_job_progress_union_covers_every_frame_the_doc_names() -> None:
         )
 
 
-def test_doc_records_the_backend_commit_it_describes() -> None:
+@pytest.mark.parametrize("doc", _ROUTE_CITING_DOCS, ids=lambda p: p.name)
+def test_doc_records_the_backend_commit_it_describes(doc: Path) -> None:
     """A handoff doc with no version is unfalsifiable: the reader cannot tell
     whether a mismatch means their build is old or the doc is."""
-    assert re.search(r"dev @ [0-9a-f]{7,40}", _doc_text()), (
-        "the handoff doc no longer states the backend commit it describes"
+    assert re.search(r"dev @ [0-9a-f]{7,40}", doc.read_text(encoding="utf-8")), (
+        f"{doc.name} no longer states the backend commit it describes"
     )
+
+
+def test_handoff_cover_doc_points_at_the_detail_doc() -> None:
+    """The cover doc is what gets sent; if its pointer to the endpoint
+    inventory rots, the team never finds the 27 unwired routes."""
+    cover = (_PATCHES / "smart-model-tune-HANDOFF.md").read_text(encoding="utf-8")
+    assert _DOC.name in cover, (
+        "the handoff cover no longer references "
+        f"{_DOC.name} — that link is the whole point of the cover doc"
+    )
+    assert "smart-model-tune-auth.md" in cover, (
+        "the handoff cover no longer points at the auth patch, which the team "
+        "needs the moment AUTH_REQUIRED flips"
+    )
+    for referenced in (_DOC, _PATCHES / "smart-model-tune-auth.md"):
+        assert referenced.exists(), (
+            f"the handoff cover sends the team to {referenced.name}, which "
+            "does not exist"
+        )
