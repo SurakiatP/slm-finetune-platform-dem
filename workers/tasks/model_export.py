@@ -55,6 +55,9 @@ from workers.sync_db import session_scope
 log = get_task_logger(__name__)
 
 
+def _cancelled_frame(job_id: str) -> JobFailed:
+    return JobFailed(job_id=job_id, error="job was cancelled", error_type="Cancelled")
+
 
 def _project_id_for_artifact(session, artifact):
     """ModelArtifact -> TrainingJob -> Project (2 hops), sync session.
@@ -127,7 +130,18 @@ def export_model(
             base_model, adapter_uri, _artifact_name = _load_export_context(
                 artifact_uuid=artifact_uuid, artifact_id=artifact_id
             )
-            _mark_export_running(artifact_uuid=artifact_uuid, artifact_id=artifact_id)
+            if not _mark_export_running(artifact_uuid=artifact_uuid, artifact_id=artifact_id):
+                # Row was already CANCELLED at context-load time (the cancel
+                # endpoint won the race before this task ever picked up work)
+                # — no RUNNING flip happened, and nothing below should run.
+                # Exiting here, before the deferred `from unsloth import
+                # FastLanguageModel`, means a job cancelled while queued
+                # never loads the model in the first place.
+                try:
+                    publish(_cancelled_frame(job_id))
+                except Exception:  # noqa: BLE001
+                    log.warning("failed to publish cancelled frame", exc_info=True)
+                return {"status": "cancelled", "artifact_id": artifact_id, "format": fmt.value}
 
             # ---- 2. Pull adapter dir from MinIO ------------------------------
             publish_stage("downloading")
@@ -304,13 +318,75 @@ def export_model(
                     )
 
                 # ---- 7. Persist artifact URIs --------------------------------
-                _persist_export_uris(
+                persisted = _persist_export_uris(
                     artifact_uuid=artifact_uuid,
                     artifact_id=artifact_id,
                     gguf_uri=gguf_uri,
                     safetensors_uri=safetensors_uri,
                     ollama_tag=ollama_tag,
                 )
+
+                if not persisted:
+                    # Row flipped to CANCELLED between the upload above and
+                    # this commit. `_persist_export_uris` deliberately left
+                    # the row untouched — no URI writes, no COMPLETED flip,
+                    # no `export.completed` audit — so mark `committed` True
+                    # here to keep the `except BaseException` handler (which
+                    # never fires on this success path anyway) inert, and
+                    # do our own best-effort discard of whatever landed in
+                    # MinIO/Ollama instead: a dangling multi-GB GGUF/Ollama
+                    # tag for a cancelled export must not survive. Mirrors
+                    # the orphan-cleanup block in the `except BaseException`
+                    # handler below.
+                    committed = True
+                    if uploaded_prefixes:
+                        try:
+                            cleanup_minio = get_minio_client()
+                            for prefix in uploaded_prefixes:
+                                try:
+                                    remove_prefix(
+                                        cleanup_minio, settings.minio_models_bucket, prefix
+                                    )
+                                except Exception:  # noqa: BLE001 — best-effort
+                                    log.warning(
+                                        "failed to remove cancelled export prefix %s "
+                                        "(job=%s, artifact=%s)",
+                                        prefix,
+                                        job_id,
+                                        artifact_id,
+                                        exc_info=True,
+                                    )
+                        except Exception:  # noqa: BLE001 — best-effort
+                            log.warning(
+                                "could not obtain MinIO client for cancelled export "
+                                "cleanup (job=%s, artifact=%s)",
+                                job_id,
+                                artifact_id,
+                                exc_info=True,
+                            )
+                    if ollama_tag_registered:
+                        try:
+                            OllamaClient(str(settings.ollama_base_url)).delete_model(
+                                ollama_tag_registered
+                            )
+                        except Exception:  # noqa: BLE001 — best-effort
+                            log.warning(
+                                "failed to remove ollama tag %s for cancelled export "
+                                "(job=%s, artifact=%s)",
+                                ollama_tag_registered,
+                                job_id,
+                                artifact_id,
+                                exc_info=True,
+                            )
+                    try:
+                        publish(_cancelled_frame(job_id))
+                    except Exception:  # noqa: BLE001
+                        log.warning("failed to publish cancelled frame", exc_info=True)
+                    return {
+                        "status": "cancelled",
+                        "artifact_id": artifact_id,
+                        "format": fmt.value,
+                    }
 
                 # `_persist_export_uris` just committed the `ModelArtifact`
                 # row that durably references `uploaded_prefixes` (and, if
@@ -649,7 +725,7 @@ def _load_export_context(
         )
 
 
-def _mark_export_running(*, artifact_uuid: UUID, artifact_id: str) -> None:
+def _mark_export_running(*, artifact_uuid: UUID, artifact_id: str) -> bool:
     """Flip `export_status` to RUNNING once `_load_export_context` has
     confirmed the artifact exists and has a LoRA adapter to export.
 
@@ -662,9 +738,18 @@ def _mark_export_running(*, artifact_uuid: UUID, artifact_id: str) -> None:
     defensive checks elsewhere) — `_load_export_context` already raised
     if the row didn't exist, so this only no-ops on the (extremely rare)
     concurrent-delete race.
+
+    Returns False iff the row was already CANCELLED at context-load time
+    (a job cancelled while it was still queued, never flipped to RUNNING,
+    never touched by any worker) — the caller uses that to short-circuit
+    before any heavy work (model load, GGUF conversion) begins. Returns
+    True otherwise, including the missing-row case, so the caller's
+    control flow is unaffected by that pre-existing defensive branch.
     """
     with session_scope() as session:
         artifact = session.get(ModelArtifact, artifact_uuid)
+        if artifact is not None and artifact.export_status == JobStatus.CANCELLED:
+            return False
         if artifact is not None:
             artifact.export_status = JobStatus.RUNNING
         else:  # pragma: no cover — defensive; _load_export_context just confirmed it
@@ -672,6 +757,7 @@ def _mark_export_running(*, artifact_uuid: UUID, artifact_id: str) -> None:
                 "export: job artifact %s vanished before RUNNING could be persisted",
                 artifact_id,
             )
+        return True
 
 
 def _persist_export_uris(
@@ -681,7 +767,7 @@ def _persist_export_uris(
     gguf_uri: str | None,
     safetensors_uri: str | None,
     ollama_tag: str | None,
-) -> None:
+) -> bool:
     """Write back the produced artifact URIs and clear any stale export error.
 
     Each URI is written only if set, so this is safe to call for either
@@ -696,11 +782,20 @@ def _persist_export_uris(
     is the same defensive check the inline code performed and signals a
     concurrent delete (extremely rare; FE confirms artifact existence
     before queuing).
+
+    Returns False iff the row is already CANCELLED by the time this runs
+    (the cancel endpoint won the race between upload completing and this
+    commit) — skips the URI writes, the error-message clear, the
+    ``COMPLETED`` flip, and the ``export.completed`` audit row entirely,
+    so a cancelled run's row is left untouched by this helper. Returns
+    True on the normal write-and-commit path.
     """
     with session_scope() as session:
         art = session.get(ModelArtifact, artifact_uuid)
         if art is None:
             raise RuntimeError(f"artifact {artifact_id} disappeared mid-export")
+        if art.export_status == JobStatus.CANCELLED:
+            return False
         if gguf_uri:
             art.gguf_uri = gguf_uri
         if safetensors_uri:
@@ -719,6 +814,7 @@ def _persist_export_uris(
             request_id=request_context.current_request_id(),
             metadata={"gguf_uri": gguf_uri, "ollama_model_tag": ollama_tag},
         )
+        return True
 
 
 def _quantize_merged_to_gguf(

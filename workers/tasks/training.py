@@ -96,6 +96,23 @@ def train_manual(
                 training_id=training_id,
                 job_id=job_id,
             )
+            if ctx is None:
+                # Zombie-cancel guard: the row was already CANCELLED by the time
+                # this task's context-load ran — e.g. cancelled while no worker
+                # existed to pick it up, then later claimed by one. No RUNNING
+                # flip happened, no GPU work was started; publish the terminal
+                # frame so a WS client isn't left hanging and exit cleanly
+                # instead of falling into dataset/mode validation that could
+                # raise and misreport this as FAILED (proven live: training
+                # 68bcc6a1 was overwritten CANCELLED -> COMPLETED by exactly
+                # this race).
+                try:
+                    publish(_cancelled_frame(job_id))
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "failed to publish cancelled frame for %s", training_id, exc_info=True
+                    )
+                return {"status": "cancelled", "training_id": training_id}
             base_model = ctx.base_model
             config = ctx.config
             task_type = ctx.task_type
@@ -191,6 +208,45 @@ def train_manual(
                 artifact_uri=artifact_uri,
                 size_bytes=size_bytes,
             )
+
+            if artifact_id is None:
+                # Zombie-cancel guard: the row flipped to CANCELLED sometime
+                # between the RUNNING flip and this point (training ran to
+                # completion under a since-cancelled job — the classic zombie
+                # window). `_persist_artifact` discarded the terminal-success
+                # write entirely: no ModelArtifact row, no COMPLETED flip. The
+                # adapter is already uploaded to MinIO (`uploaded_prefix`) with
+                # nothing in the DB referencing it, so it is exactly the
+                # orphan case the `except BaseException` handler's cleanup
+                # exists for below — but this path returns normally, so it
+                # must replicate that best-effort cleanup itself.
+                committed = True
+                if uploaded_prefix:
+                    try:
+                        cleanup_minio = get_minio_client()
+                        removed = remove_prefix(
+                            cleanup_minio, settings.minio_models_bucket, uploaded_prefix
+                        )
+                        log.info(
+                            "training: removed %d orphaned adapter object(s) at %s (job=%s)",
+                            removed,
+                            uploaded_prefix,
+                            job_id,
+                        )
+                    except Exception:  # noqa: BLE001 — best-effort, never mask the cancel
+                        log.warning(
+                            "failed to remove orphaned adapter prefix %s (job=%s)",
+                            uploaded_prefix,
+                            job_id,
+                            exc_info=True,
+                        )
+                try:
+                    publish(_cancelled_frame(job_id))
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "failed to publish cancelled frame for %s", training_id, exc_info=True
+                    )
+                return {"status": "cancelled", "training_id": training_id}
 
             # `_persist_artifact` just committed the `ModelArtifact` row that
             # durably references `uploaded_prefix`. From this point on it is
@@ -352,6 +408,10 @@ def train_manual(
 # ---- helpers ---------------------------------------------------------------
 
 
+def _cancelled_frame(job_id: str) -> JobFailed:
+    return JobFailed(job_id=job_id, error="job was cancelled", error_type="Cancelled")
+
+
 @dataclass(frozen=True)
 class _TrainContext:
     """Snapshot of TrainingJob + Dataset fields needed for one fine-tune run.
@@ -373,17 +433,24 @@ def _load_train_context(
     training_uuid: UUID,
     training_id: str,
     job_id: str,
-) -> _TrainContext:
+) -> _TrainContext | None:
     """Load TrainingJob + Dataset, validate, flip RUNNING, and snapshot fields.
 
     Pulled out of `train_manual` so the orchestrator reads top-down. Keeps the
     same DB session boundary: open → validate → snapshot → set status →
     commit on context exit, before any heavy work begins.
+
+    Returns None if the job row is already CANCELLED at context-load time
+    (the zombie-cancel case: cancelled while no worker existed, then later
+    claimed by one) — the caller must not flip RUNNING or do any work for a
+    job that is already terminal.
     """
     with session_scope() as session:
         job = session.get(TrainingJob, training_uuid)
         if job is None:
             raise RuntimeError(f"TrainingJob {training_id} not found")
+        if job.status == JobStatus.CANCELLED:
+            return None
         if job.mode.value != "manual":
             raise RuntimeError(
                 f"train.manual called on job with mode={job.mode.value}"
@@ -423,11 +490,19 @@ def _persist_artifact(
     base_model: str,
     artifact_uri: str,
     size_bytes: int,
-) -> UUID:
+) -> UUID | None:
     """Insert ModelArtifact + flip TrainingJob.COMPLETED + return artifact_id.
 
     Pulled out of `train_manual` so the post-training DB step is one call.
     Same single-session boundary as before — both writes commit together.
+
+    Returns None if the job row is already CANCELLED by the time this
+    terminal-success write is about to land (training ran to completion
+    under a since-cancelled job — the other half of the zombie-cancel
+    window). Discards the whole terminal-success block: no ModelArtifact
+    insert, no COMPLETED flip, no `training.completed` audit row. The
+    caller is responsible for treating the already-uploaded MinIO adapter
+    as an orphan in that case.
     """
     with session_scope() as session:
         job_row = session.get(TrainingJob, training_uuid)
@@ -435,6 +510,8 @@ def _persist_artifact(
             raise RuntimeError(
                 f"TrainingJob {training_id} disappeared mid-run"
             )
+        if job_row.status == JobStatus.CANCELLED:
+            return None
         artifact = ModelArtifact(
             training_job_id=job_row.id,
             name=training_name,
