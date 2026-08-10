@@ -406,3 +406,154 @@ class TestPostCommitFailureDoesNotDeleteLiveObject:
                 f"a durably-committed COMPLETED training run was unwound to {job.status}"
             )
             assert job.error_message is None
+
+
+# =============================================================================
+# 6. Zombie-cancel — START-CHECK
+#
+# A job cancelled while no worker existed to run it (or cancelled after being
+# queued but before any worker claimed it) sits CANCELLED in the DB with
+# nothing running. A later worker that picks it up must see the already-
+# CANCELLED row the moment it loads context and exit cleanly instead of
+# flipping RUNNING and doing real work on a job the API already closed out.
+# This is the bug proven live on training 68bcc6a1 (CANCELLED overwritten
+# back to COMPLETED by a zombie worker).
+# =============================================================================
+
+
+class TestStartCheckCancelledBeforeContextLoad:
+    def test_cancelled_before_context_load_exits_cleanly(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        training_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+        )
+        project_id, dataset_id, training_id = uuid4(), uuid4(), uuid4()
+        _seed_project_dataset_job(
+            sync_sessionmaker, project_id=project_id, dataset_id=dataset_id, training_id=training_id
+        )
+
+        # Seed the row as already CANCELLED — the zombie-cancel scenario:
+        # cancelled while no worker existed, then later claimed by one.
+        session = sync_sessionmaker()
+        try:
+            job = session.get(TrainingJob, training_id)
+            job.status = JobStatus.CANCELLED
+            session.commit()
+        finally:
+            session.close()
+
+        result = training_module.train_manual.apply(kwargs={"training_id": str(training_id)})
+        assert result.successful(), f"task raised: {result.result!r}"
+        assert result.result == {"status": "cancelled", "training_id": str(training_id)}
+
+        session = sync_sessionmaker()
+        try:
+            job = session.get(TrainingJob, training_id)
+            assert job.status == JobStatus.CANCELLED
+            assert job.started_at is None, "a zombie-cancelled job must never flip RUNNING"
+        finally:
+            session.close()
+
+        objects = _adapter_objects(fake_minio, training_id)
+        assert objects == [], f"a zombie-cancelled job must never upload an adapter: {objects}"
+
+        # Exactly one frame published: the cancelled frame. No progress
+        # frames — training never started.
+        assert len(fake_redis_pubsub.published) == 1, (
+            f"expected exactly one published frame: {fake_redis_pubsub.published}"
+        )
+        import json
+
+        from api.core.redis_client import job_channel, job_snapshot_key
+
+        channel, raw = fake_redis_pubsub.published[0]
+        frame = json.loads(raw)
+        assert frame["type"] == "failed"
+        assert frame["error_type"] == "Cancelled"
+
+        job_id = channel.split(":", 1)[1]
+        assert job_channel(job_id) == channel
+        snapshot = fake_redis_pubsub.client.get(job_snapshot_key(job_id))
+        assert snapshot is not None, "job:{id}:last must hold the cancelled frame"
+        snap = json.loads(snapshot)
+        assert snap["type"] == "failed"
+        assert snap["error_type"] == "Cancelled"
+
+
+# =============================================================================
+# 7. Zombie-cancel — COMPLETED-GUARD (discard)
+#
+# The other half of the same window: training runs to completion (adapter
+# already uploaded to MinIO) under a job that gets cancelled *during* the
+# run, before `_persist_artifact` commits. The terminal-success write must
+# be discarded wholesale — no ModelArtifact row, no COMPLETED flip, no
+# `training.completed` audit row, no JobCompleted frame — and the adapter
+# that's now an orphan must be cleaned up, same as the failure path.
+# =============================================================================
+
+
+class TestCompletedGuardDiscardsWhenCancelledMidRun:
+    def test_cancelled_mid_run_discards_terminal_write(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        training_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+        )
+        project_id, dataset_id, training_id = uuid4(), uuid4(), uuid4()
+        _seed_project_dataset_job(
+            sync_sessionmaker, project_id=project_id, dataset_id=dataset_id, training_id=training_id
+        )
+        _seed_dataset_jsonl(fake_minio)
+
+        # Seam: `s3_uri` is called right after `uploaded_prefix` is set and
+        # right before `_persist_artifact` — flip the row to CANCELLED here,
+        # without raising, to land squarely in the post-upload/pre-commit
+        # window `_persist_artifact`'s COMPLETED-GUARD exists for.
+        from workers.storage import s3_uri as real_s3_uri
+
+        def _cancel_then_s3_uri(*args, **kwargs):
+            session = sync_sessionmaker()
+            try:
+                job = session.get(TrainingJob, training_id)
+                job.status = JobStatus.CANCELLED
+                session.commit()
+            finally:
+                session.close()
+            return real_s3_uri(*args, **kwargs)
+
+        monkeypatch.setattr(training_module, "s3_uri", _cancel_then_s3_uri)
+
+        result = training_module.train_manual.apply(kwargs={"training_id": str(training_id)})
+        assert result.successful(), f"task raised: {result.result!r}"
+        assert result.result == {"status": "cancelled", "training_id": str(training_id)}
+
+        objects = _adapter_objects(fake_minio, training_id)
+        assert objects == [], f"the now-orphaned adapter must be cleaned up: {objects}"
+
+        session = sync_sessionmaker()
+        try:
+            job = session.get(TrainingJob, training_id)
+            assert job.status == JobStatus.CANCELLED
+
+            artifacts = session.query(ModelArtifact).filter_by(training_job_id=training_id).all()
+            assert artifacts == [], "no ModelArtifact row must be inserted for a discarded run"
+
+            from api.models.audit_event import AuditEvent
+
+            completed_events = (
+                session.query(AuditEvent)
+                .filter_by(resource_id=str(training_id), action="training.completed")
+                .all()
+            )
+            assert completed_events == [], "no training.completed audit row for a discarded run"
+        finally:
+            session.close()
+
+        import json
+
+        types = [json.loads(msg)["type"] for _channel, msg in fake_redis_pubsub.published]
+        assert "completed" not in types, f"no JobCompleted frame must be published: {types}"
+        assert types[-1] == "failed"
+        last_frame = json.loads(fake_redis_pubsub.published[-1][1])
+        assert last_frame["error_type"] == "Cancelled"

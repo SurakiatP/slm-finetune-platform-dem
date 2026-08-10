@@ -22,20 +22,23 @@ adds the storage-cleanup assertions that file doesn't make.
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 
 from ai_engine.data_gen.generator import SDGRunResult
 from ai_engine.data_gen.usage import STAGE_GENERATE
+from api.core.redis_client import job_snapshot_key
 from api.models.base import Base
 from api.models.dataset import Dataset
 from api.models.project import Project
+from api.models.usage_event import UsageEvent
 from api.schemas.enums import DatasetSource, JobStatus, TaskType
 from api.schemas.sdg import SDGRequestDescriptionOnly
 
@@ -117,6 +120,14 @@ def _build_payload(project_id, *, holdout_size=0) -> dict:
 
 def _dataset_bucket_objects(fake_minio) -> list[str]:
     return [obj.object_name for obj in fake_minio.list_objects("datasets", recursive=True)]
+
+
+def _usage_rows(sync_sessionmaker) -> list[UsageEvent]:
+    session = sync_sessionmaker()
+    try:
+        return list(session.execute(select(UsageEvent)).scalars().all())
+    finally:
+        session.close()
 
 
 def _fake_result(n=1):
@@ -428,6 +439,304 @@ class TestPostCommitFailureDoesNotDeleteLiveObject:
             ds = session.get(Dataset, dataset_id)
             assert ds.status == JobStatus.COMPLETED, (
                 "a durably-committed COMPLETED run was unwound by a post-commit failure"
+            )
+        finally:
+            session.close()
+
+
+# =============================================================================
+# 6. Zombie-cancel — a job cancelled while no worker exists must stay
+#    cancelled, not be resurrected into COMPLETED by a worker that later
+#    picks the queued task up.
+#
+#    Two guards:
+#      • START-CHECK: the row is already CANCELLED by the time this worker
+#        even loads it — no RUNNING flip, no generation work, just a
+#        `_cancelled_frame` announcement and a clean `.apply()` success.
+#      • COMPLETED-GUARD (discard): the row flips to CANCELLED mid-flight,
+#        after the start-check already passed but before the success commit
+#        — the success commit must discard every write instead of resurrecting
+#        CANCELLED back to COMPLETED, still bill usage once, and clean up the
+#        now-orphaned upload(s).
+# =============================================================================
+
+
+class TestZombieCancelStartCheck:
+    def test_already_cancelled_at_start_short_circuits_cleanly(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        dg_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+        )
+
+        # A worker must never even reach `_run_generator` for a job that was
+        # already cancelled before it started — if it does, the start-check
+        # didn't short-circuit.
+        async def _fail_if_called(**kwargs):
+            raise AssertionError(
+                "_run_generator must not run for a job cancelled before start"
+            )
+
+        monkeypatch.setattr(dg_module, "_run_generator", _fail_if_called)
+
+        project_id, dataset_id = uuid4(), uuid4()
+        _seed_project_and_dataset(
+            sync_sessionmaker,
+            project_id=project_id,
+            dataset_id=dataset_id,
+            status=JobStatus.CANCELLED,
+        )
+
+        result = dg_module.generate_synthetic_data.apply(
+            kwargs={"request_payload": _build_payload(project_id), "dataset_id": str(dataset_id)}
+        )
+        assert result.successful(), f"task raised: {result.result!r}"
+        assert result.result == {"status": "cancelled", "dataset_id": str(dataset_id)}
+
+        session = sync_sessionmaker()
+        try:
+            ds = session.get(Dataset, dataset_id)
+            assert ds.status == JobStatus.CANCELLED
+            assert ds.storage_uri is None
+        finally:
+            session.close()
+
+        objects = _dataset_bucket_objects(fake_minio)
+        assert objects == [], f"nothing should ever be uploaded for this job: {objects}"
+
+        # A published `JobFailed(error_type="Cancelled")` frame, and the
+        # `job:{id}:last` snapshot key holding the same terminal frame for a
+        # late/reconnecting subscriber.
+        assert fake_redis_pubsub.published, "no frame was published at all"
+        channel, payload = fake_redis_pubsub.published[-1]
+        frame = json.loads(payload)
+        assert frame["type"] == "failed"
+        assert frame["error_type"] == "Cancelled"
+
+        job_id = result.id
+        snapshot = fake_redis_pubsub.client.get(job_snapshot_key(job_id))
+        assert snapshot is not None
+        snapshot_frame = json.loads(snapshot)
+        assert snapshot_frame["type"] == "failed"
+        assert snapshot_frame["error_type"] == "Cancelled"
+
+
+class TestZombieCancelDiscardsMidFlightCancellation:
+    def test_cancelled_between_upload_and_commit_discards_the_completed_write(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        dg_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+        )
+        project_id, dataset_id = uuid4(), uuid4()
+        _seed_project_and_dataset(sync_sessionmaker, project_id=project_id, dataset_id=dataset_id)
+
+        async def _fake_run_generator(**kwargs):
+            kwargs["usage"].add(dg_module.sdg_models.GENERATOR, STAGE_GENERATE, 1800, 900)
+            return _fake_result(1)
+
+        monkeypatch.setattr(dg_module, "_run_generator", _fake_run_generator)
+
+        # Same seam as `TestCancelPathDeletesUpload` above (`s3_uri` called
+        # right after `put_jsonl`, strictly before the DB-persisting
+        # `session_scope()` block) but WITHOUT the SystemExit: this models
+        # the cancel endpoint's status flip landing in that same window,
+        # except the SIGTERM itself never arrives (or arrives too late to
+        # matter) — the task's own success path is the one that must notice
+        # CANCELLED and discard, not the `except BaseException` handler.
+        real_s3_uri = dg_module.s3_uri
+        calls = {"n": 0}
+
+        def _s3_uri_then_cancel_no_raise(bucket, key):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                session = sync_sessionmaker()
+                try:
+                    ds = session.get(Dataset, dataset_id)
+                    ds.status = JobStatus.CANCELLED
+                    session.commit()
+                finally:
+                    session.close()
+            return real_s3_uri(bucket, key)
+
+        monkeypatch.setattr(dg_module, "s3_uri", _s3_uri_then_cancel_no_raise)
+
+        result = dg_module.generate_synthetic_data.apply(
+            kwargs={"request_payload": _build_payload(project_id), "dataset_id": str(dataset_id)}
+        )
+        assert result.successful(), f"task raised: {result.result!r}"
+        assert result.result == {"status": "cancelled", "dataset_id": str(dataset_id)}
+
+        objects = _dataset_bucket_objects(fake_minio)
+        assert objects == [], f"the orphaned upload must be deleted: {objects}"
+
+        session = sync_sessionmaker()
+        try:
+            ds = session.get(Dataset, dataset_id)
+            assert ds.status == JobStatus.CANCELLED
+            assert ds.storage_uri is None, "the discard path must not write storage_uri"
+            assert ds.num_samples == 0, "the discard path must not write num_samples"
+
+            children = list(
+                session.execute(
+                    select(Dataset).where(Dataset.parent_dataset_id == dataset_id)
+                ).scalars()
+            )
+            assert children == [], "no holdout Dataset row must be created on discard"
+        finally:
+            session.close()
+
+        rows = _usage_rows(sync_sessionmaker)
+        assert len(rows) == 1, f"usage must be billed exactly once: {[r.outcome for r in rows]}"
+        assert rows[0].outcome == "cancelled"
+        assert rows[0].prompt_tokens == 1800
+        assert rows[0].completion_tokens == 900
+
+        types = [json.loads(msg)["type"] for _channel, msg in fake_redis_pubsub.published]
+        assert "completed" not in types, f"no JobCompleted frame must ever be published: {types}"
+        assert types[-1] == "failed", f"the terminal frame must be the cancelled one: {types}"
+
+        last_frame = json.loads(fake_redis_pubsub.published[-1][1])
+        assert last_frame["error_type"] == "Cancelled"
+
+
+# =============================================================================
+# 7. Zombie-cancel — the discard branch's `committed = True` must actually
+#    hold, i.e. a crash landing AFTER the discard commit must not re-bill or
+#    re-write the terminal frame.
+#
+# The discard branch (section 6 above) sets `committed = True` the moment its
+# CANCELLED-discovering commit lands, then does best-effort cleanup and
+# publishes the cancelled frame. That flag is the ONLY thing standing between
+# a crash in that tail and the `except BaseException` handler redoing the
+# whole terminal sequence: the handler's four blocks (status write, usage
+# record, orphan cleanup, `JobFailed` publish) are each gated on `not
+# committed`.
+#
+# Nothing exercised that flag behaviorally — deleting `committed = True` from
+# the discard branch left the entire suite green, which is precisely the
+# "assertion that cannot fail" shape this repo hunts. This test closes it.
+#
+# The crash is injected at the one place in that tail that can realistically
+# raise: the terminal publish. Note the publish is guarded by `except
+# Exception`, and `SystemExit` is a `BaseException` — so a cancel's SIGTERM
+# arriving in this exact window (the real-world scenario: the cancel endpoint
+# writes CANCELLED, the task's success path notices and discards, and only
+# THEN does billiard's SIGTERM handler fire) propagates straight past the
+# guard into `except BaseException`. That is the entry the flag has to
+# defend, and reaching it is asserted here (`pytest.raises(SystemExit)`)
+# rather than assumed.
+# =============================================================================
+
+
+class TestDiscardBranchIsIdempotentAgainstALateCrash:
+    def test_systemexit_after_discard_does_not_rebill_or_overwrite_the_frame(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        dg_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+        )
+        project_id, dataset_id = uuid4(), uuid4()
+        _seed_project_and_dataset(sync_sessionmaker, project_id=project_id, dataset_id=dataset_id)
+
+        async def _fake_run_generator(**kwargs):
+            kwargs["usage"].add(dg_module.sdg_models.GENERATOR, STAGE_GENERATE, 1800, 900)
+            return _fake_result(1)
+
+        monkeypatch.setattr(dg_module, "_run_generator", _fake_run_generator)
+
+        # Same seam as section 6: flip the row to CANCELLED in the
+        # post-upload/pre-commit window, without raising, so the success
+        # path's own guard is what discovers it and takes the discard branch.
+        real_s3_uri = dg_module.s3_uri
+        calls = {"n": 0}
+
+        def _s3_uri_then_cancel_no_raise(bucket, key):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                session = sync_sessionmaker()
+                try:
+                    ds = session.get(Dataset, dataset_id)
+                    ds.status = JobStatus.CANCELLED
+                    session.commit()
+                finally:
+                    session.close()
+            return real_s3_uri(bucket, key)
+
+        monkeypatch.setattr(dg_module, "s3_uri", _s3_uri_then_cancel_no_raise)
+
+        # The crash. `publish_ws_message` writes the `job:{id}:last` snapshot
+        # BEFORE it publishes, so raising from `publish` models a SIGTERM
+        # landing with the cancelled frame already durably snapshotted — the
+        # exact state a reconnecting watcher would read. Raising on the FIRST
+        # terminal (`failed`) frame means: if the handler re-publishes its own
+        # `JobFailed(error_type="SystemExit")`, that second publish overwrites
+        # the snapshot before dying again — which is what the assertions below
+        # detect.
+        spy_publish = fake_redis_pubsub.client.publish
+
+        def _publish_then_sigterm(channel, message):
+            returned = spy_publish(channel, message)
+            payload = message.decode("utf-8") if isinstance(message, bytes) else message
+            if json.loads(payload)["type"] == "failed":
+                raise SystemExit(-241)
+            return returned
+
+        monkeypatch.setattr(fake_redis_pubsub.client, "publish", _publish_then_sigterm)
+
+        with pytest.raises(SystemExit):
+            dg_module.generate_synthetic_data.apply(
+                kwargs={"request_payload": _build_payload(project_id), "dataset_id": str(dataset_id)}
+            )
+
+        # 1. Billing: exactly one row. Without `committed = True` the handler
+        #    re-enters `usage_service.record_run` and the same 1800/900 tokens
+        #    are charged to this actor twice.
+        rows = _usage_rows(sync_sessionmaker)
+        assert len(rows) == 1, (
+            f"the discard already billed this run; a crash after it must not "
+            f"bill again — got {[(r.outcome, r.prompt_tokens) for r in rows]}"
+        )
+        assert rows[0].outcome == "cancelled"
+        assert rows[0].prompt_tokens == 1800
+        assert rows[0].completion_tokens == 900
+
+        # 2. The terminal frame: exactly one, and it is still the cancelled
+        #    one. Without the flag the handler publishes a second terminal
+        #    frame carrying `error_type="SystemExit"` — the watcher's last
+        #    word on a cancelled job then reads as a crash.
+        terminal = [
+            json.loads(message)
+            for _channel, message in fake_redis_pubsub.published
+            if json.loads(message)["type"] == "failed"
+        ]
+        assert len(terminal) == 1, (
+            f"a terminal frame is terminal — exactly one `failed` frame "
+            f"expected, got {[f['error_type'] for f in terminal]}"
+        )
+        assert terminal[0]["error_type"] == "Cancelled"
+
+        # 3. `job:{id}:last` — the key that heals hanging watchers — must
+        #    still hold the cancelled frame, not the SystemExit that followed.
+        job_id = fake_redis_pubsub.published[0][0].split(":", 1)[1]
+        snapshot = fake_redis_pubsub.client.get(job_snapshot_key(job_id))
+        assert snapshot is not None
+        snap = json.loads(snapshot)
+        assert snap["type"] == "failed"
+        assert snap["error_type"] == "Cancelled", (
+            "the snapshot a reconnecting client reads must say the job was "
+            "cancelled, not that it crashed"
+        )
+
+        # 4. The row itself: the handler's status/error write is gated on the
+        #    same flag, so a discarded run must not acquire an error_message.
+        session = sync_sessionmaker()
+        try:
+            ds = session.get(Dataset, dataset_id)
+            assert ds.status == JobStatus.CANCELLED
+            assert ds.error_message is None, (
+                "the discard already finalised this row; the late crash must "
+                "not stamp an error message onto it"
             )
         finally:
             session.close()
