@@ -67,3 +67,7 @@ export function clearEngineMeta(supabaseProjectId: string): void {
   delete map[supabaseProjectId];
   save(map);
 }
+
+export function clearAllEngineMeta(): void {
+  localStorage.removeItem(STORAGE_KEY);
+}

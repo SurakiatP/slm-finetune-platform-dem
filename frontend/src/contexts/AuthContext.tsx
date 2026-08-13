@@ -1,6 +1,11 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from "react";
 import { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
+import {
+  getMfaAssuranceLevel,
+  listMfaFactors,
+  type MfaFactor,
+} from "@/lib/accountSecurity";
 
 interface Profile {
   id: string;
@@ -14,8 +19,15 @@ interface AuthContextValue {
   user: User | null;
   profile: Profile | null;
   loading: boolean;
+  mfaLoading: boolean;
+  mfaError: string | null;
+  mfaFactors: MfaFactor[];
+  currentAal: string | null;
+  nextAal: string | null;
+  mfaRequired: boolean;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
+  refreshMfa: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -25,15 +37,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [mfaLoading, setMfaLoading] = useState(true);
+  const [mfaError, setMfaError] = useState<string | null>(null);
+  const [mfaFactors, setMfaFactors] = useState<MfaFactor[]>([]);
+  const [currentAal, setCurrentAal] = useState<string | null>(null);
+  const [nextAal, setNextAal] = useState<string | null>(null);
 
-  const loadProfile = async (userId: string) => {
+  const loadProfile = useCallback(async (userId: string) => {
     const { data } = await supabase
       .from("profiles")
       .select("id, user_id, display_name, avatar_url")
       .eq("user_id", userId)
       .maybeSingle();
     setProfile(data ?? null);
-  };
+  }, []);
+
+  const refreshMfa = useCallback(async () => {
+    setMfaLoading(true);
+    setMfaError(null);
+    try {
+      const [factors, assurance] = await Promise.all([
+        listMfaFactors(),
+        getMfaAssuranceLevel(),
+      ]);
+      setMfaFactors(factors);
+      setCurrentAal(assurance.currentLevel);
+      setNextAal(assurance.nextLevel);
+    } catch (error) {
+      setMfaError(error instanceof Error ? error.message : "Unable to verify two-factor authentication status.");
+      throw error;
+    } finally {
+      setMfaLoading(false);
+    }
+  }, []);
+
+  const resetMfa = useCallback(() => {
+    setMfaFactors([]);
+    setCurrentAal(null);
+    setNextAal(null);
+    setMfaError(null);
+    setMfaLoading(false);
+  }, []);
 
   useEffect(() => {
     // 1) Subscribe FIRST
@@ -42,24 +86,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(newSession?.user ?? null);
       if (newSession?.user) {
         // Defer DB call to avoid recursive lock with auth state
-        setTimeout(() => loadProfile(newSession.user.id), 0);
+        setMfaLoading(true);
+        setTimeout(() => {
+          void Promise.all([loadProfile(newSession.user.id), refreshMfa()]).catch(() => undefined);
+        }, 0);
       } else {
         setProfile(null);
+        resetMfa();
       }
     });
 
     // 2) Then check existing session
-    supabase.auth.getSession().then(({ data: { session: existing } }) => {
+    void supabase.auth.getSession().then(async ({ data: { session: existing } }) => {
       setSession(existing);
       setUser(existing?.user ?? null);
       if (existing?.user) {
-        loadProfile(existing.user.id);
+        await Promise.all([loadProfile(existing.user.id), refreshMfa()]).catch(() => undefined);
+      } else {
+        resetMfa();
       }
+    }).catch(() => {
+      resetMfa();
+    }).finally(() => {
       setLoading(false);
     });
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [loadProfile, refreshMfa, resetMfa]);
 
   const signOut = async () => {
     await supabase.auth.signOut();
@@ -70,8 +123,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (user) await loadProfile(user.id);
   };
 
+  const mfaRequired = nextAal === "aal2" && currentAal !== "aal2";
+
   return (
-    <AuthContext.Provider value={{ session, user, profile, loading, signOut, refreshProfile }}>
+    <AuthContext.Provider value={{
+      session,
+      user,
+      profile,
+      loading,
+      mfaLoading,
+      mfaError,
+      mfaFactors,
+      currentAal,
+      nextAal,
+      mfaRequired,
+      signOut,
+      refreshProfile,
+      refreshMfa,
+    }}>
       {children}
     </AuthContext.Provider>
   );
