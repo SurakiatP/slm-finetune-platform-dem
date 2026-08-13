@@ -108,6 +108,12 @@ const Login = () => {
               <Input id="password" type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} />
             </div>
 
+            <div className="text-right">
+              <Link to="/forgot-password" className="text-sm font-medium text-primary hover:underline">
+                {t("login.forgotPassword")}
+              </Link>
+            </div>
+
             <Button type="submit" className="w-full" disabled={loading}>
               {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {t("login.signIn")}
