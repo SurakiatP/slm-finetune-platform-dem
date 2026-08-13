@@ -1,25 +1,22 @@
-import { useEffect, useRef } from "react";
-import { updateProject } from "@/lib/projectsApi";
+import { useEffect } from "react";
+import { getProject, updateProject } from "@/lib/projectsApi";
 import { getEngineMeta, patchEngineMeta } from "@/lib/engineStore";
 import { useTrainingWebSocket } from "@/hooks/useTrainingWebSocket";
-import type { Project, ProjectStatus } from "@/types";
+import { engineGetModelArtifacts, engineGetTraining } from "@/lib/engineApi";
+import type { Project } from "@/types";
 
-// Real backend integration: connects to Engine WebSocket when a jobId is stored
-// in engineStore for this project. Falls back to the progress simulation for
-// projects that were created without an engine connection.
+// Real Engine synchronization. The historical name is kept to avoid a broad
+// call-site rename, but this hook never fabricates status or progress.
 
 export function useTrainingSimulator(
   project: Project | null,
   onUpdate: (next: Project) => void,
-  options: { tickMs?: number; stepPercent?: number } = {},
 ) {
-  const { tickMs = 2000, stepPercent = 4 } = options;
-
   const meta = project ? getEngineMeta(project.id) : null;
   const jobId = meta?.jobId ?? null;
 
   // ── Real WebSocket path ────────────────────────────────────────────────────
-  const { latestProgress, completed, failed } = useTrainingWebSocket(
+  const { latestProgress, completed, failed, connectionFailed } = useTrainingWebSocket(
     project?.status === "training" || project?.status === "queued" ? jobId : null,
   );
 
@@ -31,7 +28,9 @@ export function useTrainingSimulator(
       if (completed) {
         // Store artifact ID so Playground can use it
         if (completed.model_artifact_id) {
-          patchEngineMeta(project.id, { modelArtifactId: completed.model_artifact_id });
+          patchEngineMeta(project.id, { modelArtifactId: completed.model_artifact_id, phase: "completed", error: undefined });
+        } else {
+          patchEngineMeta(project.id, { phase: "completed", error: undefined });
         }
         const next = await updateProject(project.id, { status: "completed", progress: 100 });
         onUpdate(next);
@@ -39,6 +38,7 @@ export function useTrainingSimulator(
       }
 
       if (failed) {
+        patchEngineMeta(project.id, { phase: "failed", error: failed.error });
         const next = await updateProject(project.id, { status: "failed" });
         onUpdate(next);
         return;
@@ -57,64 +57,64 @@ export function useTrainingSimulator(
       }
     };
 
-    run().catch(() => {/* swallow */});
+    void run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [latestProgress, completed, failed]);
 
-  // ── Fallback simulation (no engine job) ───────────────────────────────────
-  const runningRef = useRef(false);
-
+  // While upload/SDG runs in the background there is no training job yet.
+  // Poll only the real Supabase row so the page sees training/failed transitions.
   useEffect(() => {
-    if (!project) return;
-    if (jobId) return; // real WS is handling it
-
-    const shouldRun: ProjectStatus[] = ["queued", "training"];
-    if (!shouldRun.includes(project.status)) return;
-    if (runningRef.current) return;
-    runningRef.current = true;
-
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const tick = async () => {
-      if (cancelled) return;
-      try {
-        let current = project;
-        if (current.status === "queued") {
-          const next = await updateProject(current.id, { status: "training", progress: 5 });
-          if (cancelled) return;
-          current = next;
-          onUpdate(next);
-        } else {
-          const newProgress = Math.min(100, current.progress + stepPercent + Math.floor(Math.random() * 3));
-          const newStatus: ProjectStatus = newProgress >= 100 ? "completed" : "training";
-          const next = await updateProject(current.id, {
-            progress: newProgress,
-            status: newStatus,
-            ...(newStatus === "completed"
-              ? { creditsCost: Math.max(current.creditsCost, 50 + Math.floor(Math.random() * 80)) }
-              : {}),
-          });
-          if (cancelled) return;
-          onUpdate(next);
-          if (newStatus === "completed") {
-            runningRef.current = false;
-            return;
-          }
-        }
-      } catch {
-        // swallow transient errors; loop will retry on next tick
-      }
-      timer = setTimeout(tick, tickMs);
+    if (!project || jobId || project.status !== "queued") return;
+    let active = true;
+    const poll = async () => {
+      const next = await getProject(project.id);
+      if (active && next && next.updatedAt !== project.updatedAt) onUpdate(next);
     };
-
-    timer = setTimeout(tick, tickMs);
-
+    const interval = setInterval(() => void poll(), 3000);
+    void poll();
     return () => {
-      cancelled = true;
-      runningRef.current = false;
-      if (timer) clearTimeout(timer);
+      active = false;
+      clearInterval(interval);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.id, project?.status, jobId]);
+  }, [jobId, onUpdate, project]);
+
+  // A browser cannot read the backend's pre-accept 4401/4403 close code.
+  // Once repeated handshakes fail, poll the canonical training resource.
+  useEffect(() => {
+    if (!project || !meta?.trainingId || !connectionFailed) return;
+    let active = true;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const poll = async () => {
+      const training = await engineGetTraining(meta.trainingId!);
+      if (!active) return;
+      if (training.status === "completed") {
+        const artifacts = await engineGetModelArtifacts(training.id);
+        const artifactId = artifacts.items[0]?.id;
+        patchEngineMeta(project.id, {
+          phase: "completed",
+          error: undefined,
+          ...(artifactId ? { modelArtifactId: artifactId } : {}),
+        });
+        const next = await updateProject(project.id, { status: "completed", progress: 100 });
+        if (active) onUpdate(next);
+        if (interval) clearInterval(interval);
+      } else if (training.status === "failed" || training.status === "cancelled") {
+        patchEngineMeta(project.id, {
+          phase: "failed",
+          error: training.error_message || `Training ${training.status}`,
+        });
+        const next = await updateProject(project.id, { status: "failed" });
+        if (active) onUpdate(next);
+        if (interval) clearInterval(interval);
+      }
+    };
+
+    interval = setInterval(() => void poll(), 10000);
+    void poll();
+    return () => {
+      active = false;
+      if (interval) clearInterval(interval);
+    };
+  }, [connectionFailed, meta?.trainingId, onUpdate, project]);
 }

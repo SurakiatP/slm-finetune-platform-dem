@@ -2,6 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tag, MapPin, HelpCircle, Zap, FileText, ArrowUpDown } from "lucide-react";
 import type { ProjectFormData } from "@/pages/NewProject";
 import type { TaskType } from "@/types";
+import { TASK_TYPE_TO_ENGINE } from "@/lib/engineMappings";
 
 const tasks: { type: TaskType; label: string; description: string; example: string; icon: React.ElementType }[] = [
   {
@@ -67,14 +68,19 @@ export function TaskSelectionStep({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {tasks.map((task) => {
           const selected = formData.taskType === task.type;
+          const supported = TASK_TYPE_TO_ENGINE[task.type] !== null;
           return (
             <button
               key={task.type}
+              type="button"
+              disabled={!supported}
               onClick={() => updateForm({ taskType: task.type })}
               className={`text-left p-4 rounded-lg border-2 transition-all ${
                 selected
                   ? "border-primary bg-accent"
-                  : "border-border hover:border-primary/40 bg-background"
+                  : supported
+                  ? "border-border hover:border-primary/40 bg-background"
+                  : "border-border bg-muted/40 opacity-60 cursor-not-allowed"
               }`}
             >
               <div className="flex items-center gap-2.5 mb-2">
@@ -83,6 +89,7 @@ export function TaskSelectionStep({
                 </div>
                 <span className="font-semibold text-sm text-foreground">{task.label}</span>
                 {selected && <Badge className="ml-auto text-[10px]">Selected</Badge>}
+                {!supported && <Badge variant="outline" className="ml-auto text-[10px]">Coming soon</Badge>}
               </div>
               <p className="text-xs text-muted-foreground mb-2">{task.description}</p>
               <div className="bg-secondary/50 rounded-md px-2.5 py-1.5">

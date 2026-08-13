@@ -4,7 +4,22 @@
 const STORAGE_KEY = "slm_engine_meta";
 
 export interface EngineProjectMeta {
-  engineProjectId: string;
+  engineProjectId?: string;
+  phase?:
+    | "project_created"
+    | "uploading"
+    | "generating"
+    | "training"
+    | "exporting"
+    | "ready"
+    | "completed"
+    | "export_failed"
+    | "failed";
+  error?: string;
+  failureStep?: "auth" | "project" | "upload" | "sdg" | "training" | "export" | "inference";
+  errorStatus?: number;
+  errorCode?: string;
+  errorRequestId?: string;
   seedDatasetId?: string;
   sdgJobId?: string;
   trainDatasetId?: string;
@@ -12,6 +27,7 @@ export interface EngineProjectMeta {
   trainingId?: string;
   jobId?: string;
   modelArtifactId?: string;
+  exportJobId?: string;
   ollamaModelTag?: string;
   baseOllamaTag?: string;
 }

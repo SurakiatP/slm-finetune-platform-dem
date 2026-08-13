@@ -6,7 +6,7 @@ import { componentTagger } from "lovable-tagger";
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  const engineHost = env.VITE_ENGINE_HOST ?? "http://10.222.43.195:8080";
+  const engineProxyTarget = env.VITE_ENGINE_PROXY_TARGET || "http://localhost:8088";
 
   return {
   server: {
@@ -18,18 +18,18 @@ export default defineConfig(({ mode }) => {
     proxy: {
       // Forward API calls and WebSocket to the Engine backend
       "/api/v1": {
-        target: engineHost,
+        target: engineProxyTarget,
         changeOrigin: true,
         secure: false,
       },
       "/ws/": {
-        target: engineHost,
+        target: engineProxyTarget,
         changeOrigin: true,
         ws: true,
         secure: false,
       },
       "/health": {
-        target: engineHost,
+        target: engineProxyTarget,
         changeOrigin: true,
         secure: false,
       },

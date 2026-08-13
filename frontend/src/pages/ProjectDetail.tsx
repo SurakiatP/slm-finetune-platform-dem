@@ -7,17 +7,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, RotateCcw, Wand2, Loader2, CheckCircle2, AlertCircle, Activity } from "lucide-react";
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { taskTypeLabels, baseModelLabels } from "@/data/mockData";
 import { mockVersionHistory } from "@/data/deploymentMockData";
 import { TuningReport } from "@/components/training/TuningReport";
 import { TuningHistory } from "@/components/training/TuningHistory";
 import { getLatestTuningRun } from "@/lib/tuningGenerator";
 import { useProject } from "@/hooks/useProjects";
-import { useTrainingSimulator } from "@/hooks/useTrainingSimulator";
+import { useEngineWorkflowSync } from "@/hooks/useEngineWorkflowSync";
 import type { ProjectStatus } from "@/types";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useToast } from "@/hooks/use-toast";
+import { getEngineMeta } from "@/lib/engineStore";
 
 const statusVariant: Record<ProjectStatus, "default" | "secondary" | "destructive" | "outline"> = {
   completed: "default",
@@ -26,11 +26,6 @@ const statusVariant: Record<ProjectStatus, "default" | "secondary" | "destructiv
   paused: "outline",
   failed: "destructive",
 };
-
-const lossCurve = Array.from({ length: 50 }, (_, i) => ({
-  step: (i + 1) * 20,
-  loss: 2.5 * Math.exp(-i * 0.06) + 0.15 + Math.random() * 0.08,
-}));
 
 function getSuggestions(datasetSize: number) {
   if (datasetSize < 1000) return { lr: 1e-4, epochs: 10, batch: 8, label: "small" };
@@ -45,8 +40,8 @@ export default function ProjectDetail() {
   const { toast } = useToast();
   const completionToastedRef = useRef(false);
 
-  // Live training simulator — drives status & progress for prototype projects
-  useTrainingSimulator(project, setProject);
+  // Synchronizes only real Engine/Supabase state; no simulated progress.
+  const { retryExport } = useEngineWorkflowSync(project, setProject);
 
   // Notify once when training completes
   useEffect(() => {
@@ -73,19 +68,9 @@ export default function ProjectDetail() {
     );
   }
 
-  // Generate metrics deterministically from project (in lieu of real eval data per project)
-  const seed = project.id.split("").reduce((s, c) => s + c.charCodeAt(0), 0);
-  const r = (offset: number) => 85 + ((seed + offset) % 12);
-  const metrics = {
-    accuracy: r(1),
-    f1Score: r(2),
-    precision: r(3),
-    recall: r(4),
-    rouge1: r(5),
-    latencyMs: 100 + (seed % 80),
-  };
   const versions = mockVersionHistory[project.id as keyof typeof mockVersionHistory] || [];
   const suggestion = getSuggestions(project.datasetSize);
+  const engineMeta = getEngineMeta(project.id);
 
   const handleRollback = (version: string) => {
     toast({ title: t("versions.rolledBack"), description: `→ ${version}` });
@@ -110,6 +95,31 @@ export default function ProjectDetail() {
       {/* Live training status banner — visible on every tab while job runs */}
       {(project.status === "queued" || project.status === "training" || project.status === "completed" || project.status === "failed") && (
         <LiveStatusBanner project={project} />
+      )}
+
+      {project.status === "failed" && engineMeta?.error && (
+        <Card className="border-destructive/40 bg-destructive/5" role="alert">
+          <CardContent className="p-4 flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-destructive">Engine workflow failed</p>
+              <p className="text-xs text-muted-foreground mt-1 break-words">{engineMeta.error}</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {engineMeta?.phase === "export_failed" && engineMeta.error && (
+        <Card className="border-destructive/40 bg-destructive/5" role="alert">
+          <CardContent className="p-4 flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-destructive">Model export failed</p>
+              <p className="text-xs text-muted-foreground mt-1 break-words">{engineMeta.error}</p>
+            </div>
+            <Button size="sm" variant="outline" onClick={retryExport}>Retry export</Button>
+          </CardContent>
+        </Card>
       )}
 
       <Tabs defaultValue="overview">
@@ -200,55 +210,17 @@ export default function ProjectDetail() {
           )}
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-sm">{t("projectDetail.lossCurve")}</CardTitle></CardHeader>
-            <CardContent>
-              <div className="h-[260px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={lossCurve}>
-                    <defs>
-                      <linearGradient id="lossGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="hsl(243,75%,59%)" stopOpacity={0.2} />
-                        <stop offset="95%" stopColor="hsl(243,75%,59%)" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                    <XAxis dataKey="step" tick={{ fill: "hsl(220,9%,46%)", fontSize: 11 }} />
-                    <YAxis tick={{ fill: "hsl(220,9%,46%)", fontSize: 11 }} />
-                    <Tooltip contentStyle={{ backgroundColor: "hsl(0,0%,100%)", border: "1px solid hsl(220,13%,91%)", borderRadius: "8px", fontSize: 12 }} />
-                    <Area type="monotone" dataKey="loss" stroke="hsl(243,75%,59%)" fill="url(#lossGrad)" strokeWidth={2} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
+            <CardContent className="py-8 text-center">
+              <p className="text-sm text-muted-foreground mb-3">Loss metrics are loaded from the Engine on the training monitor.</p>
+              <Button variant="outline" asChild><Link to={`/projects/${project.id}/training`}>{t("training.title")}</Link></Button>
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="evaluation" className="space-y-4 mt-4">
-          {metrics ? (
-            <Card>
-              <CardHeader className="pb-2"><CardTitle className="text-sm">{t("projectDetail.evalMetrics")}</CardTitle></CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  {[
-                    ["Accuracy", `${metrics.accuracy}%`],
-                    ["F1 Score", `${metrics.f1Score}%`],
-                    ["Precision", `${metrics.precision}%`],
-                    ["Recall", `${metrics.recall}%`],
-                    ...(metrics.rouge1 > 0 ? [["ROUGE-1", `${metrics.rouge1}%`]] : []),
-                    ["Latency", `${metrics.latencyMs}ms`],
-                  ].map(([label, value]) => (
-                    <div key={String(label)} className="text-center p-3 rounded-lg bg-accent">
-                      <p className="text-xl font-bold text-foreground">{value}</p>
-                      <p className="text-xs text-muted-foreground">{label}</p>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="text-center py-12 text-muted-foreground text-sm">
-              {t("projectDetail.evalPending")}
-            </div>
-          )}
+          <div className="text-center py-12 text-muted-foreground text-sm">
+            Evaluation is not connected in this workflow. No simulated metrics are shown.
+          </div>
         </TabsContent>
 
         <TabsContent value="versions" className="space-y-4 mt-4">

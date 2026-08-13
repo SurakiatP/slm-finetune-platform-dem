@@ -5,10 +5,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { Zap, Loader2 } from "lucide-react";
+import { Zap, Loader2, MailCheck } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { describeAuthError } from "@/lib/authError";
 
 const Signup = () => {
   const { t } = useLanguage();
@@ -19,11 +20,12 @@ const Signup = () => {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [confirmationEmail, setConfirmationEmail] = useState<string | null>(null);
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
@@ -33,7 +35,11 @@ const Signup = () => {
     });
     setLoading(false);
     if (error) {
-      toast({ title: t("auth.signUpFailed"), description: error.message, variant: "destructive" });
+      toast({ title: t("auth.signUpFailed"), description: describeAuthError(error), variant: "destructive" });
+      return;
+    }
+    if (!data.session) {
+      setConfirmationEmail(email);
       return;
     }
     toast({ title: t("auth.welcome"), description: t("auth.accountReady") });
@@ -48,9 +54,33 @@ const Signup = () => {
     });
     if (error) {
       setGoogleLoading(false);
-      toast({ title: t("auth.signUpFailed"), description: error.message, variant: "destructive" });
+      toast({ title: t("auth.signUpFailed"), description: describeAuthError(error), variant: "destructive" });
     }
   };
+
+  if (confirmationEmail) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-secondary/20 p-4">
+        <Card className="w-full max-w-md text-center">
+          <CardHeader>
+            <MailCheck className="mx-auto mb-3 h-12 w-12 text-primary" aria-hidden="true" />
+            <CardTitle>{t("signup.checkEmailTitle")}</CardTitle>
+            <CardDescription>
+              {t("signup.checkEmailDescription")} <strong>{confirmationEmail}</strong>
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">{t("signup.checkEmailHint")}</p>
+          </CardContent>
+          <CardFooter className="justify-center">
+            <Link to="/login" className="text-sm font-medium text-primary hover:underline">
+              {t("signup.backToLogin")}
+            </Link>
+          </CardFooter>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-secondary/20 p-4">

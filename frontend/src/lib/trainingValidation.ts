@@ -1,3 +1,4 @@
+import { isEngineModelSupported, isEngineTaskSupported } from "@/lib/engineMappings";
 import type { TaskType, BaseModel } from "@/types";
 
 export interface ValidationIssue {
@@ -21,14 +22,13 @@ export interface PreflightInput {
 
 // Production-grade limits
 export const TRAINING_LIMITS = {
-  MAX_FILES: 10,
-  MAX_FILE_SIZE_BYTES: 50 * 1024 * 1024, // 50MB per file
-  MAX_TOTAL_SIZE_BYTES: 200 * 1024 * 1024, // 200MB combined
+  MAX_FILES: 1,
+  MAX_JSON_FILE_SIZE_BYTES: 10 * 1024 * 1024,
+  MAX_PDF_FILE_SIZE_BYTES: 25 * 1024 * 1024,
   MIN_PROMPT_LEN: 10,
   MAX_PROMPT_LEN: 2000,
   MAX_NAME_LEN: 100,
-  ALLOWED_EXTENSIONS: ["csv", "json", "jsonl"] as const,
-  RECOMMENDED_MIN_FILES: 1,
+  ALLOWED_EXTENSIONS: ["json", "jsonl", "pdf"] as const,
 } as const;
 
 function fileExt(name: string): string {
@@ -59,9 +59,13 @@ export function validatePreflight(
   // Required selections
   if (!input.taskType) {
     errors.push({ code: "task_type_missing", message: tr("preflight.taskTypeMissing", "Please select a task type.") });
+  } else if (!isEngineTaskSupported(input.taskType)) {
+    errors.push({ code: "task_type_unsupported", message: tr("preflight.taskTypeUnsupported", "This task type is not supported by the Engine yet.") });
   }
   if (!input.baseModel) {
     errors.push({ code: "base_model_missing", message: tr("preflight.baseModelMissing", "Please select a base model.") });
+  } else if (!isEngineModelSupported(input.baseModel)) {
+    errors.push({ code: "base_model_unsupported", message: tr("preflight.baseModelUnsupported", "This base model is not supported by the Engine.") });
   }
 
   // Prompt
@@ -86,8 +90,10 @@ export function validatePreflight(
     });
   }
 
-  // File count
-  if (input.files.length > TRAINING_LIMITS.MAX_FILES) {
+  // The Engine upload endpoint accepts one seed dataset per workflow.
+  if (input.files.length === 0) {
+    errors.push({ code: "file_required", message: tr("preflight.fileRequired", "Upload one seed file to start training.") });
+  } else if (input.files.length > TRAINING_LIMITS.MAX_FILES) {
     errors.push({
       code: "too_many_files",
       message: tr("preflight.tooManyFiles", `Too many files (${input.files.length}). Maximum is ${TRAINING_LIMITS.MAX_FILES}.`),
@@ -95,51 +101,35 @@ export function validatePreflight(
   }
 
   // Per-file checks
-  let totalSize = 0;
   for (const f of input.files) {
-    totalSize += f.size;
     const ext = fileExt(f.name);
     if (!TRAINING_LIMITS.ALLOWED_EXTENSIONS.includes(ext as typeof TRAINING_LIMITS.ALLOWED_EXTENSIONS[number])) {
       errors.push({
         code: "bad_format",
-        message: tr("preflight.badFormat", `Unsupported file type: ${f.name}. Use CSV, JSON, or JSONL.`),
+        message: tr("preflight.badFormat", `Unsupported file type: ${f.name}. Use JSON, JSONL, or PDF for QA.`),
       });
+    }
+    if (ext === "pdf" && input.taskType !== "qa") {
+      errors.push({ code: "pdf_qa_only", message: tr("preflight.pdfQaOnly", "PDF seed files are supported for QA projects only.") });
     }
     if (f.size === 0) {
       errors.push({
         code: "empty_file",
         message: tr("preflight.emptyFile", `File is empty: ${f.name}`),
       });
-    } else if (f.size > TRAINING_LIMITS.MAX_FILE_SIZE_BYTES) {
+    } else {
+      const maxBytes = ext === "pdf"
+        ? TRAINING_LIMITS.MAX_PDF_FILE_SIZE_BYTES
+        : TRAINING_LIMITS.MAX_JSON_FILE_SIZE_BYTES;
+      if (f.size <= maxBytes) continue;
       errors.push({
         code: "file_too_large",
         message: tr(
           "preflight.fileTooLarge",
-          `File too large: ${f.name} (${formatBytes(f.size)}). Maximum is ${formatBytes(TRAINING_LIMITS.MAX_FILE_SIZE_BYTES)} per file.`,
+          `File too large: ${f.name} (${formatBytes(f.size)}). Maximum is ${formatBytes(maxBytes)} for this format.`,
         ),
       });
     }
-  }
-
-  if (totalSize > TRAINING_LIMITS.MAX_TOTAL_SIZE_BYTES) {
-    errors.push({
-      code: "total_size_exceeded",
-      message: tr(
-        "preflight.totalSizeExceeded",
-        `Total upload size (${formatBytes(totalSize)}) exceeds limit of ${formatBytes(TRAINING_LIMITS.MAX_TOTAL_SIZE_BYTES)}.`,
-      ),
-    });
-  }
-
-  // Warnings (do not block)
-  if (input.files.length === 0) {
-    warnings.push({
-      code: "no_files",
-      message: tr(
-        "preflight.noFilesWarning",
-        "No training files uploaded — the system will generate synthetic data automatically.",
-      ),
-    });
   }
 
   return { ok: errors.length === 0, errors, warnings };

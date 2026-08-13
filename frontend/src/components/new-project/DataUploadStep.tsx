@@ -1,10 +1,9 @@
 import { useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { Upload, FileText, X, FileSpreadsheet, FileCode } from "lucide-react";
+import { Upload, FileText, X, FileCode } from "lucide-react";
 import type { ProjectFormData } from "@/pages/NewProject";
 
 const fileIcons: Record<string, React.ElementType> = {
-  csv: FileSpreadsheet,
   json: FileCode,
   jsonl: FileCode,
 };
@@ -20,8 +19,8 @@ export function DataUploadStep({
 
   const handleFiles = (fileList: FileList | null) => {
     if (!fileList) return;
-    const newFiles = Array.from(fileList);
-    updateForm({ files: [...formData.files, ...newFiles] });
+    const file = fileList.item(0);
+    if (file) updateForm({ files: [file] });
   };
 
   const removeFile = (index: number) => {
@@ -39,7 +38,7 @@ export function DataUploadStep({
       <div>
         <p className="text-sm font-semibold text-foreground">Upload Training Data</p>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Upload few-shot examples or domain knowledge. Supported: CSV, JSON, JSONL (optional)
+          Upload one seed file. Supported: JSON, JSONL, or PDF for QA.
         </p>
       </div>
 
@@ -52,12 +51,11 @@ export function DataUploadStep({
       >
         <Upload className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
         <p className="text-sm font-medium text-foreground">Click to upload or drag & drop</p>
-        <p className="text-xs text-muted-foreground mt-1">CSV, JSON, JSONL — up to 50MB</p>
+        <p className="text-xs text-muted-foreground mt-1">JSON/JSONL up to 10MB · QA PDF up to 25MB</p>
         <input
           ref={inputRef}
           type="file"
-          multiple
-          accept=".csv,.json,.jsonl"
+          accept={formData.taskType === "qa" ? ".json,.jsonl,.pdf" : ".json,.jsonl"}
           className="hidden"
           onChange={(e) => handleFiles(e.target.files)}
         />
@@ -90,10 +88,7 @@ export function DataUploadStep({
 {"input": "My bill is wrong", "output": "billing"}
 {"input": "App keeps crashing", "output": "technical"}
 
-// CSV format
-input,output
-"My bill is wrong","billing"
-"App keeps crashing","technical"`}</pre>
+`}</pre>
         </div>
       </div>
     </div>

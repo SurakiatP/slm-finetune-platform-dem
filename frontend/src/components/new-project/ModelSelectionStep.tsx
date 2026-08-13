@@ -39,15 +39,6 @@ const models: {
     size: "~1.8 GB",
   },
   {
-    id: "phi-3-mini",
-    name: "Phi-3 Mini",
-    params: "3.8B",
-    speed: "Moderate",
-    quality: "Excellent",
-    bestFor: ["QA", "Reasoning", "Code"],
-    size: "~3.2 GB",
-  },
-  {
     id: "llama-3.2-1b",
     name: "Llama 3.2",
     params: "1B",
