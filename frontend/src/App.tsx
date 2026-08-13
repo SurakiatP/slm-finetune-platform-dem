@@ -27,6 +27,7 @@ import Deployment from "./pages/Deployment";
 import Leaderboard from "./pages/Leaderboard";
 import Templates from "./pages/Templates";
 import DatasetInsights from "./pages/DatasetInsights";
+import MfaChallenge from "./pages/MfaChallenge";
 
 const queryClient = new QueryClient();
 
@@ -43,6 +44,7 @@ const App = () => (
                 <Route path="/" element={<Index />} />
                 <Route path="/login" element={<Login />} />
                 <Route path="/signup" element={<Signup />} />
+                <Route path="/mfa" element={<MfaChallenge />} />
                 <Route element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
                   <Route path="/dashboard" element={<Dashboard />} />
                   <Route path="/projects" element={<Projects />} />

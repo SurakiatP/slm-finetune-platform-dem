@@ -17,6 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 import { PageTransition, FadeIn } from "@/components/motion";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { restartOnboarding } from "@/components/OnboardingTour";
+import { AccountSecurity } from "@/components/settings/AccountSecurity";
 
 // --- API Keys Tab ---
 import { useApiKeys } from "@/hooks/useUserData";
@@ -315,37 +316,10 @@ function AccountTab() {
         </CardContent>
       </Card>
 
+      <AccountSecurity />
+
       <Card>
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Shield className="h-5 w-5 text-primary" /> Security
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium">Password</p>
-              <p className="text-xs text-muted-foreground">Last changed 30 days ago</p>
-            </div>
-            <Button variant="outline" size="sm">Change Password</Button>
-          </div>
-          <Separator />
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium">Two-Factor Authentication</p>
-              <p className="text-xs text-muted-foreground">Add an extra layer of security</p>
-            </div>
-            <Button variant="outline" size="sm">Enable 2FA</Button>
-          </div>
-          <Separator />
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-destructive">Delete Account</p>
-              <p className="text-xs text-muted-foreground">Permanently delete your account and all data</p>
-            </div>
-            <Button variant="destructive" size="sm">Delete</Button>
-          </div>
-          <Separator />
+        <CardContent className="pt-6">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium">Onboarding Tour</p>
