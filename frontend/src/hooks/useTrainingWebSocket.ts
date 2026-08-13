@@ -1,53 +1,35 @@
 import { useEffect, useRef, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import type {
+  EngineJobCompletedEvent as TrainingCompletedEvent,
+  EngineJobFailedEvent as TrainingFailedEvent,
+  EngineJobProgress,
+  EngineTrainingProgressEvent as TrainingProgressEvent,
+} from "@/lib/engineApi";
 
-export interface TrainingProgressEvent {
-  type: "training_progress";
-  epoch: number;
-  epochs_total: number;
-  step: number;
-  steps_total: number;
-  train_loss: number;
-  eval_loss: number;
-  learning_rate: number;
-  samples_per_second: number;
-  gpu_memory_mb: number;
-}
-
-export interface TrainingCompletedEvent {
-  type: "completed";
-  result: {
-    training_id: string;
-    model_artifact_id: string;
-    lora_adapter_uri: string;
-    final_train_loss: number;
-    final_eval_loss: number;
-    steps_completed: number;
-    train_runtime_seconds: number;
-  };
-  mlflow_run_id: string;
-  model_artifact_id: string;
-}
-
-export interface TrainingFailedEvent {
-  type: "failed";
-  error: string;
-}
-
-export type TrainingWsEvent = TrainingProgressEvent | TrainingCompletedEvent | TrainingFailedEvent;
+export type { TrainingCompletedEvent, TrainingFailedEvent, TrainingProgressEvent };
 
 export interface UseTrainingWebSocketResult {
   latestProgress: TrainingProgressEvent | null;
   completed: TrainingCompletedEvent | null;
   failed: TrainingFailedEvent | null;
   connected: boolean;
+  connectionFailed: boolean;
+  connectionError: string | null;
 }
 
 // Builds the WS URL from VITE_ENGINE_HOST (works in prod without a WS proxy)
-function buildWsUrl(jobId: string): string {
-  const engineHost = (import.meta.env.VITE_ENGINE_HOST as string | undefined) ?? window.location.origin;
-  const wsProtocol = engineHost.startsWith("https") ? "wss:" : "ws:";
-  const hostPart = engineHost.replace(/^https?:\/\//, "").replace(/\/$/, "");
-  return `${wsProtocol}//${hostPart}/ws/jobs/${jobId}`;
+export function buildWsUrl(
+  jobId: string,
+  configuredHost = ((import.meta.env.VITE_ENGINE_HOST as string | undefined) ?? "").trim(),
+  browserOrigin = window.location.origin,
+): string {
+  const url = new URL(configuredHost || browserOrigin, browserOrigin);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = `/ws/jobs/${encodeURIComponent(jobId)}`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 export function useTrainingWebSocket(jobId: string | null | undefined): UseTrainingWebSocketResult {
@@ -55,38 +37,64 @@ export function useTrainingWebSocket(jobId: string | null | undefined): UseTrain
   const [completed, setCompleted] = useState<TrainingCompletedEvent | null>(null);
   const [failed, setFailed] = useState<TrainingFailedEvent | null>(null);
   const [connected, setConnected] = useState(false);
+  const [connectionFailed, setConnectionFailed] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (!jobId) return;
+    if (!jobId) {
+      setConnected(false);
+      setConnectionFailed(false);
+      setConnectionError(null);
+      return;
+    }
 
     let destroyed = false;
-    let attempts = 0;
-    const MAX_ATTEMPTS = 8;
+    let terminal = false;
+    let reconnectFailures = 0;
+    let totalAttempts = 0;
+    const MAX_RECONNECT_FAILURES = 3;
+    const MAX_TOTAL_ATTEMPTS = 8;
 
-    function connect() {
-      if (destroyed || attempts >= MAX_ATTEMPTS) return;
-      attempts++;
+    async function connect() {
+      if (destroyed || reconnectFailures >= MAX_RECONNECT_FAILURES || totalAttempts >= MAX_TOTAL_ATTEMPTS) return;
+      totalAttempts++;
 
-      const ws = new WebSocket(buildWsUrl(jobId));
+      const { data: { session } } = await supabase.auth.getSession();
+      if (destroyed) return;
+
+      const token = session?.access_token;
+      if (!token) {
+        setConnectionError("Please sign in before connecting to training progress.");
+        setConnectionFailed(true);
+        return;
+      }
+
+      const ws = new WebSocket(buildWsUrl(jobId), ["bearer", token]);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (!destroyed) setConnected(true);
+        if (destroyed) return;
+        setConnectionError(null);
+        setConnectionFailed(false);
+        setConnected(true);
       };
 
       ws.onmessage = (e) => {
         if (destroyed) return;
         try {
-          const event = JSON.parse(e.data as string) as TrainingWsEvent;
+          const event = JSON.parse(e.data as string) as EngineJobProgress;
+          reconnectFailures = 0;
           if (event.type === "training_progress") {
-            setLatestProgress(event);
+            setLatestProgress(event as TrainingProgressEvent);
           } else if (event.type === "completed") {
+            terminal = true;
             setCompleted(event as TrainingCompletedEvent);
             setConnected(false);
             ws.close();
           } else if (event.type === "failed") {
+            terminal = true;
             setFailed(event as TrainingFailedEvent);
             setConnected(false);
             ws.close();
@@ -103,15 +111,26 @@ export function useTrainingWebSocket(jobId: string | null | undefined): UseTrain
       ws.onclose = () => {
         if (destroyed) return;
         setConnected(false);
-        // Retry with exponential back-off if not yet finished
-        if (attempts < MAX_ATTEMPTS) {
-          const delay = Math.min(1000 * 2 ** attempts, 30000);
-          reconnectTimer.current = setTimeout(connect, delay);
+        if (terminal) return;
+
+        reconnectFailures++;
+        if (reconnectFailures >= MAX_RECONNECT_FAILURES || totalAttempts >= MAX_TOTAL_ATTEMPTS) {
+          setConnectionError("WebSocket reconnect attempts were exhausted.");
+          setConnectionFailed(true);
+          return;
         }
+
+        const delay = Math.min(1000 * 2 ** reconnectFailures, 30000);
+        reconnectTimer.current = setTimeout(() => void connect(), delay);
       };
     }
 
-    connect();
+    setLatestProgress(null);
+    setCompleted(null);
+    setFailed(null);
+    setConnectionFailed(false);
+    setConnectionError(null);
+    void connect();
 
     return () => {
       destroyed = true;
@@ -120,5 +139,5 @@ export function useTrainingWebSocket(jobId: string | null | undefined): UseTrain
     };
   }, [jobId]);
 
-  return { latestProgress, completed, failed, connected };
+  return { latestProgress, completed, failed, connected, connectionFailed, connectionError };
 }

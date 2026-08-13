@@ -162,6 +162,10 @@ export const translations: Record<Language, Record<string, string>> = {
     "signup.terms": "By signing up, you agree to our Terms of Service and Privacy Policy.",
     "signup.hasAccount": "Already have an account?",
     "signup.login": "Log in",
+    "signup.checkEmailTitle": "Check your email",
+    "signup.checkEmailDescription": "We sent a confirmation link to",
+    "signup.checkEmailHint": "Confirm your email before signing in. You can close this page after checking your inbox.",
+    "signup.backToLogin": "Back to login",
 
     // Project Detail
     "projectDetail.notFound": "Project not found.",
@@ -183,8 +187,6 @@ export const translations: Record<Language, Record<string, string>> = {
     "projectDetail.progress": "Progress",
     "projectDetail.trainingProgress": "Training Progress",
     "projectDetail.lossCurve": "Loss Curve",
-    "projectDetail.evalMetrics": "Evaluation Metrics",
-    "projectDetail.evalPending": "Evaluation metrics will be available once training is complete.",
 
     // Training Monitor
     "training.title": "Training Monitor & Evaluation",
@@ -235,16 +237,18 @@ export const translations: Record<Language, Record<string, string>> = {
     "preflight.failedTitle": "Cannot start training",
     "preflight.heads_up": "Heads up",
     "preflight.taskTypeMissing": "Please select a task type.",
+    "preflight.taskTypeUnsupported": "This task type is not supported by the Engine yet.",
     "preflight.baseModelMissing": "Please select a base model.",
+    "preflight.baseModelUnsupported": "This base model is not supported by the Engine.",
     "preflight.promptTooShort": "Task description is too short. Please add more detail.",
     "preflight.promptTooLong": "Task description is too long. Please shorten it.",
     "preflight.nameTooLong": "Project name is too long.",
-    "preflight.tooManyFiles": "Too many files. Please remove some and try again.",
-    "preflight.badFormat": "Unsupported file type. Use CSV, JSON, or JSONL only.",
+    "preflight.fileRequired": "Upload one seed file to start training.",
+    "preflight.tooManyFiles": "Upload one seed file only.",
+    "preflight.badFormat": "Unsupported file type. Use JSON, JSONL, or PDF for QA.",
+    "preflight.pdfQaOnly": "PDF seed files are supported for QA projects only.",
     "preflight.emptyFile": "One of the files is empty. Please remove or replace it.",
-    "preflight.fileTooLarge": "A file exceeds the 50MB per-file limit.",
-    "preflight.totalSizeExceeded": "Total upload size exceeds the 200MB limit.",
-    "preflight.noFilesWarning": "No training files uploaded — synthetic data will be generated automatically.",
+    "preflight.fileTooLarge": "The seed file exceeds the Engine size limit (10MB JSON/JSONL or 25MB PDF).",
 
     // Live training status
     "training.queuedTitle": "Queued for training",
@@ -646,6 +650,10 @@ export const translations: Record<Language, Record<string, string>> = {
     "signup.terms": "การสมัครสมาชิกถือว่าคุณยอมรับข้อกำหนดการใช้งานและนโยบายความเป็นส่วนตัว",
     "signup.hasAccount": "มีบัญชีอยู่แล้ว?",
     "signup.login": "เข้าสู่ระบบ",
+    "signup.checkEmailTitle": "ตรวจสอบอีเมลของคุณ",
+    "signup.checkEmailDescription": "เราส่งลิงก์ยืนยันไปที่",
+    "signup.checkEmailHint": "กรุณายืนยันอีเมลก่อนเข้าสู่ระบบ จากนั้นสามารถปิดหน้านี้ได้",
+    "signup.backToLogin": "กลับไปหน้าเข้าสู่ระบบ",
 
     // Project Detail
     "projectDetail.notFound": "ไม่พบโปรเจกต์",
@@ -667,8 +675,6 @@ export const translations: Record<Language, Record<string, string>> = {
     "projectDetail.progress": "ความคืบหน้า",
     "projectDetail.trainingProgress": "ความคืบหน้าการฝึก",
     "projectDetail.lossCurve": "กราฟ Loss",
-    "projectDetail.evalMetrics": "เมตริกการประเมินผล",
-    "projectDetail.evalPending": "เมตริกจะพร้อมใช้งานเมื่อการฝึกเสร็จสิ้น",
 
     // Training Monitor
     "training.title": "ติดตามการฝึก & ประเมินผล",
@@ -719,16 +725,18 @@ export const translations: Record<Language, Record<string, string>> = {
     "preflight.failedTitle": "ไม่สามารถเริ่มการฝึกได้",
     "preflight.heads_up": "โปรดทราบ",
     "preflight.taskTypeMissing": "กรุณาเลือกประเภทงาน",
+    "preflight.taskTypeUnsupported": "Engine ยังไม่รองรับประเภทงานนี้",
     "preflight.baseModelMissing": "กรุณาเลือกโมเดลพื้นฐาน",
+    "preflight.baseModelUnsupported": "Engine ไม่รองรับโมเดลพื้นฐานนี้",
     "preflight.promptTooShort": "คำอธิบายงานสั้นเกินไป กรุณาเพิ่มรายละเอียด",
     "preflight.promptTooLong": "คำอธิบายงานยาวเกินไป กรุณาย่อให้สั้นลง",
     "preflight.nameTooLong": "ชื่อโปรเจกต์ยาวเกินไป",
-    "preflight.tooManyFiles": "มีไฟล์มากเกินไป กรุณาลบบางไฟล์แล้วลองใหม่",
-    "preflight.badFormat": "ไฟล์รูปแบบไม่รองรับ ใช้ได้เฉพาะ CSV, JSON หรือ JSONL",
+    "preflight.fileRequired": "กรุณาอัปโหลดไฟล์ seed 1 ไฟล์เพื่อเริ่มการฝึก",
+    "preflight.tooManyFiles": "อัปโหลดไฟล์ seed ได้ครั้งละ 1 ไฟล์เท่านั้น",
+    "preflight.badFormat": "ไฟล์รูปแบบไม่รองรับ ใช้ JSON, JSONL หรือ PDF สำหรับงาน QA",
+    "preflight.pdfQaOnly": "รองรับไฟล์ PDF เฉพาะโปรเจกต์ประเภท QA เท่านั้น",
     "preflight.emptyFile": "มีไฟล์ที่ว่างเปล่า กรุณาลบหรือเปลี่ยนไฟล์",
-    "preflight.fileTooLarge": "มีไฟล์เกินขนาดสูงสุด 50MB ต่อไฟล์",
-    "preflight.totalSizeExceeded": "ขนาดรวมของไฟล์เกิน 200MB",
-    "preflight.noFilesWarning": "ไม่มีการอัปโหลดไฟล์ฝึก ระบบจะสร้างข้อมูลสังเคราะห์ให้อัตโนมัติ",
+    "preflight.fileTooLarge": "ไฟล์ seed เกินขนาดที่ Engine รองรับ (JSON/JSONL 10MB หรือ PDF 25MB)",
 
     // Live training status
     "training.queuedTitle": "อยู่ในคิวการฝึก",

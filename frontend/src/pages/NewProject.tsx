@@ -11,17 +11,13 @@ import { TemplateLibrary } from "@/components/new-project/TemplateLibrary";
 import type { TaskType, BaseModel } from "@/types";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useToast } from "@/hooks/use-toast";
-import { createProject, updateProject } from "@/lib/projectsApi";
+import { createProject } from "@/lib/projectsApi";
 import { validatePreflight } from "@/lib/trainingValidation";
+import { runEngineWorkflow } from "@/lib/engineWorkflow";
 import {
-  engineCreateProject,
-  engineUploadSeed,
-  engineGenerateDataset,
-  engineStartTraining,
-  engineGetDataset,
-} from "@/lib/engineApi";
-import { setEngineMeta, patchEngineMeta } from "@/lib/engineStore";
-import { TASK_TYPE_TO_ENGINE, BASE_MODEL_TO_ENGINE, buildManualConfig } from "@/lib/engineMappings";
+  isEngineModelSupported,
+  isEngineTaskSupported,
+} from "@/lib/engineMappings";
 
 export interface ProjectFormData {
   projectName: string;
@@ -44,79 +40,6 @@ function autoTuneParams(datasetRows: number) {
   if (datasetRows < 1000) return { epochs: 10, learningRate: 1e-4, batchSize: 8 };
   if (datasetRows <= 5000) return { epochs: 5, learningRate: 2e-4, batchSize: 16 };
   return { epochs: 3, learningRate: 3e-4, batchSize: 32 };
-}
-
-async function pollDatasetReady(datasetId: string, maxAttempts = 60, intervalMs = 5000): Promise<string> {
-  for (let i = 0; i < maxAttempts; i++) {
-    const ds = await engineGetDataset(datasetId);
-    if (ds.status === "ready" || ds.status === "completed") return datasetId;
-    if (ds.status === "failed") throw new Error("Dataset generation failed");
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  throw new Error("Dataset generation timed out");
-}
-
-// Runs in background after navigation — calls Engine API chain independently of UI
-async function runEngineFlow(
-  supabaseProjectId: string,
-  engineProjectId: string,
-  taskType: TaskType,
-  taskDescription: string,
-  seedFile: File | null,
-  epochs: number,
-  learningRate: number,
-  baseModel: BaseModel,
-  projectName: string,
-) {
-  const engineTaskType = TASK_TYPE_TO_ENGINE[taskType];
-  const engineBaseModel = BASE_MODEL_TO_ENGINE[baseModel];
-  if (!engineTaskType) return; // task type not supported by engine
-
-  try {
-    let trainDatasetId: string | null = null;
-
-    if (seedFile) {
-      // Node 3a — upload seed
-      const seedResult = await engineUploadSeed(seedFile, engineProjectId, engineTaskType, "seed");
-      patchEngineMeta(supabaseProjectId, { seedDatasetId: seedResult.dataset_id });
-
-      // Node 4 — generate synthetic dataset
-      const sdgResult = await engineGenerateDataset(
-        engineProjectId,
-        engineTaskType,
-        taskDescription,
-        seedResult.dataset_id,
-        200,
-        50,
-      );
-      patchEngineMeta(supabaseProjectId, { sdgJobId: sdgResult.job_id });
-
-      // Poll until SDG dataset is ready
-      trainDatasetId = await pollDatasetReady(sdgResult.dataset_id);
-      patchEngineMeta(supabaseProjectId, { trainDatasetId });
-    }
-
-    if (!trainDatasetId) return; // no dataset → cannot train
-
-    // Node 6 — start training
-    const config = buildManualConfig(epochs, learningRate);
-    const trainingResult = await engineStartTraining(
-      engineProjectId,
-      trainDatasetId,
-      engineBaseModel,
-      projectName,
-      config,
-    );
-    patchEngineMeta(supabaseProjectId, {
-      trainingId: trainingResult.training_id,
-      jobId: trainingResult.job_id,
-    });
-
-    // Sync Supabase project status to training
-    await updateProject(supabaseProjectId, { status: "training", progress: 0 });
-  } catch {
-    // Background failures are silent — the simulator fallback continues
-  }
 }
 
 export default function NewProject() {
@@ -165,34 +88,21 @@ export default function NewProject() {
         datasetSize: datasetRows,
       });
 
-      // 2. Create Engine project and store its ID
-      const engineTaskType = TASK_TYPE_TO_ENGINE[formData.taskType!];
-      if (engineTaskType) {
-        try {
-          const engineProject = await engineCreateProject(
-            projectName,
-            formData.taskPrompt,
-            engineTaskType,
-          );
-          setEngineMeta(created.id, { engineProjectId: engineProject.id });
-
-          // 3. Fire background chain: upload seed → SDG → training
-          const seedFile = formData.files[0] ?? null;
-          void runEngineFlow(
-            created.id,
-            engineProject.id,
-            formData.taskType!,
-            formData.taskPrompt,
-            seedFile,
-            tuned.epochs,
-            tuned.learningRate,
-            formData.baseModel!,
-            projectName,
-          );
-        } catch {
-          // Engine unavailable — UI continues with simulator fallback
-        }
+      // 2. Start the recoverable Engine workflow in the background.
+      const seedFile = formData.files[0];
+      if (!seedFile) {
+        throw new Error("Engine task or seed file is missing");
       }
+      void runEngineWorkflow({
+        supabaseProjectId: created.id,
+        taskType: formData.taskType!,
+        taskDescription: formData.taskPrompt,
+        seedFile,
+        epochs: tuned.epochs,
+        learningRate: tuned.learningRate,
+        baseModel: formData.baseModel!,
+        projectName,
+      });
 
       toast({ title: t("newProject.launched"), description: created.name });
       navigate(`/projects/${created.id}`);
@@ -239,9 +149,9 @@ export default function NewProject() {
   const canProceed = () => {
     switch (currentStep) {
       case 0: return formData.taskPrompt.trim().length > 10;
-      case 1: return formData.taskType !== null;
-      case 2: return true;
-      case 3: return formData.baseModel !== null;
+      case 1: return isEngineTaskSupported(formData.taskType);
+      case 2: return formData.files.length === 1;
+      case 3: return isEngineModelSupported(formData.baseModel);
       default: return false;
     }
   };

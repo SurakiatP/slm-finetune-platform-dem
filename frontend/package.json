@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "check:i18n": "node scripts/check-i18n.mjs",
     "check:i18n:strict": "node scripts/check-i18n.mjs --strict",
-    "prebuild": "node scripts/check-i18n.mjs --strict"
+    "check:supabase": "node scripts/validate-build-env.mjs && node scripts/check-supabase-health.mjs",
+    "prebuild": "node scripts/validate-build-env.mjs && node scripts/check-i18n.mjs --strict"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

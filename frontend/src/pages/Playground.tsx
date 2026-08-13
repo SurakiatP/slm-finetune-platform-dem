@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PageTransition } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
 
@@ -8,20 +8,38 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Columns2, MessageSquare } from "lucide-react";
 import { ChatPanel } from "@/components/playground/ChatPanel";
-import { useModels } from "@/hooks/useUserData";
 import { useLanguage } from "@/i18n/LanguageContext";
+import { engineListInferenceModels, type EngineInferenceModel } from "@/lib/engineApi";
 
 export default function Playground() {
-  const { models } = useModels();
+  const [models, setModels] = useState<EngineInferenceModel[]>([]);
+  const [loadingModels, setLoadingModels] = useState(true);
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const [modelA, setModelA] = useState<string>("");
   const [modelB, setModelB] = useState<string>("");
   const [abMode, setAbMode] = useState(false);
   const { t } = useLanguage();
 
-  if (models.length > 0 && !modelA) setModelA(models[0].id);
-  if (models.length > 1 && !modelB) setModelB(models[1].id);
+  useEffect(() => {
+    let active = true;
+    void engineListInferenceModels()
+      .then(({ data }) => {
+        if (!active) return;
+        setModels(data);
+        setModelA((current) => current || data[0]?.id || "");
+        setModelB((current) => current || data[1]?.id || "");
+        setModelsError(null);
+      })
+      .catch((error) => {
+        if (active) setModelsError(error instanceof Error ? error.message : "Unable to load inference models");
+      })
+      .finally(() => {
+        if (active) setLoadingModels(false);
+      });
+    return () => { active = false; };
+  }, []);
 
-  const getModelName = (id: string) => models.find((m) => m.id === id)?.name || id;
+  const getModelName = (id: string) => models.find((model) => model.id === id)?.id || id;
 
   return (
     <PageTransition>
@@ -45,6 +63,10 @@ export default function Playground() {
 
       <Card>
         <CardContent className="p-4">
+          {modelsError && <p role="alert" className="mb-4 text-sm text-destructive">{modelsError}</p>}
+          {!loadingModels && models.length === 0 && !modelsError && (
+            <p className="mb-4 text-sm text-muted-foreground">No inference models are registered in the Engine.</p>
+          )}
           <div className={`grid gap-4 ${abMode ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
             <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">{abMode ? "Model A" : t("playground.model")}</Label>
@@ -54,8 +76,8 @@ export default function Playground() {
                   {models.map((m) => (
                     <SelectItem key={m.id} value={m.id}>
                       <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm">{m.name}</span>
-                        <Badge variant="outline" className="text-[9px]">{m.taskType}</Badge>
+                        <span className="font-mono text-sm">{m.id}</span>
+                        <Badge variant="outline" className="text-[9px]">{m.owned_by}</Badge>
                       </div>
                     </SelectItem>
                   ))}
@@ -71,8 +93,8 @@ export default function Playground() {
                     {models.map((m) => (
                       <SelectItem key={m.id} value={m.id}>
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-sm">{m.name}</span>
-                          <Badge variant="outline" className="text-[9px]">{m.taskType}</Badge>
+                        <span className="font-mono text-sm">{m.id}</span>
+                        <Badge variant="outline" className="text-[9px]">{m.owned_by}</Badge>
                         </div>
                       </SelectItem>
                     ))}
@@ -85,8 +107,8 @@ export default function Playground() {
       </Card>
 
       <div className={`grid gap-4 ${abMode ? "grid-cols-1 lg:grid-cols-2" : "grid-cols-1"}`}>
-        <ChatPanel key={`a-${modelA}`} modelName={getModelName(modelA)} className="h-full" />
-        {abMode && <ChatPanel key={`b-${modelB}`} modelName={getModelName(modelB)} className="h-full" />}
+        {modelA && <ChatPanel key={`a-${modelA}`} modelId={modelA} displayName={getModelName(modelA)} className="h-full" />}
+        {abMode && modelB && <ChatPanel key={`b-${modelB}`} modelId={modelB} displayName={getModelName(modelB)} className="h-full" />}
       </div>
 
       {abMode && (

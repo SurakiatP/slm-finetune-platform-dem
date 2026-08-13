@@ -8,32 +8,28 @@ import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, Clock, Cpu, Database, Gauge } from "lucide-react";
 import { PipelineSteps } from "@/components/training/PipelineSteps";
-import { TrainingLog } from "@/components/training/TrainingLog";
 import { LossCurveChart } from "@/components/training/LossCurveChart";
-import { EvaluationViewer } from "@/components/training/EvaluationViewer";
-import { mockPipelineSteps, mockTrainingLog, mockLossCurve, mockComparisonResults } from "@/data/trainingMockData";
+import type { LossCurvePoint, PipelineStep } from "@/data/trainingMockData";
 import { baseModelLabels, taskTypeLabels } from "@/data/mockData";
 import { TrainingMonitorSkeleton } from "@/components/skeletons/TrainingMonitorSkeleton";
 import { DiagnosticPanel } from "@/components/training/DiagnosticPanel";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useProject } from "@/hooks/useProjects";
-import { useTrainingWebSocket } from "@/hooks/useTrainingWebSocket";
+import { useEngineWorkflowSync } from "@/hooks/useEngineWorkflowSync";
 import { engineGetLossHistory } from "@/lib/engineApi";
 import { getEngineMeta } from "@/lib/engineStore";
 
 export default function TrainingMonitor() {
   const { id } = useParams<{ id: string }>();
-  const { project } = useProject(id);
-  const [loading, setLoading] = useState(true);
+  const { project, loading, setProject } = useProject(id);
   const { t } = useLanguage();
+  const { latestProgress } = useEngineWorkflowSync(project, setProject);
 
   const engineMeta = id ? getEngineMeta(id) : null;
-  const { latestProgress } = useTrainingWebSocket(
-    project?.status === "training" ? (engineMeta?.jobId ?? null) : null,
-  );
 
   // Real loss curve from engine — refreshed every 10 s while training
-  const [realLossCurve, setRealLossCurve] = useState<typeof mockLossCurve | null>(null);
+  const [realLossCurve, setRealLossCurve] = useState<LossCurvePoint[]>([]);
+  const [lossError, setLossError] = useState<string | null>(null);
   useEffect(() => {
     if (!engineMeta?.trainingId) return;
     let active = true;
@@ -47,10 +43,11 @@ export default function TrainingMonitor() {
             trainLoss: p.value,
             valLoss: hist.eval_loss[i]?.value ?? null,
           }));
-          setRealLossCurve(points);
+          setRealLossCurve(points as LossCurvePoint[]);
         }
-      } catch {
-        // Engine unreachable — keep using mock data
+        setLossError(null);
+      } catch (error) {
+        setLossError(error instanceof Error ? error.message : "Unable to load loss history");
       }
     };
     void fetchLoss();
@@ -61,16 +58,12 @@ export default function TrainingMonitor() {
     };
   }, [engineMeta?.trainingId, project?.status]);
 
-  const lossCurveData = realLossCurve ?? mockLossCurve;
   const currentTrainLoss = latestProgress?.train_loss
-    ?? (realLossCurve?.at(-1)?.trainLoss ?? 0.485);
+    ?? realLossCurve.at(-1)?.trainLoss
+    ?? null;
   const currentValLoss = latestProgress?.eval_loss
-    ?? (realLossCurve?.at(-1)?.valLoss ?? 0.471);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setLoading(false), 1500);
-    return () => clearTimeout(timer);
-  }, []);
+    ?? realLossCurve.at(-1)?.valLoss
+    ?? null;
 
   if (!project) {
     return (
@@ -84,6 +77,12 @@ export default function TrainingMonitor() {
   if (loading) return <TrainingMonitorSkeleton />;
 
   const isTraining = project.status === "training";
+  const pipelineSteps: PipelineStep[] = [
+    { id: "project", label: "Project", description: "Engine project is linked to this UI project", status: engineMeta?.engineProjectId ? "completed" : "active" },
+    { id: "dataset", label: "Dataset preparation", description: "Seed upload and synthetic data generation", status: engineMeta?.trainDatasetId ? "completed" : project.status === "failed" ? "failed" : "active" },
+    { id: "training", label: "Fine-tuning", description: "LoRA fine-tuning on the selected base model", status: project.status === "completed" ? "completed" : project.status === "failed" ? "failed" : isTraining ? "active" : "pending" },
+    { id: "export", label: "GGUF export", description: "Export and register the trained model with Ollama", status: engineMeta?.phase === "ready" ? "completed" : engineMeta?.phase === "export_failed" ? "failed" : engineMeta?.phase === "exporting" ? "active" : "pending" },
+  ];
 
   return (
     <PageTransition>
@@ -155,7 +154,7 @@ export default function TrainingMonitor() {
               <CardTitle className="text-sm">{t("training.trainingPipeline")}</CardTitle>
             </CardHeader>
             <CardContent>
-              <PipelineSteps steps={mockPipelineSteps} />
+              <PipelineSteps steps={pipelineSteps} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -166,13 +165,19 @@ export default function TrainingMonitor() {
               <div className="flex items-center justify-between">
                 <CardTitle className="text-sm">{t("training.lossCurve")}</CardTitle>
                 <div className="flex gap-3 text-[10px] text-muted-foreground">
-                  <span>Current train loss: <span className="font-bold text-foreground">{currentTrainLoss.toFixed(3)}</span></span>
-                  <span>Current val loss: <span className="font-bold text-foreground">{currentValLoss.toFixed(3)}</span></span>
+                  <span>Current train loss: <span className="font-bold text-foreground">{currentTrainLoss?.toFixed(3) ?? "—"}</span></span>
+                  <span>Current val loss: <span className="font-bold text-foreground">{currentValLoss?.toFixed(3) ?? "—"}</span></span>
                 </div>
               </div>
             </CardHeader>
             <CardContent>
-              <LossCurveChart data={lossCurveData} />
+              {realLossCurve.length > 0 ? (
+                <LossCurveChart data={realLossCurve} />
+              ) : (
+                <p className="py-16 text-center text-sm text-muted-foreground">
+                  {lossError || "No loss metrics have been recorded by the Engine yet."}
+                </p>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -182,17 +187,23 @@ export default function TrainingMonitor() {
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-sm">{t("training.trainingLog")}</CardTitle>
-                <Badge variant="outline" className="text-[10px]">{mockTrainingLog.length} entries</Badge>
+                <Badge variant="outline" className="text-[10px]">Engine data only</Badge>
               </div>
             </CardHeader>
             <CardContent>
-              <TrainingLog logs={mockTrainingLog} />
+              <p className="py-16 text-center text-sm text-muted-foreground">
+                The backend does not expose a training-log endpoint for this workflow.
+              </p>
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="evaluation" className="mt-4">
-          <EvaluationViewer comparisons={mockComparisonResults} />
+          <Card>
+            <CardContent className="py-16 text-center text-sm text-muted-foreground">
+              Evaluation is not connected in this workflow. No simulated results are shown.
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>

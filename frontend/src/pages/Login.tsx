@@ -9,6 +9,7 @@ import { Zap, Loader2 } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { describeAuthError } from "@/lib/authError";
 
 const Login = () => {
   const { t } = useLanguage();
@@ -30,7 +31,7 @@ const Login = () => {
     if (error) {
       toast({
         title: t("auth.signInFailed"),
-        description: error.message,
+        description: describeAuthError(error),
         variant: "destructive",
       });
       return;
@@ -46,7 +47,7 @@ const Login = () => {
     });
     if (error) {
       setGoogleLoading(false);
-      toast({ title: t("auth.signInFailed"), description: error.message, variant: "destructive" });
+      toast({ title: t("auth.signInFailed"), description: describeAuthError(error), variant: "destructive" });
     }
   };
 

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Send, Bot, User, Loader2 } from "lucide-react";
-import { engineChatCompletion } from "@/lib/engineApi";
+import { EngineApiError, engineChatCompletion } from "@/lib/engineApi";
 
 interface Message {
   role: "user" | "assistant";
@@ -11,28 +11,23 @@ interface Message {
   tokens?: number;
 }
 
-// Fallback responses used when engine is unavailable
-const mockResponses = [
-  "Based on the input, I've classified this as **Technical Support** with 94.2% confidence.\n\nThe key signals are:\n- Mentions of \"not working\" → technical issue\n- Reference to \"internet\" → connectivity category\n\nWould you like me to elaborate on the classification logic?",
-  "I've extracted the following entities:\n\n| Entity | Type | Confidence |\n|--------|------|------------|\n| สมชาย | PERSON | 96.1% |\n| กรุงเทพ | LOCATION | 98.3% |\n| ธนาคารกสิกร | ORGANIZATION | 91.7% |\n\nProcessed in 42ms with 3 entities detected.",
-  "Here's my analysis of the query:\n\n**Answer:** The return policy allows customers to return products within 30 days of purchase for a full refund, provided the item is in its original packaging.\n\n**Source:** FAQ Section 4.2 — Return & Refund Policy\n**Confidence:** 89.5%",
-];
-
 export function ChatPanel({
-  modelName,
+  modelId,
+  displayName,
   className = "",
 }: {
-  modelName: string;
+  modelId: string;
+  displayName: string;
   className?: string;
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const mockIndexRef = useRef(0);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    scrollRef.current?.scrollTo?.({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
   const handleSend = async () => {
@@ -43,12 +38,13 @@ export function ChatPanel({
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setIsLoading(true);
+    setError(null);
 
     const start = Date.now();
     try {
       const history = messages.map((m) => ({ role: m.role, content: m.content }));
       const response = await engineChatCompletion({
-        model: modelName,
+        model: modelId,
         messages: [...history, { role: "user", content: text }],
         temperature: 0.7,
         max_tokens: 512,
@@ -63,21 +59,11 @@ export function ChatPanel({
           tokens: response.usage?.completion_tokens,
         },
       ]);
-    } catch {
-      // Engine unavailable — use mock fallback
-      const delay = 400 + Math.random() * 800;
-      await new Promise((r) => setTimeout(r, delay));
-      const mock = mockResponses[mockIndexRef.current % mockResponses.length];
-      mockIndexRef.current++;
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: mock,
-          latencyMs: Math.round(Date.now() - start),
-          tokens: Math.round(mock.length / 4),
-        },
-      ]);
+    } catch (reason) {
+      const message = reason instanceof EngineApiError && reason.requestId
+        ? `${reason.message} (request ${reason.requestId})`
+        : reason instanceof Error ? reason.message : "Inference request failed";
+      setError(message);
     } finally {
       setIsLoading(false);
     }
@@ -89,13 +75,13 @@ export function ChatPanel({
       <div className="px-4 py-2.5 border-b border-border bg-secondary/30 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Bot className="h-4 w-4 text-primary" />
-          <span className="text-sm font-semibold text-foreground">{modelName}</span>
+          <span className="text-sm font-semibold text-foreground">{displayName}</span>
         </div>
         <Button
           variant="ghost"
           size="sm"
           className="text-xs h-7 text-muted-foreground"
-          onClick={() => { setMessages([]); mockIndexRef.current = 0; }}
+          onClick={() => { setMessages([]); setError(null); }}
         >
           Clear
         </Button>
@@ -154,6 +140,11 @@ export function ChatPanel({
             </div>
           </div>
         )}
+        {error && (
+          <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+            {error}
+          </p>
+        )}
       </div>
 
       {/* Input */}
@@ -166,7 +157,7 @@ export function ChatPanel({
           className="border-0 shadow-none focus-visible:ring-0 bg-transparent"
           disabled={isLoading}
         />
-        <Button size="icon" onClick={() => void handleSend()} disabled={!input.trim() || isLoading} className="shrink-0">
+        <Button aria-label="Send message" size="icon" onClick={() => void handleSend()} disabled={!input.trim() || isLoading} className="shrink-0">
           <Send className="h-4 w-4" />
         </Button>
       </div>
