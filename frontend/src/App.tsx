@@ -19,6 +19,9 @@ const EvaluationListPage = lazy(() => import('@/features/evaluations/EvaluationL
 const ModelListPage = lazy(() => import('@/features/models/ModelListPage'))
 const ModelDetailPage = lazy(() => import('@/features/models/ModelDetailPage'))
 const PlaygroundPage = lazy(() => import('@/features/playground/PlaygroundPage'))
+const UsagePage = lazy(() => import('@/features/usage/UsagePage'))
+const ProjectActivityPage = lazy(() => import('@/features/projects/ProjectActivityPage'))
+const ProjectUsagePage = lazy(() => import('@/features/projects/ProjectUsagePage'))
 
 const router = createBrowserRouter([
   {
@@ -36,11 +39,14 @@ const router = createBrowserRouter([
           { path: 'trainings', element: <TrainingListPage /> },
           { path: 'trainings/:trainingId', element: <TrainingDetailPage /> },
           { path: 'evaluations', element: <EvaluationListPage /> },
+          { path: 'activity', element: <ProjectActivityPage /> },
+          { path: 'usage', element: <ProjectUsagePage /> },
         ],
       },
       { path: '/models', element: <ModelListPage /> },
       { path: '/models/:modelId', element: <ModelDetailPage /> },
       { path: '/playground', element: <PlaygroundPage /> },
+      { path: '/usage', element: <UsagePage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

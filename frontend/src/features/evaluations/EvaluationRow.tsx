@@ -1,59 +1,43 @@
-import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Ban, ChevronDown, ChevronRight } from 'lucide-react'
 import { useState } from 'react'
 
-import { isTerminalStatus } from '@/api/types'
+import { cancelEvaluation } from '@/api/endpoints/evaluations'
+import { isTerminalStatus, type Evaluation } from '@/api/types'
 import { ConfusionMatrix } from '@/components/charts/ConfusionMatrix'
 import { MetricBars } from '@/components/charts/MetricBars'
 import { JsonViewer } from '@/components/data/JsonViewer'
 import { StatusBadge } from '@/components/data/StatusBadge'
+import { Button } from '@/components/ui/Button'
 import { Card, CardBody } from '@/components/ui/Card'
-import { useEvaluation } from '@/hooks/queries'
+import { useToast } from '@/components/ui/toast-context'
 import { formatDuration, formatNumber, formatRelativeTime, shortId } from '@/lib/format'
 import { extractConfusionMatrix, scalarMetrics } from '@/lib/metrics'
 
 interface EvaluationRowProps {
-  evaluationId: string
+  evaluation: Evaluation
   selected: boolean
   onToggleSelect: () => void
-  onForget: () => void
 }
 
-/** One registry entry, hydrated from GET /evaluations/{id}; polls while running. */
-export function EvaluationRow({ evaluationId, selected, onToggleSelect, onForget }: EvaluationRowProps) {
+/** One row from the project's evaluation list — the list is authoritative, no per-row fetch. */
+export function EvaluationRow({ evaluation, selected, onToggleSelect }: EvaluationRowProps) {
   const [expanded, setExpanded] = useState(false)
-  // No WS subscription here — evaluation jobs report no incremental progress,
-  // so a simple poll until terminal is enough.
-  const { data: evaluation, isError } = useEvaluation(evaluationId, {
-    refetchInterval: (query) =>
-      query.state.status === 'error' ||
-      (query.state.data && isTerminalStatus(query.state.data.status))
-        ? false
-        : 5_000,
+  const toast = useToast()
+  const queryClient = useQueryClient()
+  const evaluationId = evaluation.id
+
+  const cancelMutation = useMutation({
+    mutationFn: () => cancelEvaluation(evaluationId),
+    onSuccess: () => {
+      toast.success('Cancellation requested')
+      void queryClient.invalidateQueries({ queryKey: ['evaluations'] })
+    },
+    onError: (err) => toast.error(err.message),
   })
 
-  if (isError) {
-    return (
-      <Card className="flex items-center justify-between p-3 text-xs text-body-muted">
-        <span>
-          Evaluation <span className="font-mono">{shortId(evaluationId)}</span> no longer exists on the server.
-        </span>
-        <button
-          type="button"
-          onClick={onForget}
-          className="cursor-pointer rounded p-1.5 text-body-muted transition-colors hover:bg-danger-muted hover:text-danger"
-          aria-label="Forget evaluation"
-        >
-          <Trash2 className="h-4 w-4" aria-hidden />
-        </button>
-      </Card>
-    )
-  }
-
-  if (!evaluation) {
-    return <Card className="h-14 animate-pulse" />
-  }
-
   const terminal = isTerminalStatus(evaluation.status)
+  const cancellable = evaluation.status === 'running' || evaluation.status === 'pending'
   const baseMetrics = evaluation.metrics_json ? scalarMetrics(evaluation.metrics_json) : {}
   // The judge score lives on its own column (not in metrics_json); fold it into
   // the bar list so every metric renders uniformly with its range.
@@ -98,14 +82,17 @@ export function EvaluationRow({ evaluationId, selected, onToggleSelect, onForget
               : formatRelativeTime(evaluation.created_at)}
           </span>
         </button>
-        <button
-          type="button"
-          onClick={onForget}
-          className="cursor-pointer rounded p-1.5 text-body-muted transition-colors hover:bg-danger-muted hover:text-danger"
-          aria-label={`Forget evaluation ${shortId(evaluationId)}`}
-        >
-          <Trash2 className="h-4 w-4" aria-hidden />
-        </button>
+        {cancellable && (
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => cancelMutation.mutate()}
+            loading={cancelMutation.isPending}
+          >
+            <Ban className="h-3.5 w-3.5" aria-hidden />
+            Cancel
+          </Button>
+        )}
       </div>
 
       {expanded && (

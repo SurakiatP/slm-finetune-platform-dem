@@ -1,4 +1,4 @@
-import { Boxes, Cpu, FolderKanban, LayoutDashboard, LogOut, MessagesSquare } from 'lucide-react'
+import { Boxes, Coins, Cpu, FolderKanban, LayoutDashboard, LogOut, MessagesSquare } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 
 import { useAuth } from '@/auth/AuthProvider'
@@ -9,6 +9,7 @@ const navItems = [
   { to: '/projects', label: 'Projects', icon: FolderKanban, end: false },
   { to: '/models', label: 'Models', icon: Boxes, end: false },
   { to: '/playground', label: 'Playground', icon: MessagesSquare, end: false },
+  { to: '/usage', label: 'Usage', icon: Coins, end: false },
 ]
 
 export function Sidebar() {

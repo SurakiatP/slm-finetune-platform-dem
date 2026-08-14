@@ -6,6 +6,7 @@ import type {
   Training,
   TrainingJobAccepted,
   TrainingLossHistory,
+  TrainingMetrics,
   TrainingRequest,
 } from '@/api/types'
 
@@ -31,6 +32,14 @@ export function cancelTraining(id: string): Promise<{ message: string }> {
 
 export function getMlflowUrl(id: string): Promise<MlflowUrlResponse> {
   return api.get(`${BASE}/${id}/mlflow-url`)
+}
+
+/**
+ * Full metric history (all keys) plus HPO child-run summary — superset of
+ * /loss-history, which stays as the lightweight chart feed.
+ */
+export function getTrainingMetrics(id: string): Promise<TrainingMetrics> {
+  return api.get(`${BASE}/${id}/metrics`)
 }
 
 export function getLossHistory(id: string): Promise<TrainingLossHistory> {

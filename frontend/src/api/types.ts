@@ -318,6 +318,23 @@ export interface MlflowUrlResponse {
   mlflow_url: string | null
 }
 
+/** Compact view of one HPO trial run (no full series — just final + params). */
+export interface HpoChildSummary {
+  run_id: string
+  name: string
+  final_eval_loss: number | null
+  params: Record<string, string>
+}
+
+/** Full metric history of a training run, plus HPO child summary if applicable.
+ *  `hpo_children` is null for manual mode and a list for HPO mode. */
+export interface TrainingMetrics {
+  training_id: string
+  mlflow_run_id: string | null
+  metrics: Record<string, MetricPoint[]>
+  hpo_children: HpoChildSummary[] | null
+}
+
 // --- Model artifacts (api/schemas/artifacts.py) ------------------------------
 
 export interface ModelArtifact {
@@ -332,6 +349,10 @@ export interface ModelArtifact {
   size_mb: number | null
   ollama_model_tag: string | null
   export_error_message: string | null
+  /** In-flight export job state and its celery task id — drive the
+   *  export-in-flight/cancel affordance. Null when no export is running. */
+  export_status: JobStatus | null
+  export_celery_task_id: string | null
   created_at: string
   updated_at: string
   /** Ollama-Hub equivalent of `base_model`, auto-pulled by the worker after
@@ -559,3 +580,88 @@ export type WSMessage =
   | HPOProgressMsg
   | JobCompletedMsg
   | JobFailedMsg
+
+// --- Usage (api/schemas/usage.py) ---------------------------------------------
+
+/** Wire shape for a single usage row. */
+export interface UsageEvent {
+  id: string
+  created_at: string
+  actor_id: string | null
+  project_id: string | null
+  job_id: string | null
+  provider: string
+  model: string
+  stage: string
+  prompt_tokens: number
+  completion_tokens: number
+  /** Pydantic Decimal serializes as a JSON string; null when unpriced. */
+  cost_usd: string | null
+  outcome: string
+}
+
+/** One (model, stage) bucket within a `UsageSummaryResponse`. */
+export interface UsageRollupItem {
+  model: string
+  stage: string
+  prompt_tokens: number
+  completion_tokens: number
+  cost_usd: string | null
+}
+
+/** Aggregate usage/cost over a date range, broken down by model+stage. */
+export interface UsageSummaryResponse {
+  period_start: string
+  period_end: string
+  prompt_tokens: number
+  completion_tokens: number
+  cost_usd: string | null
+  items: UsageRollupItem[]
+  /** True when at least one row in this period had cost_usd IS NULL, so a
+   *  consumer knows the total is a floor, not a total. */
+  has_unpriced_usage: boolean
+}
+
+// --- Audit (api/schemas/audit.py) ---------------------------------------------
+
+export interface AuditEvent {
+  id: string
+  created_at: string
+  actor_id: string | null
+  project_id: string | null
+  action: string
+  resource_type: string
+  resource_id: string | null
+  outcome: string
+  request_id: string | null
+  metadata?: Record<string, unknown> | null
+}
+
+// --- Download links (api/schemas/download_links.py) ---------------------------
+
+/** Body of `GET /api/v1/datasets/{id}/download-url`. */
+export interface DatasetDownloadUrl {
+  url: string
+  filename: string
+  content_type: string
+  expires_at: string
+  /** Seconds from mint time until `url` stops working. */
+  expires_in: number
+}
+
+/** One object inside a `ModelDownloadUrl.files` listing. */
+export interface ModelDownloadFile {
+  key: string
+  name: string
+  size_bytes: number
+  url: string
+}
+
+/** Body of `GET /api/v1/models/{id}/download-url`. */
+export interface ModelDownloadUrl {
+  format: ArtifactFormat
+  files: ModelDownloadFile[]
+  expires_at: string
+  expires_in: number
+  truncated?: boolean
+}

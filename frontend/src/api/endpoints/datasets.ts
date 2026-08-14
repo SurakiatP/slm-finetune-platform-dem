@@ -1,7 +1,9 @@
 import { api, pageQuery } from '@/api/client'
 import type {
   Dataset,
+  DatasetDownloadUrl,
   DatasetPreview,
+  JobStatus,
   Page,
   SDGJobAccepted,
   SDGRequest,
@@ -32,6 +34,26 @@ export function deleteDataset(id: string): Promise<void> {
 /** Plain href for streaming download — use in an <a> tag, not fetch. */
 export function datasetDownloadUrl(id: string): string {
   return `${BASE}/${id}/download`
+}
+
+/**
+ * Idempotent cancel of a running SDG generation job. Already-terminal
+ * datasets (including plain SEED uploads, which are always COMPLETED)
+ * just report their current status rather than erroring.
+ */
+export function cancelDatasetGeneration(
+  id: string,
+): Promise<{ dataset_id: string; status: JobStatus }> {
+  return api.post(`${BASE}/${id}/cancel`)
+}
+
+/**
+ * Mint a presigned MinIO URL for the dataset's stored object. This is the
+ * only download surface for PDF-seeded datasets — the streaming
+ * `GET /{id}/download` endpoint has no object to stream for those.
+ */
+export function getDatasetDownloadUrl(id: string): Promise<DatasetDownloadUrl> {
+  return api.get(`${BASE}/${id}/download-url`)
 }
 
 export function uploadSeedDataset(input: {

@@ -1,4 +1,4 @@
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ClipboardCheck, GitCompareArrows, Plus } from 'lucide-react'
 import { useState } from 'react'
 
@@ -19,11 +19,12 @@ import { formatNumber, shortId } from '@/lib/format'
 
 export default function EvaluationListPage() {
   const { project } = useProjectContext()
-  const { ids, add, remove } = useEvalRegistry(project.id)
+  const { evaluations } = useEvalRegistry(project.id)
   const [createOpen, setCreateOpen] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
   const [compareResult, setCompareResult] = useState<EvaluationCompareResponse | null>(null)
   const toast = useToast()
+  const queryClient = useQueryClient()
 
   const compareMutation = useMutation({
     mutationFn: () => compareEvaluations({ evaluation_ids: selected }),
@@ -39,7 +40,6 @@ export default function EvaluationListPage() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-body-muted">
           Task-specific metrics per model + dataset pair, with an optional LLM judge.
-          <span className="ml-1 text-body-muted/60">(History is stored in this browser.)</span>
         </p>
         <div className="flex gap-2">
           <Button
@@ -65,7 +65,7 @@ export default function EvaluationListPage() {
         </div>
       )}
 
-      {ids.length === 0 ? (
+      {evaluations.length === 0 ? (
         <EmptyState
           icon={ClipboardCheck}
           title="No evaluations yet"
@@ -79,16 +79,12 @@ export default function EvaluationListPage() {
         />
       ) : (
         <ul className="space-y-3">
-          {ids.map((id) => (
-            <li key={id}>
+          {evaluations.map((evaluation) => (
+            <li key={evaluation.id}>
               <EvaluationRow
-                evaluationId={id}
-                selected={selected.includes(id)}
-                onToggleSelect={() => toggleSelect(id)}
-                onForget={() => {
-                  remove(id)
-                  setSelected((prev) => prev.filter((x) => x !== id))
-                }}
+                evaluation={evaluation}
+                selected={selected.includes(evaluation.id)}
+                onToggleSelect={() => toggleSelect(evaluation.id)}
               />
             </li>
           ))}
@@ -100,7 +96,7 @@ export default function EvaluationListPage() {
         onClose={() => setCreateOpen(false)}
         projectId={project.id}
         taskType={project.task_type}
-        onCreated={add}
+        onCreated={() => void queryClient.invalidateQueries({ queryKey: ['evaluations'] })}
       />
     </>
   )

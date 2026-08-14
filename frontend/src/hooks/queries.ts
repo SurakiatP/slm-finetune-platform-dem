@@ -7,7 +7,19 @@ import * as meta from '@/api/endpoints/meta'
 import * as models from '@/api/endpoints/models'
 import * as projects from '@/api/endpoints/projects'
 import * as trainings from '@/api/endpoints/trainings'
-import type { Dataset, Evaluation, JobStatus, ModelArtifact, Page, Training } from '@/api/types'
+import * as usage from '@/api/endpoints/usage'
+import type {
+  AuditEvent,
+  Dataset,
+  Evaluation,
+  JobStatus,
+  ModelArtifact,
+  Page,
+  Training,
+  TrainingMetrics,
+  UsageEvent,
+  UsageSummaryResponse,
+} from '@/api/types'
 
 /**
  * Narrow structural type for TanStack's refetchInterval callback — lets pages
@@ -33,10 +45,15 @@ export const queryKeys = {
   models: (projectId?: string) => ['models', { projectId: projectId ?? null }] as const,
   model: (id: string) => ['models', 'detail', id] as const,
   evaluation: (id: string) => ['evaluations', 'detail', id] as const,
+  evaluations: ['evaluations'] as const,
   inferenceModels: ['inference', 'models'] as const,
   taskTypes: ['meta', 'tasks'] as const,
   baseModels: ['meta', 'base-models'] as const,
   sdgPipelineModels: ['meta', 'sdg-pipeline'] as const,
+  usageSummary: ['usage', 'summary'] as const,
+  projectActivity: (id: string) => ['projects', id, 'activity'] as const,
+  projectUsage: (id: string) => ['projects', id, 'usage'] as const,
+  trainingMetrics: (id: string) => ['trainings', 'metrics', id] as const,
 }
 
 // --- Projects ---------------------------------------------------------------
@@ -52,6 +69,20 @@ export function useProject(id: string) {
   return useQuery({
     queryKey: queryKeys.project(id),
     queryFn: () => projects.getProject(id),
+  })
+}
+
+export function useProjectActivity(projectId: string, page: { limit?: number; offset?: number } = {}) {
+  return useQuery({
+    queryKey: [...queryKeys.projectActivity(projectId), page],
+    queryFn: (): Promise<Page<AuditEvent>> => projects.getProjectActivity(projectId, page),
+  })
+}
+
+export function useProjectUsage(projectId: string, page: { limit?: number; offset?: number } = {}) {
+  return useQuery({
+    queryKey: [...queryKeys.projectUsage(projectId), page],
+    queryFn: (): Promise<Page<UsageEvent>> => projects.getProjectUsage(projectId, page),
   })
 }
 
@@ -124,6 +155,15 @@ export function useLossHistory(id: string, enabled = true) {
   })
 }
 
+export function useTrainingMetrics(id: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.trainingMetrics(id),
+    queryFn: (): Promise<TrainingMetrics> => trainings.getTrainingMetrics(id),
+    enabled,
+    staleTime: 30_000,
+  })
+}
+
 // --- Models -------------------------------------------------------------------
 
 export function useModels(projectId?: string, page: { limit?: number; offset?: number } = {}) {
@@ -149,6 +189,28 @@ export function useEvaluation(id: string, opts: { refetchInterval?: RefetchInter
     queryFn: () => evaluations.getEvaluation(id),
     refetchInterval: opts.refetchInterval,
     enabled: opts.enabled,
+  })
+}
+
+export function useEvaluations(
+  params: { model_artifact_id?: string; dataset_id?: string; status?: JobStatus; limit?: number; offset?: number } = {},
+  opts: { refetchInterval?: RefetchInterval<Page<Evaluation>>; enabled?: boolean } = {},
+) {
+  return useQuery({
+    queryKey: [...queryKeys.evaluations, params],
+    queryFn: () => evaluations.listEvaluations(params),
+    refetchInterval: opts.refetchInterval,
+    enabled: opts.enabled,
+  })
+}
+
+// --- Usage --------------------------------------------------------------------
+
+export function useUsageSummary() {
+  return useQuery({
+    queryKey: queryKeys.usageSummary,
+    queryFn: (): Promise<UsageSummaryResponse> => usage.getUsageSummary(),
+    staleTime: 60_000,
   })
 }
 

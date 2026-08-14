@@ -1,5 +1,5 @@
 import { api, pageQuery } from '@/api/client'
-import type { Page, Project, ProjectCreate, ProjectUpdate } from '@/api/types'
+import type { AuditEvent, Page, Project, ProjectCreate, ProjectUpdate, UsageEvent } from '@/api/types'
 
 const BASE = '/api/v1/projects'
 
@@ -21,4 +21,20 @@ export function updateProject(id: string, body: ProjectUpdate): Promise<Project>
 
 export function deleteProject(id: string): Promise<void> {
   return api.delete(`${BASE}/${id}`)
+}
+
+/** Audit trail for one project, newest first. Server caps `limit` at 200. */
+export function getProjectActivity(
+  id: string,
+  params: { limit?: number; offset?: number } = {},
+): Promise<Page<AuditEvent>> {
+  return api.get(`${BASE}/${id}/activity${pageQuery(params)}`)
+}
+
+/** Raw usage/cost event log for one project, newest first. Server caps `limit` at 200. */
+export function getProjectUsage(
+  id: string,
+  params: { limit?: number; offset?: number } = {},
+): Promise<Page<UsageEvent>> {
+  return api.get(`${BASE}/${id}/usage${pageQuery(params)}`)
 }

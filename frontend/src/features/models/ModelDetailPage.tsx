@@ -1,10 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, Download, FlaskConical, MessagesSquare, PackageOpen } from 'lucide-react'
+import { Ban, ChevronLeft, Download, FlaskConical, Loader2, MessagesSquare, PackageOpen } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
-import { exportModel, modelDownloadUrl } from '@/api/endpoints/models'
+import { cancelModelExport, exportModel, getModelDownloadUrl, modelDownloadUrl } from '@/api/endpoints/models'
 import type { ArtifactFormat, ModelArtifact } from '@/api/types'
+import { Badge } from '@/components/ui/Badge'
 import { CopyButton } from '@/components/data/CopyButton'
 import { JobProgressPanel } from '@/components/jobs/JobProgressPanel'
 import { Button } from '@/components/ui/Button'
@@ -16,7 +17,7 @@ import { useToast } from '@/components/ui/toast-context'
 import { FormatBadges } from '@/features/models/ModelListPage'
 import { useModel, queryKeys } from '@/hooks/queries'
 import { useJobProgress, jobRefetchInterval } from '@/hooks/useJobProgress'
-import { formatDateTime } from '@/lib/format'
+import { formatBytes, formatDateTime } from '@/lib/format'
 
 // GGUF quantization methods supported by llama-quantize, ordered by typical
 // usefulness. The backend passes the value straight to llama-quantize.
@@ -50,6 +51,10 @@ export default function ModelDetailPage() {
     },
   })
   const exportTerminal = progress.completed !== null || progress.failed !== null
+  const exportInFlight =
+    model?.export_status === 'running' ||
+    model?.export_status === 'pending' ||
+    (exportJobId !== null && !exportTerminal)
 
   useEffect(() => {
     exportPollRef.current = exportJobId ? jobRefetchInterval(exportTerminal, progress.socketOpen) : false
@@ -132,7 +137,7 @@ export default function ModelDetailPage() {
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <ExportPanel model={model} onJobStarted={setExportJobId} />
+        <ExportPanel model={model} onJobStarted={setExportJobId} exportInFlight={exportInFlight} />
         <DownloadPanel model={model} />
       </div>
 
@@ -150,13 +155,16 @@ export default function ModelDetailPage() {
 function ExportPanel({
   model,
   onJobStarted,
+  exportInFlight,
 }: {
   model: ModelArtifact
   onJobStarted: (jobId: string) => void
+  exportInFlight: boolean
 }) {
   const [format, setFormat] = useState<ArtifactFormat>('gguf')
   const [quantization, setQuantization] = useState('q4_k_m')
   const toast = useToast()
+  const queryClient = useQueryClient()
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -171,11 +179,34 @@ function ExportPanel({
     onError: (err) => toast.error(err.message),
   })
 
+  const cancelMutation = useMutation({
+    mutationFn: () => cancelModelExport(model.id),
+    onSuccess: () => {
+      toast.success('Export cancelled')
+      void queryClient.invalidateQueries({ queryKey: queryKeys.model(model.id) })
+      void queryClient.invalidateQueries({ queryKey: ['models'] })
+    },
+    onError: (err) => toast.error(err.message),
+  })
+
   return (
     <Card>
       <CardHeader
         title="Export"
         description="GGUF registers the model with Ollama for serving; safetensors merges full weights."
+        actions={
+          exportInFlight ? (
+            <Button
+              variant="danger"
+              size="sm"
+              loading={cancelMutation.isPending}
+              onClick={() => cancelMutation.mutate()}
+            >
+              <Ban className="h-3.5 w-3.5" aria-hidden />
+              Cancel export
+            </Button>
+          ) : undefined
+        }
       />
       <CardBody>
         <form
@@ -222,35 +253,108 @@ function ExportPanel({
 }
 
 function DownloadPanel({ model }: { model: ModelArtifact }) {
-  const downloads: { format: ArtifactFormat; uri: string | null; label: string }[] = [
-    { format: 'gguf', uri: model.gguf_uri, label: 'GGUF (Ollama / llama.cpp)' },
-    { format: 'safetensors', uri: model.safetensors_uri, label: 'SafeTensors (merged weights)' },
-  ]
-  const available = downloads.filter((d) => d.uri)
+  const hasGguf = Boolean(model.gguf_uri)
+  const hasSafetensors = Boolean(model.safetensors_uri)
+  const hasLora = Boolean(model.lora_adapter_uri)
+  const available = hasGguf || hasSafetensors || hasLora
 
   return (
     <Card>
       <CardHeader title="Downloads" description="Stream exported artifacts from MinIO." />
       <CardBody>
-        {available.length === 0 ? (
+        {!available ? (
           <p className="py-4 text-center text-xs text-body-muted">Run an export to enable downloads.</p>
         ) : (
           <ul className="space-y-2">
-            {available.map((d) => (
-              <li key={d.format}>
+            {hasGguf && (
+              <li>
                 <a
-                  href={modelDownloadUrl(model.id, d.format)}
+                  href={modelDownloadUrl(model.id, 'gguf')}
                   download
                   className="flex cursor-pointer items-center justify-between rounded-md border border-line/60 bg-bg p-3 text-sm transition-colors hover:border-body-muted"
                 >
-                  <span className="text-body">{d.label}</span>
+                  <span className="text-body">GGUF (Ollama / llama.cpp)</span>
                   <Download className="h-4 w-4 text-body-muted" aria-hidden />
                 </a>
               </li>
-            ))}
+            )}
+            {hasSafetensors && (
+              <MintDownloadRow modelId={model.id} format="safetensors" label="SafeTensors (merged weights)" />
+            )}
+            {hasLora && <MintDownloadRow modelId={model.id} format="lora" label="LoRA adapter" />}
           </ul>
         )}
       </CardBody>
     </Card>
+  )
+}
+
+/**
+ * Safetensors/lora artifacts are multi-file directories, not a single
+ * stream-able object — the plain `modelDownloadUrl` href 400s on them. This
+ * mints a short-lived presigned URL per file on click instead.
+ */
+function MintDownloadRow({
+  modelId,
+  format,
+  label,
+}: {
+  modelId: string
+  format: ArtifactFormat
+  label: string
+}) {
+  const toast = useToast()
+  const mutation = useMutation({
+    mutationFn: () => getModelDownloadUrl(modelId, format),
+    onError: (err) => toast.error(err.message),
+  })
+
+  if (!mutation.data) {
+    return (
+      <li>
+        <button
+          type="button"
+          onClick={() => mutation.mutate()}
+          disabled={mutation.isPending}
+          className="flex w-full cursor-pointer items-center justify-between rounded-md border border-line/60 bg-bg p-3 text-sm transition-colors hover:border-body-muted disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <span className="text-body">{label}</span>
+          {mutation.isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin text-body-muted" aria-hidden />
+          ) : (
+            <Download className="h-4 w-4 text-body-muted" aria-hidden />
+          )}
+        </button>
+      </li>
+    )
+  }
+
+  const { files, truncated, expires_in } = mutation.data
+  const minutes = Math.max(1, Math.round(expires_in / 60))
+
+  return (
+    <li className="rounded-md border border-line/60 bg-bg p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-sm text-body">{label}</span>
+        {truncated && <Badge tone="amber">listing capped — more objects exist</Badge>}
+      </div>
+      <ul className="space-y-1">
+        {files.map((f) => (
+          <li key={f.key}>
+            <a
+              href={f.url}
+              download={f.name}
+              className="flex items-center justify-between gap-2 rounded border border-line/40 px-2 py-1.5 text-xs text-body transition-colors hover:border-body-muted"
+            >
+              <span className="truncate font-mono">{f.name}</span>
+              <span className="shrink-0 text-body-muted">{formatBytes(f.size_bytes)}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-[11px] text-body-muted">
+        Links valid for {minutes} minute{minutes === 1 ? '' : 's'}.
+      </p>
+    </li>
   )
 }

@@ -1,9 +1,9 @@
-import { useQueryClient } from '@tanstack/react-query'
-import { Database, Download, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Ban, Database, Download, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { deleteDataset } from '@/api/endpoints/datasets'
+import { cancelDatasetGeneration, deleteDataset, getDatasetDownloadUrl } from '@/api/endpoints/datasets'
 import { isTerminalStatus, type Dataset } from '@/api/types'
 import { DataTable, type Column } from '@/components/data/DataTable'
 import { Pagination } from '@/components/data/Pagination'
@@ -35,9 +35,34 @@ export default function DatasetListPage() {
   const [generateOpen, setGenerateOpen] = useState(false)
   const [activeJob, setActiveJob] = useState<SdgJobRef | null>(null)
   const [toDelete, setToDelete] = useState<Dataset | null>(null)
+  const [toCancel, setToCancel] = useState<Dataset | null>(null)
   const navigate = useNavigate()
   const toast = useToast()
   const queryClient = useQueryClient()
+
+  const downloadMutation = useMutation({
+    mutationFn: (id: string) => getDatasetDownloadUrl(id),
+    onSuccess: (res) => {
+      const a = document.createElement('a')
+      a.href = res.url
+      a.download = res.filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
+  const cancelMutation = useMutation({
+    mutationFn: (id: string) => cancelDatasetGeneration(id),
+    onSuccess: () => {
+      toast.success('Cancellation requested')
+      void queryClient.invalidateQueries({ queryKey: queryKeys.datasets(project.id) })
+      if (toCancel) void queryClient.invalidateQueries({ queryKey: queryKeys.dataset(toCancel.id) })
+      setToCancel(null)
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
 
   const columns: Column<Dataset>[] = [
     {
@@ -81,14 +106,25 @@ export default function DatasetListPage() {
       className: 'w-24 text-right',
       render: (d) => (
         <span className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-          <a
-            href={`/api/v1/datasets/${d.id}/download`}
-            download
+          <button
+            type="button"
             aria-label={`Download ${d.name}`}
-            className="cursor-pointer rounded p-1.5 text-body-muted transition-colors hover:bg-surface-2 hover:text-body"
+            onClick={() => downloadMutation.mutate(d.id)}
+            disabled={downloadMutation.isPending && downloadMutation.variables === d.id}
+            className="cursor-pointer rounded p-1.5 text-body-muted transition-colors hover:bg-surface-2 hover:text-body disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Download className="h-4 w-4" aria-hidden />
-          </a>
+          </button>
+          {(d.status === 'pending' || d.status === 'running') && (
+            <button
+              type="button"
+              aria-label={`Cancel generation for ${d.name}`}
+              onClick={() => setToCancel(d)}
+              className="cursor-pointer rounded p-1.5 text-body-muted transition-colors hover:bg-danger-muted hover:text-danger"
+            >
+              <Ban className="h-4 w-4" aria-hidden />
+            </button>
+          )}
           <button
             type="button"
             aria-label={`Delete ${d.name}`}
@@ -181,6 +217,19 @@ export default function DatasetListPage() {
         title={`Delete "${toDelete?.name}"?`}
         body={<p>Trainings that already used this dataset keep their results, but the rows are gone for good.</p>}
         confirmLabel="Delete dataset"
+      />
+
+      <ConfirmDialog
+        open={toCancel !== null}
+        onClose={() => setToCancel(null)}
+        onConfirm={() => {
+          if (!toCancel) return
+          cancelMutation.mutate(toCancel.id)
+        }}
+        title={`Cancel generation for "${toCancel?.name}"?`}
+        body={<p>The dataset will stop generating and keep whatever rows were produced so far.</p>}
+        confirmLabel="Cancel generation"
+        loading={cancelMutation.isPending}
       />
     </>
   )

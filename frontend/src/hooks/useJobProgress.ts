@@ -8,6 +8,7 @@ import type {
   TrainingProgressMsg,
   WSMessage,
 } from '@/api/types'
+import { getJobProgress } from '@/api/endpoints/jobs'
 import { isTerminalMessage, jobSocketUrl, parseWSMessage } from '@/api/ws'
 import { getAccessToken } from '@/auth/supabase'
 
@@ -136,6 +137,10 @@ export function useJobProgress(jobId: string | null, options: UseJobProgressOpti
     let attempts = 0
     let reconnectTimer: number | undefined
     let stopped = false
+    // Set before dispatching any live WS frame — guards the snapshot fetch
+    // below from clobbering newer state if it resolves after the socket has
+    // already delivered a message.
+    let liveFrameSeen = false
     // Consecutive closes that never saw onopen. An auth-rejected handshake
     // (4401/4403 server-side) reaches JS as a bare close — browsers report
     // code 1006 with no reason, never the server's number — so the only
@@ -172,6 +177,7 @@ export function useJobProgress(jobId: string | null, options: UseJobProgressOpti
         socket.onmessage = (event) => {
           const msg = parseWSMessage(String(event.data))
           if (!msg || msg.job_id !== jobId) return
+          liveFrameSeen = true
           dispatch({ type: 'message', msg })
           if (isTerminalMessage(msg)) {
             stopped = true
@@ -199,6 +205,22 @@ export function useJobProgress(jobId: string | null, options: UseJobProgressOpti
     }
 
     connect()
+
+    // Cold-start hydration: the WS has no replay, so on mount the panel
+    // would otherwise stay blank until the next live frame. Fetch the last
+    // snapshot once and seed state with it, but never let a late-resolving
+    // snapshot clobber state a live frame has already updated.
+    getJobProgress(jobId)
+      .then((msg) => {
+        if (stopped || liveFrameSeen || msg.job_id !== jobId) return
+        dispatch({ type: 'message', msg })
+        if (isTerminalMessage(msg)) {
+          stopped = true
+          onTerminalRef.current?.(msg)
+          if (ws && ws.readyState === WebSocket.OPEN) ws.close()
+        }
+      })
+      .catch(() => {})
 
     return () => {
       stopped = true

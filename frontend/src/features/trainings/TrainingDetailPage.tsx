@@ -4,7 +4,8 @@ import { useEffect, useRef } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { cancelTraining } from '@/api/endpoints/trainings'
-import { isTerminalStatus, type MetricPoint } from '@/api/types'
+import { isTerminalStatus, type HpoChildSummary, type MetricPoint } from '@/api/types'
+import { DataTable, type Column } from '@/components/data/DataTable'
 import { JsonViewer } from '@/components/data/JsonViewer'
 import { StatusBadge } from '@/components/data/StatusBadge'
 import { JobProgressPanel } from '@/components/jobs/JobProgressPanel'
@@ -14,9 +15,16 @@ import { Button } from '@/components/ui/Button'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { LoadingBlock } from '@/components/ui/Spinner'
 import { useToast } from '@/components/ui/toast-context'
-import { useLossHistory, useMlflowUrl, useTraining, queryKeys } from '@/hooks/queries'
+import { useLossHistory, useMlflowUrl, useTraining, useTrainingMetrics, queryKeys } from '@/hooks/queries'
 import { useJobProgress, jobRefetchInterval, type LossPoint } from '@/hooks/useJobProgress'
-import { formatDuration, formatNumber } from '@/lib/format'
+import { formatDuration, formatNumber, shortId } from '@/lib/format'
+
+interface MetricSummaryRow {
+  key: string
+  count: number
+  latestValue: number | null
+  latestStep: number | null
+}
 
 export default function TrainingDetailPage() {
   const { trainingId } = useParams<{ trainingId: string }>()
@@ -60,6 +68,11 @@ export default function TrainingDetailPage() {
       ? progress.lossHistory
       : mergeLossHistory(storedLoss?.train_loss ?? [], storedLoss?.eval_loss ?? [])
 
+  const { data: trainingMetrics, isLoading: metricsLoading } = useTrainingMetrics(
+    trainingId!,
+    !!training?.mlflow_run_id,
+  )
+
   const cancelMutation = useMutation({
     mutationFn: () => cancelTraining(trainingId!),
     onSuccess: () => {
@@ -72,6 +85,68 @@ export default function TrainingDetailPage() {
   if (isLoading || !training) return <LoadingBlock label="Loading training" />
 
   const modelArtifactId = progress.completed?.model_artifact_id
+
+  const metricRows: MetricSummaryRow[] = trainingMetrics
+    ? Object.entries(trainingMetrics.metrics).map(([key, points]) => ({
+        key,
+        count: points.length,
+        latestValue: points.length > 0 ? points[points.length - 1].value : null,
+        latestStep: points.length > 0 ? points[points.length - 1].step : null,
+      }))
+    : []
+
+  const sortedHpoChildren: HpoChildSummary[] | null = trainingMetrics?.hpo_children
+    ? [...trainingMetrics.hpo_children].sort((a, b) => {
+        if (a.final_eval_loss == null && b.final_eval_loss == null) return 0
+        if (a.final_eval_loss == null) return 1
+        if (b.final_eval_loss == null) return -1
+        return a.final_eval_loss - b.final_eval_loss
+      })
+    : null
+  const bestHpoRunId =
+    sortedHpoChildren?.find((child) => child.final_eval_loss != null)?.run_id ?? null
+
+  const hasMetricsData =
+    !!trainingMetrics && (metricRows.length > 0 || (sortedHpoChildren?.length ?? 0) > 0)
+  const showMetricsCard = metricsLoading || hasMetricsData
+
+  const metricColumns: Column<MetricSummaryRow>[] = [
+    { key: 'name', header: 'Metric', render: (row) => <span className="font-mono text-xs">{row.key}</span> },
+    { key: 'count', header: 'Points', render: (row) => row.count },
+    { key: 'latest', header: 'Latest value', render: (row) => formatNumber(row.latestValue) },
+    { key: 'step', header: 'Latest step', render: (row) => row.latestStep ?? '—' },
+  ]
+
+  const hpoColumns: Column<HpoChildSummary>[] = [
+    {
+      key: 'name',
+      header: 'Name',
+      render: (row) => (
+        <span className="inline-flex items-center gap-1.5">
+          {row.name}
+          {row.run_id === bestHpoRunId && <Badge tone="green">best</Badge>}
+        </span>
+      ),
+    },
+    { key: 'run_id', header: 'Run ID', render: (row) => <span className="font-mono text-xs">{shortId(row.run_id)}</span> },
+    { key: 'final_eval_loss', header: 'Final eval loss', render: (row) => formatNumber(row.final_eval_loss) },
+    {
+      key: 'params',
+      header: 'Params',
+      render: (row) => (
+        <div className="flex flex-wrap gap-1">
+          {Object.entries(row.params).map(([k, v]) => (
+            <span
+              key={k}
+              className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-body-muted"
+            >
+              {k}={v}
+            </span>
+          ))}
+        </div>
+      ),
+    },
+  ]
 
   return (
     <div className="space-y-4">
@@ -172,6 +247,26 @@ export default function TrainingDetailPage() {
           <CardHeader title="Loss curve" description="Replayed from MLflow metric history." />
           <CardBody>
             <LossCurveChart data={lossHistory} />
+          </CardBody>
+        </Card>
+      )}
+
+      {showMetricsCard && (
+        <Card>
+          <CardHeader title="Metrics" description="Full metric history recorded to MLflow." />
+          <CardBody className="space-y-4">
+            <DataTable
+              columns={metricColumns}
+              rows={metricRows}
+              rowKey={(row) => row.key}
+              loading={metricsLoading}
+            />
+            {sortedHpoChildren && (
+              <div>
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-body-muted">HPO trials</h3>
+                <DataTable columns={hpoColumns} rows={sortedHpoChildren} rowKey={(row) => row.run_id} />
+              </div>
+            )}
           </CardBody>
         </Card>
       )}

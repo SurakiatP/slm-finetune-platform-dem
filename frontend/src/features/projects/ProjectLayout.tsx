@@ -21,6 +21,8 @@ const tabs = [
   { to: 'datasets', label: 'Datasets' },
   { to: 'trainings', label: 'Trainings' },
   { to: 'evaluations', label: 'Evaluations' },
+  { to: 'activity', label: 'Activity' },
+  { to: 'usage', label: 'Usage' },
 ]
 
 export default function ProjectLayout() {

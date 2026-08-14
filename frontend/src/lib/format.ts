@@ -59,3 +59,11 @@ export function shortId(id: string | null | undefined, length = 8): string {
   if (!id) return '—'
   return id.length > length ? `${id.slice(0, length)}…` : id
 }
+
+/** `cost_usd` comes over the wire as a string (Pydantic Decimal serialization). */
+export function formatUsd(value: string | null | undefined, digits = 4): string {
+  if (value === null || value === undefined) return '—'
+  const n = Number(value)
+  if (Number.isNaN(n)) return '—'
+  return `$${n.toFixed(digits)}`
+}
