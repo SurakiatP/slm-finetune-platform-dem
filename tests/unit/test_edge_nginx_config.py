@@ -369,6 +369,10 @@ def test_ws_location_upgrade_and_timeout() -> None:
 # ---------------------------------------------------------------------------
 
 _EXPECTED_LOCATION_ZONES = [
+    # The exact-match collection route must ride the general api zones, NOT
+    # `uploads` — the SPA polls the list, and the uploads zone's burst=5
+    # would 429 it. See the comment above that location in the conf.
+    ("= /api/v1/datasets", ["api_read", "api_write"]),
     ("/api/v1/datasets/", ["uploads"]),
     ("/api/v1/inference/", ["inference"]),
     ("/api/", ["api_read", "api_write"]),
@@ -381,6 +385,29 @@ def test_location_carries_expected_limit_req_zones(selector: str, zones: list[st
     found = set(re.findall(r"limit_req\s+zone=(\w+)", block))
     missing = set(zones) - found
     assert not missing, f"location {selector!r} is missing limit_req zone(s) {sorted(missing)}"
+
+
+def test_datasets_collection_has_exact_match_location() -> None:
+    """GET /api/v1/datasets (the list route) must be proxied, not 301'd.
+
+    nginx auto-redirects a request whose URI equals a slash-terminated proxy
+    location's prefix minus the slash (301 to the slashed URI, built from the
+    container's own listen port — so the public port is dropped). With only
+    `location /api/v1/datasets/ { proxy_pass ... }` present, the collection
+    route is exactly that URI and every list call bounces to
+    `http://<host>/api/v1/datasets/` on the wrong port. Found live on
+    2026-08-14 by the embedded SPA — the first client to list datasets
+    through the edge. The exact-match location below is the fix; this guard
+    keeps it from being "simplified" away.
+    """
+    # Non-vacuity: the slashed upload location this one protects against
+    # must still exist — if it is ever renamed, this whole test needs a
+    # fresh look rather than a silent pass.
+    _location_block(_APP_SERVER, "/api/v1/datasets/")
+    block = _location_block(_APP_SERVER, "= /api/v1/datasets")
+    assert re.search(r"proxy_pass\s+http://api:8000;", block), (
+        "the exact-match /api/v1/datasets location must proxy to the API"
+    )
 
 
 def test_health_location_has_no_rate_limit() -> None:
