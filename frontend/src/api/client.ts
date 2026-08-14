@@ -1,4 +1,5 @@
 import type { ErrorBody } from '@/api/types'
+import { getAccessToken } from '@/auth/supabase'
 
 /** Base URL for the API; empty in dev so the Vite proxy handles /api. */
 const API_BASE: string = import.meta.env.VITE_API_BASE ?? ''
@@ -34,7 +35,15 @@ async function parseError(res: Response): Promise<ApiError> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, init)
+  // Fresh-or-nothing: getAccessToken() refreshes an expired session or
+  // returns null. A missing header is an actionable 401; a stale header
+  // sent anyway is a 401 that masquerades as a backend bug. When auth is
+  // disabled (no VITE_SUPABASE_*) this resolves to null and no header is
+  // added — byte-identical requests to the pre-auth build.
+  const token = await getAccessToken()
+  const headers = new Headers(init?.headers)
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers })
   if (!res.ok) throw await parseError(res)
   if (res.status === 204) return undefined as T
   return (await res.json()) as T

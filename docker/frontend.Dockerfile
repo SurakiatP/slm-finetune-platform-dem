@@ -31,6 +31,17 @@ COPY frontend/ ./
 # served from genuinely different origins (not the case in this topology).
 ARG VITE_API_BASE=""
 ENV VITE_API_BASE=${VITE_API_BASE}
+# Supabase auth (compile-time, like every Vite var). Both empty (default)
+# builds the auth-less bundle for an AUTH_REQUIRED=false backend. Set BOTH
+# to build a bundle that gates behind Supabase login and sends the session
+# JWT on /api (Authorization header) and /ws (["bearer", <jwt>]
+# subprotocol) — required against a backend running AUTH_REQUIRED=true.
+# The publishable (anon) key is public by design; never pass service_role
+# or the JWT secret here.
+ARG VITE_SUPABASE_URL=""
+ARG VITE_SUPABASE_PUBLISHABLE_KEY=""
+ENV VITE_SUPABASE_URL=${VITE_SUPABASE_URL} \
+    VITE_SUPABASE_PUBLISHABLE_KEY=${VITE_SUPABASE_PUBLISHABLE_KEY}
 RUN npm run build
 
 # Emit-only stage — no web server. `docker compose --profile build-spa run

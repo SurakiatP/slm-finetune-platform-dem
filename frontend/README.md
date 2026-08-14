@@ -9,7 +9,7 @@ GGUF export → chat playground → evaluation & comparison.
 React 19 + Vite + TypeScript + Tailwind CSS 3 · TanStack Query v5 ·
 react-router v7 · Recharts · lucide-react · Fira Sans / Fira Code.
 
-No auth (matches the backend). Desktop-first, responsive, WCAG AA on dark.
+Auth is **optional and compile-time**: leave `VITE_SUPABASE_URL` / `VITE_SUPABASE_PUBLISHABLE_KEY` unset (the default) for an auth-less build against a dev backend (`AUTH_REQUIRED=false`); set both to gate the app behind Supabase email/password login and send the session JWT on every /api call (`Authorization: Bearer`) and on /ws (`["bearer", <jwt>]` subprotocol) — required against a backend running `AUTH_REQUIRED=true`. Desktop-first, responsive, WCAG AA on dark.
 
 ## Run
 

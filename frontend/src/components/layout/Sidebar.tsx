@@ -1,6 +1,7 @@
-import { Boxes, Cpu, FolderKanban, LayoutDashboard, MessagesSquare } from 'lucide-react'
+import { Boxes, Cpu, FolderKanban, LayoutDashboard, LogOut, MessagesSquare } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 
+import { useAuth } from '@/auth/AuthProvider'
 import { cn } from '@/lib/cn'
 
 const navItems = [
@@ -11,6 +12,7 @@ const navItems = [
 ]
 
 export function Sidebar() {
+  const { enabled, session, signOut } = useAuth()
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r border-line/60 bg-surface max-lg:w-14">
       <div className="flex h-14 items-center gap-2 border-b border-line/60 px-4 max-lg:justify-center max-lg:px-0">
@@ -37,6 +39,19 @@ export function Sidebar() {
           </NavLink>
         ))}
       </nav>
+      {enabled && session && (
+        <div className="border-t border-line/60 p-2">
+          <button
+            type="button"
+            onClick={() => void signOut()}
+            title={`Sign out (${session.user.email ?? 'signed in'})`}
+            className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-3 py-2 text-sm text-body-muted transition-colors hover:bg-surface-2 hover:text-body max-lg:justify-center max-lg:px-0"
+          >
+            <LogOut className="h-4 w-4 shrink-0" aria-hidden />
+            <span className="truncate max-lg:sr-only">{session.user.email ?? 'Sign out'}</span>
+          </button>
+        </div>
+      )}
       <div className="border-t border-line/60 p-3 max-lg:hidden">
         <p className="font-mono text-[10px] text-body-muted/60">SLM Fine-Tuning PoC</p>
       </div>

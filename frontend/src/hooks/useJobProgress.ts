@@ -9,6 +9,7 @@ import type {
   WSMessage,
 } from '@/api/types'
 import { isTerminalMessage, jobSocketUrl, parseWSMessage } from '@/api/ws'
+import { getAccessToken } from '@/auth/supabase'
 
 export interface LossPoint {
   step: number
@@ -135,37 +136,66 @@ export function useJobProgress(jobId: string | null, options: UseJobProgressOpti
     let attempts = 0
     let reconnectTimer: number | undefined
     let stopped = false
+    // Consecutive closes that never saw onopen. An auth-rejected handshake
+    // (4401/4403 server-side) reaches JS as a bare close — browsers report
+    // code 1006 with no reason, never the server's number — so the only
+    // client-visible signature is "closed without ever opening". A real
+    // network flap tends to succeed at least once in between drops; a
+    // rejection never does. Give up after 3 rather than burning all
+    // MAX_RECONNECT_ATTEMPTS on a socket that can never open.
+    // (docs/patches/smart-model-tune-auth.md §4)
+    let handshakeFailures = 0
 
     const connect = () => {
-      ws = new WebSocket(jobSocketUrl(jobId))
+      void (async () => {
+        // Same fresh-or-nothing rule as api/client.ts. The token rides the
+        // Sec-WebSocket-Protocol header as the exact two-value form
+        // ["bearer", <jwt>] — the only shape the backend accepts; it echoes
+        // `bearer` back on accept. No session (or auth disabled) sends no
+        // subprotocol at all, which AUTH_REQUIRED=false accepts unchanged.
+        const token = await getAccessToken()
+        if (stopped) return
 
-      ws.onopen = () => {
-        attempts = 0
-        dispatch({ type: 'socket', open: true })
-      }
+        const socket = token
+          ? new WebSocket(jobSocketUrl(jobId), ['bearer', token])
+          : new WebSocket(jobSocketUrl(jobId))
+        ws = socket
+        let opened = false
 
-      ws.onmessage = (event) => {
-        const msg = parseWSMessage(String(event.data))
-        if (!msg || msg.job_id !== jobId) return
-        dispatch({ type: 'message', msg })
-        if (isTerminalMessage(msg)) {
-          stopped = true
-          onTerminalRef.current?.(msg)
-          ws?.close()
+        socket.onopen = () => {
+          opened = true
+          attempts = 0
+          handshakeFailures = 0
+          dispatch({ type: 'socket', open: true })
         }
-      }
 
-      ws.onclose = () => {
-        dispatch({ type: 'socket', open: false })
-        if (stopped || attempts >= MAX_RECONNECT_ATTEMPTS) return
-        const delay = Math.min(10_000, 1000 * 2 ** attempts)
-        attempts += 1
-        reconnectTimer = window.setTimeout(connect, delay)
-      }
+        socket.onmessage = (event) => {
+          const msg = parseWSMessage(String(event.data))
+          if (!msg || msg.job_id !== jobId) return
+          dispatch({ type: 'message', msg })
+          if (isTerminalMessage(msg)) {
+            stopped = true
+            onTerminalRef.current?.(msg)
+            socket.close()
+          }
+        }
 
-      ws.onerror = () => {
-        ws?.close()
-      }
+        socket.onclose = () => {
+          dispatch({ type: 'socket', open: false })
+          if (!opened) {
+            handshakeFailures += 1
+            if (handshakeFailures >= 3) return
+          }
+          if (stopped || attempts >= MAX_RECONNECT_ATTEMPTS) return
+          const delay = Math.min(10_000, 1000 * 2 ** attempts)
+          attempts += 1
+          reconnectTimer = window.setTimeout(connect, delay)
+        }
+
+        socket.onerror = () => {
+          socket.close()
+        }
+      })()
     }
 
     connect()

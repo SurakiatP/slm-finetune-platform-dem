@@ -443,6 +443,14 @@ services:
     build:
       context: .
       dockerfile: docker/frontend.Dockerfile
+      args:
+        # Compile-time Supabase auth config (see docker/frontend.Dockerfile).
+        # Empty defaults build the auth-less bundle; export both env vars
+        # before `--profile build-spa run` to build an authenticated bundle
+        # for a backend with AUTH_REQUIRED=true. Anon key only — public by
+        # design; never the service_role key or JWT secret.
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:-}
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${VITE_SUPABASE_PUBLISHABLE_KEY:-}
     container_name: slm-frontend-build
     profiles: ["build-spa"]
     volumes:

@@ -1,6 +1,8 @@
 import { lazy } from 'react'
 import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 
+import { AuthProvider, useAuth } from '@/auth/AuthProvider'
+import { LoginPage } from '@/auth/LoginPage'
 import { AppShell } from '@/components/layout/AppShell'
 import { ToastProvider } from '@/components/ui/Toast'
 import { NotFoundPage } from '@/features/shared/NotFoundPage'
@@ -44,10 +46,25 @@ const router = createBrowserRouter([
   },
 ])
 
+/**
+ * Auth gate: with VITE_SUPABASE_* unset this renders the router
+ * immediately (auth-less dev mode). With them set, the router is withheld
+ * until a Supabase session exists — so no query ever fires unauthenticated
+ * and the 401→login flicker never happens.
+ */
+function Gate() {
+  const { enabled, session, loading } = useAuth()
+  if (enabled && loading) return null
+  if (enabled && !session) return <LoginPage />
+  return <RouterProvider router={router} />
+}
+
 export default function App() {
   return (
-    <ToastProvider>
-      <RouterProvider router={router} />
-    </ToastProvider>
+    <AuthProvider>
+      <ToastProvider>
+        <Gate />
+      </ToastProvider>
+    </AuthProvider>
   )
 }
