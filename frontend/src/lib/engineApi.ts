@@ -10,6 +10,19 @@ export const ENGINE_BASE = ENGINE_HOST;
 
 export type EngineTaskType = "classification" | "tool_calling" | "qa";
 
+export interface EngineBaseModel {
+  id: string;
+  display_name: string;
+  family: string;
+  params_billions: number;
+  context_length: number;
+  recommended_max_seq_length: number;
+  quantization: string;
+  license: string | null;
+  notes: string | null;
+  ollama_tag: string | null;
+}
+
 export interface EngineProject {
   id: string;
   name: string;
@@ -277,6 +290,10 @@ async function engineFetch(path: string, init?: RequestInit, json = true): Promi
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await engineFetch(path, init);
   return res.json() as Promise<T>;
+}
+
+export async function engineListBaseModels(): Promise<EngineBaseModel[]> {
+  return apiFetch<EngineBaseModel[]>("/base-models");
 }
 
 // ─── Node 1 — Create Project ──────────────────────────────────────────────────

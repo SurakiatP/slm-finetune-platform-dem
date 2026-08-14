@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, Download, Rocket, MessageSquare, Copy, ExternalLink, CheckCircle2 } from "lucide-react";
-import { taskTypeLabels, baseModelLabels } from "@/data/mockData";
+import { getBaseModelLabel, taskTypeLabels } from "@/data/mockData";
 import { useState, useEffect } from "react";
 import { getModel, type TrainedModelExt } from "@/lib/modelsApi";
 import { useLanguage } from "@/i18n/LanguageContext";
@@ -125,7 +125,7 @@ export default function ModelDetail() {
             <Badge variant={statusColor[model.status]}>{model.status}</Badge>
           </div>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {baseModelLabels[model.baseModel]} · {taskTypeLabels[model.taskType]}
+            {getBaseModelLabel(model.baseModel)} · {taskTypeLabels[model.taskType]}
           </p>
         </div>
         <div className="flex gap-2">
@@ -156,7 +156,7 @@ export default function ModelDetail() {
               <CardContent className="space-y-2 text-sm">
                 {[
                   ["Model ID", model.id],
-                  [t("projectDetail.baseModel"), baseModelLabels[model.baseModel]],
+                  [t("projectDetail.baseModel"), getBaseModelLabel(model.baseModel)],
                   [t("projectDetail.taskType"), taskTypeLabels[model.taskType]],
                   [t("dataset.fileSize"), model.fileSize],
                   [t("dataset.format"), model.format],

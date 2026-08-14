@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ArrowLeft, ArrowRight, Check, Sparkles, Loader2 } from "lucide-react";
@@ -14,10 +14,8 @@ import { useToast } from "@/hooks/use-toast";
 import { createProject } from "@/lib/projectsApi";
 import { validatePreflight } from "@/lib/trainingValidation";
 import { runEngineWorkflow } from "@/lib/engineWorkflow";
-import {
-  isEngineModelSupported,
-  isEngineTaskSupported,
-} from "@/lib/engineMappings";
+import { isEngineTaskSupported, resolveEngineBaseModel } from "@/lib/engineMappings";
+import { engineListBaseModels, type EngineBaseModel } from "@/lib/engineApi";
 
 export interface ProjectFormData {
   projectName: string;
@@ -47,15 +45,39 @@ export default function NewProject() {
   const [formData, setFormData] = useState<ProjectFormData>(initialFormData);
   const [showTemplates, setShowTemplates] = useState(false);
   const [launching, setLaunching] = useState(false);
+  const [baseModels, setBaseModels] = useState<EngineBaseModel[]>([]);
+  const [loadingBaseModels, setLoadingBaseModels] = useState(true);
+  const [baseModelsError, setBaseModelsError] = useState<string | null>(null);
   const { t } = useLanguage();
   const { toast } = useToast();
   const navigate = useNavigate();
+
+  const loadBaseModels = useCallback(async () => {
+    setLoadingBaseModels(true);
+    setBaseModelsError(null);
+    try {
+      const models = await engineListBaseModels();
+      setBaseModels(models);
+      setFormData((current) => (
+        current.baseModel && !models.some((model) => model.id === current.baseModel)
+          ? { ...current, baseModel: null }
+          : current
+      ));
+    } catch (error) {
+      setBaseModels([]);
+      setBaseModelsError(error instanceof Error ? error.message : "Unable to load base models");
+    } finally {
+      setLoadingBaseModels(false);
+    }
+  }, []);
+
+  const supportedBaseModelIds = new Set(baseModels.map((model) => model.id));
 
   const handleLaunch = async () => {
     if (launching) return;
 
     // Pre-flight validation — block launch on errors, surface warnings as info toasts
-    const result = validatePreflight(formData, t);
+    const result = validatePreflight(formData, t, supportedBaseModelIds);
     if (!result.ok) {
       // Show up to 3 errors so the toast stays readable; remainder summarized
       const shown = result.errors.slice(0, 3).map((e) => `• ${e.message}`).join("\n");
@@ -126,7 +148,7 @@ export default function NewProject() {
           projectName: tpl.name ?? p.projectName,
           taskPrompt: tpl.prompt ?? p.taskPrompt,
           taskType: tpl.taskType ?? p.taskType,
-          baseModel: tpl.baseModel ?? p.baseModel,
+          baseModel: tpl.baseModel ? resolveEngineBaseModel(tpl.baseModel) : p.baseModel,
         }));
         sessionStorage.removeItem("template-prefill");
       } catch {
@@ -134,6 +156,10 @@ export default function NewProject() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    void loadBaseModels();
+  }, [loadBaseModels]);
 
   const steps = [
     { id: "prompt", label: t("newProject.taskPrompt") },
@@ -151,7 +177,10 @@ export default function NewProject() {
       case 0: return formData.taskPrompt.trim().length > 10;
       case 1: return isEngineTaskSupported(formData.taskType);
       case 2: return formData.files.length === 1;
-      case 3: return isEngineModelSupported(formData.baseModel);
+      case 3: return !loadingBaseModels
+        && !baseModelsError
+        && formData.baseModel !== null
+        && supportedBaseModelIds.has(formData.baseModel);
       default: return false;
     }
   };
@@ -162,7 +191,7 @@ export default function NewProject() {
       projectName: template.name,
       taskPrompt: template.prompt,
       taskType: template.taskType,
-      baseModel: template.baseModel,
+      baseModel: resolveEngineBaseModel(template.baseModel),
     });
     setShowTemplates(false);
     setCurrentStep(2);
@@ -218,7 +247,16 @@ export default function NewProject() {
           {currentStep === 0 && <TaskPromptStep formData={formData} updateForm={updateForm} />}
           {currentStep === 1 && <TaskSelectionStep formData={formData} updateForm={updateForm} />}
           {currentStep === 2 && <DataUploadStep formData={formData} updateForm={updateForm} />}
-          {currentStep === 3 && <ModelSelectionStep formData={formData} updateForm={updateForm} />}
+          {currentStep === 3 && (
+            <ModelSelectionStep
+              formData={formData}
+              updateForm={updateForm}
+              models={baseModels}
+              loading={loadingBaseModels}
+              error={baseModelsError}
+              onRetry={() => void loadBaseModels()}
+            />
+          )}
         </CardContent>
       </Card>
 
