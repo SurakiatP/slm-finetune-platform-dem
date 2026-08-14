@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Download, Rocket, MessageSquare } from "lucide-react";
 import type { TrainedModel } from "@/types";
-import { taskTypeLabels, baseModelLabels } from "@/data/mockData";
+import { getBaseModelLabel, taskTypeLabels } from "@/data/mockData";
 
 const statusColor: Record<string, "default" | "secondary" | "outline"> = {
   deployed: "default",
@@ -20,7 +20,7 @@ export function ModelCard({ model }: { model: TrainedModel }) {
           <div className="flex items-start justify-between gap-2">
             <div>
               <CardTitle className="text-sm font-semibold font-mono">{model.name}</CardTitle>
-              <p className="text-[10px] text-muted-foreground mt-0.5">{baseModelLabels[model.baseModel]}</p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">{getBaseModelLabel(model.baseModel)}</p>
             </div>
             <Badge variant={statusColor[model.status]} className="text-[10px]">{model.status}</Badge>
           </div>

@@ -110,6 +110,28 @@ describe("NewProject Engine workflow", () => {
     }));
   });
 
+  it("passes a catalog model ID to the Engine without remapping it", async () => {
+    await runEngineWorkflow({
+      supabaseProjectId: "supabase-project",
+      taskType: "qa",
+      taskDescription: "Answer questions about the policy document.",
+      seedFile: new File(["{}"], "seed.json"),
+      epochs: 3,
+      learningRate: 0.0002,
+      baseModel: "unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
+      projectName: "Project",
+    });
+
+    expect(engineStartTraining).toHaveBeenCalledWith(
+      "engine-project",
+      "generated-dataset",
+      "unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
+      "Project",
+      expect.any(Object),
+      "training:supabase-project",
+    );
+  });
+
   it("marks the real project failed and never starts training when upload fails", async () => {
     engineUploadSeed.mockRejectedValue(new Error("Engine unavailable"));
 

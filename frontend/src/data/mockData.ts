@@ -195,3 +195,7 @@ export const baseModelLabels: Record<string, string> = {
   "llama-3.2-1b": "Llama 3.2 1B",
   "smollm2-1.7b": "SmolLM2 1.7B",
 };
+
+export function getBaseModelLabel(baseModel: string): string {
+  return baseModelLabels[baseModel] ?? baseModel;
+}

@@ -13,9 +13,9 @@ import {
 import { getEngineMeta, patchEngineMeta, setEngineMeta } from "@/lib/engineStore";
 import { updateProject } from "@/lib/projectsApi";
 import {
-  BASE_MODEL_TO_ENGINE,
   TASK_TYPE_TO_ENGINE,
   buildManualConfig,
+  resolveEngineBaseModel,
 } from "@/lib/engineMappings";
 
 export interface EngineWorkflowInput {
@@ -103,9 +103,9 @@ export async function runEngineWorkflow(input: EngineWorkflowInput): Promise<voi
   let failureStep: FailureStep = "project";
   try {
     const engineTaskType = TASK_TYPE_TO_ENGINE[input.taskType];
-    const engineBaseModel = BASE_MODEL_TO_ENGINE[input.baseModel];
-    if (!engineTaskType || !engineBaseModel) {
-      throw new Error("Selected task or base model is not supported by the Engine");
+    const engineBaseModel = resolveEngineBaseModel(input.baseModel);
+    if (!engineTaskType) {
+      throw new Error("Selected task is not supported by the Engine");
     }
 
     const engineProjectId = await findOrCreateEngineProject(input);
