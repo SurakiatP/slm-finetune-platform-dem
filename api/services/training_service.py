@@ -5,6 +5,8 @@ Steps:
   2. Validate dataset exists, belongs to the project, has finished generation
      (storage_uri set) and matches the project's task_type.
   3. Validate base_model is in the supported allowlist (ADR-002).
+  3b. RTX 3060 VRAM safety — reject a per_device_train_batch_size that
+      would OOM at the requested max_seq_length (mirrors the HPO guard).
   4. GPU quota gate (Bucket.GPU, shared with HPO training/evaluation/export).
   5. Insert TrainingJob row (status=PENDING, status flips to RUNNING in the worker).
   6. Enqueue the train.manual Celery task.
@@ -58,9 +60,11 @@ def _max_safe_batch_for_3060(params_billions: float, max_seq_length: int) -> int
     12GB VRAM for the given model size and sequence length on RTX 3060 with
     QLoRA 4-bit + LoRA r=16 + all-linear target modules.
 
-    Used by HPO submission to reject search-space choices that would OOM.
-    Manual mode skips this check — power users get to overshoot at their
-    own risk (a single OOM fails one job, not a whole study).
+    Used by both manual and HPO submission to reject a
+    `per_device_train_batch_size` that would OOM. Manual mode used to skip
+    this check (power users get to overshoot at their own risk), but a
+    doomed manual submit still burns the single GPU slot and fails opaquely
+    mid-run — same cost as a poisoned HPO trial, so both paths apply it now.
     """
     for params_upper, seq_table in _MAX_SAFE_BATCH_3060:
         if params_billions <= params_upper:
@@ -135,6 +139,26 @@ async def submit_manual_training_job(
                 f"Use GET /api/v1/base-models to see allowed values."
             ),
         )
+
+    # 3b. 3060 VRAM safety — the requested per_device_train_batch_size must
+    # fit on the GPU at the requested max_seq_length. A manual submit that
+    # OOMs mid-run still burns the single GPU slot and fails opaquely, same
+    # as an unsafe HPO trial (see `_max_safe_batch_for_3060` guard below).
+    params_b = _PARAMS_BY_MODEL_ID.get(base_model)
+    if params_b is not None:
+        seq = request.manual_config.max_seq_length
+        max_batch = _max_safe_batch_for_3060(params_b, seq)
+        requested_batch = request.manual_config.per_device_train_batch_size
+        if requested_batch > max_batch:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"manual_config.per_device_train_batch_size={requested_batch} "
+                    f"exceeds the safe ceiling ({max_batch}) for base_model='{base_model}' "
+                    f"({params_b:.2f}B params) at max_seq_length={seq} on RTX 3060 12GB. "
+                    f"Lower per_device_train_batch_size or shorten max_seq_length."
+                ),
+            )
 
     # 4. GPU quota gate — one bucket shared with HPO training, evaluation, and
     # export (they all pin the same RTX 3060). Runs after every validation /

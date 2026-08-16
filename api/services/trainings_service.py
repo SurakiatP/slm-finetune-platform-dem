@@ -29,7 +29,7 @@ from api.schemas.trainings import (
     TrainingMetricsResponse,
     TrainingResponse,
 )
-from api.services import audit_service, mlflow_metrics, ownership
+from api.services import audit_service, mlflow_metrics, ownership, queue_position
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 
 log = logging.getLogger(__name__)
@@ -68,7 +68,21 @@ async def get_training(
     db: AsyncSession, training_id: UUID, user: CurrentUser | None = None
 ) -> TrainingResponse:
     job = await ownership.assert_training_access(db, training_id, user)
-    return TrainingResponse.model_validate(job)
+    response = TrainingResponse.model_validate(job)
+    # Display-only, in-flight-only: only a PENDING/RUNNING job can meaningfully
+    # sit in a GPU queue, so skip the lookup entirely for terminal jobs (and
+    # never populate on list_trainings — see queue_position.py).
+    if job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+        info = await queue_position.project_queue_info(db, job.project_id)
+        if info is not None:
+            response = response.model_copy(
+                update={
+                    "queue_state": info.queue_state,
+                    "queue_position": info.queue_position,
+                    "owner_queue_position": info.owner_queue_position,
+                }
+            )
+    return response
 
 
 async def cancel_training(

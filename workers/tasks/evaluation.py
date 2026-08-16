@@ -9,6 +9,16 @@ Flow:
   5. Compute per-task metrics (classification / tool_calling / qa).
   6. (Optional) run the LLM-as-judge on top.
   7. Persist `metrics_json` + `llm_judge_score` + flip COMPLETED.
+
+Deliberately NOT wired to `workers/vram.py`'s `preflight_gpu_vram()` (unlike
+`training.py` / `hpo_training.py` / `model_export.py`): evaluation never
+touches the GPU in this worker's own process. Inference happens on the
+Ollama server over HTTP, in a separate process (and often a separate
+container) — this worker process's `torch.cuda.mem_get_info()` reports on
+*this* process's CUDA context, which says nothing about whatever headroom
+Ollama has (or doesn't) for the model it's about to load. A preflight check
+here would either check the wrong thing or need an entirely different
+mechanism (e.g. asking Ollama's own API), which is out of scope here.
 """
 
 from __future__ import annotations
