@@ -29,7 +29,7 @@ from api.schemas.artifacts import (
 )
 from api.schemas.enums import ArtifactFormat, JobStatus
 from api.schemas.responses import Page
-from api.services import audit_service, ownership, quota
+from api.services import audit_service, ownership, quota, queue_position
 from api.services.quota import Bucket
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 from workers.storage import get_minio_client, parse_s3_uri
@@ -79,7 +79,26 @@ async def get_model(
     db: AsyncSession, model_id: UUID, user: CurrentUser | None = None
 ) -> ModelArtifactResponse:
     artifact = await ownership.assert_model_access(db, model_id, user)
-    return ModelArtifactResponse.model_validate(artifact)
+    response = ModelArtifactResponse.model_validate(artifact)
+    # Display-only, in-flight-only: only a PENDING/RUNNING export can
+    # meaningfully sit in a GPU queue, so skip the lookup entirely otherwise
+    # (and never populate on list_models — see queue_position.py).
+    if artifact.export_status in (JobStatus.PENDING, JobStatus.RUNNING):
+        project_id = await _project_id_for_artifact(db, artifact)
+        info = (
+            await queue_position.project_queue_info(db, project_id)
+            if project_id is not None
+            else None
+        )
+        if info is not None:
+            response = response.model_copy(
+                update={
+                    "queue_state": info.queue_state,
+                    "queue_position": info.queue_position,
+                    "owner_queue_position": info.owner_queue_position,
+                }
+            )
+    return response
 
 
 # ---- export ---------------------------------------------------------------

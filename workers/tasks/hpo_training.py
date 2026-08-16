@@ -57,6 +57,7 @@ from workers.storage import (
     s3_uri,
 )
 from workers.sync_db import session_scope
+from workers.vram import friendly_oom_message, preflight_gpu_vram
 
 log = get_task_logger(__name__)
 
@@ -145,6 +146,18 @@ def train_hpo(
                         "failed to publish cancelled frame for %s", training_id, exc_info=True
                     )
                 return {"status": "cancelled", "training_id": training_id}
+
+            # GPU preflight: fail fast, before the dataset download and the
+            # heavy training imports below, if the card doesn't have enough
+            # free VRAM for a new study right now. Placed AFTER the
+            # cancelled-at-start early-return above (not directly after the
+            # RUNNING flip in section 1) so a study cancelled while still
+            # queued exits on that path first, without ever touching the
+            # GPU check. Raising here lands in this task's own `except
+            # BaseException` handler further down, which marks the
+            # TrainingJob FAILED with this message — no separate status
+            # assignment needed here.
+            preflight_gpu_vram(job_kind="hpo")
 
             # ---- 2. Pull rows --------------------------------------------------
             log.info("hpo: job=%s loading dataset %s", job_id, dataset_uri)
@@ -441,7 +454,9 @@ def train_hpo(
                         if row.status != JobStatus.CANCELLED:
                             row.status = JobStatus.FAILED
                         row.ended_at = datetime.now(timezone.utc)
-                        row.error_message = (str(exc) or repr(exc))[:4000]
+                        row.error_message = (
+                            friendly_oom_message(exc) or (str(exc) or repr(exc))
+                        )[:4000]
                         audit_service.record(
                             session,
                             action=(

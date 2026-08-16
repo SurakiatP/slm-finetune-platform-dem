@@ -7,7 +7,7 @@ The request side (`TrainingRequest`) and the accepted-job response live in
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -36,6 +36,19 @@ class TrainingResponse(BaseModel):
     ended_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # queue_state / queue_position / owner_queue_position: project-level GPU
+    # queue standing (train/export/eval jobs share one GPU, worker
+    # concurrency=1). "processing" = a GPU job for this project is currently
+    # running (positions are null in that case); "queued" = a GPU job for
+    # this project is only pending. queue_position is the 1-based global
+    # FIFO ordinal across all queued projects; owner_queue_position is the
+    # ordinal within the same owner's queued projects only. Populated only
+    # on detail GETs while a job is in-flight — deliberately left null on
+    # list endpoints (would require an N+1 queue lookup per row) and on
+    # terminal/idle rows. Pure additive, backward compatible.
+    queue_state: Literal["processing", "queued"] | None = None
+    queue_position: int | None = None
+    owner_queue_position: int | None = None
 
 
 class MlflowUrlResponse(BaseModel):

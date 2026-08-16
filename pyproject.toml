@@ -39,6 +39,14 @@ dependencies = [
     "python-multipart>=0.0.17",
     "websockets>=13.1",
     "openai>=1.58.1",
+    # httpx is imported DIRECTLY by api/services/{inference_service,
+    # base_model_catalog,trainings_service,mlflow_metrics}.py,
+    # workers/ollama_client.py and workers/tasks/evaluation.py — it must be a
+    # declared dependency, not inherited transitively. Until 2026-08-16 it
+    # arrived via openai's own dependency tree; a fresh image build resolved a
+    # newer openai that no longer pulls httpx, and api + worker-cpu crash-looped
+    # on `ModuleNotFoundError: No module named 'httpx'` at boot.
+    "httpx>=0.28.0",
     "mlflow>=2.19.0",
     "optuna>=4.1.0",
     "tenacity>=9.0.0",

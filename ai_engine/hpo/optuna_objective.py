@@ -9,6 +9,7 @@ outer loop over `ManualTrainingConfig` variations.
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import shutil
@@ -120,6 +121,7 @@ class HPOObjective:
                 trial_workdir = os.path.join(self.workdir_root, f"trial-{trial.number}")
                 os.makedirs(trial_workdir, exist_ok=True)
 
+                trainer = None
                 try:
                     trainer = UnslothTrainer(
                         base_model=self.base_model,
@@ -141,6 +143,14 @@ class HPOObjective:
                 finally:
                     # Trial adapters are throwaway — only the final-best run keeps its weights.
                     shutil.rmtree(trial_workdir, ignore_errors=True)
+                    # Study-level GPU cleanup only runs once, after every trial has
+                    # finished (workers/tasks/hpo_training.py), so a trial that OOMs
+                    # or errors otherwise leaks VRAM into every trial after it. Drop
+                    # the trainer ref BEFORE emptying the CUDA cache — the allocator
+                    # still holds the weights until the last reference dies, so
+                    # empty_cache() first would free nothing.
+                    trainer = None
+                    _release_gpu_memory()
 
                 value = _extract_metric(result.metrics, self.hpo_config.objective_metric)
                 if value is None:
@@ -217,6 +227,28 @@ class HPOObjective:
 
 
 # ---- helpers ---------------------------------------------------------------
+
+
+def _release_gpu_memory() -> None:
+    """Best-effort CUDA cleanup after a trial. Safe to call when torch isn't installed.
+
+    Deliberately NOT paired with a per-trial VRAM preflight that raises
+    `optuna.TrialPruned` when free memory looks low: on a host that is
+    persistently short on VRAM, that would prune every single trial and let
+    the study "complete" with zero real trials run — a silent, misleading
+    success. Failing loudly once at study start (the whole-study preflight in
+    workers/tasks/hpo_training.py) is the right place to catch that; this
+    helper's job is only to stop one trial's leftovers from starving the next.
+    """
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:  # noqa: BLE001
+        log.debug("torch cleanup skipped", exc_info=True)
+    gc.collect()
 
 
 def _extract_metric(metrics: dict[str, float], wanted: str) -> float | None:

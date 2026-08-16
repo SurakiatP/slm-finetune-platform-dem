@@ -51,6 +51,7 @@ from workers.storage import (
     s3_uri,
 )
 from workers.sync_db import session_scope
+from workers.vram import friendly_oom_message, preflight_gpu_vram
 
 log = get_task_logger(__name__)
 
@@ -142,6 +143,15 @@ def export_model(
                 except Exception:  # noqa: BLE001
                     log.warning("failed to publish cancelled frame", exc_info=True)
                 return {"status": "cancelled", "artifact_id": artifact_id, "format": fmt.value}
+
+            # GPU preflight: fail fast, before the adapter download and the
+            # deferred `unsloth` import below, if the card doesn't have
+            # enough free VRAM to reload the base model + adapter right now.
+            # Raising here lands in this task's own `except BaseException`
+            # handler further down, which marks the ModelArtifact export
+            # FAILED with this message — no separate status assignment
+            # needed here.
+            preflight_gpu_vram(job_kind="export")
 
             # ---- 2. Pull adapter dir from MinIO ------------------------------
             publish_stage("downloading")
@@ -449,7 +459,9 @@ def export_model(
                     # still re-raised so Celery records the task failure. Same
                     # guard, same reasoning, as `data_generation.py`'s.
                     if row is not None and not committed:
-                        row.export_error_message = (str(exc) or repr(exc))[:4000]
+                        row.export_error_message = (
+                            friendly_oom_message(exc) or (str(exc) or repr(exc))
+                        )[:4000]
                         # The cancel endpoint sets export_status=CANCELLED in
                         # the DB *before* revoking the task. If that already
                         # landed, don't clobber it back to FAILED — CANCELLED
