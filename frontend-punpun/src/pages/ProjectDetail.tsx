@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Database, Loader2, PlayCircle, Trash2 } from "lucide-react";
+import { ArrowLeft, ClipboardList, Database, Loader2, PlayCircle, Trash2 } from "lucide-react";
 
 import { PageTransition } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
@@ -13,10 +13,18 @@ import { EngineEmptyState } from "@/components/engine/EngineEmptyState";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { QueueBadge } from "@/components/engine/QueueBadge";
 import { StatusBadge } from "@/components/engine/StatusBadge";
-import { taskTypeLabel } from "@/components/dashboard/ProjectCard";
-import { queryKeys, useDatasets, useProject, useTrainings } from "@/hooks/queries";
+import { EvaluationTable } from "@/components/evaluation/EvaluationTable";
+import {
+  queryKeys,
+  useDatasets,
+  useEvaluations,
+  useModels,
+  useProject,
+  useTrainings,
+} from "@/hooks/queries";
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/i18n/LanguageContext";
+import { useTaskTypeLabel } from "@/lib/labels";
 import { deleteProjectCascade } from "@/lib/projectDelete";
 
 // ProjectActivityTable / ProjectUsageTable are owned by another W3 lane and
@@ -32,6 +40,7 @@ export default function ProjectDetail() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const taskTypeLabel = useTaskTypeLabel();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -78,19 +87,17 @@ export default function ProjectDetail() {
   return (
     <PageTransition>
       <div className="space-y-6 max-w-5xl">
-        <div className="flex items-start gap-3">
+        <div className="flex items-center gap-3">
           <Button variant="ghost" size="icon" asChild>
             <Link to="/projects"><ArrowLeft className="h-4 w-4" /></Link>
           </Button>
-          <div className="flex-1 min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl font-bold text-foreground truncate">{project.name}</h1>
-              <Badge variant="outline" className="text-[10px]">{taskTypeLabel[project.task_type]}</Badge>
+          <div className="flex-1">
+            <div className="flex items-center gap-3">
+              <h1 className="text-xl font-bold text-foreground">{project.name}</h1>
+              <Badge variant="outline" className="text-[10px]">{taskTypeLabel(project.task_type)}</Badge>
               <QueueBadge queueState={project.queue_state} queuePosition={project.queue_position} />
             </div>
-            {project.description && (
-              <p className="text-sm text-muted-foreground mt-0.5">{project.description}</p>
-            )}
+            <p className="text-sm text-muted-foreground mt-0.5">{project.description}</p>
             {project.external_project_id && (
               <p className="text-[11px] font-mono text-muted-foreground mt-0.5">
                 external id: {project.external_project_id}
@@ -111,7 +118,8 @@ export default function ProjectDetail() {
           <TabsList>
             <TabsTrigger value="overview">{t("projectDetail.overview")}</TabsTrigger>
             <TabsTrigger value="datasets">{t("project.datasetsTab")}</TabsTrigger>
-            <TabsTrigger value="trainings">{t("projectDetail.training")}</TabsTrigger>
+            <TabsTrigger value="training">{t("projectDetail.training")}</TabsTrigger>
+            <TabsTrigger value="evaluation">{t("projectDetail.evaluation")}</TabsTrigger>
             <TabsTrigger value="activity">{t("project.activityTab")}</TabsTrigger>
             <TabsTrigger value="usage">{t("project.usageTab")}</TabsTrigger>
           </TabsList>
@@ -122,7 +130,7 @@ export default function ProjectDetail() {
                 <CardHeader className="pb-2"><CardTitle className="text-sm">{t("projectDetail.configuration")}</CardTitle></CardHeader>
                 <CardContent className="space-y-2 text-sm">
                   {[
-                    [t("projectDetail.taskType"), taskTypeLabel[project.task_type]],
+                    [t("projectDetail.taskType"), taskTypeLabel(project.task_type)],
                     [t("projectDetail.created"), new Date(project.created_at).toLocaleString()],
                     [t("projectDetail.lastUpdated"), new Date(project.updated_at).toLocaleString()],
                   ].map(([label, value]) => (
@@ -186,8 +194,12 @@ export default function ProjectDetail() {
             <DatasetsPreview projectId={project.id} />
           </TabsContent>
 
-          <TabsContent value="trainings" className="mt-4">
+          <TabsContent value="training" className="mt-4">
             <TrainingsPreview projectId={project.id} />
+          </TabsContent>
+
+          <TabsContent value="evaluation" className="mt-4">
+            <ProjectEvaluations projectId={project.id} />
           </TabsContent>
 
           <TabsContent value="activity" className="mt-4">
@@ -271,6 +283,44 @@ function DatasetsPreview({ projectId }: { projectId: string }) {
       </div>
     </div>
   );
+}
+
+/** Restores the original's `evaluation` tab, now backed by the real evaluation
+ *  stage: evaluations are keyed by model artifact, so scope them to this
+ *  project by way of its model artifacts. */
+function ProjectEvaluations({ projectId }: { projectId: string }) {
+  const { data: modelsPage, isLoading: modelsLoading } = useModels(projectId, { limit: 100 });
+  const { data: evalsPage, isLoading: evalsLoading } = useEvaluations({ limit: 100 });
+
+  if (modelsLoading || evalsLoading) {
+    return (
+      <div className="flex justify-center py-10">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  const models = modelsPage?.items ?? [];
+  const modelIds = new Set(models.map((m) => m.id));
+  const modelNames = Object.fromEntries(models.map((m) => [m.id, m.name]));
+  const rows = (evalsPage?.items ?? []).filter((e) => modelIds.has(e.model_artifact_id));
+
+  if (rows.length === 0) {
+    return (
+      <EngineEmptyState
+        icon={ClipboardList}
+        title="No evaluations yet"
+        hint="Export a model, then run an evaluation to compare it against a held-out dataset."
+        action={
+          <Button variant="outline" size="sm" asChild>
+            <Link to="/evaluations">Open Evaluations</Link>
+          </Button>
+        }
+      />
+    );
+  }
+
+  return <EvaluationTable evaluations={rows} modelNames={modelNames} />;
 }
 
 function TrainingsPreview({ projectId }: { projectId: string }) {

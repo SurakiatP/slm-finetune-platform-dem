@@ -6,8 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { Upload, FileText, X, FileCode, Loader2, CheckCircle2, Info, RefreshCw } from "lucide-react";
-import type { ProjectFormData } from "@/pages/NewProject";
-import { toErrorDetail } from "@/pages/NewProject";
+import { toErrorDetail, type ProjectFormData } from "@/pages/NewProject";
 import { useTaskExample, useUploadSeedDataset, useGenerateDataset, useSdgPipelineModels, queryKeys } from "@/hooks/queries";
 import { getDataset } from "@/api/endpoints/datasets";
 import type { JobStatus } from "@/api/types";
@@ -130,15 +129,6 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
 
       {!projectId && (
         <p className="text-xs text-muted-foreground">Waiting for the project to be created…</p>
-      )}
-
-      {example && (
-        <div className="bg-accent/50 rounded-lg p-4 space-y-2">
-          <p className="text-xs font-semibold text-foreground">Expected Seed Format ({taskType})</p>
-          <div className="bg-background rounded-md p-3 font-mono text-[11px] text-muted-foreground overflow-x-auto">
-            <pre>{JSON.stringify(example, null, 2)}</pre>
-          </div>
-        </div>
       )}
 
       {!seedUploaded && (
@@ -301,6 +291,18 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
               </Button>
             </>
           )}
+        </div>
+      )}
+
+      {/* Format guide — the sample now comes from the Engine's per-task
+          example (GET /api/v1/tasks/{task_type}/example) instead of a
+          hard-coded classification snippet. */}
+      {example && (
+        <div className="bg-accent/50 rounded-lg p-4 space-y-2">
+          <p className="text-xs font-semibold text-foreground">Expected Format</p>
+          <div className="bg-background rounded-md p-3 font-mono text-[11px] text-muted-foreground overflow-x-auto">
+            <pre>{JSON.stringify(example, null, 2)}</pre>
+          </div>
         </div>
       )}
     </div>

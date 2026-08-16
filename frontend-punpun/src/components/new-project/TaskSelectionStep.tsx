@@ -1,9 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Tag, HelpCircle, Zap, ListChecks, Loader2, RefreshCw } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
-import type { ProjectFormData } from "@/pages/NewProject";
-import { toErrorDetail } from "@/pages/NewProject";
+import { Tag, HelpCircle, Zap, ListChecks, Loader2, RefreshCw, type LucideIcon } from "lucide-react";
+import { toErrorDetail, type ProjectFormData } from "@/pages/NewProject";
 import type { TaskType } from "@/api/types";
 import { useTaskTypes } from "@/hooks/queries";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
@@ -69,13 +67,11 @@ export function TaskSelectionStep({
                   {selected && <Badge className="ml-auto text-[10px]">Selected</Badge>}
                 </div>
                 <p className="text-xs text-muted-foreground mb-2">{task.description}</p>
-                {task.sdg_modes_supported.length > 0 && (
-                  <div className="bg-secondary/50 rounded-md px-2.5 py-1.5">
-                    <p className="text-[10px] font-mono text-muted-foreground">
-                      SDG modes: {task.sdg_modes_supported.join(", ")}
-                    </p>
-                  </div>
-                )}
+                <div className="bg-secondary/50 rounded-md px-2.5 py-1.5">
+                  <p className="text-[10px] font-mono text-muted-foreground line-clamp-2">
+                    {JSON.stringify(task.example)}
+                  </p>
+                </div>
               </button>
             );
           })}

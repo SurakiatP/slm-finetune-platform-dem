@@ -1,35 +1,31 @@
-import { motion } from "framer-motion";
-import { Box, FolderKanban, Sparkles } from "lucide-react";
-
+import { FolderKanban, Box, Clock } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import { StaggerContainer, StaggerItem } from "@/components/motion";
-import { useModels, useProjects } from "@/hooks/queries";
-
-const DAY_MS = 24 * 60 * 60 * 1000;
+import { motion } from "framer-motion";
+import { useModels, useProjects, useTrainings } from "@/hooks/queries";
 
 export function StatsCards() {
-  const { data: projectsPage, isLoading: projectsLoading } = useProjects({ limit: 100 });
-  const { data: modelsPage, isLoading: modelsLoading } = useModels(undefined, { limit: 100 });
+  const { data: projectsPage } = useProjects({ limit: 100 });
+  const { data: modelsPage } = useModels(undefined, { limit: 100 });
+  const { data: trainingsPage } = useTrainings({ limit: 100 });
 
-  if (projectsLoading || modelsLoading) {
-    return (
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {Array.from({ length: 3 }).map((_, i) => (
-          <Skeleton key={i} className="h-[76px] rounded-xl" />
-        ))}
-      </div>
-    );
-  }
-
-  const projects = projectsPage?.items ?? [];
-  const weekAgo = Date.now() - 7 * DAY_MS;
-  const newThisWeek = projects.filter((p) => new Date(p.created_at).getTime() >= weekAgo).length;
+  const totalProjects = projectsPage?.total ?? 0;
+  const modelsTrained = modelsPage?.total ?? 0;
+  // The original derived "training hours" from a mock `epochs * 0.5`; the
+  // Engine reports real wall-clock start/end per training job instead.
+  const trainingHours = (trainingsPage?.items ?? [])
+    .reduce((s, tr) => {
+      if (!tr.started_at) return s;
+      const end = tr.ended_at ? new Date(tr.ended_at).getTime() : Date.now();
+      const ms = end - new Date(tr.started_at).getTime();
+      return ms > 0 ? s + ms / 3_600_000 : s;
+    }, 0)
+    .toFixed(1);
 
   const stats = [
-    { label: "Total Projects", value: projectsPage?.total ?? 0, icon: FolderKanban, color: "text-primary" },
-    { label: "Models Trained", value: modelsPage?.total ?? 0, icon: Box, color: "text-success" },
-    { label: "New This Week", value: newThisWeek, icon: Sparkles, color: "text-warning" },
+    { label: "Total Projects", value: totalProjects, icon: FolderKanban, color: "text-primary" },
+    { label: "Models Trained", value: modelsTrained, icon: Box, color: "text-success" },
+    { label: "Training Hours", value: `${trainingHours}h`, icon: Clock, color: "text-warning" },
   ];
 
   return (

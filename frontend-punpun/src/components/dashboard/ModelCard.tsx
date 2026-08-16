@@ -32,7 +32,7 @@ export function ModelCard({ model }: { model: ModelArtifact }) {
         <CardContent className="space-y-3">
           <div className="grid grid-cols-2 gap-2 text-center">
             <div>
-              <p className="text-sm font-bold text-foreground">
+              <p className="text-lg font-bold text-foreground">
                 {model.size_mb !== null ? `${model.size_mb.toFixed(0)} MB` : "—"}
               </p>
               <p className="text-[10px] text-muted-foreground">Size</p>

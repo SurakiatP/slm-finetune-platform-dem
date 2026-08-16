@@ -11,22 +11,15 @@ import { QueueBadge } from "@/components/engine/QueueBadge";
 import { queryKeys } from "@/hooks/queries";
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/i18n/LanguageContext";
+import { useTaskTypeLabel } from "@/lib/labels";
 import { deleteProjectCascade } from "@/lib/projectDelete";
-import type { Project, TaskType } from "@/api/types";
-
-/** Backend supports exactly 3 task types (ADR-005) — keep this in lockstep
- *  with `api/types.ts`'s `TaskType` union. Shared across the dashboard/
- *  projects surface instead of `data/mockData`'s stale 6-value label map. */
-export const taskTypeLabel: Record<TaskType, string> = {
-  classification: "Classification",
-  tool_calling: "Tool Calling",
-  qa: "Q&A",
-};
+import type { Project } from "@/api/types";
 
 export function ProjectCard({ project }: { project: Project }) {
   const { t } = useLanguage();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const taskTypeLabel = useTaskTypeLabel();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -50,17 +43,14 @@ export function ProjectCard({ project }: { project: Project }) {
 
   return (
     <>
-      <Link to={`/projects/${project.id}`} className="block h-full">
+      <Link to={`/projects/${project.id}`}>
         <Card className="hover:shadow-md transition-shadow cursor-pointer h-full group">
           <CardHeader className="pb-3">
             <div className="flex items-start justify-between gap-2">
-              <CardTitle className="text-sm font-semibold leading-tight flex-1 min-w-0 truncate">
-                {project.name}
-              </CardTitle>
-              <div
-                className="flex items-center gap-1 shrink-0"
-                onClick={(e) => e.preventDefault()}
-              >
+              <div className="flex items-start gap-1.5 flex-1 min-w-0">
+                <CardTitle className="text-sm font-semibold leading-tight">{project.name}</CardTitle>
+              </div>
+              <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.preventDefault()}>
                 <QueueBadge queueState={project.queue_state} queuePosition={project.queue_position} />
                 <Button
                   variant="ghost"
@@ -79,11 +69,9 @@ export function ProjectCard({ project }: { project: Project }) {
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            <p className="text-xs text-muted-foreground line-clamp-2">
-              {project.description || t("common.none")}
-            </p>
+            <p className="text-xs text-muted-foreground line-clamp-2">{project.description}</p>
             <div className="flex flex-wrap gap-1.5">
-              <Badge variant="outline" className="text-[10px]">{taskTypeLabel[project.task_type]}</Badge>
+              <Badge variant="outline" className="text-[10px]">{taskTypeLabel(project.task_type)}</Badge>
             </div>
             <p className="text-[10px] text-muted-foreground">
               {new Date(project.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}

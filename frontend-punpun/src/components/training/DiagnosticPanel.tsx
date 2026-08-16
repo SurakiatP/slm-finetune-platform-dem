@@ -26,7 +26,7 @@ export function DiagnosticPanel({ status, errorMessage }: DiagnosticPanelProps) 
           <AlertOctagon className="h-4 w-4" />
           {t("diagnostic.title")}
         </CardTitle>
-        <CardDescription className="text-xs">Error reported by the training worker</CardDescription>
+        <CardDescription className="text-xs">{t("diagnostic.subtitle")}</CardDescription>
       </CardHeader>
       <CardContent>
         <ErrorDetail error={{ detail: errorMessage }} />

@@ -8,13 +8,15 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ArrowLeft, Ban, Clock, Cpu, Gauge, Layers } from "lucide-react";
+import { ArrowLeft, Ban, Clock, Cpu, Database, Gauge, Layers } from "lucide-react";
 import { PipelineSteps } from "@/components/training/PipelineSteps";
 import { LossCurveChart, type LossChartPoint } from "@/components/training/LossCurveChart";
 import { DiagnosticPanel } from "@/components/training/DiagnosticPanel";
+import { EvaluationViewer } from "@/components/training/EvaluationViewer";
 import { MetricsTable } from "@/components/training/MetricsTable";
 import { HpoTrialsTable } from "@/components/training/HpoTrialsTable";
-import type { PipelineStep } from "@/data/trainingMockData";
+import { TrainingLog } from "@/components/training/TrainingLog";
+import type { PipelineStep, TrainingLogEntry } from "@/data/trainingMockData";
 import { getBaseModelLabel } from "@/data/mockData";
 import { TrainingMonitorSkeleton } from "@/components/skeletons/TrainingMonitorSkeleton";
 import { StatusBadge } from "@/components/engine/StatusBadge";
@@ -23,11 +25,74 @@ import { ConfirmDialog } from "@/components/engine/ConfirmDialog";
 import { EngineEmptyState } from "@/components/engine/EngineEmptyState";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useToast } from "@/hooks/use-toast";
-import { useProject, useTrainings, useLossHistory, useTrainingMetrics, useCancelTraining } from "@/hooks/queries";
+import {
+  useProject,
+  useTrainings,
+  useLossHistory,
+  useTrainingMetrics,
+  useCancelTraining,
+  useModels,
+} from "@/hooks/queries";
 import { useJobProgress } from "@/hooks/useJobProgress";
 import { isTerminalStatus, type Training, type MetricPoint } from "@/api/types";
 import { formatDuration, formatNumber, shortId } from "@/lib/format";
+import { useTaskTypeLabel } from "@/lib/labels";
 import { cn } from "@/lib/utils";
+
+const clockTime = (iso: string | null | undefined) =>
+  iso ? new Date(iso).toLocaleTimeString([], { hour12: false }) : "--:--:--";
+
+/** Builds the terminal-style log feed the original rendered with `TrainingLog`,
+ *  from real Engine state (run lifecycle + live WS steps) instead of the mock
+ *  `mockTrainingLog` fixture. */
+function buildTrainingLog(
+  run: Training,
+  live: { step: number; steps_total: number; epoch: number; epochs_total: number; train_loss: number | null } | null,
+  errorMessage: string | null,
+): TrainingLogEntry[] {
+  const entries: TrainingLogEntry[] = [
+    {
+      timestamp: clockTime(run.created_at),
+      level: "info",
+      message: `Queued ${run.mode === "hpo" ? "HPO search" : "fine-tuning"} run ${shortId(run.id)}`,
+    },
+    {
+      timestamp: clockTime(run.created_at),
+      level: "info",
+      message: `Base model: ${run.base_model} | dataset: ${shortId(run.dataset_id)}`,
+    },
+  ];
+  if (run.started_at) {
+    entries.push({ timestamp: clockTime(run.started_at), level: "info", message: "Training started on the GPU worker" });
+  }
+  if (run.mlflow_run_id) {
+    entries.push({ timestamp: clockTime(run.started_at), level: "info", message: `MLflow run: ${run.mlflow_run_id}` });
+  }
+  if (live) {
+    entries.push({
+      timestamp: clockTime(new Date().toISOString()),
+      level: "info",
+      message:
+        `step ${live.step}/${live.steps_total} · epoch ${live.epoch.toFixed(2)}/${live.epochs_total}` +
+        (live.train_loss !== null ? ` · train_loss ${live.train_loss.toFixed(4)}` : ""),
+    });
+  }
+  if (run.best_metric_value !== null) {
+    entries.push({
+      timestamp: clockTime(run.ended_at ?? run.updated_at),
+      level: "info",
+      message: `Best metric: ${formatNumber(run.best_metric_value)}`,
+    });
+  }
+  if (run.status === "completed") {
+    entries.push({ timestamp: clockTime(run.ended_at), level: "success", message: "Training completed" });
+  } else if (run.status === "failed") {
+    entries.push({ timestamp: clockTime(run.ended_at), level: "error", message: errorMessage ?? "Training failed" });
+  } else if (run.status === "cancelled") {
+    entries.push({ timestamp: clockTime(run.ended_at), level: "warning", message: "Training cancelled" });
+  }
+  return entries;
+}
 
 /** Merges MLflow's separate train/eval loss series (from useLossHistory) into
  *  one step-indexed array for the chart — used to backfill when the WS
@@ -48,6 +113,7 @@ export default function TrainingMonitor() {
   const { t } = useLanguage();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const taskTypeLabel = useTaskTypeLabel();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -96,6 +162,10 @@ export default function TrainingMonitor() {
     selected?.id ?? "",
     !!selected,
   );
+
+  // Model artifact produced by the selected run — feeds the evaluation tab.
+  const { data: projectModels } = useModels(projectId, { limit: 100 });
+  const selectedArtifact = (projectModels?.items ?? []).find((m) => m.training_job_id === selectedId) ?? null;
 
   const lossData: LossChartPoint[] =
     progress.lossHistory.length > 0
@@ -163,7 +233,10 @@ export default function TrainingMonitor() {
           <Link to={`/projects/${projectId}`}><ArrowLeft className="h-4 w-4" /></Link>
         </Button>
         <div className="flex-1">
-          <h1 className="text-xl font-bold text-foreground">{project.name}</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl font-bold text-foreground">{project.name}</h1>
+            {selected && <StatusBadge status={selected.status} />}
+          </div>
           <p className="text-sm text-muted-foreground mt-0.5">{t("training.title")}</p>
         </div>
       </div>
@@ -239,13 +312,13 @@ export default function TrainingMonitor() {
           <StaggerContainer className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
               { label: t("training.baseModel"), value: getBaseModelLabel(selected.base_model), icon: Cpu },
+              { label: t("training.taskType"), value: taskTypeLabel(project.task_type), icon: Database },
               {
                 label: t("training.epochProgress"),
                 value: liveTraining ? `${liveTraining.epoch.toFixed(1)} / ${liveTraining.epochs_total}` : "—",
                 icon: Gauge,
               },
               { label: t("training.elapsedTime"), value: formatDuration(selected.started_at, selected.ended_at), icon: Clock },
-              { label: "Best metric", value: formatNumber(selected.best_metric_value), icon: Gauge },
             ].map((s) => (
               <StaggerItem key={s.label}>
                 <Card>
@@ -319,6 +392,8 @@ export default function TrainingMonitor() {
               <TabsTrigger value="pipeline">{t("training.pipeline")}</TabsTrigger>
               <TabsTrigger value="loss">{t("training.lossCurve")}</TabsTrigger>
               <TabsTrigger value="metrics">{t("training.metrics")}</TabsTrigger>
+              <TabsTrigger value="logs">{t("training.trainingLog")}</TabsTrigger>
+              <TabsTrigger value="evaluation">{t("training.evaluation")}</TabsTrigger>
             </TabsList>
 
             <TabsContent value="pipeline" className="mt-4">
@@ -376,6 +451,38 @@ export default function TrainingMonitor() {
                   </CardHeader>
                   <CardContent>
                     <HpoTrialsTable trials={trainingMetrics.hpo_children} />
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
+
+            <TabsContent value="logs" className="mt-4">
+              <Card>
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm">{t("training.trainingLog")}</CardTitle>
+                    <Badge variant="outline" className="text-[10px]">Engine data only</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <TrainingLog
+                    logs={buildTrainingLog(
+                      selected,
+                      liveTraining,
+                      progress.failed?.error ?? selected.error_message,
+                    )}
+                  />
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="evaluation" className="mt-4">
+              {selectedArtifact ? (
+                <EvaluationViewer modelArtifactId={selectedArtifact.id} modelName={selectedArtifact.name} />
+              ) : (
+                <Card>
+                  <CardContent className="py-16 text-center text-sm text-muted-foreground">
+                    Export this training run to a model artifact first — evaluations run against an exported model.
                   </CardContent>
                 </Card>
               )}

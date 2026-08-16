@@ -3,8 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { useBaseModels } from "@/hooks/queries";
-import type { ProjectFormData } from "@/pages/NewProject";
-import { toErrorDetail } from "@/pages/NewProject";
+import { toErrorDetail, type ProjectFormData } from "@/pages/NewProject";
 
 interface ModelSelectionStepProps {
   formData: ProjectFormData;
@@ -20,7 +19,6 @@ const familyTitleColors: Record<string, string> = {
 
 const detailTitleColors = {
   context: "text-violet-700 dark:text-violet-300",
-  seqlen: "text-fuchsia-700 dark:text-fuchsia-300",
   quantization: "text-amber-700 dark:text-amber-300",
 };
 
@@ -73,7 +71,7 @@ export function ModelSelectionStep({ formData, updateForm }: ModelSelectionStepP
                   {selected && <Badge className="text-[10px] shrink-0">Selected</Badge>}
                 </div>
 
-                <div className="grid grid-cols-4 gap-2 text-[11px] mb-2.5">
+                <div className="grid grid-cols-3 gap-2 text-[11px] mb-2.5">
                   <div>
                     <p className="text-muted-foreground">Family</p>
                     <p className="font-medium text-foreground capitalize">{model.family}</p>
@@ -83,11 +81,7 @@ export function ModelSelectionStep({ formData, updateForm }: ModelSelectionStepP
                     <p className="font-medium text-foreground">{model.context_length.toLocaleString()}</p>
                   </div>
                   <div>
-                    <p className={detailTitleColors.seqlen}>Rec. seq len</p>
-                    <p className="font-medium text-foreground">{model.recommended_max_seq_length.toLocaleString()}</p>
-                  </div>
-                  <div>
-                    <p className={detailTitleColors.quantization}>Quant</p>
+                    <p className={detailTitleColors.quantization}>Quantization</p>
                     <p className="font-medium text-foreground">{model.quantization}</p>
                   </div>
                 </div>

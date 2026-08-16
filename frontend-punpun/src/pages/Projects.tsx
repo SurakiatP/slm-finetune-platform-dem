@@ -1,14 +1,13 @@
 import { useState } from "react";
-import { FolderKanban, Search } from "lucide-react";
+import { Search } from "lucide-react";
 
 import { NewProjectDialog } from "@/components/dashboard/NewProjectDialog";
-import { ProjectCard, taskTypeLabel } from "@/components/dashboard/ProjectCard";
-import { EngineEmptyState } from "@/components/engine/EngineEmptyState";
+import { ProjectCard } from "@/components/dashboard/ProjectCard";
 import { FadeIn, MotionCard, PageTransition, StaggerContainer } from "@/components/motion";
 import { ProjectCardSkeleton } from "@/components/skeletons/ProjectCardSkeleton";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useProjects } from "@/hooks/queries";
+import { useProjects, useTaskTypes } from "@/hooks/queries";
 import { useLanguage } from "@/i18n/LanguageContext";
 import type { TaskType } from "@/api/types";
 
@@ -17,6 +16,7 @@ export default function Projects() {
   const [filterTask, setFilterTask] = useState<TaskType | "all">("all");
   const { t } = useLanguage();
   const { data, isLoading, isError, error } = useProjects({ limit: 100 });
+  const { data: taskTypes } = useTaskTypes();
 
   const projects = data?.items ?? [];
 
@@ -63,8 +63,8 @@ export default function Projects() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">{t("projects.allTasks")}</SelectItem>
-                {(Object.keys(taskTypeLabel) as TaskType[]).map((key) => (
-                  <SelectItem key={key} value={key}>{taskTypeLabel[key]}</SelectItem>
+                {(taskTypes ?? []).map((info) => (
+                  <SelectItem key={info.task_type} value={info.task_type}>{info.display_name}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -83,19 +83,6 @@ export default function Projects() {
               {error instanceof Error ? error.message : "Failed to load projects."}
             </div>
           </FadeIn>
-        ) : projects.length === 0 ? (
-          <EngineEmptyState
-            icon={FolderKanban}
-            title="No projects yet"
-            hint="Create a project to start generating data and fine-tuning models."
-            action={<NewProjectDialog />}
-          />
-        ) : filtered.length === 0 ? (
-          <FadeIn>
-            <div className="text-center py-12 text-muted-foreground">
-              <p className="text-sm">{t("projects.noResults")}</p>
-            </div>
-          </FadeIn>
         ) : (
           <StaggerContainer className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {filtered.map((project) => (
@@ -104,6 +91,14 @@ export default function Projects() {
               </MotionCard>
             ))}
           </StaggerContainer>
+        )}
+
+        {!isLoading && !isError && filtered.length === 0 && (
+          <FadeIn>
+            <div className="text-center py-12 text-muted-foreground">
+              <p className="text-sm">{t("projects.noResults")}</p>
+            </div>
+          </FadeIn>
         )}
       </div>
     </PageTransition>
