@@ -24,7 +24,7 @@ from api.schemas.evaluations import (
     EvaluationResponse,
 )
 from api.schemas.responses import Page
-from api.services import audit_service, ownership, quota
+from api.services import audit_service, ownership, quota, queue_position
 from api.services.quota import Bucket
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 
@@ -160,7 +160,26 @@ async def get_evaluation(
     user: CurrentUser | None = None,
 ) -> EvaluationResponse:
     ev = await ownership.assert_evaluation_access(db, evaluation_id, user)
-    return EvaluationResponse.model_validate(ev)
+    response = EvaluationResponse.model_validate(ev)
+    # Display-only, in-flight-only: only a PENDING/RUNNING run can
+    # meaningfully sit in a GPU queue, so skip the lookup entirely otherwise
+    # (and never populate on list_evaluations — see queue_position.py).
+    if ev.status in (JobStatus.PENDING, JobStatus.RUNNING):
+        project_id = await _project_id_for_evaluation(db, ev)
+        info = (
+            await queue_position.project_queue_info(db, project_id)
+            if project_id is not None
+            else None
+        )
+        if info is not None:
+            response = response.model_copy(
+                update={
+                    "queue_state": info.queue_state,
+                    "queue_position": info.queue_position,
+                    "owner_queue_position": info.owner_queue_position,
+                }
+            )
+    return response
 
 
 async def cancel_evaluation(

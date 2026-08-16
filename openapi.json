@@ -4036,6 +4036,43 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "queue_state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "processing",
+                  "queued"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue State"
+          },
+          "queue_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Position"
+          },
+          "owner_queue_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Queue Position"
           }
         },
         "additionalProperties": false,
@@ -5315,6 +5352,43 @@
             "format": "date-time",
             "title": "Updated At"
           },
+          "queue_state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "processing",
+                  "queued"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue State"
+          },
+          "queue_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Position"
+          },
+          "owner_queue_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Queue Position"
+          },
           "base_ollama_tag": {
             "anyOf": [
               {
@@ -5909,6 +5983,43 @@
               }
             ],
             "title": "Owner Id"
+          },
+          "queue_state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "processing",
+                  "queued"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue State"
+          },
+          "queue_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Position"
+          },
+          "owner_queue_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Queue Position"
           },
           "created_at": {
             "type": "string",
@@ -6986,6 +7097,43 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "queue_state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "processing",
+                  "queued"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue State"
+          },
+          "queue_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Position"
+          },
+          "owner_queue_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Queue Position"
           }
         },
         "additionalProperties": false,

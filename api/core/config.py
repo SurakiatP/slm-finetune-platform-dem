@@ -199,6 +199,39 @@ class Settings(BaseSettings):
     default_base_model: str = "unsloth/Llama-3.2-3B-Instruct-bnb-4bit"
     default_hpo_max_trials: int = Field(default=10, ge=2, le=100)
 
+    # ---- GPU VRAM safety (see workers/vram.py) ------------------------------
+    # ADR-002 pins the target hardware to a single RTX 3060 12GB — there is no
+    # second GPU to fail over to, and no queueing beyond Celery's own worker
+    # concurrency, so a training/HPO/export task that starts while the card is
+    # already pinned by a previous job doesn't queue politely: it OOMs deep
+    # inside a CUDA kernel, and the resulting error text is an opaque PyTorch
+    # traceback instead of something that tells the person waiting on the WS
+    # what actually happened or what to do about it. `workers/vram.py`'s
+    # `preflight_gpu_vram()` checks free VRAM *before* a task pulls its
+    # dataset/adapter and imports the heavy training stack, so a card that's
+    # still busy fails fast with an actionable message instead of burning
+    # minutes downloading + loading a model only to OOM at the first
+    # `backward()`.
+    #
+    # Total VRAM of the target card. Used only to render a human-readable
+    # "X.XX / 12.00 GiB free" in the preflight failure message — never
+    # compared against directly (the free-GB threshold below is what gates).
+    gpu_vram_total_gb: float = Field(default=12.0, gt=0)  # RTX 3060
+    # Minimum free VRAM (GiB) required for a training/HPO/export task to
+    # proceed. Deliberately below `gpu_vram_total_gb`, not some fraction of
+    # it: this is "enough headroom for the smallest model this platform
+    # supports (<=3B, 4-bit QLoRA) to load and take one optimizer step
+    # without immediately OOMing", not "the GPU must be nearly idle" — a
+    # previous job's CUDA context can legitimately still hold a few GiB
+    # after `torch.cuda.empty_cache()` and that's fine.
+    gpu_preflight_min_free_gb: float = Field(default=8.0, ge=0)
+    # Kill switch for the check itself. Defaults on (the whole point of this
+    # settings group), but exists so a deployment that hits a false positive
+    # — e.g. `torch.cuda.mem_get_info()` misreporting on an unusual driver —
+    # can disable the gate without a code change while the real issue is
+    # investigated, rather than being stuck unable to launch any GPU job.
+    gpu_preflight_enforce: bool = True
+
     # ---- Ollama ------------------------------------------------------------
     ollama_base_url: AnyUrl = Field(default=AnyUrl("http://ollama:11434"))
 

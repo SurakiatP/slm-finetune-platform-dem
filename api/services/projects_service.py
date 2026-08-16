@@ -13,7 +13,7 @@ from api.core.auth import CurrentUser
 from api.models.project import Project
 from api.schemas.projects import ProjectCreate, ProjectResponse, ProjectUpdate
 from api.schemas.responses import Page
-from api.services import audit_service, ownership
+from api.services import audit_service, ownership, queue_position
 
 
 def _actor() -> tuple[str | None, str | None]:
@@ -99,7 +99,21 @@ async def get_project(
     db: AsyncSession, project_id: UUID, user: CurrentUser | None = None
 ) -> ProjectResponse:
     project = await ownership.assert_project_access(db, project_id, user)
-    return ProjectResponse.model_validate(project)
+    response = ProjectResponse.model_validate(project)
+    # Display-only, in-flight-only: populate the GPU queue fields on the
+    # detail response only (never on list_projects — see queue_position.py).
+    # `None` means "nothing in flight for this project", so the response's
+    # default-None fields are left untouched in that case.
+    info = await queue_position.project_queue_info(db, project_id)
+    if info is not None:
+        response = response.model_copy(
+            update={
+                "queue_state": info.queue_state,
+                "queue_position": info.queue_position,
+                "owner_queue_position": info.owner_queue_position,
+            }
+        )
+    return response
 
 
 async def update_project(
