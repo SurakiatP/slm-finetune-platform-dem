@@ -5,6 +5,7 @@ import { Link, NavLink, Navigate, Outlet, useNavigate, useParams } from 'react-r
 
 import { deleteProject, updateProject } from '@/api/endpoints/projects'
 import type { Project } from '@/api/types'
+import { QueueBadge } from '@/components/data/QueueBadge'
 import { TaskTypeBadge } from '@/components/data/TaskTypeBadge'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Button } from '@/components/ui/Button'
@@ -50,6 +51,7 @@ export default function ProjectLayout() {
           <>
             {project.name}
             <TaskTypeBadge taskType={project.task_type} />
+            <QueueBadge queueState={project.queue_state} queuePosition={project.queue_position} />
           </>
         }
         description={

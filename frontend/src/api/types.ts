@@ -9,6 +9,14 @@ export type TaskType = 'classification' | 'tool_calling' | 'qa'
 export type TrainingMode = 'manual' | 'hpo'
 export type SDGMode = 'with_seed' | 'description_only'
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+/** Project-level GPU queue standing (display-only, computed by the backend at
+ *  read time). 'processing' = a GPU job of this project is running (positions
+ *  are null); 'queued' = only pending GPU work — `queue_position` is the
+ *  1-based global FIFO ordinal, `owner_queue_position` the ordinal within the
+ *  same owner's queued projects. The trio is populated only on detail GETs
+ *  while in-flight; list endpoints and terminal rows always carry nulls. */
+export type QueueState = 'processing' | 'queued'
 export type DatasetSource = 'seed' | 'sdg' | 'merged'
 export type ArtifactFormat = 'lora' | 'gguf' | 'safetensors'
 
@@ -57,6 +65,9 @@ export interface Project {
    *  embedded frontend (it has no external system to map) — present so a
    *  project created via the API with a non-null value still round-trips. */
   external_project_id: string | null
+  queue_state: QueueState | null
+  queue_position: number | null
+  owner_queue_position: number | null
   created_at: string
   updated_at: string
 }
@@ -294,6 +305,9 @@ export interface Training {
   error_message: string | null
   started_at: string | null
   ended_at: string | null
+  queue_state: QueueState | null
+  queue_position: number | null
+  owner_queue_position: number | null
   created_at: string
   updated_at: string
 }
@@ -353,6 +367,9 @@ export interface ModelArtifact {
    *  export-in-flight/cancel affordance. Null when no export is running. */
   export_status: JobStatus | null
   export_celery_task_id: string | null
+  queue_state: QueueState | null
+  queue_position: number | null
+  owner_queue_position: number | null
   created_at: string
   updated_at: string
   /** Ollama-Hub equivalent of `base_model`, auto-pulled by the worker after
@@ -394,6 +411,9 @@ export interface Evaluation {
   llm_judge_score: number | null
   llm_judge_model: string | null
   error_message: string | null
+  queue_state: QueueState | null
+  queue_position: number | null
+  owner_queue_position: number | null
   started_at: string | null
   ended_at: string | null
   created_at: string

@@ -6,6 +6,7 @@ import { Link, useParams } from 'react-router-dom'
 import { cancelModelExport, exportModel, getModelDownloadUrl, modelDownloadUrl } from '@/api/endpoints/models'
 import type { ArtifactFormat, ModelArtifact } from '@/api/types'
 import { Badge } from '@/components/ui/Badge'
+import { QueueBadge } from '@/components/data/QueueBadge'
 import { CopyButton } from '@/components/data/CopyButton'
 import { JobProgressPanel } from '@/components/jobs/JobProgressPanel'
 import { Button } from '@/components/ui/Button'
@@ -76,6 +77,7 @@ export default function ModelDetailPage() {
           <h1 className="flex flex-wrap items-center gap-2 text-xl font-semibold text-body">
             {model.name}
             <FormatBadges model={model} />
+            <QueueBadge queueState={model.queue_state} queuePosition={model.queue_position} />
           </h1>
           <div className="flex gap-2">
             {model.ollama_model_tag && (

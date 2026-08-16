@@ -7,6 +7,7 @@ import { cancelTraining } from '@/api/endpoints/trainings'
 import { isTerminalStatus, type HpoChildSummary, type MetricPoint } from '@/api/types'
 import { DataTable, type Column } from '@/components/data/DataTable'
 import { JsonViewer } from '@/components/data/JsonViewer'
+import { QueueBadge } from '@/components/data/QueueBadge'
 import { StatusBadge } from '@/components/data/StatusBadge'
 import { JobProgressPanel } from '@/components/jobs/JobProgressPanel'
 import { LossCurveChart } from '@/components/jobs/LossCurveChart'
@@ -164,6 +165,7 @@ export default function TrainingDetailPage() {
             {training.training_name ?? training.id.slice(0, 8)}
             <Badge tone={training.mode === 'hpo' ? 'violet' : 'neutral'}>{training.mode}</Badge>
             <StatusBadge status={training.status} />
+            <QueueBadge queueState={training.queue_state} queuePosition={training.queue_position} />
           </h2>
         </div>
         <div className="flex items-center gap-2">
