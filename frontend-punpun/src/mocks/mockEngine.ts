@@ -176,8 +176,31 @@ function seedStore(): Store {
       num_samples: 900,
       storage_uri: 's3://mock-bucket/datasets/ds-p1-sdg-done.jsonl',
       size_bytes: 410_000,
-      generation_metadata: { celery_task_id: 'job-sdg-p1-done', loops: 3 },
-      parent_dataset_id: 'ds-p1-seed',
+      // Regular SDG output (not a holdout split) — parent_dataset_id stays
+      // null so `datasetRoleTag` doesn't misclassify it as hold-out; the
+      // seed used is recorded informationally in generation_metadata.
+      generation_metadata: { celery_task_id: 'job-sdg-p1-done', loops: 3, seed_dataset_id: 'ds-p1-seed' },
+      parent_dataset_id: null,
+      created_at: isoAt(8 * DAY),
+      updated_at: isoAt(8 * DAY),
+    },
+    {
+      // Holdout split held out of `ds-p1-sdg-done` — exercises the
+      // `datasetRoleTag` "hold-out" branch and gives the auto-pipeline
+      // evaluate step (see POST /trainings) a real holdout to evaluate
+      // tr-p1-manual-done / tr-p1-hpo-running against.
+      id: 'ds-p1-holdout',
+      project_id: 'p1',
+      name: 'ticket-sdg-900-holdout',
+      task_type: 'classification',
+      source: 'sdg',
+      status: 'completed',
+      error_message: null,
+      num_samples: 90,
+      storage_uri: 's3://mock-bucket/datasets/ds-p1-holdout.jsonl',
+      size_bytes: 41_000,
+      generation_metadata: { celery_task_id: 'job-sdg-p1-done', role: 'holdout' },
+      parent_dataset_id: 'ds-p1-sdg-done',
       created_at: isoAt(8 * DAY),
       updated_at: isoAt(8 * DAY),
     },
@@ -192,8 +215,8 @@ function seedStore(): Store {
       num_samples: 0,
       storage_uri: null,
       size_bytes: null,
-      generation_metadata: { celery_task_id: 'job-sdg-p1-running' },
-      parent_dataset_id: 'ds-p1-seed',
+      generation_metadata: { celery_task_id: 'job-sdg-p1-running', seed_dataset_id: 'ds-p1-seed' },
+      parent_dataset_id: null,
       created_at: isoAt(20 * MIN),
       updated_at: isoAt(1 * MIN),
     },
@@ -225,8 +248,8 @@ function seedStore(): Store {
       num_samples: 650,
       storage_uri: 's3://mock-bucket/datasets/ds-p2-sdg-done.jsonl',
       size_bytes: 512_000,
-      generation_metadata: { celery_task_id: 'job-sdg-p2-done', loops: 2 },
-      parent_dataset_id: 'ds-p2-seed',
+      generation_metadata: { celery_task_id: 'job-sdg-p2-done', loops: 2, seed_dataset_id: 'ds-p2-seed' },
+      parent_dataset_id: null,
       created_at: isoAt(4 * DAY),
       updated_at: isoAt(4 * DAY),
     },
@@ -258,8 +281,8 @@ function seedStore(): Store {
       num_samples: 500,
       storage_uri: 's3://mock-bucket/datasets/ds-p3-sdg-done.jsonl',
       size_bytes: 220_000,
-      generation_metadata: { celery_task_id: 'job-sdg-p3-done', loops: 1 },
-      parent_dataset_id: 'ds-p3-seed',
+      generation_metadata: { celery_task_id: 'job-sdg-p3-done', loops: 1, seed_dataset_id: 'ds-p3-seed' },
+      parent_dataset_id: null,
       created_at: isoAt(23 * HOUR),
       updated_at: isoAt(23 * HOUR),
     },
@@ -275,10 +298,27 @@ function seedStore(): Store {
       num_samples: 0,
       storage_uri: null,
       size_bytes: null,
-      generation_metadata: { celery_task_id: 'job-sdg-p3-failed' },
-      parent_dataset_id: 'ds-p3-seed',
+      generation_metadata: { celery_task_id: 'job-sdg-p3-failed', seed_dataset_id: 'ds-p3-seed' },
+      parent_dataset_id: null,
       created_at: isoAt(6 * HOUR),
       updated_at: isoAt(6 * HOUR),
+    },
+    // --- orphan: project deleted, dataset survives with project_id: null ---
+    {
+      id: 'ds-orphan-1',
+      project_id: null,
+      name: 'legacy-seed-orphaned',
+      task_type: 'classification',
+      source: 'seed',
+      status: 'completed',
+      error_message: null,
+      num_samples: 60,
+      storage_uri: 's3://mock-bucket/datasets/ds-orphan-1.jsonl',
+      size_bytes: 21_000,
+      generation_metadata: null,
+      parent_dataset_id: null,
+      created_at: isoAt(30 * DAY),
+      updated_at: isoAt(30 * DAY),
     },
   ]
 
@@ -305,6 +345,14 @@ function seedStore(): Store {
       owner_queue_position: null,
       created_at: isoAt(8 * DAY),
       updated_at: isoAt(8 * DAY - 40 * MIN),
+      // Demonstrates a fully-settled auto pipeline: art-1 is this training's
+      // export target and ev-1 is the evaluation against its holdout.
+      auto_export: true,
+      auto_evaluate: true,
+      auto_pipeline: {
+        export: { status: 'completed', artifact_id: 'art-1', error: null },
+        evaluate: { status: 'completed', evaluation_id: 'ev-1', skip_reason: null, error: null },
+      },
     },
     {
       id: 'tr-p1-hpo-running',
@@ -328,6 +376,9 @@ function seedStore(): Store {
       owner_queue_position: null,
       created_at: isoAt(20 * MIN),
       updated_at: isoAt(1 * MIN),
+      auto_export: false,
+      auto_evaluate: false,
+      auto_pipeline: null,
     },
     {
       id: 'tr-p2-pending',
@@ -351,6 +402,9 @@ function seedStore(): Store {
       owner_queue_position: 1,
       created_at: isoAt(3 * HOUR),
       updated_at: isoAt(3 * HOUR),
+      auto_export: false,
+      auto_evaluate: false,
+      auto_pipeline: null,
     },
     {
       id: 'tr-p2-failed',
@@ -375,6 +429,9 @@ function seedStore(): Store {
       owner_queue_position: null,
       created_at: isoAt(2 * DAY),
       updated_at: isoAt(2 * DAY - 6 * MIN),
+      auto_export: false,
+      auto_evaluate: false,
+      auto_pipeline: null,
     },
   ]
 
@@ -684,7 +741,100 @@ function settleTraining(id: string, jobId: string, delayMs = 8000): void {
       dataset_id: null,
       model_artifact_id: artifactId,
     }
+
+    if (tr.auto_export || tr.auto_evaluate) runAutoPipeline(tr.id, artifactId)
   }, delayMs)
+}
+
+/**
+ * Drives `Training.auto_pipeline` after training settles: export (on the
+ * artifact `settleTraining` just created) → evaluate (against the holdout
+ * sibling of the training's dataset, if one exists). Mirrors the real
+ * pipeline's export-then-evaluate ordering; each step is a no-op if its
+ * flag wasn't requested (status stays 'skipped').
+ *
+ * `auto_pipeline` itself is null on the row until this point — matching the
+ * backend, which leaves the column null at insert time regardless of the
+ * auto_export/auto_evaluate flags and only populates it once the pipeline
+ * actually kicks off (see api/models/training_job.py).
+ */
+function runAutoPipeline(trainingId: string, artifactId: string, stepDelayMs = 4000): void {
+  const tr = store.trainings.find((t) => t.id === trainingId)
+  if (!tr || (!tr.auto_export && !tr.auto_evaluate)) return
+  tr.auto_pipeline = {
+    export: { status: tr.auto_export ? 'pending' : 'skipped', artifact_id: null, error: null },
+    evaluate: {
+      status: tr.auto_evaluate ? 'pending' : 'skipped',
+      evaluation_id: null,
+      skip_reason: tr.auto_evaluate ? null : 'auto_evaluate not requested',
+      error: null,
+    },
+  }
+  const pipeline = tr.auto_pipeline
+
+  const runEvaluate = (): void => {
+    if (pipeline.evaluate.status !== 'pending') return
+    pipeline.evaluate.status = 'running'
+    tr.updated_at = new Date().toISOString()
+    setTimeout(() => {
+      const holdout = store.datasets.find(
+        (d) => d.parent_dataset_id === tr.dataset_id && (d.generation_metadata as { role?: string } | null)?.role === 'holdout',
+      )
+      if (!holdout) {
+        pipeline.evaluate.status = 'skipped'
+        pipeline.evaluate.skip_reason = "no holdout dataset found for this training's dataset"
+        tr.updated_at = new Date().toISOString()
+        return
+      }
+      const project = store.projects.find((p) => p.id === tr.project_id)
+      const useJudge = project?.task_type === 'qa'
+      const evId = genId('ev')
+      const ev: Evaluation = {
+        id: evId,
+        model_artifact_id: artifactId,
+        dataset_id: holdout.id,
+        celery_task_id: genId('job-eval'),
+        status: 'completed',
+        metrics_json: { accuracy: 0.912, f1_macro: 0.889, n: holdout.num_samples || 50, out_of_set_predictions: 1 },
+        llm_judge_score: useJudge ? 4.1 : null,
+        llm_judge_model: useJudge ? SDG_PIPELINE_MODELS.judge : null,
+        error_message: null,
+        queue_state: null,
+        queue_position: null,
+        owner_queue_position: null,
+        started_at: new Date().toISOString(),
+        ended_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+      store.evaluations.unshift(ev)
+      pipeline.evaluate.status = 'completed'
+      pipeline.evaluate.evaluation_id = evId
+      tr.updated_at = new Date().toISOString()
+    }, stepDelayMs)
+  }
+
+  if (pipeline.export.status !== 'pending') {
+    runEvaluate()
+    return
+  }
+
+  pipeline.export.status = 'running'
+  tr.updated_at = new Date().toISOString()
+  setTimeout(() => {
+    const art = store.models.find((m) => m.id === artifactId)
+    if (art) {
+      art.export_status = 'completed'
+      art.gguf_uri = `s3://mock-bucket/artifacts/${artifactId}/model.q4_k_m.gguf`
+      art.size_mb = 780
+      art.ollama_model_tag = `local/${tr.training_name ?? tr.id}`
+      art.updated_at = new Date().toISOString()
+    }
+    pipeline.export.status = 'completed'
+    pipeline.export.artifact_id = artifactId
+    tr.updated_at = new Date().toISOString()
+    runEvaluate()
+  }, stepDelayMs)
 }
 
 function settleExport(artifactId: string, jobId: string, format: ArtifactFormat, delayMs = 5000): void {
@@ -892,6 +1042,14 @@ const routes: Route[] = [
       const idx = store.projects.findIndex((p) => p.id === m[1])
       if (idx === -1) return errorResponse(404, 'Project not found')
       store.projects.splice(idx, 1)
+      // Datasets survive project deletion as orphans (project_id -> null)
+      // rather than being cascade-deleted.
+      for (const ds of store.datasets) {
+        if (ds.project_id === m[1]) {
+          ds.project_id = null
+          ds.updated_at = new Date().toISOString()
+        }
+      }
       return json(undefined, 204)
     },
   },
@@ -983,6 +1141,11 @@ const routes: Route[] = [
       const body = readJsonBody<SDGRequest>(init)
       const jobId = genId('job-sdg')
       const target = body.num_samples ?? 200
+      const seedDatasetId = body.sdg_mode === 'with_seed' ? body.seed_dataset_id : null
+      // parent_dataset_id is reserved for the hold-out split's link back to
+      // this dataset (see `datasetRoleTag`) — the seed used to generate it
+      // is recorded informationally in generation_metadata instead, so a
+      // regular SDG output never gets misclassified as "hold-out".
       const ds: Dataset = {
         id: genId('ds'),
         project_id: body.project_id,
@@ -994,8 +1157,8 @@ const routes: Route[] = [
         num_samples: 0,
         storage_uri: null,
         size_bytes: null,
-        generation_metadata: { celery_task_id: jobId },
-        parent_dataset_id: body.sdg_mode === 'with_seed' ? body.seed_dataset_id : null,
+        generation_metadata: { celery_task_id: jobId, seed_dataset_id: seedDatasetId },
+        parent_dataset_id: null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }
@@ -1016,6 +1179,30 @@ const routes: Route[] = [
         dedup_rejected: 1,
       }
       settleDataset(ds.id, jobId, target)
+
+      const holdoutSize = body.holdout_size ?? 0
+      if (holdoutSize > 0) {
+        const holdoutJobId = `${jobId}-holdout`
+        const holdoutDs: Dataset = {
+          id: genId('ds'),
+          project_id: body.project_id,
+          name: body.holdout_name || `${ds.name}-holdout`,
+          task_type: body.task_type,
+          source: 'sdg',
+          status: 'running',
+          error_message: null,
+          num_samples: 0,
+          storage_uri: null,
+          size_bytes: null,
+          generation_metadata: { celery_task_id: jobId, role: 'holdout' },
+          parent_dataset_id: ds.id,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }
+        store.datasets.unshift(holdoutDs)
+        settleDataset(holdoutDs.id, holdoutJobId, holdoutSize)
+      }
+
       const resp: SDGJobAccepted = { job_id: jobId, dataset_id: ds.id, status: 'running', websocket_url: `/ws/jobs/${jobId}` }
       return json(resp, 202)
     },
@@ -1082,6 +1269,8 @@ const routes: Route[] = [
     handler: (m) => {
       const idx = store.datasets.findIndex((d) => d.id === m[1])
       if (idx === -1) return errorResponse(404, 'Dataset not found')
+      const inUse = store.trainings.some((t) => t.dataset_id === m[1])
+      if (inUse) return errorResponse(409, `dataset '${m[1]}' is in use by an existing training`)
       store.datasets.splice(idx, 1)
       return json(undefined, 204)
     },
@@ -1114,7 +1303,12 @@ const routes: Route[] = [
     pattern: /^\/api\/v1\/trainings$/,
     handler: (_m, _url, init) => {
       const body = readJsonBody<TrainingRequest>(init)
+      if (body.training_name && store.trainings.some((t) => t.training_name === body.training_name)) {
+        return errorResponse(409, `training_name '${body.training_name}' already exists`)
+      }
       const jobId = genId('job-tr')
+      const autoExport = body.auto_export ?? false
+      const autoEvaluate = body.auto_evaluate ?? false
       const tr: Training = {
         id: genId('tr'),
         project_id: body.project_id,
@@ -1137,6 +1331,13 @@ const routes: Route[] = [
         owner_queue_position: null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
+        auto_export: autoExport,
+        auto_evaluate: autoEvaluate,
+        // Matches the backend row default: auto_pipeline stays null until
+        // the pipeline actually kicks off (after training completes), even
+        // when auto_export/auto_evaluate are true at creation time — see
+        // `runAutoPipeline`, which populates it in `settleTraining`.
+        auto_pipeline: null,
       }
       store.trainings.unshift(tr)
       store.jobProgress[jobId] = {

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from sqlalchemy import DateTime, Float, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, false
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -69,6 +69,32 @@ class TrainingJob(Base, TimestampMixin):
     error_message: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # -- auto-pipeline (auto-export + auto-evaluate after training) --------
+    auto_export: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=false(),
+        doc="If true, kick off GGUF export automatically when training completes.",
+    )
+    auto_evaluate: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=false(),
+        doc="If true, kick off evaluation automatically after export completes.",
+    )
+    auto_pipeline: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        doc=(
+            "Per-stage progress for the auto-export/auto-evaluate pipeline, e.g. "
+            '{"export": {"status": "pending|running|completed|failed|skipped", '
+            '"artifact_id": str|null, "error": str|null}, '
+            '"evaluate": {"status": "pending|running|completed|failed|skipped", '
+            '"evaluation_id": str|null, "skip_reason": str|null, "error": str|null}}. '
+            "Null until the pipeline is kicked off."
+        ),
+    )
 
     project: Mapped["Project"] = relationship(back_populates="training_jobs")
     dataset: Mapped["Dataset"] = relationship(back_populates="training_jobs")

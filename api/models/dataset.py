@@ -22,9 +22,18 @@ class Dataset(Base, TimestampMixin):
     __tablename__ = "datasets"
 
     id: Mapped[UUID] = uuid_pk()
-    project_id: Mapped[UUID] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
+    # project_id is nullable so a dataset can outlive its project: deleting a
+    # Project now sets this to NULL (ondelete="SET NULL") instead of
+    # cascading the delete into the dataset. This decouples dataset
+    # lifecycle from project lifecycle (see W1-T1).
+    #
+    # NOTE: who "owns" an orphaned dataset (project_id IS NULL) once
+    # AUTH_REQUIRED=true exists is an open question deferred until this
+    # branch merges to dev -- this experiment branch runs with auth off,
+    # so there is no owner/user concept yet to reassign orphaned rows to.
+    project_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)

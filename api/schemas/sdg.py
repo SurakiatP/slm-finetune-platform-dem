@@ -99,6 +99,10 @@ class _SDGRequestBase(BaseModel):
         default=None,
         description="Display name for the resulting dataset; defaults to project + timestamp.",
     )
+    holdout_name: str | None = Field(
+        default=None,
+        description="Display name for the holdout dataset; defaults to '<train dataset name>-holdout'.",
+    )
 
 
 class SDGRequestWithSeed(_SDGRequestBase):

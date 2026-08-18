@@ -76,7 +76,9 @@ export interface Project {
 
 export interface Dataset {
   id: string
-  project_id: string
+  /** Null when the owning project was deleted — the dataset survives as an
+   *  orphan row rather than being cascade-deleted. */
+  project_id: string | null
   name: string
   task_type: TaskType
   source: DatasetSource
@@ -138,6 +140,9 @@ interface SDGRequestBase {
   num_samples: number
   /** Extra rows persisted as a separate holdout child dataset; 0 disables. */
   holdout_size?: number
+  /** Name for the holdout child dataset (see `holdout_size`); server picks a
+   *  default name when omitted. */
+  holdout_name?: string
   temperature?: number
   dataset_name?: string | null
 }
@@ -263,6 +268,14 @@ interface TrainingRequestBase {
   dataset_id: string
   base_model?: string | null
   training_name?: string | null
+  /** When true, a GGUF export kicks off automatically once training
+   *  completes — see `Training.auto_pipeline.export`. */
+  auto_export?: boolean
+  /** When true, an evaluation against the dataset's holdout child runs
+   *  automatically once the auto export completes — see
+   *  `Training.auto_pipeline.evaluate`. Only meaningful alongside
+   *  `auto_export`; with no holdout dataset the step reports `skipped`. */
+  auto_evaluate?: boolean
 }
 
 export interface ManualTrainingRequest extends TrainingRequestBase {
@@ -288,6 +301,32 @@ export interface TrainingJobAccepted {
 
 // --- Trainings read views (api/schemas/trainings.py) -------------------------
 
+/** Status of one step within `Training.auto_pipeline`. */
+export type AutoPipelineStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+
+export interface AutoPipelineExportState {
+  status: AutoPipelineStepStatus
+  artifact_id: string | null
+  error: string | null
+}
+
+export interface AutoPipelineEvaluateState {
+  status: AutoPipelineStepStatus
+  evaluation_id: string | null
+  /** Set (with `status: 'skipped'`) when there's no holdout dataset to
+   *  evaluate against, e.g. the SDG run had `holdout_size` 0. */
+  skip_reason: string | null
+  error: string | null
+}
+
+/** Live state of the auto_export → auto_evaluate chain kicked off after
+ *  training completes; null when neither `auto_export` nor `auto_evaluate`
+ *  was requested. */
+export interface AutoPipelineState {
+  export: AutoPipelineExportState
+  evaluate: AutoPipelineEvaluateState
+}
+
 export interface Training {
   id: string
   project_id: string
@@ -310,6 +349,9 @@ export interface Training {
   owner_queue_position: number | null
   created_at: string
   updated_at: string
+  auto_export: boolean
+  auto_evaluate: boolean
+  auto_pipeline: AutoPipelineState | null
 }
 
 export interface MetricPoint {

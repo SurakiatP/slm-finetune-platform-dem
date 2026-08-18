@@ -9,7 +9,7 @@
  * `undefined`, without having to special-case the loading state themselves.
  */
 import { useBaseModels, useTaskTypes } from '@/hooks/queries'
-import type { TaskType } from '@/api/types'
+import type { Dataset, TaskType } from '@/api/types'
 
 /** Static fallback — mirrors src/data/mockData.ts's `taskTypeLabels` for the
  *  three task types the backend actually supports (ADR-005). */
@@ -58,4 +58,20 @@ export function useBaseModelLabel(): (baseModel: string | null | undefined) => s
     if (known) return known.display_name
     return BASE_MODEL_LABEL_FALLBACK[baseModel] ?? baseModel
   }
+}
+
+/**
+ * Classifies a dataset's role in the seed → sdg → hold-out lineage for
+ * display (e.g. a badge next to its name). A dataset is "hold-out" when it
+ * is a split held out of another dataset — signalled by `parent_dataset_id`
+ * being set, or (fallback, in case a given response doesn't populate that
+ * field) `generation_metadata.role === 'holdout'`. Otherwise a plain seed
+ * upload is "seed", and everything else (SDG-generated training data) is
+ * "training".
+ */
+export function datasetRoleTag(ds: Dataset): 'seed' | 'training' | 'hold-out' {
+  const role = (ds.generation_metadata as { role?: string } | null)?.role
+  if (ds.parent_dataset_id != null || role === 'holdout') return 'hold-out'
+  if (ds.source === 'seed') return 'seed'
+  return 'training'
 }

@@ -10,12 +10,22 @@ the WebSocket channel `job:{job_id}` (see schemas/progress.py).
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from api.schemas.enums import JobStatus, TrainingMode
+
+# Ollama tag names allow lowercase alphanumerics plus `.`, `_`, `-`, up to 64
+# chars, and must not start with `.`/`_`/`-` (Ollama itself rejects those as
+# tag-name separators in the first position). `training_name` doubles as the
+# MLflow run name *and* is used to derive Ollama model tags downstream (see
+# `workers/tasks/model_export.py`), so it has to be safe in both places —
+# hence the stricter (lowercase-only) pattern rather than MLflow's own
+# looser run-name rules.
+TRAINING_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 
 # --- LoRA + manual hyperparameters ------------------------------------------
 
@@ -215,8 +225,41 @@ class _TrainingRequestBase(BaseModel):
     )
     training_name: str | None = Field(
         default=None,
-        description="MLflow run name; defaults to project + timestamp.",
+        description=(
+            "MLflow run name; defaults to project + timestamp. When provided, "
+            "must be ollama-tag-safe: lowercase letters, digits, '.', '_', '-' "
+            "only, starting with a letter or digit, 1-63 chars total. Must be "
+            "unique within the owning project's owner scope."
+        ),
     )
+    auto_export: bool = Field(
+        default=False,
+        description=(
+            "If true, automatically kick off GGUF export when this training "
+            "job completes successfully."
+        ),
+    )
+    auto_evaluate: bool = Field(
+        default=False,
+        description=(
+            "If true, automatically kick off evaluation once the auto-export "
+            "step (or training itself, if auto_export is false) completes. "
+            "Has no effect unless the export it depends on succeeds."
+        ),
+    )
+
+    @field_validator("training_name")
+    @classmethod
+    def _training_name_is_ollama_tag_safe(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not TRAINING_NAME_PATTERN.match(v):
+            raise ValueError(
+                "training_name must start with a lowercase letter or digit and "
+                "contain only lowercase letters, digits, '.', '_', or '-' "
+                "(max 63 characters) — e.g. 'qa-policy-v1'"
+            )
+        return v
 
 
 class ManualTrainingRequest(_TrainingRequestBase):

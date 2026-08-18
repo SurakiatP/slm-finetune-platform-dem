@@ -113,6 +113,9 @@ async def submit_sdg_job(
     # 5. Enqueue Celery task
     from workers.tasks.data_generation import generate_synthetic_data
 
+    # Full request dump — dataset_name and holdout_name both ride along here
+    # as ordinary schema fields (no special-casing needed); the worker reads
+    # `request.holdout_name` the same way it reads `request.dataset_name`.
     payload = request.model_dump(mode="json")
     async_result = generate_synthetic_data.apply_async(
         kwargs={"request_payload": payload, "dataset_id": str(dataset.id)},

@@ -7,11 +7,13 @@ Steps:
   3. Validate base_model is in the supported allowlist (ADR-002).
   3b. RTX 3060 VRAM safety — reject a per_device_train_batch_size that
       would OOM at the requested max_seq_length (mirrors the HPO guard).
-  4. GPU quota gate (Bucket.GPU, shared with HPO training/evaluation/export).
-  5. Insert TrainingJob row (status=PENDING, status flips to RUNNING in the worker).
-  6. Enqueue the train.manual Celery task.
-  7. Stash celery_task_id back on the row.
-  8. Return TrainingJobAcceptedResponse.
+  4. training_name uniqueness within the owning project's owner scope (409
+     on collision; owner_id IS NULL projects share one scope).
+  5. GPU quota gate (Bucket.GPU, shared with HPO training/evaluation/export).
+  6. Insert TrainingJob row (status=PENDING, status flips to RUNNING in the worker).
+  7. Enqueue the train.manual Celery task.
+  8. Stash celery_task_id back on the row.
+  9. Return TrainingJobAcceptedResponse.
 
 HPO mode goes through `submit_hpo_training_job` (Phase 6 — currently 501).
 """
@@ -19,6 +21,7 @@ HPO mode goes through `submit_hpo_training_job` (Phase 6 — currently 501).
 from __future__ import annotations
 
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core import request_context
@@ -75,6 +78,43 @@ def _max_safe_batch_for_3060(params_billions: float, max_seq_length: int) -> int
     # Shouldn't happen: SUPPORTED_BASE_MODELS caps at 3.5B per BaseModelInfo.
     # Be conservative and return the 3B row.
     return _MAX_SAFE_BATCH_3060[-1][1][-1][1]
+
+
+async def _assert_training_name_available(
+    db: AsyncSession, *, project: Project, training_name: str | None
+) -> None:
+    """Reject a duplicate `training_name` within the submitting project's
+    owner scope (join TrainingJob -> Project, compared on `owner_id`).
+
+    Scope is the *owner*, not just this one project: `training_name` doubles
+    as the MLflow run name and (downstream) the Ollama export tag, both of
+    which are namespaced per-owner rather than per-project, so two of the
+    same owner's projects must not be able to collide on it either. Projects
+    with `owner_id IS NULL` (phase-1 / auth-disabled rows) all share a single
+    scope — matches `ownership.py`'s fail-closed treatment of null owners as
+    their own bucket rather than either mutually invisible or a free-for-all
+    open to every named owner too.
+
+    A no-op when `training_name` is `None` — untitled runs never collide.
+    """
+    if training_name is None:
+        return
+    stmt = (
+        select(TrainingJob.id)
+        .join(Project, Project.id == TrainingJob.project_id)
+        .where(TrainingJob.training_name == training_name)
+    )
+    stmt = (
+        stmt.where(Project.owner_id.is_(None))
+        if project.owner_id is None
+        else stmt.where(Project.owner_id == project.owner_id)
+    )
+    existing = (await db.execute(stmt.limit(1))).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"training_name '{training_name}' already exists",
+        )
 
 
 async def submit_manual_training_job(
@@ -160,13 +200,20 @@ async def submit_manual_training_job(
                 ),
             )
 
-    # 4. GPU quota gate — one bucket shared with HPO training, evaluation, and
+    # 4. training_name must be unique within the owning project's owner scope
+    # (409 on collision). Runs before the GPU quota gate so a doomed-to-fail
+    # duplicate submit never consumes a GPU slot.
+    await _assert_training_name_available(
+        db, project=project, training_name=request.training_name
+    )
+
+    # 5. GPU quota gate — one bucket shared with HPO training, evaluation, and
     # export (they all pin the same RTX 3060). Runs after every validation /
     # resource-state check above and right before the row insert, so a
     # rejected submit never leaves a half-created TrainingJob behind.
     await quota.assert_can_submit(db, bucket=Bucket.GPU, actor_id=request_context.current_user_id())
 
-    # 5. Insert TrainingJob row.
+    # 6. Insert TrainingJob row.
     job_row = TrainingJob(
         project_id=project.id,
         dataset_id=dataset.id,
@@ -174,12 +221,14 @@ async def submit_manual_training_job(
         status=JobStatus.PENDING,
         base_model=base_model,
         training_name=request.training_name,
+        auto_export=request.auto_export,
+        auto_evaluate=request.auto_evaluate,
         config_json=request.manual_config.model_dump(mode="json"),
     )
     db.add(job_row)
     await db.flush()  # populate job_row.id
 
-    # 6. Enqueue Celery task. Local import keeps the API process from
+    # 7. Enqueue Celery task. Local import keeps the API process from
     # eagerly loading worker-only deps (torch, unsloth, minio, ...).
     from workers.tasks.training import train_manual
 
@@ -188,7 +237,7 @@ async def submit_manual_training_job(
     )
     job_id: str = async_result.id
 
-    # 7. Persist celery_task_id + the audit row, and commit them together.
+    # 8. Persist celery_task_id + the audit row, and commit them together.
     job_row.celery_task_id = job_id
     audit_service.record(
         db,
@@ -202,7 +251,7 @@ async def submit_manual_training_job(
     )
     await db.commit()
 
-    # 8. Return.
+    # 9. Return.
     return TrainingJobAcceptedResponse(
         job_id=job_id,
         training_id=job_row.id,
@@ -221,7 +270,9 @@ async def submit_hpo_training_job(
 
     Mirrors `submit_manual_training_job` but persists `hpo_config` (n_trials,
     objective_metric, search_space, fixed_config, ...) into `config_json` and
-    dispatches to the `train.hpo` Celery task.
+    dispatches to the `train.hpo` Celery task. Also mirrors its `training_name`
+    uniqueness check (409 within the owning project's owner scope) — see
+    `_assert_training_name_available`.
     """
     settings = get_settings()
 
@@ -308,12 +359,19 @@ async def submit_hpo_training_job(
                     ),
                 )
 
-    # 5. GPU quota gate — same shared bucket as manual training, evaluation,
+    # 5. training_name must be unique within the owning project's owner scope
+    # (409 on collision). Runs before the GPU quota gate so a doomed-to-fail
+    # duplicate submit never consumes a GPU slot.
+    await _assert_training_name_available(
+        db, project=project, training_name=request.training_name
+    )
+
+    # 6. GPU quota gate — same shared bucket as manual training, evaluation,
     # and export (see quota.py). After all validation above, right before
     # the row insert.
     await quota.assert_can_submit(db, bucket=Bucket.GPU, actor_id=request_context.current_user_id())
 
-    # 6. Insert TrainingJob row.
+    # 7. Insert TrainingJob row.
     job_row = TrainingJob(
         project_id=project.id,
         dataset_id=dataset.id,
@@ -321,12 +379,14 @@ async def submit_hpo_training_job(
         status=JobStatus.PENDING,
         base_model=base_model,
         training_name=request.training_name,
+        auto_export=request.auto_export,
+        auto_evaluate=request.auto_evaluate,
         config_json=request.hpo_config.model_dump(mode="json"),
     )
     db.add(job_row)
     await db.flush()
 
-    # 7. Enqueue Celery task. Local import keeps the API process from
+    # 8. Enqueue Celery task. Local import keeps the API process from
     # eagerly loading worker-only deps.
     from workers.tasks.hpo_training import train_hpo
 
