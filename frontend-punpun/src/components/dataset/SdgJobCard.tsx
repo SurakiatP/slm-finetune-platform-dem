@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Ban, CheckCircle2, Loader2, Radio } from "lucide-react";
 
@@ -9,9 +9,10 @@ import { ConfirmDialog } from "@/components/engine/ConfirmDialog";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { useCancelDatasetGeneration, queryKeys } from "@/hooks/queries";
 import { useJobProgress } from "@/hooks/useJobProgress";
+import { getJobProgress } from "@/api/endpoints/jobs";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useToast } from "@/hooks/use-toast";
-import type { Dataset } from "@/api/types";
+import type { Dataset, SDGProgressMsg } from "@/api/types";
 
 /** Extracts the Celery task id persisted on the dataset row. It lives inside
  *  the free-form `generation_metadata` blob rather than as a typed column. */
@@ -19,6 +20,43 @@ function extractJobId(dataset: Dataset): string | null {
   const raw = dataset.generation_metadata?.celery_task_id;
   return typeof raw === "string" ? raw : null;
 }
+
+/** `phase` is a plain `string` on the wire (see `SDGProgressMsg` in
+ *  `api/types.ts`) so the frontend never hard-fails `tsc` when the backend
+ *  ships a phase value this build hasn't heard of yet. Known phases get a
+ *  localized i18n label (values below are literal `sdgPhase.*` keys, so
+ *  `npm run check:i18n` sees them as used even though they're looked up
+ *  dynamically); anything unrecognized falls back to the raw phase string
+ *  with underscores turned into spaces. */
+const SDG_PHASE_LABEL_KEYS: Record<string, string> = {
+  format_detection: "sdgPhase.formatDetection",
+  meta_prompting: "sdgPhase.metaPrompting",
+  generating: "sdgPhase.generating",
+  validating: "sdgPhase.validating",
+  judging: "sdgPhase.judging",
+  dedup: "sdgPhase.dedup",
+  deduplicating: "sdgPhase.deduplicating",
+  persisting: "sdgPhase.persisting",
+  // New phases added in parallel on the backend (train/hold-out split).
+  splitting_holdout: "sdgPhase.splittingHoldout",
+  persisting_train: "sdgPhase.persistingTrain",
+  persisting_holdout: "sdgPhase.persistingHoldout",
+};
+
+function sdgPhaseLabel(phase: string, t: (key: string) => string): string {
+  const key = SDG_PHASE_LABEL_KEYS[phase];
+  if (key) return t(key);
+  return phase.replace(/_/g, " ");
+}
+
+/** `VITE_MOCK=1` has no WS server pushing frames (see `useJobProgress`,
+ *  which skips the socket entirely in this mode and only fetches the
+ *  progress snapshot once on mount) — poll the same REST snapshot the
+ *  mock's ticking simulation (`mockEngine.ts`) updates so the phase/percent
+ *  display actually moves during `dev:mock` instead of freezing at the
+ *  first render. */
+const isMockMode = import.meta.env.VITE_MOCK === "1";
+const MOCK_POLL_MS = 1200;
 
 /** Live progress card for an in-flight (or just-failed) SDG generation job.
  *  Renders phase + samples-generated/target from the WS, with a cancel
@@ -38,6 +76,35 @@ export function SdgJobCard({ dataset }: { dataset: Dataset }) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.dataset(dataset.id) });
     },
   });
+
+  // Mock-mode-only fallback: `useJobProgress` fetches the REST snapshot
+  // once on mount (no WS in this mode to keep pushing frames), so without
+  // this the phase/percent readout below would freeze at whatever the
+  // snapshot said when the row was expanded. Polling here — scoped to this
+  // component, distinct from the hook's one-shot hydration fetch — is what
+  // makes mockEngine's ticking SDG simulation visible while a job runs.
+  const [polledSdg, setPolledSdg] = useState<SDGProgressMsg | null>(null);
+  useEffect(() => {
+    setPolledSdg(null);
+    if (!isMockMode || isFailed || !jobId) return;
+    let cancelled = false;
+    const tick = () => {
+      getJobProgress(jobId)
+        .then((msg) => {
+          if (cancelled) return;
+          if (msg.type === "sdg_progress") setPolledSdg(msg);
+        })
+        .catch(() => {
+          // No snapshot yet (404) — keep waiting for the next tick.
+        });
+    };
+    tick();
+    const interval = window.setInterval(tick, MOCK_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [jobId, isFailed]);
 
   const cancelMutation = useCancelDatasetGeneration();
 
@@ -59,10 +126,13 @@ export function SdgJobCard({ dataset }: { dataset: Dataset }) {
     );
   }
 
-  const sdg = progress.sdg;
-  const target = sdg?.samples_target ?? 0;
+  // Prefer the locally-polled mock snapshot (ticks live in dev:mock) over
+  // the WS-hydrated one so the display keeps moving in mock mode; in real
+  // mode `polledSdg` stays null and `progress.sdg` (pushed over WS) wins.
+  const sdg = polledSdg ?? progress.sdg;
+  const target = Math.max(1, sdg?.samples_target ?? 0);
   const generated = sdg?.samples_generated ?? 0;
-  const pct = target > 0 ? Math.min(100, Math.round((generated / target) * 100)) : 0;
+  const pct = Math.max(0, Math.min(100, Math.round((generated / target) * 100)));
 
   return (
     <div className="space-y-3 rounded-lg border border-border p-4">
@@ -77,7 +147,7 @@ export function SdgJobCard({ dataset }: { dataset: Dataset }) {
           </span>
           {sdg && (
             <Badge variant="outline" className="text-[10px] capitalize">
-              {sdg.phase.replace(/_/g, " ")}
+              {sdgPhaseLabel(sdg.phase, t)}
             </Badge>
           )}
         </div>
@@ -101,7 +171,7 @@ export function SdgJobCard({ dataset }: { dataset: Dataset }) {
           <div className="flex justify-between text-xs">
             <span className="text-muted-foreground">Samples generated</span>
             <span className="font-mono text-foreground">
-              {generated.toLocaleString()} / {target.toLocaleString()}
+              {generated.toLocaleString()} / {target.toLocaleString()} ({pct}%)
             </span>
           </div>
           <Progress value={pct} className="h-2" />

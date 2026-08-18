@@ -584,7 +584,13 @@ interface WSMessageBase {
 
 export interface SDGProgressMsg extends WSMessageBase {
   type: 'sdg_progress'
-  phase: SDGPhase
+  // Widened from the closed `SDGPhase` union to `string`: the backend adds
+  // new phase values (e.g. splitting_holdout/persisting_train/
+  // persisting_holdout) independently of this frontend, and a closed union
+  // here would hard-fail `tsc` the moment a WS frame carries one. Consumers
+  // must treat phase as an open string with a label map + fallback (see
+  // `SdgJobCard.tsx`) rather than assuming exhaustiveness.
+  phase: string
   samples_generated: number
   samples_target: number
   samples_valid: number

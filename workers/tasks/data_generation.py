@@ -176,6 +176,51 @@ def generate_synthetic_data(
                 ),
             )
 
+        def emit_endgame_phase(
+            phase: str,
+            *,
+            samples_generated: int,
+            samples_target: int,
+            samples_valid: int,
+            samples_rejected: int,
+            duplicates_removed: int,
+        ) -> None:
+            """Publish one of the three post-generation-loop `SDGProgress`
+            frames ("splitting_holdout" / "persisting_train" /
+            "persisting_holdout") so the UI can say "splitting train/hold-out"
+            and "saving training data / saving hold-out data".
+
+            These aren't `GenerationPhase` values (that Literal lives in
+            `ai_engine.data_gen.generator` and is out of scope here), so this
+            builds `SDGProgress` directly instead of going through
+            `emit_progress`/`GenerationProgress`.
+
+            Wrapped in try/except like the terminal-frame publishes below: a
+            Redis hiccup announcing an end-game phase must never fail a run
+            whose actual generation work already succeeded.
+            """
+            try:
+                publish_ws_message(
+                    redis,
+                    job_id,
+                    SDGProgress(
+                        job_id=job_id,
+                        phase=phase,
+                        samples_generated=samples_generated,
+                        samples_target=samples_target,
+                        samples_valid=samples_valid,
+                        samples_rejected=samples_rejected,
+                        duplicates_removed=duplicates_removed,
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — announcement only
+                log.warning(
+                    "failed to publish SDGProgress(phase=%s) message (job=%s)",
+                    phase,
+                    job_id,
+                    exc_info=True,
+                )
+
         try:
             log.info(
                 "SDG starting: job=%s dataset=%s task=%s mode=%s "
@@ -207,6 +252,22 @@ def generate_synthetic_data(
 
             from ai_engine.data_gen.holdout_split import split_rows
 
+            # Snapshot the final generation numbers once — every end-game
+            # frame below (splitting/persisting) reports this same snapshot
+            # rather than per-stage counts, so `samples_generated`/
+            # `samples_target` stay consistent with the numbers the
+            # generation loop actually finished with.
+            endgame_counts = {
+                "samples_generated": len(result.valid_rows),
+                "samples_target": effective_target,
+                "samples_valid": len(result.valid_rows),
+                "samples_rejected": result.rejected_count,
+                "duplicates_removed": result.duplicate_count,
+            }
+
+            if holdout_size > 0:
+                emit_endgame_phase("splitting_holdout", **endgame_counts)
+
             rng = _random.Random(_split_seed(request, dataset_id))
             train_rows, holdout_rows = split_rows(
                 result.valid_rows,
@@ -215,16 +276,7 @@ def generate_synthetic_data(
                 rng=rng,
             )
 
-            emit_progress(
-                GenerationProgress(
-                    phase="persisting",
-                    samples_generated=len(result.valid_rows),
-                    samples_target=effective_target,
-                    samples_valid=len(result.valid_rows),
-                    samples_rejected=result.rejected_count,
-                    duplicates_removed=result.duplicate_count,
-                )
-            )
+            emit_endgame_phase("persisting_train", **endgame_counts)
             minio = get_minio_client()
             bucket = settings.minio_datasets_bucket
             train_key = f"sdg/{dataset_id}.jsonl"
@@ -239,6 +291,8 @@ def generate_synthetic_data(
             holdout_size_bytes: int | None = None
             if holdout_rows:
                 from uuid import uuid4
+
+                emit_endgame_phase("persisting_holdout", **endgame_counts)
 
                 holdout_uuid = uuid4()
                 holdout_key = f"sdg/{holdout_uuid}.jsonl"

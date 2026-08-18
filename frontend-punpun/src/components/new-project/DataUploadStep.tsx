@@ -4,12 +4,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
-import { Upload, FileText, X, FileCode, Loader2, CheckCircle2, Info, RefreshCw } from "lucide-react";
+import { Upload, FileText, X, FileCode, Loader2, CheckCircle2, Info, RefreshCw, Wand2 } from "lucide-react";
 import { toErrorDetail, type ProjectFormData } from "@/pages/NewProject";
 import { useTaskExample, useUploadSeedDataset, useGenerateDataset, useSdgPipelineModels, queryKeys } from "@/hooks/queries";
 import { getDataset } from "@/api/endpoints/datasets";
-import type { JobStatus } from "@/api/types";
+import type { JobStatus, ToolDefinition } from "@/api/types";
+import { useLanguage } from "@/i18n/LanguageContext";
 
 const fileIcons: Record<string, React.ElementType> = {
   json: FileCode,
@@ -19,6 +22,19 @@ const fileIcons: Record<string, React.ElementType> = {
 const isTerminal = (status: JobStatus | null | undefined) =>
   status === "completed" || status === "failed" || status === "cancelled";
 
+// Example placeholder for the tool-definitions JSON editor (no-seed +
+// tool_calling). Kept as a plain literal — it's a code sample, not prose,
+// so it isn't run through i18n.
+const toolsPlaceholder = `[
+  {
+    "name": "set_oven",
+    "description": "Set oven temperature",
+    "parameters": {"celsius": {"type": "integer", "required": true}}
+  }
+]`;
+
+type SdgMode = "with_seed" | "description_only";
+
 interface DataUploadStepProps {
   formData: ProjectFormData;
   updateForm: (p: Partial<ProjectFormData>) => void;
@@ -26,7 +42,9 @@ interface DataUploadStepProps {
 }
 
 export function DataUploadStep({ formData, updateForm, projectId }: DataUploadStepProps) {
+  const { t } = useLanguage();
   const inputRef = useRef<HTMLInputElement>(null);
+  const [mode, setMode] = useState<SdgMode>("with_seed");
   const [file, setFile] = useState<File | null>(null);
   const [seedName, setSeedName] = useState("");
   const [numSamples, setNumSamples] = useState("200");
@@ -34,6 +52,10 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
   const [temperature, setTemperature] = useState("0.9");
   const [datasetName, setDatasetName] = useState("");
   const [holdoutName, setHoldoutName] = useState("");
+  // No-seed (description_only) mode only — per-task-type generation config.
+  const [labelsText, setLabelsText] = useState("");
+  const [toolsText, setToolsText] = useState("");
+  const [toolsFormatError, setToolsFormatError] = useState<string | null>(null);
 
   const taskType = formData.taskType;
   const { data: example } = useTaskExample(taskType ?? undefined, !!taskType);
@@ -111,6 +133,83 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
     );
   };
 
+  // --- No-seed (description_only) mode helpers --------------------------
+
+  const parseLabels = (): string[] =>
+    [...new Set(labelsText.split(",").map((l) => l.trim()).filter(Boolean))];
+
+  const parseTools = (): ToolDefinition[] | null => {
+    if (!toolsText.trim()) return null;
+    try {
+      const parsed = JSON.parse(toolsText) as unknown;
+      if (!Array.isArray(parsed) || parsed.length === 0) return null;
+      const tools = parsed as ToolDefinition[];
+      const names = tools.map((tool) => tool.name);
+      if (names.some((n) => typeof n !== "string" || !n.trim())) return null;
+      if (new Set(names).size !== names.length) return null;
+      return tools;
+    } catch {
+      return null;
+    }
+  };
+
+  // Pretty-print the tool definitions JSON. Tolerates the common copy-paste
+  // failure where line wrapping injects raw newlines/tabs inside string
+  // literals ("Bad control character") by collapsing control whitespace to a
+  // single space before parsing — then re-indents the result.
+  const formatToolsJson = () => {
+    if (!toolsText.trim()) return;
+    const tryParse = (s: string) => JSON.parse(s) as unknown;
+    try {
+      setToolsText(JSON.stringify(tryParse(toolsText), null, 2));
+      setToolsFormatError(null);
+    } catch {
+      try {
+        setToolsText(JSON.stringify(tryParse(toolsText.replace(/[\r\n\t]+/g, " ")), null, 2));
+        setToolsFormatError(null);
+      } catch {
+        setToolsFormatError(t("sdgNoSeed.toolsError"));
+      }
+    }
+  };
+
+  const holdoutRequired = (Number(holdoutSize) || 0) > 0;
+
+  const canGenerateNoSeed = (): boolean => {
+    if (!projectId || !taskType) return false;
+    if (!datasetName.trim()) return false;
+    if (holdoutRequired && !holdoutName.trim()) return false;
+    if (taskType === "classification") return parseLabels().length >= 2;
+    if (taskType === "tool_calling") return parseTools() !== null;
+    return true; // qa needs only the task description already gathered in step 1.
+  };
+
+  const handleGenerateNoSeed = () => {
+    if (!projectId || !taskType || !canGenerateNoSeed()) return;
+    const labels = taskType === "classification" ? parseLabels() : null;
+    const tools = taskType === "tool_calling" ? parseTools() : null;
+    generateDataset.mutate(
+      {
+        project_id: projectId,
+        task_type: taskType,
+        task_description: formData.taskPrompt,
+        num_samples: Number(numSamples) || 200,
+        holdout_size: Number(holdoutSize) || 0,
+        holdout_name: holdoutRequired ? holdoutName.trim() || undefined : undefined,
+        temperature: Number(temperature) || 0.9,
+        dataset_name: datasetName.trim(),
+        sdg_mode: "description_only",
+        classification_config: labels ? { labels } : undefined,
+        tool_calling_config: tools ? { tool_definitions: tools } : undefined,
+      },
+      {
+        onSuccess: (res) => {
+          updateForm({ trainingDatasetId: res.dataset_id, trainingDatasetStatus: res.status });
+        },
+      },
+    );
+  };
+
   const resetGeneration = () => {
     updateForm({ trainingDatasetId: null, trainingDatasetStatus: null });
   };
@@ -123,15 +222,35 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
     { role: "Diversity rules", model: pipelineModels?.diversity_rules },
   ];
 
+  const pipelineInfoBox = (
+    <div className="flex items-start gap-2 rounded-md border border-border bg-secondary/30 p-3">
+      <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <div className="text-xs text-muted-foreground">
+        <p className="font-medium text-foreground">Pipeline models (fixed by the platform)</p>
+        <dl className="mt-1 space-y-0.5 font-mono text-[11px]">
+          {pipelineRows.map((m) => (
+            <div key={m.role} className="flex gap-2">
+              <dt className="w-28 shrink-0">{m.role}:</dt>
+              <dd className="text-muted-foreground/80">{m.model ?? "—"}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    </div>
+  );
+
   const seedUploaded = !!formData.seedDatasetId;
   const status = formData.trainingDatasetStatus;
+  const generationStarted = !!formData.trainingDatasetId;
 
   return (
     <div className="space-y-4">
       <div>
         <p className="text-sm font-semibold text-foreground">Upload Training Data</p>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Upload a seed file, then generate a full synthetic training set from it.
+          {mode === "with_seed"
+            ? "Upload a seed file, then generate a full synthetic training set from it."
+            : t("sdgNoSeed.subtitle")}
         </p>
       </div>
 
@@ -139,73 +258,201 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
         <p className="text-xs text-muted-foreground">Waiting for the project to be created…</p>
       )}
 
-      {!seedUploaded && (
+      {!generationStarted && (
+        <Tabs value={mode} onValueChange={(v) => setMode(v as SdgMode)}>
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="with_seed">{t("sdgNoSeed.modeWithSeed")}</TabsTrigger>
+            <TabsTrigger value="description_only">{t("sdgNoSeed.modeNoSeed")}</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      )}
+
+      {mode === "with_seed" && !generationStarted && (
         <>
-          <div
-            onClick={() => inputRef.current?.click()}
-            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-            onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleFiles(e.dataTransfer.files); }}
-            className="border-2 border-dashed border-border rounded-lg p-10 text-center cursor-pointer hover:border-primary/50 hover:bg-accent/50 transition-colors"
-          >
-            <Upload className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
-            <p className="text-sm font-medium text-foreground">Click to upload or drag & drop</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              {taskType === "qa" ? "JSON/JSONL up to 10MB · QA PDF up to 25MB" : "JSON/JSONL up to 10MB"}
-            </p>
-            <input
-              ref={inputRef}
-              type="file"
-              accept={taskType === "qa" ? ".json,.jsonl,.pdf" : ".json,.jsonl"}
-              className="hidden"
-              onChange={(e) => handleFiles(e.target.files)}
-            />
-          </div>
-
-          {file && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-3 p-2.5 rounded-md bg-secondary/50 border border-border">
-                <div className="text-muted-foreground">{getIcon(file.name)}</div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-foreground truncate">{file.name}</p>
-                  <p className="text-[10px] text-muted-foreground">{(file.size / 1024).toFixed(1)} KB</p>
-                </div>
-                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={removeFile}>
-                  <X className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-
-              <div>
-                <Label className="text-xs">Seed dataset name (optional)</Label>
-                <Input
-                  className="mt-1"
-                  placeholder={file.name.replace(/\.(jsonl|json|pdf)$/i, "")}
-                  value={seedName}
-                  onChange={(e) => setSeedName(e.target.value)}
+          {!seedUploaded && (
+            <>
+              <div
+                onClick={() => inputRef.current?.click()}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleFiles(e.dataTransfer.files); }}
+                className="border-2 border-dashed border-border rounded-lg p-10 text-center cursor-pointer hover:border-primary/50 hover:bg-accent/50 transition-colors"
+              >
+                <Upload className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
+                <p className="text-sm font-medium text-foreground">Click to upload or drag & drop</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {taskType === "qa" ? "JSON/JSONL up to 10MB · QA PDF up to 25MB" : "JSON/JSONL up to 10MB"}
+                </p>
+                <input
+                  ref={inputRef}
+                  type="file"
+                  accept={taskType === "qa" ? ".json,.jsonl,.pdf" : ".json,.jsonl"}
+                  className="hidden"
+                  onChange={(e) => handleFiles(e.target.files)}
                 />
               </div>
 
-              <Button
-                type="button"
-                onClick={handleUpload}
-                disabled={!projectId || uploadSeed.isPending}
-                className="gap-2"
-              >
-                {uploadSeed.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                Upload seed file
-              </Button>
-            </div>
+              {file && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3 p-2.5 rounded-md bg-secondary/50 border border-border">
+                    <div className="text-muted-foreground">{getIcon(file.name)}</div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-foreground truncate">{file.name}</p>
+                      <p className="text-[10px] text-muted-foreground">{(file.size / 1024).toFixed(1)} KB</p>
+                    </div>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={removeFile}>
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+
+                  <div>
+                    <Label className="text-xs">Seed dataset name (optional)</Label>
+                    <Input
+                      className="mt-1"
+                      placeholder={file.name.replace(/\.(jsonl|json|pdf)$/i, "")}
+                      value={seedName}
+                      onChange={(e) => setSeedName(e.target.value)}
+                    />
+                  </div>
+
+                  <Button
+                    type="button"
+                    onClick={handleUpload}
+                    disabled={!projectId || uploadSeed.isPending}
+                    className="gap-2"
+                  >
+                    {uploadSeed.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                    Upload seed file
+                  </Button>
+                </div>
+              )}
+
+              {uploadSeed.isError && <ErrorDetail error={toErrorDetail(uploadSeed.error)} />}
+            </>
           )}
 
-          {uploadSeed.isError && <ErrorDetail error={toErrorDetail(uploadSeed.error)} />}
+          {seedUploaded && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 text-sm text-foreground">
+                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                Seed dataset uploaded
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <Label className="text-xs">Samples</Label>
+                  <Input
+                    className="mt-1"
+                    type="number"
+                    min={1}
+                    max={10000}
+                    value={numSamples}
+                    onChange={(e) => setNumSamples(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Holdout rows</Label>
+                  <Input
+                    className="mt-1"
+                    type="number"
+                    min={0}
+                    max={2000}
+                    value={holdoutSize}
+                    onChange={(e) => setHoldoutSize(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Temperature</Label>
+                  <Input
+                    className="mt-1"
+                    type="number"
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    value={temperature}
+                    onChange={(e) => setTemperature(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <Label className="text-xs">Training dataset name (optional)</Label>
+                <Input className="mt-1" value={datasetName} onChange={(e) => setDatasetName(e.target.value)} />
+              </div>
+
+              {holdoutRequired && (
+                <div>
+                  <Label className="text-xs">Holdout dataset name (optional)</Label>
+                  <Input className="mt-1" value={holdoutName} onChange={(e) => setHoldoutName(e.target.value)} />
+                </div>
+              )}
+
+              {pipelineInfoBox}
+
+              <Button type="button" onClick={handleGenerate} disabled={generateDataset.isPending} className="gap-2">
+                {generateDataset.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                Generate training dataset
+              </Button>
+
+              {generateDataset.isError && <ErrorDetail error={toErrorDetail(generateDataset.error)} />}
+            </div>
+          )}
         </>
       )}
 
-      {seedUploaded && !formData.trainingDatasetId && (
+      {mode === "description_only" && !generationStarted && (
         <div className="space-y-4">
-          <div className="flex items-center gap-2 text-sm text-foreground">
-            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-            Seed dataset uploaded
+          {taskType === "qa" && (
+            <p className="text-xs text-muted-foreground rounded-md border border-border bg-secondary/30 p-3">
+              {t("sdgNoSeed.qaNote")}
+            </p>
+          )}
+
+          <div className="rounded-md border border-border bg-secondary/30 p-3">
+            <p className="text-xs font-medium text-foreground">{t("sdgNoSeed.usingTaskPrompt")}</p>
+            <p className="text-xs text-muted-foreground mt-1 line-clamp-3">{formData.taskPrompt}</p>
           </div>
+
+          {taskType === "classification" && (
+            <div>
+              <Label className="text-xs">{t("sdgNoSeed.labelsLabel")}</Label>
+              <Input
+                className="mt-1"
+                value={labelsText}
+                onChange={(e) => setLabelsText(e.target.value)}
+                placeholder="billing, technical, general"
+              />
+              <p className="text-[10px] text-muted-foreground mt-1">{t("sdgNoSeed.labelsHint")}</p>
+            </div>
+          )}
+
+          {taskType === "tool_calling" && (
+            <div className="space-y-2">
+              <Label className="text-xs">{t("sdgNoSeed.toolsLabel")}</Label>
+              <Textarea
+                value={toolsText}
+                onChange={(e) => setToolsText(e.target.value)}
+                placeholder={toolsPlaceholder}
+                className="min-h-36 font-mono text-xs"
+              />
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] text-muted-foreground">{t("sdgNoSeed.toolsHint")}</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={formatToolsJson}
+                  disabled={!toolsText.trim()}
+                >
+                  {t("sdgNoSeed.formatJson")}
+                </Button>
+              </div>
+              {toolsFormatError && (
+                <p role="alert" className="text-xs text-destructive">
+                  {toolsFormatError}
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
@@ -245,35 +492,33 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
           </div>
 
           <div>
-            <Label className="text-xs">Training dataset name (optional)</Label>
-            <Input className="mt-1" value={datasetName} onChange={(e) => setDatasetName(e.target.value)} />
+            <Label className="text-xs">
+              {t("sdgNoSeed.datasetNameLabel")} <span className="text-destructive">*</span>
+            </Label>
+            <Input className="mt-1" value={datasetName} onChange={(e) => setDatasetName(e.target.value)} required />
+            <p className="text-[10px] text-muted-foreground mt-1">{t("sdgNoSeed.datasetNameHint")}</p>
           </div>
 
-          {(Number(holdoutSize) || 0) > 0 && (
+          {holdoutRequired && (
             <div>
-              <Label className="text-xs">Holdout dataset name (optional)</Label>
-              <Input className="mt-1" value={holdoutName} onChange={(e) => setHoldoutName(e.target.value)} />
+              <Label className="text-xs">
+                {t("sdgNoSeed.holdoutNameLabel")} <span className="text-destructive">*</span>
+              </Label>
+              <Input className="mt-1" value={holdoutName} onChange={(e) => setHoldoutName(e.target.value)} required />
+              <p className="text-[10px] text-muted-foreground mt-1">{t("sdgNoSeed.holdoutNameHint")}</p>
             </div>
           )}
 
-          <div className="flex items-start gap-2 rounded-md border border-border bg-secondary/30 p-3">
-            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            <div className="text-xs text-muted-foreground">
-              <p className="font-medium text-foreground">Pipeline models (fixed by the platform)</p>
-              <dl className="mt-1 space-y-0.5 font-mono text-[11px]">
-                {pipelineRows.map((m) => (
-                  <div key={m.role} className="flex gap-2">
-                    <dt className="w-28 shrink-0">{m.role}:</dt>
-                    <dd className="text-muted-foreground/80">{m.model ?? "—"}</dd>
-                  </div>
-                ))}
-              </dl>
-            </div>
-          </div>
+          {pipelineInfoBox}
 
-          <Button type="button" onClick={handleGenerate} disabled={generateDataset.isPending} className="gap-2">
-            {generateDataset.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-            Generate training dataset
+          <Button
+            type="button"
+            onClick={handleGenerateNoSeed}
+            disabled={!canGenerateNoSeed() || generateDataset.isPending}
+            className="gap-2"
+          >
+            {generateDataset.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
+            {t("sdgNoSeed.generateButton")}
           </Button>
 
           {generateDataset.isError && <ErrorDetail error={toErrorDetail(generateDataset.error)} />}
@@ -290,7 +535,10 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
           </div>
           {!isTerminal(status) && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating rows from your seed dataset…
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              {mode === "with_seed"
+                ? "Generating rows from your seed dataset…"
+                : t("sdgNoSeed.generatingFromDescription")}
             </div>
           )}
           {status === "completed" && trainingDataset && (
@@ -311,8 +559,9 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
 
       {/* Format guide — the sample now comes from the Engine's per-task
           example (GET /api/v1/tasks/{task_type}/example) instead of a
-          hard-coded classification snippet. */}
-      {example && (
+          hard-coded classification snippet. Only relevant to the with_seed
+          upload flow (it documents the seed file's expected shape). */}
+      {mode === "with_seed" && example && (
         <div className="bg-accent/50 rounded-lg p-4 space-y-2">
           <p className="text-xs font-semibold text-foreground">Expected Format</p>
           <div className="bg-background rounded-md p-3 font-mono text-[11px] text-muted-foreground overflow-x-auto">

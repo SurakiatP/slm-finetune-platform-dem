@@ -771,6 +771,86 @@ function settleDataset(id: string, jobId: string, targetSamples: number, delayMs
   }, delayMs)
 }
 
+/**
+ * Phases the backend added alongside the pre-existing SDG phase set
+ * (generating/validating/judging/dedup/deduplicating/persisting/
+ * format_detection/meta_prompting) — the hold-out split gets carved off and
+ * persisted separately from the training data. `phase` on the wire is a
+ * plain string (see `SDGProgressMsg` in api/types.ts), so these three don't
+ * need a type of their own here either.
+ */
+const SDG_TAIL_PHASES: Array<{ phase: string; holdMs: number }> = [
+  { phase: 'splitting_holdout', holdMs: 800 },
+  { phase: 'persisting_train', holdMs: 800 },
+  { phase: 'persisting_holdout', holdMs: 800 },
+]
+
+/**
+ * Ticks `store.jobProgress[jobId]` through a live-looking SDG run instead of
+ * the single static snapshot `settleDataset` alone would leave in place:
+ * `samples_generated` climbs toward `target` during `generating`, then the
+ * three post-generation phases above flash in order. `onDone` fires once the
+ * tail phases finish — the one-shot caller (POST /datasets/generate) uses it
+ * to settle the dataset to `completed`, exactly like `settleDataset` used to
+ * do on a fixed timer. Pass `loop: true` for fixtures that should keep
+ * demoing the sequence forever instead of settling once.
+ */
+function runSdgProgressSimulation(
+  jobId: string,
+  target: number,
+  options: { loop?: boolean; tickMs?: number; ticks?: number; onDone?: () => void } = {},
+): void {
+  const { loop = false, tickMs = 500, ticks = 6, onDone } = options
+  const startGenerated = Math.max(1, Math.round(target * 0.15))
+
+  const emit = (phase: string, generated: number): void => {
+    const valid = Math.round(generated * 0.92)
+    const duplicates = Math.round(generated * 0.02)
+    store.jobProgress[jobId] = {
+      type: 'sdg_progress',
+      job_id: jobId,
+      timestamp: new Date().toISOString(),
+      phase,
+      samples_generated: generated,
+      samples_target: target,
+      samples_valid: valid,
+      samples_rejected: Math.max(0, generated - valid - duplicates),
+      duplicates_removed: duplicates,
+      current_loop: 0,
+      judge_rejected: 0,
+      judge_parse_failures: 0,
+      dedup_rejected: duplicates,
+    }
+  }
+
+  const runGenerating = (onGenDone: () => void): void => {
+    let tick = 0
+    emit('generating', startGenerated)
+    const timer = setInterval(() => {
+      tick += 1
+      const generated = Math.min(target, startGenerated + Math.round(((target - startGenerated) * tick) / ticks))
+      emit('generating', generated)
+      if (tick >= ticks) {
+        clearInterval(timer)
+        onGenDone()
+      }
+    }, tickMs)
+  }
+
+  const runTailPhases = (index: number): void => {
+    if (index >= SDG_TAIL_PHASES.length) {
+      onDone?.()
+      if (loop) runGenerating(() => runTailPhases(0))
+      return
+    }
+    const { phase, holdMs } = SDG_TAIL_PHASES[index]
+    emit(phase, target)
+    setTimeout(() => runTailPhases(index + 1), holdMs)
+  }
+
+  runGenerating(() => runTailPhases(0))
+}
+
 function settleTraining(id: string, jobId: string, delayMs = 8000): void {
   setTimeout(() => {
     const tr = store.trainings.find((t) => t.id === id)
@@ -1216,6 +1296,12 @@ const routes: Route[] = [
       const jobId = genId('job-sdg')
       const target = body.num_samples ?? 200
       const seedDatasetId = body.sdg_mode === 'with_seed' ? body.seed_dataset_id : null
+      // description_only (no-seed) requests carry per-task-type generation
+      // config instead of a seed — stashed in generation_metadata so the
+      // preview handler below can render task-appropriate mock rows (real
+      // labels / tool names) instead of generic placeholders.
+      const classificationConfig = body.sdg_mode === 'description_only' ? body.classification_config ?? null : null
+      const toolCallingConfig = body.sdg_mode === 'description_only' ? body.tool_calling_config ?? null : null
       // parent_dataset_id is reserved for the hold-out split's link back to
       // this dataset (see `datasetRoleTag`) — the seed used to generate it
       // is recorded informationally in generation_metadata instead, so a
@@ -1231,28 +1317,43 @@ const routes: Route[] = [
         num_samples: 0,
         storage_uri: null,
         size_bytes: null,
-        generation_metadata: { celery_task_id: jobId, seed_dataset_id: seedDatasetId },
+        generation_metadata: {
+          celery_task_id: jobId,
+          seed_dataset_id: seedDatasetId,
+          sdg_mode: body.sdg_mode,
+          classification_config: classificationConfig,
+          tool_calling_config: toolCallingConfig,
+        },
         parent_dataset_id: null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }
       store.datasets.unshift(ds)
-      store.jobProgress[jobId] = {
-        type: 'sdg_progress',
-        job_id: jobId,
-        timestamp: new Date().toISOString(),
-        phase: 'generating',
-        samples_generated: Math.round(target * 0.15),
-        samples_target: target,
-        samples_valid: Math.round(target * 0.13),
-        samples_rejected: Math.round(target * 0.02),
-        duplicates_removed: 1,
-        current_loop: 0,
-        judge_rejected: 0,
-        judge_parse_failures: 0,
-        dedup_rejected: 1,
-      }
-      settleDataset(ds.id, jobId, target)
+      // Ticks through generating (samples_generated climbing) and then the
+      // three post-generation phases (splitting_holdout -> persisting_train
+      // -> persisting_holdout) before settling the dataset — replaces the
+      // old single static snapshot + fixed-delay `settleDataset` pairing so
+      // dev:mock actually shows a live phase progression.
+      runSdgProgressSimulation(jobId, target, {
+        onDone: () => {
+          const runningDs = store.datasets.find((d) => d.id === ds.id)
+          if (!runningDs || runningDs.status !== 'running') return
+          runningDs.status = 'completed'
+          runningDs.num_samples = target
+          runningDs.storage_uri = `s3://mock-bucket/datasets/${ds.id}.jsonl`
+          runningDs.size_bytes = target * 450
+          runningDs.updated_at = new Date().toISOString()
+          store.jobProgress[jobId] = {
+            type: 'completed',
+            job_id: jobId,
+            timestamp: new Date().toISOString(),
+            result: { num_samples: target },
+            mlflow_run_id: null,
+            dataset_id: ds.id,
+            model_artifact_id: null,
+          }
+        },
+      })
 
       const holdoutSize = body.holdout_size ?? 0
       if (holdoutSize > 0) {
@@ -1268,7 +1369,13 @@ const routes: Route[] = [
           num_samples: 0,
           storage_uri: null,
           size_bytes: null,
-          generation_metadata: { celery_task_id: jobId, role: 'holdout' },
+          generation_metadata: {
+            celery_task_id: jobId,
+            role: 'holdout',
+            sdg_mode: body.sdg_mode,
+            classification_config: classificationConfig,
+            tool_calling_config: toolCallingConfig,
+          },
           parent_dataset_id: ds.id,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -1289,11 +1396,25 @@ const routes: Route[] = [
       if (!ds) return errorResponse(404, 'Dataset not found')
       const q = parseQuery(url)
       const limit = Number(q.limit ?? 20)
+      // No-seed (description_only) datasets stash the user-supplied labels /
+      // tool definitions in generation_metadata (see the /generate handler
+      // above) — use them here so mock rows actually reflect what the user
+      // asked for instead of always falling back to generic placeholders.
+      const meta = (ds.generation_metadata ?? {}) as {
+        classification_config?: { labels: string[] } | null
+        tool_calling_config?: { tool_definitions: { name: string }[] } | null
+      }
+      const mockLabels = meta.classification_config?.labels?.length
+        ? meta.classification_config.labels
+        : ['billing', 'shipping_delay', 'account_access', 'refund_request']
+      const mockTools = meta.tool_calling_config?.tool_definitions?.length
+        ? meta.tool_calling_config.tool_definitions
+        : [{ name: 'mock_tool' }]
       const samples =
         ds.task_type === 'classification'
           ? Array.from({ length: Math.min(limit, ds.num_samples) }, (_, i) => ({
               text: `Sample support ticket text #${i + 1} for ${ds.name}.`,
-              label: ['billing', 'shipping_delay', 'account_access', 'refund_request'][i % 4],
+              label: mockLabels[i % mockLabels.length],
             }))
           : ds.task_type === 'qa'
             ? Array.from({ length: Math.min(limit, ds.num_samples) }, (_, i) => ({
@@ -1302,7 +1423,7 @@ const routes: Route[] = [
               }))
             : Array.from({ length: Math.min(limit, ds.num_samples) }, (_, i) => ({
                 question: `Sample tool request #${i + 1}.`,
-                answer: JSON.stringify({ name: 'mock_tool', parameters: { index: i } }),
+                answer: JSON.stringify({ name: mockTools[i % mockTools.length].name, parameters: { index: i } }),
               }))
       const resp: DatasetPreview = { dataset_id: ds.id, task_type: ds.task_type, samples, total: ds.num_samples }
       return json(resp)

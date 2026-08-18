@@ -6173,7 +6173,10 @@
               "format_detection",
               "meta_prompting",
               "judging",
-              "dedup"
+              "dedup",
+              "splitting_holdout",
+              "persisting_train",
+              "persisting_holdout"
             ],
             "title": "Phase",
             "default": "generating"
