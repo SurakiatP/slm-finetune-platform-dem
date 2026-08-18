@@ -34,6 +34,7 @@ celery_app = Celery(
         "workers.tasks.hpo_training",
         "workers.tasks.model_export",
         "workers.tasks.evaluation",
+        "workers.tasks.auto_pipeline",
     ],
 )
 
@@ -72,7 +73,13 @@ celery_app.conf.update(
     # somewhere in ai_engine/training or ai_engine/hpo, so they fall through
     # to `task_default_queue` rather than needing an explicit route each.
     task_default_queue="gpu",
-    task_routes={"sdg.*": {"queue": "cpu"}},
+    # `pipeline.*` (workers/tasks/auto_pipeline.py, W2-T1) is CPU-only
+    # bookkeeping + enqueue glue around the auto-export/auto-evaluate chain
+    # — it never loads a model or touches CUDA, so it shares `sdg.*`'s queue
+    # rather than competing with the GPU tasks (train.*/model.export/
+    # evaluation.run) for the single GPU worker's one slot
+    # (`worker_max_tasks_per_child=1` below).
+    task_routes={"sdg.*": {"queue": "cpu"}, "pipeline.*": {"queue": "cpu"}},
     timezone="UTC",
     enable_utc=True,
 )

@@ -433,6 +433,39 @@ function seedStore(): Store {
       auto_evaluate: false,
       auto_pipeline: null,
     },
+    {
+      // p2 is the seeded `qa` project — gives Models/ModelDetail/Compare a
+      // completed qa-task artifact with a judge score to show alongside
+      // p1's classification one (art-1), and a second fully-settled
+      // auto_pipeline demo (see art-4 / ev-5 below).
+      id: 'tr-p2-manual-done',
+      project_id: 'p2',
+      dataset_id: 'ds-p2-sdg-done',
+      mode: 'manual',
+      status: 'completed',
+      celery_task_id: 'job-tr-p2-manual',
+      base_model: BASE_MODEL_2,
+      training_name: 'faq-answerer-manual-v1',
+      mlflow_experiment_id: '3',
+      mlflow_run_id: 'mlflow-run-p2-manual',
+      config_json: { num_train_epochs: 3, learning_rate: 0.0002 },
+      best_metric_value: 0.1024,
+      best_params_json: null,
+      error_message: null,
+      started_at: isoAt(4 * DAY),
+      ended_at: isoAt(4 * DAY - 35 * MIN),
+      queue_state: null,
+      queue_position: null,
+      owner_queue_position: null,
+      created_at: isoAt(4 * DAY),
+      updated_at: isoAt(4 * DAY - 35 * MIN),
+      auto_export: true,
+      auto_evaluate: true,
+      auto_pipeline: {
+        export: { status: 'completed', artifact_id: 'art-4', error: null },
+        evaluate: { status: 'completed', evaluation_id: 'ev-5', skip_reason: null, error: null },
+      },
+    },
   ]
 
   const models: ModelArtifact[] = [
@@ -498,6 +531,27 @@ function seedStore(): Store {
       owner_queue_position: null,
       created_at: isoAt(1 * DAY),
       updated_at: isoAt(1 * DAY - 10 * MIN),
+      base_ollama_tag: 'llama3.2:3b',
+    },
+    {
+      id: 'art-4',
+      training_job_id: 'tr-p2-manual-done',
+      name: 'faq-answerer-v1',
+      base_model: BASE_MODEL_2,
+      mlflow_run_id: 'mlflow-run-p2-manual',
+      lora_adapter_uri: 's3://mock-bucket/artifacts/art-4/lora/',
+      gguf_uri: 's3://mock-bucket/artifacts/art-4/model.q4_k_m.gguf',
+      safetensors_uri: null,
+      size_mb: 1720,
+      ollama_model_tag: 'faq-answerer-v1:latest',
+      export_error_message: null,
+      export_status: 'completed',
+      export_celery_task_id: 'job-export-art4',
+      queue_state: null,
+      queue_position: null,
+      owner_queue_position: null,
+      created_at: isoAt(4 * DAY - 35 * MIN),
+      updated_at: isoAt(4 * DAY - 25 * MIN),
       base_ollama_tag: 'llama3.2:3b',
     },
   ]
@@ -579,6 +633,26 @@ function seedStore(): Store {
       ended_at: isoAt(2 * DAY - 1 * MIN),
       created_at: isoAt(2 * DAY),
       updated_at: isoAt(2 * DAY - 1 * MIN),
+    },
+    {
+      // art-4's auto-eval — the qa-task counterpart to ev-1, so a judge
+      // score is visible on a `qa` project's model without digging into p1.
+      id: 'ev-5',
+      model_artifact_id: 'art-4',
+      dataset_id: 'ds-p2-sdg-done',
+      celery_task_id: 'job-eval-5',
+      status: 'completed',
+      metrics_json: { rouge1: 0.812, rougeL: 0.774, bleu: 0.612, n: 120 },
+      llm_judge_score: 4.5,
+      llm_judge_model: 'anthropic/claude-3-haiku',
+      error_message: null,
+      queue_state: null,
+      queue_position: null,
+      owner_queue_position: null,
+      started_at: isoAt(4 * DAY - 30 * MIN),
+      ended_at: isoAt(4 * DAY - 27 * MIN),
+      created_at: isoAt(4 * DAY - 30 * MIN),
+      updated_at: isoAt(4 * DAY - 27 * MIN),
     },
   ]
 

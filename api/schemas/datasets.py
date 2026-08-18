@@ -15,7 +15,14 @@ class DatasetResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     id: UUID
-    project_id: UUID
+    project_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Owning project. Null for an orphaned dataset — one whose "
+            "project was deleted (ondelete=SET NULL, see W1-T1) while the "
+            "dataset itself survives."
+        ),
+    )
     parent_dataset_id: UUID | None = Field(
         default=None,
         description=(

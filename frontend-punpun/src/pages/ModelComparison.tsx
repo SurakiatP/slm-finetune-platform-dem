@@ -18,7 +18,8 @@ import { EngineEmptyState } from "@/components/engine/EngineEmptyState";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { CompareTable } from "@/components/evaluation/CompareTable";
 import { FadeIn, PageTransition } from "@/components/motion";
-import { useCompareEvaluations, useDatasets, useEvaluations, useModels } from "@/hooks/queries";
+import { buildTrainingNameMap, modelDisplayName } from "@/components/model/modelNaming";
+import { useCompareEvaluations, useDatasets, useEvaluations, useModels, useTrainings } from "@/hooks/queries";
 import { metricMeta } from "@/lib/metrics";
 import { shortId } from "@/lib/format";
 import { useLanguage } from "@/i18n/LanguageContext";
@@ -31,6 +32,7 @@ export default function ModelComparison() {
   const { t } = useLanguage();
 
   const { data: models } = useModels(undefined, { limit: 200 });
+  const { data: trainings } = useTrainings({ limit: 200 });
   const { data: datasets } = useDatasets(undefined, { limit: 200 });
   const { data: completedPage, isLoading: evaluationsLoading } = useEvaluations({
     status: "completed",
@@ -51,10 +53,11 @@ export default function ModelComparison() {
   }, [candidates, selected.length]);
 
   const modelNames = useMemo(() => {
+    const trainingNames = buildTrainingNameMap(trainings?.items);
     const map: Record<string, string> = {};
-    for (const m of models?.items ?? []) map[m.id] = m.name;
+    for (const m of models?.items ?? []) map[m.id] = modelDisplayName(m, trainingNames);
     return map;
-  }, [models]);
+  }, [models, trainings]);
 
   const datasetNames = useMemo(() => {
     const map: Record<string, string> = {};

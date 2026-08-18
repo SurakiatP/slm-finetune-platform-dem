@@ -3,7 +3,7 @@ import {
   FolderKanban,
   Box,
   MessageSquare,
-  ClipboardCheck,
+  Database,
   Wallet,
   Zap,
 } from "lucide-react";
@@ -24,7 +24,7 @@ const navItems = [
   { titleKey: "nav.dashboard", url: "/dashboard", icon: LayoutDashboard },
   { titleKey: "nav.projects", url: "/projects", icon: FolderKanban },
   { titleKey: "nav.models", url: "/models", icon: Box },
-  { titleKey: "nav.evaluations", url: "/evaluations", icon: ClipboardCheck },
+  { titleKey: "datasetsPage.navLabel", url: "/datasets", icon: Database },
   { titleKey: "nav.playground", url: "/playground", icon: MessageSquare },
   { titleKey: "nav.usage", url: "/usage", icon: Wallet },
 ];

@@ -263,6 +263,26 @@ def train_manual(
             # cleanup below must never fire for it.
             committed = True
 
+            # ---- 6b. Auto-pipeline: chain export -> evaluate (W2-T1) -----------
+            # Fire-and-forget from this training task's point of view:
+            # `enqueue_auto_pipeline` does its own fresh DB read of
+            # `auto_export`/`auto_evaluate` and no-ops instantly unless
+            # `auto_export` is set on this row. Placed after `committed = True`
+            # on purpose — a job that never reached durable COMPLETED (the
+            # zombie-cancel `artifact_id is None` branch above) must never
+            # kick off an export/evaluate chain for it. Any failure here is
+            # logged and swallowed: a training run that itself succeeded must
+            # never be reported as failed because its optional follow-on
+            # pipeline couldn't be enqueued.
+            try:
+                from workers.tasks.auto_pipeline import enqueue_auto_pipeline
+
+                enqueue_auto_pipeline(training_id=training_id, artifact_id=str(artifact_id))
+            except Exception:  # noqa: BLE001 — never mask a successful training run
+                log.warning(
+                    "training: job=%s failed to enqueue auto-pipeline", job_id, exc_info=True
+                )
+
             # ---- 7. Publish completion -----------------------------------------
             publish(
                 JobCompleted(

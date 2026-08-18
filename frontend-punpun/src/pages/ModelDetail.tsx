@@ -8,13 +8,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, CheckCircle2, Copy, ExternalLink, FlaskConical, MessageSquare } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageContext";
-import { queryKeys, useEvaluations, useModel } from "@/hooks/queries";
+import { queryKeys, useEvaluations, useModel, useTraining } from "@/hooks/queries";
 import { jobRefetchInterval, useJobProgress } from "@/hooks/useJobProgress";
 import { QueueBadge } from "@/components/engine/QueueBadge";
+import { AutoPipelineStatus } from "@/components/model/AutoPipelineStatus";
 import { ExportPanel } from "@/components/model/ExportPanel";
 import { DownloadMenu } from "@/components/model/DownloadMenu";
 import { formatDateTime, formatNumber } from "@/lib/format";
-import { scalarMetrics } from "@/lib/metrics";
+import { metricMeta, scalarMetrics } from "@/lib/metrics";
 
 const codeExamples = {
   python: `import requests
@@ -79,6 +80,10 @@ export default function ModelDetail() {
     refetchInterval: () => exportPollRef.current,
   });
 
+  // Single targeted fetch of the owning training — only one model is shown
+  // per page here, so this is the natural join (no N+1 across a list).
+  const { data: training } = useTraining(model?.training_job_id ?? "");
+
   const { data: evalsPage } = useEvaluations(
     { model_artifact_id: id ?? "", limit: 20 },
     { enabled: Boolean(id) },
@@ -116,11 +121,19 @@ export default function ModelDetail() {
 
   // The original read fixed accuracy/f1/precision/recall off a mock row; the
   // Engine reports whatever the evaluation stage produced for this artifact.
+  // A completed run with either scalar metrics or a judge score counts —
+  // an LLM-judge-only evaluation has no metrics_json at all.
   const latestEval = (evalsPage?.items ?? [])
-    .filter((e) => e.status === "completed" && e.metrics_json)
+    .filter((e) => e.status === "completed" && (e.metrics_json || e.llm_judge_score !== null))
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
-  const metrics = latestEval ? scalarMetrics(latestEval.metrics_json ?? {}) : null;
-  const metricEntries = metrics ? Object.entries(metrics) : [];
+  const baseMetrics = latestEval ? scalarMetrics(latestEval.metrics_json ?? {}) : {};
+  const metrics =
+    latestEval && latestEval.llm_judge_score !== null
+      ? { ...baseMetrics, llm_judge_score: latestEval.llm_judge_score }
+      : baseMetrics;
+  const metricEntries = Object.entries(metrics);
+
+  const displayName = training?.training_name ?? model.name;
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text.replace(/MODEL_NAME/g, model.ollama_model_tag ?? model.name));
@@ -137,7 +150,7 @@ export default function ModelDetail() {
         </Button>
         <div className="flex-1">
           <div className="flex items-center gap-3">
-            <h1 className="text-xl font-bold font-mono text-foreground">{model.name}</h1>
+            <h1 className="text-xl font-bold font-mono text-foreground" title={model.id}>{displayName}</h1>
             <QueueBadge queueState={model.queue_state} queuePosition={model.queue_position} />
           </div>
           <p className="text-sm text-muted-foreground mt-0.5">
@@ -191,7 +204,12 @@ export default function ModelDetail() {
                   <span className="text-muted-foreground flex items-center gap-1">
                     <FlaskConical className="h-3 w-3" /> Training job
                   </span>
-                  <span className="font-mono text-xs text-foreground">{model.training_job_id.slice(0, 8)}…</span>
+                  <span className="text-right">
+                    {training?.training_name && (
+                      <span className="block text-xs font-medium text-foreground">{training.training_name}</span>
+                    )}
+                    <span className="font-mono text-xs text-muted-foreground">{model.training_job_id.slice(0, 8)}…</span>
+                  </span>
                 </div>
                 {model.ollama_model_tag && (
                   <div className="flex justify-between gap-4">
@@ -205,15 +223,25 @@ export default function ModelDetail() {
             {metricEntries.length > 0 ? (
               <Card>
                 <CardHeader className="pb-2"><CardTitle className="text-sm">{t("modelDetail.performanceMetrics")}</CardTitle></CardHeader>
-                <CardContent>
+                <CardContent className="space-y-3">
                   <div className="grid grid-cols-2 gap-3">
-                    {metricEntries.map(([label, value]) => (
-                      <div key={label} className="text-center p-3 rounded-lg bg-accent">
-                        <p className="text-lg font-bold text-foreground">{formatNumber(value)}</p>
-                        <p className="text-[10px] text-muted-foreground">{label}</p>
-                      </div>
-                    ))}
+                    {metricEntries.map(([label, value]) => {
+                      const meta = metricMeta(label, value);
+                      return (
+                        <div key={label} className="text-center p-3 rounded-lg bg-accent">
+                          <p className="text-lg font-bold text-foreground">
+                            {meta.kind === "score5" ? `${formatNumber(value, 2)}/5` : formatNumber(value)}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground">{label}</p>
+                        </div>
+                      );
+                    })}
                   </div>
+                  {latestEval?.llm_judge_model && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("modelNaming.judgeModel")}: <span className="font-mono text-foreground">{latestEval.llm_judge_model}</span>
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             ) : (
@@ -224,6 +252,8 @@ export default function ModelDetail() {
               </Card>
             )}
           </div>
+
+          {training?.auto_pipeline && <AutoPipelineStatus pipeline={training.auto_pipeline} />}
         </TabsContent>
 
         <TabsContent value="export" className="space-y-4 mt-4">

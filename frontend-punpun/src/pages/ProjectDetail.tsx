@@ -14,6 +14,7 @@ import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { QueueBadge } from "@/components/engine/QueueBadge";
 import { StatusBadge } from "@/components/engine/StatusBadge";
 import { EvaluationTable } from "@/components/evaluation/EvaluationTable";
+import { PipelineHub } from "@/components/project-pipeline/PipelineHub";
 import {
   queryKeys,
   useDatasets,
@@ -125,6 +126,8 @@ export default function ProjectDetail() {
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4 mt-4">
+            <PipelineHub projectId={project.id} />
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Card>
                 <CardHeader className="pb-2"><CardTitle className="text-sm">{t("projectDetail.configuration")}</CardTitle></CardHeader>
@@ -219,7 +222,7 @@ export default function ProjectDetail() {
         title={t("project.delete")}
         description={
           <>
-            {t("project.deleteConfirm")} {t("project.deleteCancelsJobs")}
+            {t("project.deleteConfirm")} {t("project.deleteCancelsJobs")} {t("pipelineHub.deleteDatasetsNote")}
           </>
         }
         confirmLabel={t("project.delete")}

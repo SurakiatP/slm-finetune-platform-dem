@@ -27,6 +27,7 @@ from uuid import UUID
 from fastapi import HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_engine.data_gen import models as llm_models
@@ -95,6 +96,23 @@ async def list_datasets(
     if project_id is not None:
         base = base.where(Dataset.project_id == project_id)
         count = count.where(Dataset.project_id == project_id)
+    # Orphaned datasets (project_id IS NULL, see W1-T1's ondelete=SET NULL)
+    # list fine with no `project_id` filter and no `user` (AUTH_REQUIRED=
+    # false, this branch's current state): `scope_datasets_to_owner` is a
+    # no-op when `user is None`, so nothing here excludes them and nothing
+    # 500s.
+    #
+    # Once a `user` is present, `scope_datasets_to_owner` INNER JOINs
+    # Dataset -> Project on `Dataset.project_id`; an orphan's NULL FK
+    # matches no Project row, so the join silently drops it from both the
+    # `total` count and the page of `rows` below (not a 403 — it simply
+    # never appears). That is the same "belongs to nobody, invisible to
+    # everyone" posture `ownership.py`'s module docstring already commits
+    # to for `owner_id IS NULL` rows; who *should* own a re-parented orphan
+    # once auth is required is the deferred question noted on
+    # `Dataset.project_id` and on ownership.py, not something to invent
+    # here. Nothing to fix in this function — this comment exists so the
+    # next reader doesn't mistake the silent drop for a bug.
     base = ownership.scope_datasets_to_owner(base, user)
     count = ownership.scope_datasets_to_owner(count, user)
     total = (await db.execute(count)).scalar_one()
@@ -220,7 +238,14 @@ async def delete_dataset(
 
     # Both `training_jobs.dataset_id` and `evaluation_runs.dataset_id` are
     # NOT NULL with `ondelete=RESTRICT` — we must refuse the delete here
-    # rather than let the FK constraint surface as a 500.
+    # rather than let the FK constraint surface as a 500. Pre-check (clear,
+    # testable) is the primary guard; the IntegrityError catch around the
+    # actual delete below is the backstop for a row created in the gap
+    # between this check and the delete/commit.
+    #
+    # The training-job detail string below is a frontend contract (W2-T2) —
+    # keep it byte-for-byte: "Dataset <id> is in use by one or more
+    # trainings and cannot be deleted".
     n_trainings = (
         await db.execute(
             select(func.count())
@@ -228,6 +253,15 @@ async def delete_dataset(
             .where(TrainingJob.dataset_id == dataset_id)
         )
     ).scalar_one()
+    if n_trainings:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Dataset {dataset_id} is in use by one or more trainings "
+                "and cannot be deleted"
+            ),
+        )
+
     n_evals = (
         await db.execute(
             select(func.count())
@@ -235,13 +269,12 @@ async def delete_dataset(
             .where(EvaluationRun.dataset_id == dataset_id)
         )
     ).scalar_one()
-    if n_trainings or n_evals:
+    if n_evals:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"Dataset {dataset_id} is referenced by "
-                f"{n_trainings} training_job(s) and {n_evals} evaluation_run(s); "
-                "delete those first or DELETE the parent project to cascade."
+                f"Dataset {dataset_id} is in use by one or more evaluation "
+                "runs and cannot be deleted"
             ),
         )
 
@@ -275,7 +308,22 @@ async def delete_dataset(
         metadata={"name": ds.name, "source": ds.source.value},
     )
     await db.delete(ds)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Backstop for a race between the pre-check above and this commit
+        # (e.g. a training job pointed at this dataset landed in between).
+        # The RESTRICT FK on training_jobs.dataset_id is the one the
+        # frontend contract cares about, so surface the same detail string
+        # the pre-check above uses.
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Dataset {dataset_id} is in use by one or more trainings "
+                "and cannot be deleted"
+            ),
+        )
 
 
 async def cancel_dataset(

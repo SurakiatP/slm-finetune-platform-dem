@@ -50,6 +50,7 @@ _WORKER_BOOT_MODULES = (
     "workers.tasks.hpo_training",
     "workers.tasks.evaluation",
     "workers.tasks.model_export",
+    "workers.tasks.auto_pipeline",
 )
 
 # Round-2 modules the task bodies import transitively (usage/budget

@@ -62,7 +62,13 @@ class Project(Base, TimestampMixin):
 
     datasets: Mapped[list["Dataset"]] = relationship(
         back_populates="project",
-        cascade="all, delete-orphan",
+        # No delete/delete-orphan cascade: datasets must SURVIVE project
+        # deletion as orphans (project_id -> NULL). The DB enforces this via
+        # the FK's ondelete="SET NULL" (migration 0010); passive_deletes="all"
+        # stops the ORM unit-of-work from pre-empting it by loading children
+        # and either deleting them or nulling the FK itself.
+        cascade="save-update, merge",
+        passive_deletes="all",
     )
     training_jobs: Mapped[list["TrainingJob"]] = relationship(
         back_populates="project",

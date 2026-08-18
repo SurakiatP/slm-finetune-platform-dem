@@ -8,7 +8,7 @@ import { StatusBadge } from "@/components/engine/StatusBadge";
 import { formatDateTime } from "@/lib/format";
 import { useLanguage } from "@/i18n/LanguageContext";
 
-export function ModelCard({ model }: { model: ModelArtifact }) {
+export function ModelCard({ model, displayName }: { model: ModelArtifact; displayName?: string }) {
   const { t } = useLanguage();
   const formats: string[] = [];
   if (model.gguf_uri) formats.push("GGUF");
@@ -21,7 +21,7 @@ export function ModelCard({ model }: { model: ModelArtifact }) {
         <CardHeader className="pb-3">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <CardTitle className="text-sm font-semibold font-mono truncate">{model.name}</CardTitle>
+              <CardTitle className="text-sm font-semibold font-mono truncate">{displayName ?? model.name}</CardTitle>
               <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
                 {model.base_model.replace(/^unsloth\//, "")}
               </p>

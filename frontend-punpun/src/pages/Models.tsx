@@ -1,16 +1,22 @@
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { ModelCard } from "@/components/dashboard/ModelCard";
+import { buildTrainingNameMap, modelDisplayName } from "@/components/model/modelNaming";
 import { PageTransition, FadeIn, StaggerContainer, MotionCard } from "@/components/motion";
 import { ModelCardSkeleton } from "@/components/skeletons/ModelCardSkeleton";
 import { Button } from "@/components/ui/button";
 import { GitCompare, Box } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageContext";
-import { useModels } from "@/hooks/queries";
+import { useModels, useTrainings } from "@/hooks/queries";
 
 export default function Models() {
   const { data, isLoading } = useModels();
+  // One unscoped trainings list, joined client-side below — avoids a
+  // per-model GET /trainings/{id} just to resolve training_name.
+  const { data: trainingsPage } = useTrainings({ limit: 200 });
   const { t } = useLanguage();
   const models = data?.items ?? [];
+  const trainingNames = useMemo(() => buildTrainingNameMap(trainingsPage?.items), [trainingsPage]);
 
   return (
     <PageTransition>
@@ -45,7 +51,7 @@ export default function Models() {
           <StaggerContainer className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {models.map((model) => (
               <MotionCard key={model.id}>
-                <ModelCard model={model} />
+                <ModelCard model={model} displayName={modelDisplayName(model, trainingNames)} />
               </MotionCard>
             ))}
           </StaggerContainer>
