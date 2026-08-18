@@ -14,7 +14,7 @@ import {
   Box,
   LayoutDashboard,
   MessageSquare,
-  ClipboardCheck,
+  Database,
   Wallet,
   Plus,
   Search,
@@ -90,9 +90,9 @@ export function CommandPalette() {
               <Box className="mr-2 h-4 w-4" />
               {t("nav.models")}
             </CommandItem>
-            <CommandItem onSelect={() => runCommand("/evaluations")}>
-              <ClipboardCheck className="mr-2 h-4 w-4" />
-              {t("nav.evaluations")}
+            <CommandItem onSelect={() => runCommand("/datasets")}>
+              <Database className="mr-2 h-4 w-4" />
+              {t("datasetsPage.navLabel")}
             </CommandItem>
             <CommandItem onSelect={() => runCommand("/playground")}>
               <MessageSquare className="mr-2 h-4 w-4" />

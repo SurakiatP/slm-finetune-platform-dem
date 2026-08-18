@@ -54,11 +54,22 @@ def test_spec_file_exists_at_the_documented_location() -> None:
 
 def test_no_second_copy_of_the_spec_exists() -> None:
     """`docs/openapi.json` was a manually re-copied mirror and it drifted.
-    One file, no copying step — this fails if the mirror comes back."""
+    One file, no copying step — this fails if the mirror comes back.
+
+    ``.claude/`` is excluded for the same reason ``.venv``/``node_modules``
+    are: it's a fully gitignored, tool-managed directory (Claude Code session
+    state, including ephemeral per-agent git worktrees under
+    ``.claude/worktrees/agent-*/``). A copy of the spec regenerated inside one
+    of those worktrees can never reach the committed tree, so it carries none
+    of the drift risk this test guards against.
+    """
     strays = [
         p
         for p in _REPO_ROOT.rglob("openapi.json")
-        if p != SPEC_PATH and ".venv" not in p.parts and "node_modules" not in p.parts
+        if p != SPEC_PATH
+        and ".venv" not in p.parts
+        and "node_modules" not in p.parts
+        and ".claude" not in p.parts
     ]
     assert not strays, (
         "a second copy of the spec exists and will drift: "

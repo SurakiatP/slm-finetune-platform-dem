@@ -7,7 +7,6 @@ export const translations: Record<Language, Record<string, string>> = {
     "nav.projects": "Projects",
     "nav.models": "Models",
     "nav.playground": "Playground",
-    "nav.evaluations": "Evaluations",
     "nav.usage": "Usage",
 
     // Dashboard
@@ -94,6 +93,7 @@ export const translations: Record<Language, Record<string, string>> = {
     "eval.finetuned": "Fine-tuned",
     "eval.delta": "Delta",
     "eval.empty": "No evaluation runs yet.",
+    "eval.emptyHint": "Export this model to trigger an evaluation automatically — results will appear on the model's detail page.",
     "eval.detail": "Evaluation Detail",
     "eval.dataset": "Evaluation Dataset",
     "eval.status": "Status",
@@ -259,7 +259,7 @@ export const translations: Record<Language, Record<string, string>> = {
     "onboarding.welcome.title": "Welcome to SLM Studio! 👋",
     "onboarding.welcome.desc": "Your all-in-one platform for fine-tuning small language models. Let us show you around!",
     "onboarding.sidebar.title": "Navigation Sidebar",
-    "onboarding.sidebar.desc": "Access all features from the sidebar — projects, models, evaluations, playground, and usage.",
+    "onboarding.sidebar.desc": "Access all features from the sidebar — projects, models, datasets, playground, and usage.",
     "onboarding.newProject.title": "Create Projects",
     "onboarding.newProject.desc": "Start a new fine-tuning project by describing your task, uploading data, and choosing a base model.",
     "onboarding.models.title": "Trained Models",
@@ -344,7 +344,7 @@ export const translations: Record<Language, Record<string, string>> = {
 
     // Project extras
     "project.delete": "Delete Project",
-    "project.deleteConfirm": "This will permanently delete this project and all its data.",
+    "project.deleteConfirm": "This will permanently delete this project.",
     "project.deleteCancelsJobs": "Any running jobs for this project will be cancelled.",
     "project.activityTab": "Activity",
     "project.usageTab": "Usage",
@@ -465,7 +465,6 @@ export const translations: Record<Language, Record<string, string>> = {
     "nav.projects": "โปรเจกต์",
     "nav.models": "โมเดล",
     "nav.playground": "ทดสอบโมเดล",
-    "nav.evaluations": "การประเมินผล",
     "nav.usage": "การใช้งาน",
 
     // Dashboard
@@ -552,6 +551,7 @@ export const translations: Record<Language, Record<string, string>> = {
     "eval.finetuned": "Fine-tuned",
     "eval.delta": "ผลต่าง",
     "eval.empty": "ยังไม่มีการประเมินผล",
+    "eval.emptyHint": "ส่งออกโมเดลนี้เพื่อเริ่มการประเมินผลโดยอัตโนมัติ ผลลัพธ์จะแสดงในหน้ารายละเอียดโมเดล",
     "eval.detail": "รายละเอียดการประเมินผล",
     "eval.dataset": "ชุดข้อมูลสำหรับประเมิน",
     "eval.status": "สถานะ",
@@ -717,7 +717,7 @@ export const translations: Record<Language, Record<string, string>> = {
     "onboarding.welcome.title": "ยินดีต้อนรับสู่ SLM Studio! 👋",
     "onboarding.welcome.desc": "แพลตฟอร์มครบวงจรสำหรับ Fine-tune โมเดลภาษาขนาดเล็ก มาดูกันว่ามีอะไรบ้าง!",
     "onboarding.sidebar.title": "แถบนำทาง",
-    "onboarding.sidebar.desc": "เข้าถึงฟีเจอร์ทั้งหมดจากแถบด้านข้าง — โปรเจกต์ โมเดล การประเมินผล Playground และการใช้งาน",
+    "onboarding.sidebar.desc": "เข้าถึงฟีเจอร์ทั้งหมดจากแถบด้านข้าง — โปรเจกต์ โมเดล ชุดข้อมูล Playground และการใช้งาน",
     "onboarding.newProject.title": "สร้างโปรเจกต์",
     "onboarding.newProject.desc": "เริ่มโปรเจกต์ Fine-tuning ใหม่โดยอธิบายงาน อัปโหลดข้อมูล และเลือกโมเดลพื้นฐาน",
     "onboarding.models.title": "โมเดลที่ฝึกแล้ว",
@@ -802,7 +802,7 @@ export const translations: Record<Language, Record<string, string>> = {
 
     // Project extras
     "project.delete": "ลบโปรเจกต์",
-    "project.deleteConfirm": "การลบนี้จะลบโปรเจกต์และข้อมูลทั้งหมดอย่างถาวร",
+    "project.deleteConfirm": "การลบนี้จะลบโปรเจกต์นี้อย่างถาวร",
     "project.deleteCancelsJobs": "งานที่กำลังทำงานอยู่ของโปรเจกต์นี้จะถูกยกเลิก",
     "project.activityTab": "กิจกรรม",
     "project.usageTab": "การใช้งาน",

@@ -18,8 +18,10 @@ interface EvaluationViewerProps {
  *  this component rendered fully mocked charts off `ComparisonResult[]`
  *  (student-vs-teacher radar/latency data with no backend behind it) and had
  *  no callers left in the app — replaced with a real, reusable card now that
- *  the evaluation stage exists (`useEvaluations` / `EvaluationDetail`). For
- *  the full list + start/cancel workflow, see the `/evaluations` page. */
+ *  the evaluation stage exists (`useEvaluations` / `EvaluationDetail`). The
+ *  full list + start/cancel workflow now lives on the model's own detail
+ *  page (`/models/:id`) — evaluation runs automatically as part of the
+ *  pipeline hub once a model is exported. */
 export function EvaluationViewer({ modelArtifactId, modelName }: EvaluationViewerProps) {
   const { t } = useLanguage();
   const { data, isLoading } = useEvaluations(
@@ -39,7 +41,7 @@ export function EvaluationViewer({ modelArtifactId, modelName }: EvaluationViewe
       <EngineEmptyState
         icon={ClipboardCheck}
         title={t("eval.empty")}
-        hint="Start an evaluation for this model from the Evaluations page to see metrics here."
+        hint={t("eval.emptyHint")}
       />
     );
   }

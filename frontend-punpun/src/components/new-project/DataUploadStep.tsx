@@ -33,6 +33,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
   const [holdoutSize, setHoldoutSize] = useState("0");
   const [temperature, setTemperature] = useState("0.9");
   const [datasetName, setDatasetName] = useState("");
+  const [holdoutName, setHoldoutName] = useState("");
 
   const taskType = formData.taskType;
   const { data: example } = useTaskExample(taskType ?? undefined, !!taskType);
@@ -71,10 +72,16 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
 
   const handleUpload = () => {
     if (!file || !projectId || !taskType) return;
+    // Naming convention: SDG-launched datasets default to `${seedName}-training`
+    // and `${seedName}-hold-out` so the seed → training/holdout lineage is
+    // obvious from the dataset list without opening each one.
+    const effectiveSeedName = seedName.trim() || file.name.replace(/\.(jsonl|json|pdf)$/i, "");
     uploadSeed.mutate(
       { project_id: projectId, task_type: taskType, file, name: seedName.trim() || undefined },
       {
         onSuccess: (res) => {
+          setDatasetName(`${effectiveSeedName}-training`);
+          setHoldoutName(`${effectiveSeedName}-hold-out`);
           updateForm({ seedDatasetId: res.dataset_id, trainingDatasetId: null, trainingDatasetStatus: null });
         },
       },
@@ -90,6 +97,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
         task_description: formData.taskPrompt,
         num_samples: Number(numSamples) || 200,
         holdout_size: Number(holdoutSize) || 0,
+        holdout_name: (Number(holdoutSize) || 0) > 0 ? holdoutName.trim() || undefined : undefined,
         temperature: Number(temperature) || 0.9,
         dataset_name: datasetName.trim() || null,
         sdg_mode: "with_seed",
@@ -240,6 +248,13 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
             <Label className="text-xs">Training dataset name (optional)</Label>
             <Input className="mt-1" value={datasetName} onChange={(e) => setDatasetName(e.target.value)} />
           </div>
+
+          {(Number(holdoutSize) || 0) > 0 && (
+            <div>
+              <Label className="text-xs">Holdout dataset name (optional)</Label>
+              <Input className="mt-1" value={holdoutName} onChange={(e) => setHoldoutName(e.target.value)} />
+            </div>
+          )}
 
           <div className="flex items-start gap-2 rounded-md border border-border bg-secondary/30 p-3">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />

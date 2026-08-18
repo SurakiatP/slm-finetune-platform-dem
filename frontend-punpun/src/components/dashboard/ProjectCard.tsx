@@ -87,7 +87,8 @@ export function ProjectCard({ project }: { project: Project }) {
         title={t("project.delete")}
         description={
           <>
-            {t("project.deleteConfirm")} <strong>{project.name}</strong>. {t("project.deleteCancelsJobs")}
+            {t("project.deleteConfirm")} <strong>{project.name}</strong>. {t("project.deleteCancelsJobs")}{" "}
+            {t("pipelineHub.deleteDatasetsNote")}
           </>
         }
         confirmLabel={t("project.delete")}

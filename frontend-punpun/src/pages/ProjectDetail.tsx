@@ -292,6 +292,7 @@ function DatasetsPreview({ projectId }: { projectId: string }) {
  *  stage: evaluations are keyed by model artifact, so scope them to this
  *  project by way of its model artifacts. */
 function ProjectEvaluations({ projectId }: { projectId: string }) {
+  const navigate = useNavigate();
   const { data: modelsPage, isLoading: modelsLoading } = useModels(projectId, { limit: 100 });
   const { data: evalsPage, isLoading: evalsLoading } = useEvaluations({ limit: 100 });
 
@@ -313,17 +314,23 @@ function ProjectEvaluations({ projectId }: { projectId: string }) {
       <EngineEmptyState
         icon={ClipboardList}
         title="No evaluations yet"
-        hint="Export a model, then run an evaluation to compare it against a held-out dataset."
+        hint="Export a model, then evaluation runs automatically and results appear on that model's detail page."
         action={
           <Button variant="outline" size="sm" asChild>
-            <Link to="/evaluations">Open Evaluations</Link>
+            <Link to="/models">Open Models</Link>
           </Button>
         }
       />
     );
   }
 
-  return <EvaluationTable evaluations={rows} modelNames={modelNames} />;
+  return (
+    <EvaluationTable
+      evaluations={rows}
+      modelNames={modelNames}
+      onRowClick={(evaluation) => navigate(`/models/${evaluation.model_artifact_id}`)}
+    />
+  );
 }
 
 function TrainingsPreview({ projectId }: { projectId: string }) {
