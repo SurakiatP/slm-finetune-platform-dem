@@ -173,6 +173,26 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
     }
   };
 
+  // `datasetName`/`holdoutName` are one pair of state shared by both modes,
+  // but the two modes have opposite naming rules: with-seed prefills
+  // `${seed}-training` / `${seed}-hold-out` on upload, while no-seed mode
+  // requires the user to type both and must show NO prefill. Switching tabs
+  // therefore parks the current mode's names and restores the incoming
+  // mode's own (empty until typed for no-seed) instead of letting the
+  // with-seed prefill leak across.
+  const namesByMode = useRef<Record<SdgMode, { dataset: string; holdout: string }>>({
+    with_seed: { dataset: "", holdout: "" },
+    description_only: { dataset: "", holdout: "" },
+  });
+
+  const handleModeChange = (next: SdgMode) => {
+    if (next === mode) return;
+    namesByMode.current[mode] = { dataset: datasetName, holdout: holdoutName };
+    setDatasetName(namesByMode.current[next].dataset);
+    setHoldoutName(namesByMode.current[next].holdout);
+    setMode(next);
+  };
+
   const holdoutRequired = (Number(holdoutSize) || 0) > 0;
 
   const canGenerateNoSeed = (): boolean => {
@@ -259,7 +279,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
       )}
 
       {!generationStarted && (
-        <Tabs value={mode} onValueChange={(v) => setMode(v as SdgMode)}>
+        <Tabs value={mode} onValueChange={(v) => handleModeChange(v as SdgMode)}>
           <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="with_seed">{t("sdgNoSeed.modeWithSeed")}</TabsTrigger>
             <TabsTrigger value="description_only">{t("sdgNoSeed.modeNoSeed")}</TabsTrigger>

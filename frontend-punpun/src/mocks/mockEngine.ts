@@ -798,9 +798,22 @@ const SDG_TAIL_PHASES: Array<{ phase: string; holdMs: number }> = [
 function runSdgProgressSimulation(
   jobId: string,
   target: number,
-  options: { loop?: boolean; tickMs?: number; ticks?: number; onDone?: () => void } = {},
+  options: {
+    loop?: boolean
+    tickMs?: number
+    ticks?: number
+    withHoldout?: boolean
+    onDone?: () => void
+  } = {},
 ): void {
-  const { loop = false, tickMs = 500, ticks = 6, onDone } = options
+  const { loop = false, tickMs = 500, ticks = 6, withHoldout = true, onDone } = options
+  // Mirror the worker: the two hold-out frames only exist when there is a
+  // hold-out split to announce (see `workers/tasks/data_generation.py`,
+  // which gates `splitting_holdout` on `holdout_size > 0` and
+  // `persisting_holdout` on the split actually yielding rows).
+  const tailPhases = withHoldout
+    ? SDG_TAIL_PHASES
+    : SDG_TAIL_PHASES.filter((p) => p.phase === 'persisting_train')
   const startGenerated = Math.max(1, Math.round(target * 0.15))
 
   const emit = (phase: string, generated: number): void => {
@@ -838,12 +851,12 @@ function runSdgProgressSimulation(
   }
 
   const runTailPhases = (index: number): void => {
-    if (index >= SDG_TAIL_PHASES.length) {
+    if (index >= tailPhases.length) {
       onDone?.()
       if (loop) runGenerating(() => runTailPhases(0))
       return
     }
-    const { phase, holdMs } = SDG_TAIL_PHASES[index]
+    const { phase, holdMs } = tailPhases[index]
     emit(phase, target)
     setTimeout(() => runTailPhases(index + 1), holdMs)
   }
@@ -1335,6 +1348,7 @@ const routes: Route[] = [
       // old single static snapshot + fixed-delay `settleDataset` pairing so
       // dev:mock actually shows a live phase progression.
       runSdgProgressSimulation(jobId, target, {
+        withHoldout: (body.holdout_size ?? 0) > 0,
         onDone: () => {
           const runningDs = store.datasets.find((d) => d.id === ds.id)
           if (!runningDs || runningDs.status !== 'running') return

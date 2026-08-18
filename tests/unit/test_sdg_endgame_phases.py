@@ -215,3 +215,56 @@ class TestEndgamePhasesWithoutHoldout:
         assert "persisting_holdout" not in phases
         # persisting_train still fires — there is always a train file to save.
         assert "persisting_train" in phases
+
+
+class TestEndgamePublishFailuresAreNonFatal:
+    """A Redis hiccup while *announcing* an end-game phase must never fail a
+    run whose generation + persistence work already succeeded — the frames
+    are cosmetic, the dataset is not."""
+
+    def test_run_still_succeeds_and_completes_when_endgame_publish_raises(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        dg_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+        )
+
+        real_publish = dg_module.publish_ws_message
+        endgame = {"splitting_holdout", "persisting_train", "persisting_holdout"}
+
+        def _flaky_publish(redis, job_id, message):  # noqa: ANN001, ANN202
+            if getattr(message, "phase", None) in endgame:
+                raise RuntimeError("redis is down")
+            return real_publish(redis, job_id, message)
+
+        monkeypatch.setattr(dg_module, "publish_ws_message", _flaky_publish)
+
+        async def _fake_run_generator(**kwargs):
+            kwargs["usage"].add(dg_module.sdg_models.GENERATOR, STAGE_GENERATE, 1000, 500)
+            return _fake_result(5)
+
+        monkeypatch.setattr(dg_module, "_run_generator", _fake_run_generator)
+
+        project_id, dataset_id = uuid4(), uuid4()
+        _seed_project_and_dataset(
+            sync_sessionmaker, project_id=project_id, dataset_id=dataset_id
+        )
+
+        result = dg_module.generate_synthetic_data.apply(
+            kwargs={
+                "request_payload": _build_payload(project_id, holdout_size=1),
+                "dataset_id": str(dataset_id),
+            }
+        )
+
+        assert result.successful(), f"task raised: {result.result!r}"
+
+        session = sync_sessionmaker()
+        try:
+            parent = session.get(Dataset, dataset_id)
+            assert parent is not None
+            assert parent.status is JobStatus.COMPLETED
+            # The training rows were still persisted despite the failed frames.
+            assert parent.num_samples == 4
+        finally:
+            session.close()
