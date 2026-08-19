@@ -10,7 +10,7 @@ import { ArrowLeft, Clock, Cpu, Database, Gauge, ExternalLink } from "lucide-rea
 import { PipelineSteps } from "@/components/training/PipelineSteps";
 import { LossCurveChart } from "@/components/training/LossCurveChart";
 import type { LossCurvePoint, PipelineStep } from "@/data/trainingMockData";
-import { baseModelLabels, taskTypeLabels } from "@/data/mockData";
+import { getBaseModelLabel, taskTypeLabels } from "@/data/mockData";
 import { TrainingMonitorSkeleton } from "@/components/skeletons/TrainingMonitorSkeleton";
 import { DiagnosticPanel } from "@/components/training/DiagnosticPanel";
 import { useLanguage } from "@/i18n/LanguageContext";
@@ -117,7 +117,7 @@ export default function TrainingMonitor() {
 
       <StaggerContainer className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
-          { label: t("training.baseModel"), value: baseModelLabels[project.baseModel], icon: Cpu },
+          { label: t("training.baseModel"), value: getBaseModelLabel(project.baseModel), icon: Cpu },
           { label: t("training.taskType"), value: taskTypeLabels[project.taskType], icon: Database },
           { label: t("training.epochProgress"), value: latestProgress ? `${Math.round(latestProgress.epoch)} / ${latestProgress.epochs_total}` : isTraining ? "… / …" : `${project.epochs} / ${project.epochs}`, icon: Gauge },
           { label: t("training.elapsedTime"), value: isTraining ? "Live" : "Done", icon: Clock },

@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PageTransition, FadeIn } from "@/components/motion";
 import { Trophy, Medal, ArrowUpDown, Rocket, Eye } from "lucide-react";
-import { taskTypeLabels, baseModelLabels } from "@/data/mockData";
+import { getBaseModelLabel, taskTypeLabels } from "@/data/mockData";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useModels } from "@/hooks/useUserData";
 import { useProjects } from "@/hooks/useProjects";
@@ -135,7 +135,7 @@ export default function Leaderboard() {
                         </td>
                         <td className="py-3 font-medium font-mono text-xs">{m.name}</td>
                         <td className="py-3 text-xs text-muted-foreground">{m.project?.name}</td>
-                        <td className="py-3"><Badge variant="outline" className="text-[10px]">{baseModelLabels[m.baseModel]}</Badge></td>
+                        <td className="py-3"><Badge variant="outline" className="text-[10px]">{getBaseModelLabel(m.baseModel)}</Badge></td>
                         <td className="py-3"><Badge variant="secondary" className="text-[10px]">{taskTypeLabels[m.taskType]}</Badge></td>
                         <td className="py-3 text-right font-medium">{m.metrics?.accuracy}%</td>
                         <td className="py-3 text-right">{m.metrics?.f1Score}%</td>

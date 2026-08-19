@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Pin } from "lucide-react";
 import type { Project, ProjectStatus } from "@/types";
-import { taskTypeLabels, baseModelLabels } from "@/data/mockData";
+import { getBaseModelLabel, taskTypeLabels } from "@/data/mockData";
 
 const statusVariant: Record<ProjectStatus, "default" | "secondary" | "destructive" | "outline"> = {
   completed: "default",
@@ -40,7 +40,7 @@ export function ProjectCard({ project }: { project: Project }) {
           <p className="text-xs text-muted-foreground line-clamp-2">{project.description}</p>
           <div className="flex flex-wrap gap-1.5">
             <Badge variant="outline" className="text-[10px]">{taskTypeLabels[project.taskType]}</Badge>
-            <Badge variant="outline" className="text-[10px]">{baseModelLabels[project.baseModel]}</Badge>
+            <Badge variant="outline" className="text-[10px]">{getBaseModelLabel(project.baseModel)}</Badge>
             {project.tags?.map((tag) => (
               <Badge key={tag} variant="outline" className={`text-[10px] ${tagColor(tag)}`}>
                 {tag}

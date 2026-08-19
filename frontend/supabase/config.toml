@@ -1,1 +1,4 @@
 project_id = "smart-model-tune-main"
+
+[functions.delete-account]
+verify_jwt = true

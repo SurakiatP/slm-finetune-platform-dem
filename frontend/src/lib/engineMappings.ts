@@ -11,8 +11,9 @@ export const TASK_TYPE_TO_ENGINE: Record<TaskType, EngineTaskType | null> = {
   ranking: null,
 };
 
-// Maps frontend BaseModel → Engine Hugging Face model ID
-export const BASE_MODEL_TO_ENGINE: Partial<Record<BaseModel, string>> = {
+// IDs stored before the Engine catalog was introduced. Keep these only so
+// existing projects and templates can still launch a training job.
+const LEGACY_BASE_MODEL_TO_ENGINE: Record<string, string> = {
   "qwen2.5-1.5b": "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit",
   "qwen2.5-3b": "unsloth/Qwen2.5-3B-Instruct-bnb-4bit",
   "gemma-2-2b": "unsloth/gemma-2-2b-it-bnb-4bit",
@@ -20,12 +21,12 @@ export const BASE_MODEL_TO_ENGINE: Partial<Record<BaseModel, string>> = {
   "smollm2-1.7b": "unsloth/SmolLM2-1.7B-Instruct-bnb-4bit",
 };
 
-export function isEngineTaskSupported(taskType: TaskType | null): taskType is TaskType {
-  return taskType !== null && TASK_TYPE_TO_ENGINE[taskType] !== null;
+export function resolveEngineBaseModel(baseModel: BaseModel): string {
+  return LEGACY_BASE_MODEL_TO_ENGINE[baseModel] ?? baseModel;
 }
 
-export function isEngineModelSupported(baseModel: BaseModel | null): baseModel is BaseModel {
-  return baseModel !== null && BASE_MODEL_TO_ENGINE[baseModel] !== undefined;
+export function isEngineTaskSupported(taskType: TaskType | null): taskType is TaskType {
+  return taskType !== null && TASK_TYPE_TO_ENGINE[taskType] !== null;
 }
 
 export function buildManualConfig(epochs: number, learningRate: number): ManualTrainingConfig {

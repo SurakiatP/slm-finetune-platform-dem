@@ -1,4 +1,4 @@
-import { isEngineModelSupported, isEngineTaskSupported } from "@/lib/engineMappings";
+import { isEngineTaskSupported } from "@/lib/engineMappings";
 import type { TaskType, BaseModel } from "@/types";
 
 export interface ValidationIssue {
@@ -51,6 +51,7 @@ function formatBytes(bytes: number): string {
 export function validatePreflight(
   input: PreflightInput,
   t?: (key: string) => string,
+  supportedBaseModelIds: ReadonlySet<string>,
 ): ValidationResult {
   const errors: ValidationIssue[] = [];
   const warnings: ValidationIssue[] = [];
@@ -64,7 +65,7 @@ export function validatePreflight(
   }
   if (!input.baseModel) {
     errors.push({ code: "base_model_missing", message: tr("preflight.baseModelMissing", "Please select a base model.") });
-  } else if (!isEngineModelSupported(input.baseModel)) {
+  } else if (!supportedBaseModelIds.has(input.baseModel)) {
     errors.push({ code: "base_model_unsupported", message: tr("preflight.baseModelUnsupported", "This base model is not supported by the Engine.") });
   }
 

@@ -10,6 +10,7 @@ import { useLanguage } from "@/i18n/LanguageContext";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { describeAuthError } from "@/lib/authError";
+import { getMfaAssuranceLevel } from "@/lib/accountSecurity";
 
 const Login = () => {
   const { t } = useLanguage();
@@ -27,8 +28,8 @@ const Login = () => {
     e.preventDefault();
     setLoading(true);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
     if (error) {
+      setLoading(false);
       toast({
         title: t("auth.signInFailed"),
         description: describeAuthError(error),
@@ -36,6 +37,17 @@ const Login = () => {
       });
       return;
     }
+    try {
+      const assurance = await getMfaAssuranceLevel();
+      if (assurance.currentLevel === "aal1" && assurance.nextLevel === "aal2") {
+        setLoading(false);
+        navigate("/mfa", { state: { from: { pathname: from } }, replace: true });
+        return;
+      }
+    } catch {
+      // ProtectedRoute performs the same check once AuthContext refreshes.
+    }
+    setLoading(false);
     navigate(from, { replace: true });
   };
 
@@ -94,6 +106,12 @@ const Login = () => {
             <div className="space-y-2">
               <Label htmlFor="password">{t("login.password")}</Label>
               <Input id="password" type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} />
+            </div>
+
+            <div className="text-right">
+              <Link to="/forgot-password" className="text-sm font-medium text-primary hover:underline">
+                {t("login.forgotPassword")}
+              </Link>
             </div>
 
             <Button type="submit" className="w-full" disabled={loading}>

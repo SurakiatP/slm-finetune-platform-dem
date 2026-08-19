@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, RotateCcw, Wand2, Loader2, CheckCircle2, AlertCircle, Activity } from "lucide-react";
-import { taskTypeLabels, baseModelLabels } from "@/data/mockData";
+import { getBaseModelLabel, taskTypeLabels } from "@/data/mockData";
 import { mockVersionHistory } from "@/data/deploymentMockData";
 import { TuningReport } from "@/components/training/TuningReport";
 import { TuningHistory } from "@/components/training/TuningHistory";
@@ -142,7 +142,7 @@ export default function ProjectDetail() {
               <CardContent className="space-y-2 text-sm">
                 {[
                   [t("projectDetail.taskType"), taskTypeLabels[project.taskType]],
-                  [t("projectDetail.baseModel"), baseModelLabels[project.baseModel]],
+                  [t("projectDetail.baseModel"), getBaseModelLabel(project.baseModel)],
                   [t("projectDetail.epochs"), project.epochs],
                   [t("projectDetail.learningRate"), project.learningRate],
                   [t("projectDetail.datasetSize"), `${project.datasetSize} ${t("calc.samples")}`],
