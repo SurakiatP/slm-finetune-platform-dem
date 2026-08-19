@@ -1,8 +1,9 @@
 import { Badge } from "@/components/ui/badge";
 import type { ProjectFormData } from "@/pages/NewProject";
 import type { BaseModel } from "@/types";
+import { useBaseModels } from "@/hooks/useBaseModels";
 
-const models: {
+const fallbackModels: {
   id: BaseModel;
   name: string;
   params: string;
@@ -11,6 +12,7 @@ const models: {
   bestFor: string[];
   size: string;
 }[] = [
+
   {
     id: "qwen2.5-1.5b",
     name: "Qwen 2.5",
@@ -71,18 +73,31 @@ export function ModelSelectionStep({
   formData: ProjectFormData;
   updateForm: (p: Partial<ProjectFormData>) => void;
 }) {
+  const { models: engineModels, loading: engineModelsLoading } = useBaseModels();
+
   return (
     <div className="space-y-4">
-      <div>
-        <p className="text-sm font-semibold text-foreground">Choose Base Model</p>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Select the pre-trained model to fine-tune. Larger models are more capable but slower to train.
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-semibold text-foreground">Choose Base Model</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Select the pre-trained model to fine-tune. Larger models are more capable but slower to train.
+          </p>
+        </div>
+        {engineModels.length > 0 && (
+          <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/30 bg-emerald-500/5 shrink-0">
+            {engineModels.length} models synced with Engine
+          </Badge>
+        )}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {models.map((model) => {
+        {fallbackModels.map((model) => {
           const selected = formData.baseModel === model.id;
+          const engineMatch = engineModels.find((m) => m.id.toLowerCase().includes(model.id.toLowerCase()));
+          const displayName = engineMatch?.display_name || model.name;
+          const notes = engineMatch?.notes;
+
           return (
             <button
               key={model.id}
@@ -95,7 +110,7 @@ export function ModelSelectionStep({
             >
               <div className="flex items-center justify-between mb-2">
                 <div>
-                  <span className="font-semibold text-sm text-foreground">{model.name}</span>
+                  <span className="font-semibold text-sm text-foreground">{displayName}</span>
                   <span className="text-xs text-muted-foreground ml-1.5">{model.params}</span>
                 </div>
                 {selected && <Badge className="text-[10px]">Selected</Badge>}
@@ -116,6 +131,12 @@ export function ModelSelectionStep({
                 </div>
               </div>
 
+              {notes && (
+                <p className="text-[10px] text-muted-foreground mb-2 line-clamp-1 italic">
+                  "{notes}"
+                </p>
+              )}
+
               <div className="flex flex-wrap gap-1">
                 {model.bestFor.map((tag) => (
                   <Badge key={tag} variant="outline" className="text-[9px] px-1.5 py-0">
@@ -130,3 +151,4 @@ export function ModelSelectionStep({
     </div>
   );
 }
+

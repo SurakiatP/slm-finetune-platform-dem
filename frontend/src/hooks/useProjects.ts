@@ -31,6 +31,22 @@ export function useProjects() {
     refresh();
   }, [refresh]);
 
+  const hasActiveProjects = projects.some((p) => p.status === "training" || p.status === "queued");
+
+  useEffect(() => {
+    if (!hasActiveProjects) return;
+    const intervalId = setInterval(async () => {
+      if (!user) return;
+      try {
+        const data = await listProjects();
+        setProjects(data);
+      } catch {
+        // ignore background refresh error
+      }
+    }, 5000);
+    return () => clearInterval(intervalId);
+  }, [hasActiveProjects, user]);
+
   const create = useCallback(async (input: CreateProjectInput) => {
     const created = await createProject(input);
     setProjects((prev) => [created, ...prev]);
