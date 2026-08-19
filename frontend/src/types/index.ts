@@ -1,6 +1,7 @@
 export type ProjectStatus = "training" | "completed" | "failed" | "queued" | "paused";
 export type TaskType = "classification" | "ner" | "qa" | "function-calling" | "extraction" | "ranking";
-export type BaseModel = "qwen2.5-1.5b" | "qwen2.5-3b" | "gemma-2-2b" | "phi-3-mini" | "llama-3.2-1b" | "smollm2-1.7b";
+// Base model identifiers are provided by the Engine catalog at runtime.
+export type BaseModel = string;
 
 export interface Project {
   id: string;

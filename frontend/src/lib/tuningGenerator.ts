@@ -240,6 +240,10 @@ export function setAppliedRun(projectId: string, runId: string): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
 }
 
+export function clearAppliedTuningRuns(): void {
+  localStorage.removeItem(STORAGE_KEY);
+}
+
 // Public: get all tuning runs for a project (latest first).
 export function getTuningRunsForProject(project: Project): TuningRun[] {
   // Number of past runs derived deterministically from project — gives history

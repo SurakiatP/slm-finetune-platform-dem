@@ -11,6 +11,7 @@ import {
   engineCreateProject,
   engineGenerateDataset,
   engineHealthCheck,
+  engineListBaseModels,
   engineUploadSeed,
 } from "@/lib/engineApi";
 
@@ -45,6 +46,28 @@ describe("Engine API client", () => {
         task_type: "qa",
         external_project_id: "supabase-project",
       }),
+    }));
+  });
+
+  it("loads the live base-model catalog with the Supabase token", async () => {
+    const models = [{
+      id: "unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
+      display_name: "Qwen3 0.6B Instruct (4-bit)",
+      family: "qwen",
+      params_billions: 0.75,
+      context_length: 32768,
+      recommended_max_seq_length: 2048,
+      quantization: "bnb-4bit",
+      license: "apache-2.0",
+      notes: null,
+      ollama_tag: "qwen3:0.6b",
+    }];
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(models));
+
+    await expect(engineListBaseModels()).resolves.toEqual(models);
+
+    expect(fetch).toHaveBeenCalledWith("/api/v1/base-models", expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: "Bearer jwt-token" }),
     }));
   });
 
