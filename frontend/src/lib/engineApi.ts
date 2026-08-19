@@ -417,6 +417,23 @@ export async function engineFindProjectByExternalId(externalProjectId: string): 
   return page.items[0] ?? null;
 }
 
+export interface EngineProjectUpdate {
+  name?: string;
+  description?: string;
+}
+
+export async function engineUpdateProject(projectId: string, body: EngineProjectUpdate): Promise<EngineProject> {
+  return apiFetch<EngineProject>(`/projects/${projectId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function engineDeleteProject(projectId: string): Promise<void> {
+  await engineFetch(`/projects/${projectId}`, { method: "DELETE" });
+}
+
+
 // ─── Node 3a — Upload Seed Data ───────────────────────────────────────────────
 
 export async function engineUploadSeed(
@@ -681,6 +698,23 @@ export async function engineGetTaskExample(taskType: EngineTaskType): Promise<Re
 export async function engineGetSdgPipelineConfig(): Promise<EngineSdgPipelineConfig> {
   return apiFetch<EngineSdgPipelineConfig>("/sdg-pipeline");
 }
+
+export interface EngineBaseModelInfo {
+  id: string;
+  display_name: string;
+  family: string;
+  params_billions: number;
+  context_length: number;
+  recommended_max_seq_length: number;
+  license: string;
+  notes?: string;
+  ollama_tag?: string;
+}
+
+export async function engineListBaseModels(): Promise<EngineBaseModelInfo[]> {
+  return apiFetch<EngineBaseModelInfo[]>("/base-models");
+}
+
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 

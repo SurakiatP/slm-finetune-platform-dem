@@ -6,7 +6,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, Clock, Cpu, Database, Gauge, ExternalLink } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { ArrowLeft, Clock, Cpu, Database, Gauge, ExternalLink, XCircle, Loader2 } from "lucide-react";
 import { PipelineSteps } from "@/components/training/PipelineSteps";
 import { LossCurveChart } from "@/components/training/LossCurveChart";
 import type { LossCurvePoint, PipelineStep } from "@/data/trainingMockData";
@@ -16,14 +26,22 @@ import { DiagnosticPanel } from "@/components/training/DiagnosticPanel";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useProject } from "@/hooks/useProjects";
 import { useEngineWorkflowSync } from "@/hooks/useEngineWorkflowSync";
-import { engineGetLossHistory, engineGetMlflowUrl } from "@/lib/engineApi";
-import { getEngineMeta } from "@/lib/engineStore";
+import { engineGetLossHistory, engineGetMlflowUrl, engineCancelTraining, engineListEvaluations, type EngineEvaluation } from "@/lib/engineApi";
+import { updateProject as updateSupabaseProject } from "@/lib/projectsApi";
+
+import { getEngineMeta, patchEngineMeta } from "@/lib/engineStore";
+import { useToast } from "@/hooks/use-toast";
+
 
 export default function TrainingMonitor() {
   const { id } = useParams<{ id: string }>();
   const { project, loading, setProject } = useProject(id);
   const { t } = useLanguage();
+  const { toast } = useToast();
   const { latestProgress } = useEngineWorkflowSync(project, setProject);
+
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
 
   const engineMeta = id ? getEngineMeta(id) : null;
 
@@ -57,6 +75,38 @@ export default function TrainingMonitor() {
       if (interval) clearInterval(interval);
     };
   }, [engineMeta?.trainingId, project?.status]);
+
+  const [evaluationsList, setEvaluationsList] = useState<EngineEvaluation[]>([]);
+  useEffect(() => {
+    if (!engineMeta?.modelArtifactId) return;
+    let active = true;
+    engineListEvaluations({ modelArtifactId: engineMeta.modelArtifactId })
+      .then((res) => {
+        if (active) setEvaluationsList(res.items);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [engineMeta?.modelArtifactId]);
+
+
+  const handleConfirmCancelTraining = async () => {
+    if (!project) return;
+    setIsCancelling(true);
+    try {
+      if (engineMeta?.trainingId) {
+        await engineCancelTraining(engineMeta.trainingId).catch(() => undefined);
+      }
+      const updated = await updateSupabaseProject(project.id, { status: "paused" });
+      setProject(updated);
+      patchEngineMeta(project.id, { phase: "failed", error: "Training cancelled by user" });
+      toast({ title: "Training cancelled", description: "Project status changed to paused." });
+      setCancelOpen(false);
+    } catch (err) {
+      toast({ title: "Failed to cancel training", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setIsCancelling(false);
+    }
+  };
 
   const currentTrainLoss = latestProgress?.train_loss
     ?? realLossCurve.at(-1)?.trainLoss
@@ -100,20 +150,55 @@ export default function TrainingMonitor() {
           </div>
           <p className="text-sm text-muted-foreground mt-0.5">{t("training.title")}</p>
         </div>
-        {engineMeta?.trainingId && (
-          <Button variant="outline" size="sm" onClick={async () => {
-            try {
-              const res = await engineGetMlflowUrl(engineMeta.trainingId!);
-              if (res.mlflow_url) window.open(res.mlflow_url, "_blank");
-              else alert("MLflow URL not ready for this training run.");
-            } catch (err) {
-              alert("MLflow error: " + (err instanceof Error ? err.message : String(err)));
-            }
-          }}>
-            <ExternalLink className="h-4 w-4 mr-2" /> View in MLflow
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {isTraining && (
+            <Button variant="destructive" size="sm" onClick={() => setCancelOpen(true)}>
+              <XCircle className="h-4 w-4 mr-1.5" />
+              Cancel Training
+            </Button>
+          )}
+          {engineMeta?.trainingId && (
+            <Button variant="outline" size="sm" onClick={async () => {
+              try {
+                const res = await engineGetMlflowUrl(engineMeta.trainingId!);
+                if (res.mlflow_url) window.open(res.mlflow_url, "_blank");
+                else alert("MLflow URL not ready for this training run.");
+              } catch (err) {
+                alert("MLflow error: " + (err instanceof Error ? err.message : String(err)));
+              }
+            }}>
+              <ExternalLink className="h-4 w-4 mr-2" /> View in MLflow
+            </Button>
+          )}
+        </div>
       </div>
+
+      {/* Cancel Training Alert Dialog */}
+      <AlertDialog open={cancelOpen} onOpenChange={setCancelOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Stop Fine-Tuning Process?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will stop the current training job on the FineTune Engine and set the project status to <strong>paused</strong>.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isCancelling}>Keep Training</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(e) => {
+                e.preventDefault();
+                void handleConfirmCancelTraining();
+              }}
+              disabled={isCancelling}
+            >
+              {isCancelling && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Cancel Training
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
 
       <StaggerContainer className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
@@ -213,11 +298,50 @@ export default function TrainingMonitor() {
 
         <TabsContent value="evaluation" className="mt-4">
           <Card>
-            <CardContent className="py-16 text-center text-sm text-muted-foreground">
-              Evaluation is not connected in this workflow. No simulated results are shown.
+            <CardHeader className="pb-2 flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className="text-sm">Model Evaluations</CardTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">Automated benchmark and LLM-as-judge scores for this trained artifact.</p>
+              </div>
+              <Button size="sm" asChild>
+                <Link to="/evaluations">Launch New Evaluation →</Link>
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {evaluationsList.length > 0 ? (
+                <div className="space-y-3">
+                  {evaluationsList.map((ev) => (
+                    <div key={ev.id} className="p-3 rounded-lg border border-border flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">{ev.eval_name || `Eval ${ev.id.slice(0, 8)}`}</p>
+                        <p className="text-xs text-muted-foreground">Status: <span className="font-medium text-foreground">{ev.status}</span> · Created {new Date(ev.created_at).toLocaleString()}</p>
+                      </div>
+                      {ev.metrics ? (
+                        <div className="flex gap-2">
+                          {Object.entries(ev.metrics).slice(0, 3).map(([k, v]) => (
+                            <Badge key={k} variant="secondary" className="text-[10px]">
+                              {k}: {typeof v === "number" ? v.toFixed(3) : String(v)}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px]">{ev.status}</Badge>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="py-12 text-center text-sm text-muted-foreground space-y-2">
+                  <p>No evaluations recorded yet for this model artifact.</p>
+                  <Button variant="outline" size="sm" asChild>
+                    <Link to="/evaluations">Go to Evaluations Page</Link>
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
+
       </Tabs>
     </div>
     </PageTransition>

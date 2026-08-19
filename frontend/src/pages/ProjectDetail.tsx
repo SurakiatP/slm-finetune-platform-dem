@@ -1,13 +1,27 @@
-import { useParams, Link } from "react-router-dom";
-import { useEffect, useRef } from "react";
+import { useParams, Link, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
 import { PageTransition } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, RotateCcw, Wand2, Loader2, CheckCircle2, AlertCircle, Activity } from "lucide-react";
-import { getBaseModelLabel, taskTypeLabels } from "@/data/mockData";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { ArrowLeft, RotateCcw, Wand2, Loader2, CheckCircle2, AlertCircle, Activity, Pencil, Trash2 } from "lucide-react";
+import { taskTypeLabels, baseModelLabels } from "@/data/mockData";
 import { mockVersionHistory } from "@/data/deploymentMockData";
 import { TuningReport } from "@/components/training/TuningReport";
 import { TuningHistory } from "@/components/training/TuningHistory";
@@ -18,8 +32,16 @@ import type { ProjectStatus } from "@/types";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useToast } from "@/hooks/use-toast";
 import { getEngineMeta } from "@/lib/engineStore";
-import { engineListProjectActivity, engineListProjectUsage, type EngineAuditEvent, type EngineUsageEvent } from "@/lib/engineApi";
-import { useState } from "react";
+import {
+  engineListProjectActivity,
+  engineListProjectUsage,
+  engineUpdateProject,
+  engineDeleteProject,
+  type EngineAuditEvent,
+  type EngineUsageEvent,
+} from "@/lib/engineApi";
+import { updateProject as updateSupabaseProject, deleteProject as deleteSupabaseProject } from "@/lib/projectsApi";
+
 
 const statusVariant: Record<ProjectStatus, "default" | "secondary" | "destructive" | "outline"> = {
   completed: "default",
@@ -37,10 +59,21 @@ function getSuggestions(datasetSize: number) {
 
 export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { project, loading, setProject } = useProject(id);
   const { t } = useLanguage();
   const { toast } = useToast();
   const completionToastedRef = useRef(false);
+
+  // Edit Project Dialog state
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  // Delete Project Dialog state
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Synchronizes only real Engine/Supabase state; no simulated progress.
   const { retryExport } = useEngineWorkflowSync(project, setProject);
@@ -74,6 +107,51 @@ export default function ProjectDetail() {
   const suggestion = getSuggestions(project.datasetSize);
   const engineMeta = getEngineMeta(project.id);
 
+  const handleOpenEdit = () => {
+    setEditName(project.name);
+    setEditDescription(project.description || "");
+    setEditOpen(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editName.trim()) return;
+    setIsUpdating(true);
+    try {
+      if (engineMeta?.engineProjectId) {
+        await engineUpdateProject(engineMeta.engineProjectId, {
+          name: editName.trim(),
+          description: editDescription.trim() || undefined,
+        });
+      }
+      const updated = await updateSupabaseProject(project.id, {
+        name: editName.trim(),
+        description: editDescription.trim(),
+      });
+      setProject(updated);
+      toast({ title: "Project updated successfully" });
+      setEditOpen(false);
+    } catch (err) {
+      toast({ title: "Failed to update project", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    setIsDeleting(true);
+    try {
+      if (engineMeta?.engineProjectId) {
+        await engineDeleteProject(engineMeta.engineProjectId).catch(() => undefined);
+      }
+      await deleteSupabaseProject(project.id);
+      toast({ title: "Project deleted" });
+      navigate("/projects");
+    } catch (err) {
+      toast({ title: "Failed to delete project", description: (err as Error).message, variant: "destructive" });
+      setIsDeleting(false);
+    }
+  };
+
   const handleRollback = (version: string) => {
     toast({ title: t("versions.rolledBack"), description: `→ ${version}` });
   };
@@ -92,7 +170,81 @@ export default function ProjectDetail() {
           </div>
           <p className="text-sm text-muted-foreground mt-0.5">{project.description}</p>
         </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleOpenEdit}>
+            <Pencil className="h-4 w-4 mr-1.5" />
+            Edit
+          </Button>
+          <Button variant="destructive" size="sm" onClick={() => setDeleteOpen(true)}>
+            <Trash2 className="h-4 w-4 mr-1.5" />
+            Delete
+          </Button>
+        </div>
       </div>
+
+      {/* Edit Project Dialog */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Project</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="edit-name">Project Name</Label>
+              <Input
+                id="edit-name"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                placeholder="Project Name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-description">Description</Label>
+              <Textarea
+                id="edit-description"
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                placeholder="Project Description"
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)} disabled={isUpdating}>Cancel</Button>
+            <Button onClick={handleSaveEdit} disabled={isUpdating || !editName.trim()}>
+              {isUpdating && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Project Alert Dialog */}
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Are you sure you want to delete this project?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete <strong>{project.name}</strong> from both the FineTune Engine and Supabase storage. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(e) => {
+                e.preventDefault();
+                void handleConfirmDelete();
+              }}
+              disabled={isDeleting}
+            >
+              {isDeleting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Delete Project
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
 
       {/* Live training status banner — visible on every tab while job runs */}
       {(project.status === "queued" || project.status === "training" || project.status === "completed" || project.status === "failed") && (
@@ -142,7 +294,7 @@ export default function ProjectDetail() {
               <CardContent className="space-y-2 text-sm">
                 {[
                   [t("projectDetail.taskType"), taskTypeLabels[project.taskType]],
-                  [t("projectDetail.baseModel"), getBaseModelLabel(project.baseModel)],
+                  [t("projectDetail.baseModel"), baseModelLabels[project.baseModel]],
                   [t("projectDetail.epochs"), project.epochs],
                   [t("projectDetail.learningRate"), project.learningRate],
                   [t("projectDetail.datasetSize"), `${project.datasetSize} ${t("calc.samples")}`],

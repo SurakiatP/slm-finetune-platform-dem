@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { PageTransition, FadeIn } from "@/components/motion";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -7,14 +7,33 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft, Database, CheckCircle2, AlertTriangle, Tag, Activity, FileText } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { ArrowLeft, Database, CheckCircle2, AlertTriangle, Tag, Activity, FileText, Trash2, Loader2 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from "recharts";
 import { mockDatasets } from "@/data/datasetMockData";
 import { computeQualityReport } from "@/lib/qualityCalculator";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useProject } from "@/hooks/useProjects";
-import { engineGetDatasetDownloadUrl, enginePreviewDataset, engineCancelDataset } from "@/lib/engineApi";
+import {
+  engineGetDatasetDownloadUrl,
+  enginePreviewDataset,
+  engineCancelDataset,
+  engineListDatasets,
+  engineDeleteDataset,
+  type EngineDataset,
+} from "@/lib/engineApi";
+import { getEngineMeta } from "@/lib/engineStore";
 import { useToast } from "@/hooks/use-toast";
+
 
 const READINESS_BANDS = (score: number, t: (k: string) => string) => {
   if (score >= 85) return { label: t("insights.readyToTrain"), color: "text-emerald-500", icon: CheckCircle2 };
@@ -28,10 +47,56 @@ export default function DatasetInsights() {
   const { id } = useParams<{ id: string }>();
   const { project } = useProject(id);
   const { t } = useLanguage();
+  const { toast } = useToast();
+
+  const [realDatasets, setRealDatasets] = useState<EngineDataset[]>([]);
   const [selectedDataset, setSelectedDataset] = useState(mockDatasets[0].id);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const engineMeta = id ? getEngineMeta(id) : null;
+
+  useEffect(() => {
+    if (!engineMeta?.engineProjectId) return;
+    let active = true;
+    engineListDatasets(engineMeta.engineProjectId)
+      .then((res) => {
+        if (active && res.items.length > 0) {
+          setRealDatasets(res.items);
+          setSelectedDataset(res.items[0].id);
+        }
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [engineMeta?.engineProjectId]);
 
   const report = useMemo(() => computeQualityReport(selectedDataset), [selectedDataset]);
-  const datasetMeta = mockDatasets.find((d) => d.id === selectedDataset)!;
+  const activeDatasetObj = realDatasets.find((d) => d.id === selectedDataset);
+  const datasetMeta = activeDatasetObj
+    ? {
+        name: activeDatasetObj.name || `Dataset ${activeDatasetObj.id.slice(0, 8)}`,
+        format: activeDatasetObj.source.toUpperCase(),
+        fileSize: activeDatasetObj.size_bytes ? `${Math.round(activeDatasetObj.size_bytes / 1024)} KB` : `${activeDatasetObj.num_samples} rows`,
+      }
+    : (mockDatasets.find((d) => d.id === selectedDataset) || mockDatasets[0]);
+
+  const handleDeleteDataset = async () => {
+    setIsDeleting(true);
+    try {
+      await engineDeleteDataset(selectedDataset);
+      toast({ title: "Dataset deleted" });
+      setRealDatasets((prev) => prev.filter((d) => d.id !== selectedDataset));
+      const remaining = realDatasets.filter((d) => d.id !== selectedDataset);
+      if (remaining.length > 0) setSelectedDataset(remaining[0].id);
+      else setSelectedDataset(mockDatasets[0].id);
+      setDeleteOpen(false);
+    } catch (err) {
+      toast({ title: "Failed to delete dataset", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const band = READINESS_BANDS(report.overallScore, t);
   const BandIcon = band.icon;
 
@@ -72,15 +137,22 @@ export default function DatasetInsights() {
               <p className="text-sm text-muted-foreground">{project.name}</p>
             </div>
             <Select value={selectedDataset} onValueChange={setSelectedDataset}>
-              <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-64"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {mockDatasets.map((d) => (
-                  <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-                ))}
+                {realDatasets.length > 0
+                  ? realDatasets.map((d) => (
+                      <SelectItem key={d.id} value={d.id}>
+                        {d.name || `${d.source.toUpperCase()} (${d.num_samples} rows)`}
+                      </SelectItem>
+                    ))
+                  : mockDatasets.map((d) => (
+                      <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                    ))}
               </SelectContent>
             </Select>
           </div>
         </FadeIn>
+
 
         {/* Readiness Banner */}
         <FadeIn delay={0.05}>
@@ -270,6 +342,10 @@ export default function DatasetInsights() {
                 }}>
                   Preview Data
                 </Button>
+                <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteOpen(true)}>
+                  <Trash2 className="h-4 w-4 mr-1.5" />
+                  Delete Dataset
+                </Button>
                 <Button variant="destructive" size="sm" onClick={async () => {
                   if (!confirm("Are you sure you want to cancel synthetic generation for this dataset?")) return;
                   try {
@@ -284,6 +360,33 @@ export default function DatasetInsights() {
               </div>
             </CardHeader>
           </Card>
+
+          {/* Delete Dataset Alert Dialog */}
+          <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete Dataset</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Are you sure you want to delete dataset <strong>{datasetMeta.name}</strong> from the FineTune Engine? This action cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void handleDeleteDataset();
+                  }}
+                  disabled={isDeleting}
+                >
+                  {isDeleting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                  Delete Dataset
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+
 
           <div className="flex justify-between items-center pt-4">
             <p className="text-xs text-muted-foreground">

@@ -6,12 +6,11 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { LanguageProvider } from "@/i18n/LanguageContext";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { TrainingSyncProvider } from "@/contexts/TrainingSyncContext";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import Index from "./pages/Index";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
-import ForgotPassword from "./pages/ForgotPassword";
-import ResetPassword from "./pages/ResetPassword";
 import NotFound from "./pages/NotFound";
 import DashboardLayout from "./components/dashboard/DashboardLayout";
 import Dashboard from "./pages/Dashboard";
@@ -42,34 +41,33 @@ const App = () => (
           <Sonner />
           <BrowserRouter>
             <AuthProvider>
-              <Routes>
-                <Route path="/" element={<Index />} />
-                <Route path="/login" element={<Login />} />
-                <Route path="/signup" element={<Signup />} />
-                <Route path="/forgot-password" element={<ForgotPassword />} />
-                <Route path="/reset-password" element={<ResetPassword />} />
-                <Route path="/mfa" element={<MfaChallenge />} />
-                <Route element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
-                  <Route path="/dashboard" element={<Dashboard />} />
-                  <Route path="/projects" element={<Projects />} />
-                  <Route path="/projects/new" element={<NewProject />} />
-                  <Route path="/projects/:id" element={<ProjectDetail />} />
-                  <Route path="/projects/:id/insights" element={<DatasetInsights />} />
-                  <Route path="/projects/:id/training" element={<TrainingMonitor />} />
-                  <Route path="/models" element={<Models />} />
-                  <Route path="/models/:id" element={<ModelDetail />} />
-                  <Route path="/models/compare" element={<ModelComparison />} />
-                  <Route path="/evaluations" element={<Evaluations />} />
-                  <Route path="/playground" element={<Playground />} />
-                  <Route path="/analytics" element={<Analytics />} />
-                  <Route path="/deployment" element={<Deployment />} />
-                  <Route path="/leaderboard" element={<Leaderboard />} />
-                  <Route path="/templates" element={<Templates />} />
-                  <Route path="/settings" element={<Settings />} />
-                  <Route path="/api-keys" element={<Settings />} />
-                </Route>
-                <Route path="*" element={<NotFound />} />
-              </Routes>
+              <TrainingSyncProvider>
+                <Routes>
+                  <Route path="/" element={<Index />} />
+                  <Route path="/login" element={<Login />} />
+                  <Route path="/signup" element={<Signup />} />
+                  <Route element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
+                    <Route path="/dashboard" element={<Dashboard />} />
+                    <Route path="/projects" element={<Projects />} />
+                    <Route path="/projects/new" element={<NewProject />} />
+                    <Route path="/projects/:id" element={<ProjectDetail />} />
+                    <Route path="/projects/:id/insights" element={<DatasetInsights />} />
+                    <Route path="/projects/:id/training" element={<TrainingMonitor />} />
+                    <Route path="/models" element={<Models />} />
+                    <Route path="/models/:id" element={<ModelDetail />} />
+                    <Route path="/models/compare" element={<ModelComparison />} />
+                    <Route path="/evaluations" element={<Evaluations />} />
+                    <Route path="/playground" element={<Playground />} />
+                    <Route path="/analytics" element={<Analytics />} />
+                    <Route path="/deployment" element={<Deployment />} />
+                    <Route path="/leaderboard" element={<Leaderboard />} />
+                    <Route path="/templates" element={<Templates />} />
+                    <Route path="/settings" element={<Settings />} />
+                    <Route path="/api-keys" element={<Settings />} />
+                  </Route>
+                  <Route path="*" element={<NotFound />} />
+                </Routes>
+              </TrainingSyncProvider>
             </AuthProvider>
           </BrowserRouter>
         </TooltipProvider>

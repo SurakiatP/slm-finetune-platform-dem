@@ -1,110 +1,154 @@
-import { Loader2, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import type { EngineBaseModel } from "@/lib/engineApi";
 import type { ProjectFormData } from "@/pages/NewProject";
+import type { BaseModel } from "@/types";
+import { useBaseModels } from "@/hooks/useBaseModels";
 
-interface ModelSelectionStepProps {
-  formData: ProjectFormData;
-  updateForm: (p: Partial<ProjectFormData>) => void;
-  models: EngineBaseModel[];
-  loading: boolean;
-  error: string | null;
-  onRetry: () => void;
-}
+const fallbackModels: {
+  id: BaseModel;
+  name: string;
+  params: string;
+  speed: string;
+  quality: string;
+  bestFor: string[];
+  size: string;
+}[] = [
 
-const familyTitleColors: Record<string, string> = {
-  qwen: "text-sky-700 dark:text-sky-300",
-  llama: "text-orange-700 dark:text-orange-300",
-  gemma: "text-emerald-700 dark:text-emerald-300",
-  smollm: "text-violet-700 dark:text-violet-300",
-};
+  {
+    id: "qwen2.5-1.5b",
+    name: "Qwen 2.5",
+    params: "1.5B",
+    speed: "Very Fast",
+    quality: "Good",
+    bestFor: ["Classification", "Extraction"],
+    size: "~1.2 GB",
+  },
+  {
+    id: "qwen2.5-3b",
+    name: "Qwen 2.5",
+    params: "3B",
+    speed: "Fast",
+    quality: "Very Good",
+    bestFor: ["Function Calling", "QA"],
+    size: "~2.4 GB",
+  },
+  {
+    id: "gemma-2-2b",
+    name: "Gemma 2",
+    params: "2B",
+    speed: "Fast",
+    quality: "Very Good",
+    bestFor: ["NER", "Classification", "Multilingual"],
+    size: "~1.8 GB",
+  },
+  {
+    id: "llama-3.2-1b",
+    name: "Llama 3.2",
+    params: "1B",
+    speed: "Very Fast",
+    quality: "Good",
+    bestFor: ["Ranking", "Classification"],
+    size: "~0.9 GB",
+  },
+  {
+    id: "smollm2-1.7b",
+    name: "SmolLM2",
+    params: "1.7B",
+    speed: "Very Fast",
+    quality: "Good",
+    bestFor: ["Extraction", "Simple Tasks"],
+    size: "~1.3 GB",
+  },
+];
 
-const detailTitleColors = {
-  context: "text-violet-700 dark:text-violet-300",
-  quantization: "text-amber-700 dark:text-amber-300",
+const speedColor: Record<string, string> = {
+  "Very Fast": "text-success",
+  Fast: "text-primary",
+  Moderate: "text-warning",
 };
 
 export function ModelSelectionStep({
   formData,
   updateForm,
-  models,
-  loading,
-  error,
-  onRetry,
-}: ModelSelectionStepProps) {
+}: {
+  formData: ProjectFormData;
+  updateForm: (p: Partial<ProjectFormData>) => void;
+}) {
+  const { models: engineModels, loading: engineModelsLoading } = useBaseModels();
+
   return (
     <div className="space-y-4">
-      <div>
-        <p className="text-sm font-semibold text-foreground">Choose Base Model</p>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Select the pre-trained model to fine-tune. Larger models are more capable but slower to train.
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-semibold text-foreground">Choose Base Model</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Select the pre-trained model to fine-tune. Larger models are more capable but slower to train.
+          </p>
+        </div>
+        {engineModels.length > 0 && (
+          <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/30 bg-emerald-500/5 shrink-0">
+            {engineModels.length} models synced with Engine
+          </Badge>
+        )}
       </div>
 
-      {loading ? (
-        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading available base models…
-        </div>
-      ) : error ? (
-        <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4" role="alert">
-          <p className="text-sm font-medium text-destructive">Unable to load base models</p>
-          <p className="mt-1 text-xs text-muted-foreground">{error}</p>
-          <Button type="button" variant="outline" size="sm" className="mt-3 gap-2" onClick={onRetry}>
-            <RefreshCw className="h-3.5 w-3.5" /> Try again
-          </Button>
-        </div>
-      ) : models.length === 0 ? (
-        <p className="py-8 text-sm text-muted-foreground">No base models are currently available from the Engine.</p>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {models.map((model) => {
-            const selected = formData.baseModel === model.id;
-            const modelTitleColor = familyTitleColors[model.family.toLowerCase()] ?? "text-foreground";
-            return (
-              <button
-                key={model.id}
-                type="button"
-                onClick={() => updateForm({ baseModel: model.id })}
-                className={`text-left p-4 rounded-lg border-2 transition-all ${
-                  selected
-                    ? "border-primary bg-accent"
-                    : "border-border hover:border-primary/40 bg-background"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <div>
-                    <span className={`font-semibold text-sm ${modelTitleColor}`}>{model.display_name}</span>
-                    <span className="ml-1.5 text-xs text-muted-foreground">{model.params_billions}B</span>
-                  </div>
-                  {selected && <Badge className="text-[10px] shrink-0">Selected</Badge>}
-                </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {fallbackModels.map((model) => {
+          const selected = formData.baseModel === model.id;
+          const engineMatch = engineModels.find((m) => m.id.toLowerCase().includes(model.id.toLowerCase()));
+          const displayName = engineMatch?.display_name || model.name;
+          const notes = engineMatch?.notes;
 
-                <div className="grid grid-cols-3 gap-2 text-[11px] mb-2.5">
-                  <div>
-                    <p className="text-muted-foreground">Family</p>
-                    <p className="font-medium text-foreground capitalize">{model.family}</p>
-                  </div>
-                  <div>
-                    <p className={detailTitleColors.context}>Context</p>
-                    <p className="font-medium text-foreground">{model.context_length.toLocaleString()}</p>
-                  </div>
-                  <div>
-                    <p className={detailTitleColors.quantization}>Quantization</p>
-                    <p className="font-medium text-foreground">{model.quantization}</p>
-                  </div>
+          return (
+            <button
+              key={model.id}
+              onClick={() => updateForm({ baseModel: model.id })}
+              className={`text-left p-4 rounded-lg border-2 transition-all ${
+                selected
+                  ? "border-primary bg-accent"
+                  : "border-border hover:border-primary/40 bg-background"
+              }`}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <span className="font-semibold text-sm text-foreground">{displayName}</span>
+                  <span className="text-xs text-muted-foreground ml-1.5">{model.params}</span>
                 </div>
+                {selected && <Badge className="text-[10px]">Selected</Badge>}
+              </div>
 
-                <div className="flex flex-wrap gap-1">
-                  {model.license && <Badge variant="outline" className="text-[9px] px-1.5 py-0">{model.license}</Badge>}
-                  {model.ollama_tag && <Badge variant="outline" className="text-[9px] px-1.5 py-0">{model.ollama_tag}</Badge>}
+              <div className="grid grid-cols-3 gap-2 text-[11px] mb-2.5">
+                <div>
+                  <p className="text-muted-foreground">Speed</p>
+                  <p className={`font-medium ${speedColor[model.speed] || "text-foreground"}`}>{model.speed}</p>
                 </div>
-                {model.notes && <p className="mt-2.5 text-xs text-muted-foreground">{model.notes}</p>}
-              </button>
-            );
-          })}
-        </div>
-      )}
+                <div>
+                  <p className="text-muted-foreground">Quality</p>
+                  <p className="font-medium text-foreground">{model.quality}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Size</p>
+                  <p className="font-medium text-foreground">{model.size}</p>
+                </div>
+              </div>
+
+              {notes && (
+                <p className="text-[10px] text-muted-foreground mb-2 line-clamp-1 italic">
+                  "{notes}"
+                </p>
+              )}
+
+              <div className="flex flex-wrap gap-1">
+                {model.bestFor.map((tag) => (
+                  <Badge key={tag} variant="outline" className="text-[9px] px-1.5 py-0">
+                    {tag}
+                  </Badge>
+                ))}
+              </div>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
+
