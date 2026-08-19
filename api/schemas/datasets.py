@@ -61,6 +61,15 @@ class DatasetResponse(BaseModel):
     )
     created_at: datetime
     updated_at: datetime
+    owner_id: str | None = Field(
+        default=None,
+        description=(
+            "Supabase sub of the owner, copied from the owning project at "
+            "creation. Survives project deletion (the dataset is orphaned, "
+            "not the ownership record). Null means unowned — invisible "
+            "under auth."
+        ),
+    )
 
 
 class DatasetPreviewResponse(BaseModel):

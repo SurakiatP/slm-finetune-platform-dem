@@ -79,8 +79,9 @@ async def _world(db: AsyncSession, owner: str | None, tag: str) -> dict:
     """One full ownership chain — project → dataset → training → artifact → eval."""
     project = Project(id=uuid4(), name=f"p-{tag}", task_type=TaskType.QA, owner_id=owner)
     dataset = Dataset(
-        id=uuid4(), project_id=project.id, name=f"d-{tag}", source=DatasetSource.SDG,
-        task_type=TaskType.QA, status=JobStatus.COMPLETED, celery_task_id=f"sdg-{tag}",
+        id=uuid4(), project_id=project.id, owner_id=owner, name=f"d-{tag}",
+        source=DatasetSource.SDG, task_type=TaskType.QA, status=JobStatus.COMPLETED,
+        celery_task_id=f"sdg-{tag}",
     )
     training = TrainingJob(
         id=uuid4(), project_id=project.id, dataset_id=dataset.id, mode=TrainingMode.MANUAL,
@@ -298,8 +299,8 @@ class TestJobOwnership:
         `generation_metadata`; the WS gate must still find their owner."""
         project = Project(id=uuid4(), name="legacy", task_type=TaskType.QA, owner_id=ALICE.id)
         dataset = Dataset(
-            id=uuid4(), project_id=project.id, name="legacy-ds", source=DatasetSource.SDG,
-            task_type=TaskType.QA, status=JobStatus.RUNNING,
+            id=uuid4(), project_id=project.id, owner_id=ALICE.id, name="legacy-ds",
+            source=DatasetSource.SDG, task_type=TaskType.QA, status=JobStatus.RUNNING,
             celery_task_id=None, generation_metadata={"celery_task_id": "legacy-job"},
         )
         db.add_all([project, dataset])

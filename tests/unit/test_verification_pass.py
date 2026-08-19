@@ -96,6 +96,7 @@ async def _chain(session: AsyncSession) -> tuple[Project, TrainingJob, ModelArti
     dataset = Dataset(
         id=uuid4(),
         project_id=project.id,
+        owner_id=USER_A.id,
         name="ds",
         task_type=TaskType.QA,
         source=DatasetSource.SEED,
@@ -418,6 +419,7 @@ class TestWorkerAuditWriteExecutes:
             dataset = Dataset(
                 id=uuid4(),
                 project_id=project.id,
+                owner_id=USER_A.id,
                 name="ds",
                 task_type=TaskType.QA,
                 source=DatasetSource.SEED,
@@ -502,6 +504,7 @@ class TestWorkerAuditWriteExecutes:
             dataset = Dataset(
                 id=uuid4(),
                 project_id=project.id,
+                owner_id=USER_A.id,
                 name="ds",
                 task_type=TaskType.QA,
                 source=DatasetSource.SEED,

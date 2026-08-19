@@ -89,6 +89,7 @@ async def submit_sdg_job(
     name = request.dataset_name or f"sdg-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     dataset = Dataset(
         project_id=request.project_id,
+        owner_id=project.owner_id,
         name=name,
         task_type=request.task_type,
         source=DatasetSource.SDG,

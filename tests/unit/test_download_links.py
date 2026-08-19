@@ -106,6 +106,7 @@ async def _project_and_dataset(
     dataset = Dataset(
         id=uuid4(),
         project_id=project.id,
+        owner_id=owner,
         name="seed-ds",
         task_type=TaskType.QA,
         source=DatasetSource.SEED,
@@ -129,7 +130,7 @@ async def _project_training_and_artifact(
 ) -> tuple[Project, ModelArtifact]:
     project = Project(id=uuid4(), name="p", task_type=TaskType.QA, owner_id=owner)
     dataset = Dataset(
-        id=uuid4(), project_id=project.id, name="d", task_type=TaskType.QA,
+        id=uuid4(), project_id=project.id, owner_id=owner, name="d", task_type=TaskType.QA,
         source=DatasetSource.SDG, status=JobStatus.COMPLETED,
     )
     training = TrainingJob(

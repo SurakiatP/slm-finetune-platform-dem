@@ -1,15 +1,24 @@
 """Per-resource ownership enforcement, layered on top of `api.core.auth`.
 
 `api/core/auth.py` answers "who is this?"; this module answers "may they
-touch this row?" Ownership lives only on `Project.owner_id` — every other
-entity reaches it by FK join:
+touch this row?" Ownership lives on `Project.owner_id` for most entities,
+reached by FK join, except `Dataset`, which carries its own `owner_id`
+column directly (copied from its owning `Project` at creation time, and
+NOT cleared when the project is deleted — see `api/models/dataset.py`):
 
-    Dataset / TrainingJob          --(project_id)-->            Project        (1 hop)
+    Dataset                        --(owner_id, direct)-->     [no join]
+    TrainingJob                    --(project_id)-->            Project        (1 hop)
     ModelArtifact                  --(training_job_id)-->
                                     TrainingJob --(project_id)--> Project        (2 hops)
     EvaluationRun                  --(model_artifact_id)-->
                                     ModelArtifact --(training_job_id)-->
                                     TrainingJob --(project_id)--> Project        (3 hops)
+
+`Dataset.owner_id` being read directly (rather than joined through
+`Project`) is what keeps an orphaned dataset (`project_id IS NULL`, e.g.
+after its project is deleted) reachable by its owner: there is no longer a
+`Project` row to join through, but the copied `owner_id` survives the
+orphaning.
 
 Two families of helper are provided:
 
@@ -18,9 +27,10 @@ Two families of helper are provided:
     place of the `await db.get(...); if ... is None: raise 404` pattern that
     was already scattered across every service, so the ownership check can't
     be forgotten at a call site.
-  * `scope_<entity>_to_owner(stmt, user)` — for `list_*` services. Adds the
-    join(s) + `WHERE Project.owner_id == user.id` needed to restrict a
-    `select(...)` to the caller's own rows.
+  * `scope_<entity>_to_owner(stmt, user)` — for `list_*` services. Adds
+    `WHERE <entity>.owner_id == user.id` directly for `Dataset`, or the
+    join(s) + `WHERE Project.owner_id == user.id` for everything else,
+    needed to restrict a `select(...)` to the caller's own rows.
 
 **The one rule that matters everywhere in this file**: `user is None` is a
 **complete no-op**. Every function here returns immediately (existence-only
@@ -55,10 +65,11 @@ silent revert of this one.
 
 **`owner_id IS NULL` still fails closed, now with 403**: those rows predate
 auth, or were created during phase-1 while no user was attached. Per
-`Project.owner_id`'s own `doc=`, once a `user` is present, a null-owner row
-is invisible to *everyone*, not visible to everyone. The row still exists,
-so refusing it is a 403 — the same code as "exists, owned by someone else"
-— not a 404; there is no third status for "exists, owned by nobody".
+`Project.owner_id`'s (and, for datasets, `Dataset.owner_id`'s) own `doc=`,
+once a `user` is present, a null-owner row is invisible to *everyone*, not
+visible to everyone. The row still exists, so refusing it is a 403 — the
+same code as "exists, owned by someone else" — not a 404; there is no
+third status for "exists, owned by nobody".
 """
 
 from __future__ import annotations
@@ -201,17 +212,21 @@ async def assert_project_access(
 async def assert_dataset_access(
     db: AsyncSession, dataset_id: UUID, user: CurrentUser | None
 ) -> Dataset:
-    """Load `Dataset(dataset_id)`; 404 if missing, 403 if it exists and its
-    project isn't owned by `user` (1-hop: Dataset -> Project). Returns the
-    row.
+    """Load `Dataset(dataset_id)`; 404 if missing, 403 if it exists and
+    `dataset.owner_id` isn't `user`'s (direct column, no join — see the
+    module docstring). Returns the row.
+
+    Reading `owner_id` directly off the row rather than via `Project` is
+    what keeps an orphaned dataset (`project_id IS NULL`) reachable by its
+    owner: there is no `Project` to join through once the dataset has been
+    orphaned, but `Dataset.owner_id` was copied at creation time and
+    survives that.
     """
     dataset = await db.get(Dataset, dataset_id)
     if dataset is None:
         raise _not_found("Dataset", dataset_id)
     _bind_log_project(dataset.project_id)
-    if user is not None:
-        owner_id = await _project_owner_id(db, dataset.project_id)
-        _check_owner(owner_id, user, label="Dataset", resource_id=dataset_id)
+    _check_owner(dataset.owner_id, user, label="Dataset", resource_id=dataset_id)
     return dataset
 
 
@@ -303,14 +318,16 @@ async def assert_evaluation_access(
 # ADR-012 does NOT touch these. `_check_owner`/`_forbidden` above answer "may
 # `user` load *this specific row*" — there's a concrete id to be 403 about.
 # A `scope_*` helper answers a different question, "which rows does a list
-# query return", by adding a `WHERE Project.owner_id = user.id` filter; a row
-# that fails it is never rendered into a response at all, it is just absent
-# from the page. There is no id in play for a 403 to attach to and no
-# request to fail — returning 403 for a *list* endpoint would be a category
-# error, not a stricter check. Silently filtering is the correct behaviour
-# here regardless of which status code the single-resource endpoints use, so
-# this asymmetry with the `assert_*_access` family above is intentional, not
-# a spot the 404→403 change was missed.
+# query return", by adding an owner filter (`WHERE Dataset.owner_id =
+# user.id` directly, or `WHERE Project.owner_id = user.id` through a join
+# for everything else); a row that fails it is never rendered into a
+# response at all, it is just absent from the page. There is no id in play
+# for a 403 to attach to and no request to fail — returning 403 for a *list*
+# endpoint would be a category error, not a stricter check. Silently
+# filtering is the correct behaviour here regardless of which status code
+# the single-resource endpoints use, so this asymmetry with the
+# `assert_*_access` family above is intentional, not a spot the 404→403
+# change was missed.
 
 
 def scope_projects_to_owner(stmt: Select, user: CurrentUser | None) -> Select:
@@ -325,14 +342,14 @@ def scope_projects_to_owner(stmt: Select, user: CurrentUser | None) -> Select:
 
 
 def scope_datasets_to_owner(stmt: Select, user: CurrentUser | None) -> Select:
-    """Restrict a `Dataset`-selecting statement to the caller's projects
-    (1-hop join: Dataset -> Project).
+    """Restrict a `Dataset`-selecting statement to rows whose `owner_id`
+    matches the caller — a direct column filter, no join through `Project`
+    (see the module docstring). This is what keeps orphaned datasets
+    (`project_id IS NULL`) in their owner's list.
     """
     if user is None:
         return stmt
-    return stmt.join(Project, Project.id == Dataset.project_id).where(
-        Project.owner_id == user.id
-    )
+    return stmt.where(Dataset.owner_id == user.id)
 
 
 def scope_trainings_to_owner(stmt: Select, user: CurrentUser | None) -> Select:
