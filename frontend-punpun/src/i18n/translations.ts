@@ -459,6 +459,14 @@ export const translations: Record<Language, Record<string, string>> = {
     "datasetsPage.inUseHint": "This dataset is used by an existing training and can't be deleted.",
     "datasetsPage.inUseTitle": "Dataset in use",
 
+    // Evaluations (global, cross-project list)
+    "evaluationsPage.navLabel": "Evaluations",
+    "evaluationsPage.title": "Evaluations",
+    "evaluationsPage.subtitle": "All evaluation runs across every project.",
+    "evaluationsPage.searchPlaceholder": "Search evaluations...",
+    "evaluationsPage.noResults": "No evaluations match your search.",
+    "evaluationsPage.emptyHint": "Export a model to trigger an evaluation — runs will appear here.",
+
     // No-seed (description_only) SDG mode — DataUploadStep (T-B)
     "sdgNoSeed.modeWithSeed": "Have seed data",
     "sdgNoSeed.modeNoSeed": "No seed (describe task)",
@@ -948,6 +956,14 @@ export const translations: Record<Language, Record<string, string>> = {
     "datasetsPage.noProject": "ไม่มีโปรเจกต์",
     "datasetsPage.inUseHint": "ชุดข้อมูลนี้ถูกใช้งานโดยการฝึกที่มีอยู่ ไม่สามารถลบได้",
     "datasetsPage.inUseTitle": "ชุดข้อมูลกำลังถูกใช้งาน",
+
+    // Evaluations (global, cross-project list)
+    "evaluationsPage.navLabel": "ประเมินผล",
+    "evaluationsPage.title": "ประเมินผล",
+    "evaluationsPage.subtitle": "การประเมินผลทั้งหมดจากทุกโปรเจกต์",
+    "evaluationsPage.searchPlaceholder": "ค้นหาการประเมินผล...",
+    "evaluationsPage.noResults": "ไม่พบการประเมินผลที่ตรงกับการค้นหา",
+    "evaluationsPage.emptyHint": "ส่งออกโมเดลเพื่อเริ่มการประเมินผล — รายการจะแสดงที่นี่",
 
     // No-seed (description_only) SDG mode — DataUploadStep (T-B)
     "sdgNoSeed.modeWithSeed": "มี seed data",

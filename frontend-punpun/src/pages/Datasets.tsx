@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Database, Search, Trash2 } from "lucide-react";
+import { Fragment, useMemo, useState } from "react";
+import { Database, Download, Eye, Loader2, Search, Trash2 } from "lucide-react";
 
 import { ApiError } from "@/api/client";
 import type { Dataset } from "@/api/types";
@@ -11,7 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useDatasets, useDeleteDataset, useProjects, useTrainings } from "@/hooks/queries";
+import { DatasetPreviewTable } from "@/components/dataset/DatasetPreviewTable";
+import { useDatasetDownloadUrl, useDatasets, useDeleteDataset, useProjects, useTrainings } from "@/hooks/queries";
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { formatBytes, formatDateTime } from "@/lib/format";
@@ -43,11 +44,26 @@ export default function Datasets() {
   const [search, setSearch] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Dataset | null>(null);
   const [blockedReasons, setBlockedReasons] = useState<Record<string, string>>({});
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const { data: datasetsPage, isLoading, error } = useDatasets(undefined, { limit: 200 });
   const { data: projectsPage } = useProjects({ limit: 200 });
   const { data: trainingsPage } = useTrainings({ limit: 200 });
   const deleteMutation = useDeleteDataset();
+  const downloadMutation = useDatasetDownloadUrl();
+
+  const toggleExpanded = (id: string) => setExpandedId((cur) => (cur === id ? null : id));
+
+  const handleDownload = (id: string) => {
+    downloadMutation.mutate(id, {
+      onSuccess: (res) => {
+        window.open(res.url, "_blank", "noopener,noreferrer");
+      },
+      onError: (err: unknown) => {
+        toast({ variant: "destructive", description: errorMessage(err) });
+      },
+    });
+  };
 
   const projectNames = useMemo(() => {
     const map: Record<string, string> = {};
@@ -79,6 +95,7 @@ export default function Datasets() {
       onSuccess: () => {
         toast({ title: t("dataset.delete"), description: target.name });
         setDeleteTarget(null);
+        setExpandedId((cur) => (cur === target.id ? null : cur));
       },
       onError: (err: unknown) => {
         // The dataset stayed in use between page load and this click (or the
@@ -153,8 +170,12 @@ export default function Datasets() {
                     const blocked = Boolean(blockedReason) || preKnownBlocked;
                     const tooltipText = blockedReason ?? (preKnownBlocked ? t("datasetsPage.inUseHint") : undefined);
 
+                    const expanded = expandedId === dataset.id;
+                    const downloading = downloadMutation.isPending && downloadMutation.variables === dataset.id;
+
                     return (
-                      <TableRow key={dataset.id}>
+                      <Fragment key={dataset.id}>
+                      <TableRow>
                         <TableCell className="font-medium text-foreground">{dataset.name}</TableCell>
                         <TableCell>
                           <Badge variant="outline" className={cn("capitalize", ROLE_TAG_STYLES[role])}>
@@ -180,36 +201,70 @@ export default function Datasets() {
                           {formatDateTime(dataset.created_at)}
                         </TableCell>
                         <TableCell className="text-right">
-                          {blocked ? (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="inline-block" tabIndex={0}>
-                                  <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    className="h-7 w-7 text-muted-foreground"
-                                    disabled
-                                    aria-label={t("dataset.delete")}
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                                  </Button>
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent>{tooltipText}</TooltipContent>
-                            </Tooltip>
-                          ) : (
+                          <div className="flex items-center justify-end gap-1">
                             <Button
                               size="icon"
                               variant="ghost"
-                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                              aria-label={t("dataset.delete")}
-                              onClick={() => setDeleteTarget(dataset)}
+                              className="h-7 w-7"
+                              aria-label={t("dataset.preview")}
+                              aria-pressed={expanded}
+                              onClick={() => toggleExpanded(dataset.id)}
                             >
-                              <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                              <Eye className="h-3.5 w-3.5" aria-hidden />
                             </Button>
-                          )}
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              aria-label={t("dataset.download")}
+                              onClick={() => handleDownload(dataset.id)}
+                              disabled={downloading}
+                            >
+                              {downloading ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                              ) : (
+                                <Download className="h-3.5 w-3.5" aria-hidden />
+                              )}
+                            </Button>
+                            {blocked ? (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="inline-block" tabIndex={0}>
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      className="h-7 w-7 text-muted-foreground"
+                                      disabled
+                                      aria-label={t("dataset.delete")}
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                                    </Button>
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent>{tooltipText}</TooltipContent>
+                              </Tooltip>
+                            ) : (
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                                aria-label={t("dataset.delete")}
+                                onClick={() => setDeleteTarget(dataset)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                              </Button>
+                            )}
+                          </div>
                         </TableCell>
                       </TableRow>
+                      {expanded && (
+                        <TableRow className="hover:bg-transparent">
+                          <TableCell colSpan={7} className="bg-muted/20 p-4">
+                            <DatasetPreviewTable datasetId={dataset.id} numSamples={dataset.num_samples} />
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      </Fragment>
                     );
                   })}
                 </TableBody>

@@ -18,6 +18,7 @@ import ModelDetail from "./pages/ModelDetail";
 import ModelComparison from "./pages/ModelComparison";
 import DatasetInsights from "./pages/DatasetInsights";
 import Datasets from "./pages/Datasets";
+import Evaluations from "./pages/Evaluations";
 import Usage from "./pages/Usage";
 
 const queryClient = new QueryClient();
@@ -43,6 +44,7 @@ const App = () => (
                 <Route path="/models/:id" element={<ModelDetail />} />
                 <Route path="/models/compare" element={<ModelComparison />} />
                 <Route path="/datasets" element={<Datasets />} />
+                <Route path="/evaluations" element={<Evaluations />} />
                 <Route path="/usage" element={<Usage />} />
                 <Route path="/playground" element={<Playground />} />
               </Route>

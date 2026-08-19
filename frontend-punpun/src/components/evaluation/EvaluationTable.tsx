@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { Ban, ClipboardList } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -20,12 +20,25 @@ interface EvaluationTableProps {
   datasetNames?: Record<string, string>;
   onRowClick?: (evaluation: Evaluation) => void;
   emptyHint?: string;
+  /** When set to a row's id (and renderExpanded is provided), that row grows
+   *  an inline detail panel beneath it — used by the standalone Evaluations
+   *  page for an accordion-style expand instead of navigating away. */
+  expandedId?: string | null;
+  renderExpanded?: (evaluation: Evaluation) => ReactNode;
 }
 
 /** Job/dataset/run list for the evaluation stage. Row click opens the detail
  *  view (caller decides how — dialog, drawer, etc); cancel is handled inline
  *  for pending/running rows via the shared ConfirmDialog. */
-export function EvaluationTable({ evaluations, modelNames, datasetNames, onRowClick, emptyHint }: EvaluationTableProps) {
+export function EvaluationTable({
+  evaluations,
+  modelNames,
+  datasetNames,
+  onRowClick,
+  emptyHint,
+  expandedId,
+  renderExpanded,
+}: EvaluationTableProps) {
   const { t } = useLanguage();
   const [cancelTarget, setCancelTarget] = useState<Evaluation | null>(null);
   const cancelMutation = useCancelEvaluation();
@@ -64,12 +77,13 @@ export function EvaluationTable({ evaluations, modelNames, datasetNames, onRowCl
           <TableBody>
             {evaluations.map((evaluation) => {
               const cancellable = evaluation.status === "pending" || evaluation.status === "running";
+              const isExpanded = expandedId === evaluation.id && !!renderExpanded;
               return (
-                <TableRow
-                  key={evaluation.id}
-                  className={onRowClick ? "cursor-pointer" : undefined}
-                  onClick={() => onRowClick?.(evaluation)}
-                >
+                <Fragment key={evaluation.id}>
+                  <TableRow
+                    className={onRowClick ? "cursor-pointer" : undefined}
+                    onClick={() => onRowClick?.(evaluation)}
+                  >
                   <TableCell>
                     <div className="flex flex-col">
                       <span className="font-mono text-xs text-foreground">{shortId(evaluation.id)}</span>
@@ -115,6 +129,14 @@ export function EvaluationTable({ evaluations, modelNames, datasetNames, onRowCl
                     )}
                   </TableCell>
                 </TableRow>
+                {isExpanded && (
+                  <TableRow className="hover:bg-transparent">
+                    <TableCell colSpan={6} className="bg-muted/20 p-4">
+                      {renderExpanded!(evaluation)}
+                    </TableCell>
+                  </TableRow>
+                )}
+                </Fragment>
               );
             })}
           </TableBody>

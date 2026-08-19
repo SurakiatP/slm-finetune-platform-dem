@@ -4,6 +4,7 @@ import {
   Box,
   MessageSquare,
   Database,
+  ClipboardList,
   Wallet,
   Zap,
 } from "lucide-react";
@@ -25,6 +26,7 @@ const navItems = [
   { titleKey: "nav.projects", url: "/projects", icon: FolderKanban },
   { titleKey: "nav.models", url: "/models", icon: Box },
   { titleKey: "datasetsPage.navLabel", url: "/datasets", icon: Database },
+  { titleKey: "evaluationsPage.navLabel", url: "/evaluations", icon: ClipboardList },
   { titleKey: "nav.playground", url: "/playground", icon: MessageSquare },
   { titleKey: "nav.usage", url: "/usage", icon: Wallet },
 ];
