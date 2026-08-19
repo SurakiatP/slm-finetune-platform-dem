@@ -1,8 +1,10 @@
+import { useState, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Tag, MapPin, HelpCircle, Zap, FileText, ArrowUpDown } from "lucide-react";
 import type { ProjectFormData } from "@/pages/NewProject";
 import type { TaskType } from "@/types";
 import { TASK_TYPE_TO_ENGINE } from "@/lib/engineMappings";
+import { engineListTaskTypes, type EngineTaskTypeInfo } from "@/lib/engineApi";
 
 const tasks: { type: TaskType; label: string; description: string; example: string; icon: React.ElementType }[] = [
   {
@@ -56,6 +58,13 @@ export function TaskSelectionStep({
   formData: ProjectFormData;
   updateForm: (p: Partial<ProjectFormData>) => void;
 }) {
+  const [engineTaskTypes, setEngineTaskTypes] = useState<EngineTaskTypeInfo[]>([]);
+
+  useEffect(() => {
+    engineListTaskTypes()
+      .then(setEngineTaskTypes)
+      .catch(() => setEngineTaskTypes([]));
+  }, []);
   return (
     <div className="space-y-4">
       <div>

@@ -18,6 +18,8 @@ import type { ProjectStatus } from "@/types";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useToast } from "@/hooks/use-toast";
 import { getEngineMeta } from "@/lib/engineStore";
+import { engineListProjectActivity, engineListProjectUsage, type EngineAuditEvent, type EngineUsageEvent } from "@/lib/engineApi";
+import { useState } from "react";
 
 const statusVariant: Record<ProjectStatus, "default" | "secondary" | "destructive" | "outline"> = {
   completed: "default",
@@ -129,6 +131,8 @@ export default function ProjectDetail() {
           <TabsTrigger value="evaluation">{t("projectDetail.evaluation")}</TabsTrigger>
           <TabsTrigger value="versions">{t("versions.title")}</TabsTrigger>
           <TabsTrigger value="tuning">{t("projectDetail.autoTuning")}</TabsTrigger>
+          <TabsTrigger value="activity">Activity</TabsTrigger>
+          <TabsTrigger value="usage">Usage & Cost</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4 mt-4">
@@ -291,6 +295,24 @@ export default function ProjectDetail() {
             </TabsContent>
           </Tabs>
         </TabsContent>
+
+        <TabsContent value="activity" className="space-y-4 mt-4">
+          <Card>
+            <CardHeader><CardTitle className="text-sm">Audit Trail / Activity Log</CardTitle></CardHeader>
+            <CardContent>
+              <ProjectActivityList projectId={project.id} />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="usage" className="space-y-4 mt-4">
+          <Card>
+            <CardHeader><CardTitle className="text-sm">OpenRouter Usage & Cost Log</CardTitle></CardHeader>
+            <CardContent>
+              <ProjectUsageList projectId={project.id} />
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
     </div>
     </PageTransition>
@@ -368,3 +390,62 @@ function LiveStatusBanner({ project }: { project: import("@/types").Project }) {
     </Card>
   );
 }
+
+function ProjectActivityList({ projectId }: { projectId: string }) {
+  const [activities, setActivities] = useState<EngineAuditEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    engineListProjectActivity(projectId)
+      .then((page) => setActivities(page.items))
+      .catch(() => setActivities([]))
+      .finally(() => setLoading(false));
+  }, [projectId]);
+
+  if (loading) return <p className="text-xs text-muted-foreground">Loading activity log...</p>;
+  if (activities.length === 0) return <p className="text-xs text-muted-foreground">No activity recorded yet for this project.</p>;
+
+  return (
+    <div className="space-y-2">
+      {activities.map((act) => (
+        <div key={act.id} className="flex justify-between items-center text-xs py-2 border-b border-border last:border-0">
+          <div>
+            <span className="font-semibold text-foreground mr-2">{act.action}</span>
+            <span className="text-muted-foreground">{act.resource_type} {act.resource_id ? `(${act.resource_id.slice(0, 8)})` : ""}</span>
+          </div>
+          <span className="text-muted-foreground">{new Date(act.created_at).toLocaleString()}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProjectUsageList({ projectId }: { projectId: string }) {
+  const [usage, setUsage] = useState<EngineUsageEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    engineListProjectUsage(projectId)
+      .then((page) => setUsage(page.items))
+      .catch(() => setUsage([]))
+      .finally(() => setLoading(false));
+  }, [projectId]);
+
+  if (loading) return <p className="text-xs text-muted-foreground">Loading usage events...</p>;
+  if (usage.length === 0) return <p className="text-xs text-muted-foreground">No usage recorded yet for this project.</p>;
+
+  return (
+    <div className="space-y-2">
+      {usage.map((u) => (
+        <div key={u.id} className="flex justify-between items-center text-xs py-2 border-b border-border last:border-0">
+          <div>
+            <span className="font-semibold text-foreground mr-2">{u.model}</span>
+            <span className="text-muted-foreground">Stage: {u.stage} · {u.prompt_tokens + u.completion_tokens} tokens</span>
+          </div>
+          <span className="font-medium text-emerald-500">${u.cost_usd.toFixed(4)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+

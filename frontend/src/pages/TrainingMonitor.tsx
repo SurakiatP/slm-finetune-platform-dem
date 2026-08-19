@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, Clock, Cpu, Database, Gauge } from "lucide-react";
+import { ArrowLeft, Clock, Cpu, Database, Gauge, ExternalLink } from "lucide-react";
 import { PipelineSteps } from "@/components/training/PipelineSteps";
 import { LossCurveChart } from "@/components/training/LossCurveChart";
 import type { LossCurvePoint, PipelineStep } from "@/data/trainingMockData";
@@ -16,7 +16,7 @@ import { DiagnosticPanel } from "@/components/training/DiagnosticPanel";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useProject } from "@/hooks/useProjects";
 import { useEngineWorkflowSync } from "@/hooks/useEngineWorkflowSync";
-import { engineGetLossHistory } from "@/lib/engineApi";
+import { engineGetLossHistory, engineGetMlflowUrl } from "@/lib/engineApi";
 import { getEngineMeta } from "@/lib/engineStore";
 
 export default function TrainingMonitor() {
@@ -100,6 +100,19 @@ export default function TrainingMonitor() {
           </div>
           <p className="text-sm text-muted-foreground mt-0.5">{t("training.title")}</p>
         </div>
+        {engineMeta?.trainingId && (
+          <Button variant="outline" size="sm" onClick={async () => {
+            try {
+              const res = await engineGetMlflowUrl(engineMeta.trainingId!);
+              if (res.mlflow_url) window.open(res.mlflow_url, "_blank");
+              else alert("MLflow URL not ready for this training run.");
+            } catch (err) {
+              alert("MLflow error: " + (err instanceof Error ? err.message : String(err)));
+            }
+          }}>
+            <ExternalLink className="h-4 w-4 mr-2" /> View in MLflow
+          </Button>
+        )}
       </div>
 
       <StaggerContainer className="grid grid-cols-2 sm:grid-cols-4 gap-3">

@@ -29,7 +29,7 @@ import Deployment from "./pages/Deployment";
 import Leaderboard from "./pages/Leaderboard";
 import Templates from "./pages/Templates";
 import DatasetInsights from "./pages/DatasetInsights";
-import MfaChallenge from "./pages/MfaChallenge";
+import Evaluations from "./pages/Evaluations";
 
 const queryClient = new QueryClient();
 
@@ -59,6 +59,7 @@ const App = () => (
                   <Route path="/models" element={<Models />} />
                   <Route path="/models/:id" element={<ModelDetail />} />
                   <Route path="/models/compare" element={<ModelComparison />} />
+                  <Route path="/evaluations" element={<Evaluations />} />
                   <Route path="/playground" element={<Playground />} />
                   <Route path="/analytics" element={<Analytics />} />
                   <Route path="/deployment" element={<Deployment />} />

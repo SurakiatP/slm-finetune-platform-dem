@@ -224,7 +224,104 @@ export type EngineJobProgress =
       timestamp: string;
     } & Record<string, unknown>);
 
+export interface EngineDatasetPreview {
+  dataset_id: string;
+  rows: Record<string, unknown>[];
+  total_rows: number;
+}
+
+export interface EngineDatasetDownloadUrl {
+  download_url: string;
+  expires_at: string;
+}
+
+export interface EngineTrainingMetrics {
+  training_id: string;
+  metrics: Record<string, { values: number[]; steps: number[]; timestamps: number[] }>;
+  hpo_children: Array<{ run_id: string; params: Record<string, unknown>; metrics: Record<string, number> }> | null;
+}
+
+export interface EngineModelDownloadUrl {
+  download_url: string;
+  format: string;
+  expires_at: string;
+}
+
+export interface EngineAuditEvent {
+  id: string;
+  project_id: string;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  payload: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface EngineUsageEvent {
+  id: string;
+  project_id: string;
+  model: string;
+  stage: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+  created_at: string;
+}
+
+export interface EngineUsageSummary {
+  total_cost_usd: number;
+  by_model: Array<{ model: string; stage: string; cost_usd: number; prompt_tokens: number; completion_tokens: number }>;
+  since: string;
+}
+
+export interface EngineEvaluationCreate {
+  model_artifact_id: string;
+  dataset_id: string;
+  eval_name?: string;
+  config?: Record<string, unknown>;
+}
+
+export interface EngineEvaluationAccepted {
+  evaluation_id: string;
+  job_id: string;
+  status: string;
+  websocket_url: string;
+}
+
+export interface EngineEvaluation {
+  id: string;
+  model_artifact_id: string;
+  dataset_id: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  eval_name: string | null;
+  metrics: Record<string, number> | null;
+  error_message: string | null;
+  celery_task_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EngineEvaluationComparison {
+  evaluations: EngineEvaluation[];
+  comparison: Record<string, Record<string, number>>;
+}
+
+export interface EngineTaskTypeInfo {
+  task_type: EngineTaskType;
+  display_name: string;
+  description: string;
+  sample_schema: Record<string, unknown>;
+  example: Record<string, unknown>;
+}
+
+export interface EngineSdgPipelineConfig {
+  generator: string;
+  judge: string;
+  diversity_rules: string;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
 
 interface EngineErrorBody {
   detail?: string;
@@ -473,6 +570,118 @@ export async function engineChatCompletion(req: EngineChatRequest): Promise<Engi
   });
 }
 
+// ─── Additional Dataset Operations ───────────────────────────────────────────
+
+export async function engineCancelDataset(datasetId: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/datasets/${datasetId}/cancel`, { method: "POST" });
+}
+
+export async function engineDeleteDataset(datasetId: string): Promise<void> {
+  await engineFetch(`/datasets/${datasetId}`, { method: "DELETE" });
+}
+
+export async function enginePreviewDataset(datasetId: string, limit = 20): Promise<EngineDatasetPreview> {
+  return apiFetch<EngineDatasetPreview>(`/datasets/${datasetId}/preview?limit=${limit}`);
+}
+
+export async function engineGetDatasetDownloadUrl(datasetId: string): Promise<EngineDatasetDownloadUrl> {
+  return apiFetch<EngineDatasetDownloadUrl>(`/datasets/${datasetId}/download-url`);
+}
+
+// ─── Additional Training & Artifact Operations ─────────────────────────────
+
+export async function engineGetMlflowUrl(trainingId: string): Promise<{ mlflow_url: string | null }> {
+  return apiFetch<{ mlflow_url: string | null }>(`/trainings/${trainingId}/mlflow-url`);
+}
+
+export async function engineGetTrainingMetrics(trainingId: string): Promise<EngineTrainingMetrics> {
+  return apiFetch<EngineTrainingMetrics>(`/trainings/${trainingId}/metrics`);
+}
+
+export async function engineCancelModelExport(modelId: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/models/${modelId}/export/cancel`, { method: "POST" });
+}
+
+export async function engineGetModelDownloadUrl(modelId: string, fmt = "gguf"): Promise<EngineModelDownloadUrl> {
+  return apiFetch<EngineModelDownloadUrl>(`/models/${modelId}/download-url?format=${fmt}`);
+}
+
+// ─── Project Activity & Usage ───────────────────────────────────────────────
+
+export async function engineListProjectActivity(
+  projectId: string,
+  limit = 50,
+  offset = 0
+): Promise<EnginePage<EngineAuditEvent>> {
+  const query = new URLSearchParams({ limit: limit.toString(), offset: offset.toString() });
+  return apiFetch<EnginePage<EngineAuditEvent>>(`/projects/${projectId}/activity?${query.toString()}`);
+}
+
+export async function engineListProjectUsage(
+  projectId: string,
+  limit = 50,
+  offset = 0
+): Promise<EnginePage<EngineUsageEvent>> {
+  const query = new URLSearchParams({ limit: limit.toString(), offset: offset.toString() });
+  return apiFetch<EnginePage<EngineUsageEvent>>(`/projects/${projectId}/usage?${query.toString()}`);
+}
+
+export async function engineGetUsageSummary(): Promise<EngineUsageSummary> {
+  return apiFetch<EngineUsageSummary>("/usage");
+}
+
+// ─── Evaluations ────────────────────────────────────────────────────────────
+
+export async function engineStartEvaluation(body: EngineEvaluationCreate): Promise<EngineEvaluationAccepted> {
+  return apiFetch<EngineEvaluationAccepted>("/evaluations", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function engineListEvaluations(filter?: {
+  modelArtifactId?: string;
+  datasetId?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<EnginePage<EngineEvaluation>> {
+  const query = new URLSearchParams();
+  if (filter?.modelArtifactId) query.set("model_artifact_id", filter.modelArtifactId);
+  if (filter?.datasetId) query.set("dataset_id", filter.datasetId);
+  if (filter?.limit) query.set("limit", filter.limit.toString());
+  if (filter?.offset) query.set("offset", filter.offset.toString());
+  return apiFetch<EnginePage<EngineEvaluation>>(`/evaluations?${query.toString()}`);
+}
+
+export async function engineGetEvaluation(evaluationId: string): Promise<EngineEvaluation> {
+  return apiFetch<EngineEvaluation>(`/evaluations/${evaluationId}`);
+}
+
+export async function engineCancelEvaluation(evaluationId: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/evaluations/${evaluationId}/cancel`, { method: "POST" });
+}
+
+export async function engineCompareEvaluations(evaluationIds: string[]): Promise<EngineEvaluationComparison> {
+  return apiFetch<EngineEvaluationComparison>("/evaluations/compare", {
+    method: "POST",
+    body: JSON.stringify({ evaluation_ids: evaluationIds }),
+  });
+}
+
+// ─── Tasks & Metadata ────────────────────────────────────────────────────────
+
+export async function engineListTaskTypes(): Promise<EngineTaskTypeInfo[]> {
+  return apiFetch<EngineTaskTypeInfo[]>("/tasks");
+}
+
+export async function engineGetTaskExample(taskType: EngineTaskType): Promise<Record<string, unknown>> {
+  return apiFetch<Record<string, unknown>>(`/tasks/${taskType}/example`);
+}
+
+export async function engineGetSdgPipelineConfig(): Promise<EngineSdgPipelineConfig> {
+  return apiFetch<EngineSdgPipelineConfig>("/sdg-pipeline");
+}
+
 // ─── Health check ─────────────────────────────────────────────────────────────
 
 export async function engineHealthCheck(): Promise<boolean> {
@@ -483,3 +692,4 @@ export async function engineHealthCheck(): Promise<boolean> {
     return false;
   }
 }
+

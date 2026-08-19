@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { engineGetUsageSummary, type EngineUsageSummary } from "@/lib/engineApi";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -474,6 +475,57 @@ function WebhooksTab() {
   );
 }
 
+function UsageSummaryTab() {
+  const [summary, setSummary] = useState<EngineUsageSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    engineGetUsageSummary()
+      .then(setSummary)
+      .catch(() => setSummary(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <p className="text-xs text-muted-foreground">Loading usage summary...</p>;
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">Monthly OpenRouter Cost Summary</CardTitle>
+          <CardDescription>Usage and accumulated costs for the current calendar month</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="p-4 rounded-lg bg-accent/50 flex justify-between items-center">
+            <div>
+              <p className="text-xs text-muted-foreground">Total Spend (Month-to-Date)</p>
+              <p className="text-2xl font-bold text-emerald-500">${summary?.total_cost_usd?.toFixed(4) ?? "0.0000"}</p>
+            </div>
+            <Badge variant="outline">Since {summary?.since ? new Date(summary.since).toLocaleDateString() : "Beginning of Month"}</Badge>
+          </div>
+
+          <p className="text-sm font-semibold mt-4">Breakdown by Model</p>
+          {summary?.by_model && summary.by_model.length > 0 ? (
+            <div className="space-y-2">
+              {summary.by_model.map((m, i) => (
+                <div key={i} className="flex justify-between items-center text-xs py-2 border-b border-border last:border-0">
+                  <div>
+                    <span className="font-semibold text-foreground mr-2">{m.model}</span>
+                    <span className="text-muted-foreground">Stage: {m.stage}</span>
+                  </div>
+                  <span className="font-medium text-foreground">${m.cost_usd.toFixed(4)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">No usage recorded this month.</p>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 // --- Main Settings Page ---
 export default function Settings() {
   const { t } = useLanguage();
@@ -494,6 +546,9 @@ export default function Settings() {
               <TabsTrigger value="api-keys" className="text-xs">
                 <Key className="h-3.5 w-3.5 mr-1.5" /> {t("settings.apiKeys")}
               </TabsTrigger>
+              <TabsTrigger value="usage" className="text-xs">
+                <Zap className="h-3.5 w-3.5 mr-1.5" /> Usage & Billing
+              </TabsTrigger>
               <TabsTrigger value="notifications" className="text-xs">
                 <Bell className="h-3.5 w-3.5 mr-1.5" /> {t("settings.notifications")}
               </TabsTrigger>
@@ -506,6 +561,7 @@ export default function Settings() {
             </TabsList>
 
             <TabsContent value="api-keys"><ApiKeysTab /></TabsContent>
+            <TabsContent value="usage"><UsageSummaryTab /></TabsContent>
             <TabsContent value="notifications"><NotificationsTab /></TabsContent>
             <TabsContent value="webhooks"><WebhooksTab /></TabsContent>
             <TabsContent value="account"><AccountTab /></TabsContent>

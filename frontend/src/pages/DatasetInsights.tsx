@@ -13,6 +13,8 @@ import { mockDatasets } from "@/data/datasetMockData";
 import { computeQualityReport } from "@/lib/qualityCalculator";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useProject } from "@/hooks/useProjects";
+import { engineGetDatasetDownloadUrl, enginePreviewDataset, engineCancelDataset } from "@/lib/engineApi";
+import { useToast } from "@/hooks/use-toast";
 
 const READINESS_BANDS = (score: number, t: (k: string) => string) => {
   if (score >= 85) return { label: t("insights.readyToTrain"), color: "text-emerald-500", icon: CheckCircle2 };
@@ -241,7 +243,49 @@ export default function DatasetInsights() {
         </FadeIn>
 
         <FadeIn delay={0.3}>
-          <div className="flex justify-between items-center pt-2">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className="text-sm">Dataset Operations</CardTitle>
+                <CardDescription className="text-xs">{datasetMeta.name} · {datasetMeta.format} · {datasetMeta.fileSize}</CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={async () => {
+                  try {
+                    const res = await engineGetDatasetDownloadUrl(selectedDataset);
+                    window.open(res.download_url, "_blank");
+                  } catch (err) {
+                    alert("Download link not available: " + (err instanceof Error ? err.message : String(err)));
+                  }
+                }}>
+                  Download JSONL
+                </Button>
+                <Button variant="outline" size="sm" onClick={async () => {
+                  try {
+                    const preview = await enginePreviewDataset(selectedDataset, 5);
+                    alert(`Dataset Preview (${preview.total_rows} total rows):\n` + JSON.stringify(preview.rows, null, 2));
+                  } catch (err) {
+                    alert("Preview error: " + (err instanceof Error ? err.message : String(err)));
+                  }
+                }}>
+                  Preview Data
+                </Button>
+                <Button variant="destructive" size="sm" onClick={async () => {
+                  if (!confirm("Are you sure you want to cancel synthetic generation for this dataset?")) return;
+                  try {
+                    await engineCancelDataset(selectedDataset);
+                    alert("Dataset generation cancelled.");
+                  } catch (err) {
+                    alert("Cancel error: " + (err instanceof Error ? err.message : String(err)));
+                  }
+                }}>
+                  Cancel SDG Job
+                </Button>
+              </div>
+            </CardHeader>
+          </Card>
+
+          <div className="flex justify-between items-center pt-4">
             <p className="text-xs text-muted-foreground">
               {datasetMeta.name} · {datasetMeta.format} · {datasetMeta.fileSize}
             </p>

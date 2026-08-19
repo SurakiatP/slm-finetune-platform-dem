@@ -36,6 +36,7 @@ const navItems = [
   { titleKey: "nav.projects", url: "/projects", icon: FolderKanban },
   { titleKey: "nav.templates", url: "/templates", icon: LayoutTemplate },
   { titleKey: "nav.models", url: "/models", icon: Box },
+  { titleKey: "Evaluations", url: "/evaluations", icon: Zap },
   { titleKey: "nav.playground", url: "/playground", icon: MessageSquare },
   { titleKey: "nav.analytics", url: "/analytics", icon: BarChart3 },
   { titleKey: "nav.deployment", url: "/deployment", icon: Rocket },
