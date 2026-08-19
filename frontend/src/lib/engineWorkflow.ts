@@ -16,6 +16,7 @@ import {
   TASK_TYPE_TO_ENGINE,
   buildManualConfig,
   resolveEngineBaseModel,
+  toTrainingSlug,
 } from "@/lib/engineMappings";
 
 export interface EngineWorkflowInput {
@@ -178,7 +179,7 @@ export async function runEngineWorkflow(input: EngineWorkflowInput): Promise<voi
         engineProjectId,
         trainDatasetId,
         engineBaseModel,
-        input.projectName,
+        toTrainingSlug(input.projectName),
         buildManualConfig(input.epochs, input.learningRate),
         `training:${input.supabaseProjectId}`,
       );

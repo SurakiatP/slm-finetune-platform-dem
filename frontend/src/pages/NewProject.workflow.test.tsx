@@ -98,7 +98,7 @@ describe("NewProject Engine workflow", () => {
       "engine-project",
       "generated-dataset",
       "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit",
-      "Project",
+      "project",
       expect.any(Object),
       "training:supabase-project",
     );
@@ -126,7 +126,7 @@ describe("NewProject Engine workflow", () => {
       "engine-project",
       "generated-dataset",
       "unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
-      "Project",
+      "project",
       expect.any(Object),
       "training:supabase-project",
     );
