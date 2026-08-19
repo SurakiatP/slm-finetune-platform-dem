@@ -13,7 +13,7 @@ raw-SQL `INSERT` (via `text()`, naming only the NOT NULL columns that have
 no default) directly against the schema `Base.metadata.create_all` created
 from the ORM models, bypassing the ORM's INSERT-compilation path entirely,
 to prove the `server_default=sa.false()` from migration
-`20260818_0010_dataset_decouple_auto_pipeline.py` is really wired into the
+`20260818_0010_dataset_decouple.py` is really wired into the
 table DDL and not just an ORM-side convenience.
 
 Also covers the migration file itself: parses, `down_revision` points at
@@ -69,7 +69,7 @@ def _load_migration_module(filename: str) -> ModuleType:
 
 
 class TestMigration0010FileIntegrity:
-    FILENAME = "20260818_0010_dataset_decouple_auto_pipeline.py"
+    FILENAME = "20260818_0010_dataset_decouple.py"
 
     @staticmethod
     @pytest.fixture(scope="class")
@@ -82,7 +82,7 @@ class TestMigration0010FileIntegrity:
         assert path.is_file()
 
     def test_revision_matches_filename_embedded_id(self, migration_module) -> None:
-        assert migration_module.revision == "0010_dataset_decouple_auto_pipeline"
+        assert migration_module.revision == "0010_dataset_decouple"
 
     def test_down_revision_points_at_the_prior_tip(self, migration_module) -> None:
         # 0009_usage_events is the tip this migration was authored against

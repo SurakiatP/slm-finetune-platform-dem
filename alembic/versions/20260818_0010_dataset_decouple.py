@@ -1,6 +1,6 @@
 """dataset.project_id nullable (SET NULL on project delete) + training_jobs auto-pipeline columns
 
-Revision ID: 0010_dataset_decouple_auto_pipeline
+Revision ID: 0010_dataset_decouple
 Revises: 0009_usage_events
 Create Date: 2026-08-18
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0010_dataset_decouple_auto_pipeline"
+revision: str = "0010_dataset_decouple"
 down_revision: str | None = "0009_usage_events"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

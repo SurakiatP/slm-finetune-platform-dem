@@ -1,5 +1,5 @@
 """W2-T7 cross-cutting hardening: does a Dataset actually survive its
-Project being deleted, as migration `20260818_0010_dataset_decouple_auto_pipeline.py`
+Project being deleted, as migration `20260818_0010_dataset_decouple.py`
 (W1-T1) intends?
 
 `tests/unit/test_dataset_decouple_auto_pipeline.py` proves the SCHEMA
