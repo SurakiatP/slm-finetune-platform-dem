@@ -47,6 +47,12 @@ class SDGProgress(_WSMessageBase):
         "meta_prompting",
         "judging",
         "dedup",
+        # End-game phases — published by the worker (`workers/tasks/
+        # data_generation.py`) after the generation loop finishes, around
+        # the deterministic train/hold-out split and the two persist steps.
+        "splitting_holdout",
+        "persisting_train",
+        "persisting_holdout",
     ] = "generating"
     samples_generated: int = Field(default=0, ge=0)
     samples_target: int = Field(..., ge=1)

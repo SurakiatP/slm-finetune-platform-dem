@@ -966,6 +966,20 @@
             }
           },
           {
+            "name": "disposition",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "attachment",
+                "inline"
+              ],
+              "type": "string",
+              "default": "attachment",
+              "title": "Disposition"
+            }
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,
@@ -3594,9 +3608,17 @@
             "title": "Id"
           },
           "project_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Project Id"
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Owning project. Null for an orphaned dataset — one whose project was deleted (ondelete=SET NULL, see W1-T1) while the dataset itself survives."
           },
           "parent_dataset_id": {
             "anyOf": [
@@ -3702,7 +3724,6 @@
         "type": "object",
         "required": [
           "id",
-          "project_id",
           "name",
           "task_type",
           "source",
@@ -4667,7 +4688,19 @@
               }
             ],
             "title": "Training Name",
-            "description": "MLflow run name; defaults to project + timestamp."
+            "description": "MLflow run name; defaults to project + timestamp. When provided, must be ollama-tag-safe: lowercase letters, digits, '.', '_', '-' only, starting with a letter or digit, 1-63 chars total. Must be unique within the owning project's owner scope."
+          },
+          "auto_export": {
+            "type": "boolean",
+            "title": "Auto Export",
+            "description": "If true, automatically kick off GGUF export when this training job completes successfully.",
+            "default": false
+          },
+          "auto_evaluate": {
+            "type": "boolean",
+            "title": "Auto Evaluate",
+            "description": "If true, automatically kick off evaluation once the auto-export step (or training itself, if auto_export is false) completes. Has no effect unless the export it depends on succeeds.",
+            "default": false
           },
           "mode": {
             "type": "string",
@@ -5109,7 +5142,19 @@
               }
             ],
             "title": "Training Name",
-            "description": "MLflow run name; defaults to project + timestamp."
+            "description": "MLflow run name; defaults to project + timestamp. When provided, must be ollama-tag-safe: lowercase letters, digits, '.', '_', '-' only, starting with a letter or digit, 1-63 chars total. Must be unique within the owning project's owner scope."
+          },
+          "auto_export": {
+            "type": "boolean",
+            "title": "Auto Export",
+            "description": "If true, automatically kick off GGUF export when this training job completes successfully.",
+            "default": false
+          },
+          "auto_evaluate": {
+            "type": "boolean",
+            "title": "Auto Evaluate",
+            "description": "If true, automatically kick off evaluation once the auto-export step (or training itself, if auto_export is false) completes. Has no effect unless the export it depends on succeeds.",
+            "default": false
           },
           "mode": {
             "type": "string",
@@ -6142,7 +6187,10 @@
               "format_detection",
               "meta_prompting",
               "judging",
-              "dedup"
+              "dedup",
+              "splitting_holdout",
+              "persisting_train",
+              "persisting_holdout"
             ],
             "title": "Phase",
             "default": "generating"
@@ -6288,6 +6336,18 @@
             "title": "Dataset Name",
             "description": "Display name for the resulting dataset; defaults to project + timestamp."
           },
+          "holdout_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holdout Name",
+            "description": "Display name for the holdout dataset; defaults to '<train dataset name>-holdout'."
+          },
           "sdg_mode": {
             "type": "string",
             "const": "description_only",
@@ -6426,6 +6486,18 @@
             ],
             "title": "Dataset Name",
             "description": "Display name for the resulting dataset; defaults to project + timestamp."
+          },
+          "holdout_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holdout Name",
+            "description": "Display name for the holdout dataset; defaults to '<train dataset name>-holdout'."
           },
           "sdg_mode": {
             "type": "string",
@@ -7098,6 +7170,26 @@
             "format": "date-time",
             "title": "Updated At"
           },
+          "auto_export": {
+            "type": "boolean",
+            "title": "Auto Export"
+          },
+          "auto_evaluate": {
+            "type": "boolean",
+            "title": "Auto Evaluate"
+          },
+          "auto_pipeline": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Pipeline"
+          },
           "queue_state": {
             "anyOf": [
               {
@@ -7156,7 +7248,9 @@
           "started_at",
           "ended_at",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "auto_export",
+          "auto_evaluate"
         ],
         "title": "TrainingResponse"
       },

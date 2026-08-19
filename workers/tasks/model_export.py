@@ -9,7 +9,10 @@ Flow:
   3. Re-load the base model in 4-bit + attach the adapter via Unsloth.
   4. Save GGUF (or merged SafeTensors) into the tempdir.
   5. Upload the resulting file(s) to MinIO at `models/exports/{artifact_id}/{format}/`.
-  6. (GGUF only) build a Modelfile + register `slm/{artifact_id}` with Ollama.
+  6. (GGUF only) build a Modelfile + register with Ollama under a computed
+     tag — `{owner_id}/{training_name}` if both are known, `local/{training_name}`
+     if only training_name is set, else the legacy `slm/{artifact_id[:8]}`
+     (see `_compute_ollama_tag`).
   7. Persist URIs + `ollama_model_tag` back on the artifact row.
   8. Publish `JobCompleted`. GPU cleanup in `finally`.
 """
@@ -31,6 +34,7 @@ from celery.utils.log import get_task_logger
 
 from api.core.config import get_settings
 from api.models.model_artifact import ModelArtifact
+from api.models.project import Project
 from api.models.training_job import TrainingJob
 from api.schemas.enums import ArtifactFormat, JobStatus
 from api.core import request_context
@@ -69,6 +73,31 @@ def _project_id_for_artifact(session, artifact):
     """
     training_job = session.get(TrainingJob, artifact.training_job_id)
     return training_job.project_id if training_job is not None else None
+
+
+def _ollama_tag_context(artifact_uuid: UUID) -> tuple[str | None, str | None]:
+    """Resolve ``(training_name, owner_id)`` needed to compute the Ollama tag.
+
+    Same ``ModelArtifact -> TrainingJob -> Project`` join as
+    ``_project_id_for_artifact``, but self-contained (opens its own
+    session) since it's called from the registration try/except in
+    ``export_model``, not from a spot that already has a session open.
+
+    Returns ``(None, None)`` if the artifact or its ``TrainingJob`` no
+    longer exist — defensive, mirrors ``_project_id_for_artifact``'s
+    None-returning contract. Callers fall back to the pre-existing
+    ``slm/<short-id>`` tag whenever ``training_name`` comes back None.
+    """
+    with session_scope() as session:
+        artifact = session.get(ModelArtifact, artifact_uuid)
+        if artifact is None:
+            return None, None
+        training_job = session.get(TrainingJob, artifact.training_job_id)
+        if training_job is None:
+            return None, None
+        project = session.get(Project, training_job.project_id)
+        owner_id = project.owner_id if project is not None else None
+        return training_job.training_name, owner_id
 
 
 @celery_app.task(bind=True, name="model.export", max_retries=0)
@@ -280,7 +309,12 @@ def export_model(
                     # failure keeps gguf_uri persistable on partial success.
                     publish_stage("registering")
                     try:
-                        candidate_tag = _compute_ollama_tag(artifact_id)
+                        training_name, owner_id = _ollama_tag_context(artifact_uuid)
+                        candidate_tag = _compute_ollama_tag(
+                            artifact_id,
+                            training_name=training_name,
+                            owner_id=owner_id,
+                        )
                         _register_with_ollama(
                             ollama=OllamaClient(str(settings.ollama_base_url)),
                             tag=candidate_tag,
@@ -655,14 +689,35 @@ def _release_gpu_memory() -> None:
 # Snapshot diff = 0 after refactor proves byte-stability.
 
 
-def _compute_ollama_tag(artifact_id: str) -> str:
+def _compute_ollama_tag(
+    artifact_id: str,
+    *,
+    training_name: str | None = None,
+    owner_id: str | None = None,
+) -> str:
     """Build the Ollama model tag for a fine-tuned artifact.
 
-    Format: ``slm/<first-8-chars-of-uuid>`` — short enough to type, long
-    enough that real-world artifact collisions are vanishingly unlikely
-    on the dev box. Used by ``export_model`` to register the fine-tuned
-    GGUF with Ollama.
+    Three cases, in priority order:
+      1. ``training_name`` set + owning project has ``owner_id`` set ->
+         ``"{owner_id}/{training_name}"`` — namespaces the tag under the
+         user who owns it, matching how a multi-tenant Ollama registry
+         would key models per-owner.
+      2. ``training_name`` set but ``owner_id`` is None (the
+         ``AUTH_REQUIRED=false`` case — no auth, no owner) ->
+         ``"local/{training_name}"``.
+      3. ``training_name`` is None (old rows predating the training-name
+         feature, or callers that don't pass it) -> the original
+         fallback, unchanged: ``slm/<first-8-chars-of-uuid>``. Short
+         enough to type, long enough that real-world artifact collisions
+         are vanishingly unlikely on the dev box.
+
+    ``training_name`` is used verbatim — no sanitization/lowercasing here;
+    the name pattern is enforced at training-create time elsewhere.
     """
+    if training_name:
+        if owner_id:
+            return f"{owner_id}/{training_name}"
+        return f"local/{training_name}"
     return f"slm/{artifact_id[:8]}"
 
 

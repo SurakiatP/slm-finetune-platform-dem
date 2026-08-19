@@ -1,4 +1,4 @@
-"""Validate `holdout_size` field on SDGRequest (defaults, bounds)."""
+"""Validate `holdout_size` / `holdout_name` fields on SDGRequest (defaults, bounds)."""
 
 from __future__ import annotations
 
@@ -67,3 +67,29 @@ def test_holdout_size_present_on_description_only_mode():
     }
     req = _ADAPTER.validate_python(payload)
     assert req.holdout_size == 50
+
+
+def test_holdout_name_defaults_to_none_when_omitted():
+    req = _ADAPTER.validate_python(_qa_with_seed_base())
+    assert req.holdout_name is None
+
+
+def test_holdout_name_accepts_explicit_value():
+    payload = _qa_with_seed_base() | {"holdout_name": "my-custom-holdout"}
+    req = _ADAPTER.validate_python(payload)
+    assert req.holdout_name == "my-custom-holdout"
+
+
+def test_holdout_name_present_on_description_only_mode():
+    payload = {
+        "sdg_mode": "description_only",
+        "project_id": _PROJECT_ID,
+        "task_type": "classification",
+        "task_description": "Classify support tickets",
+        "num_samples": 200,
+        "holdout_size": 50,
+        "holdout_name": "support-tickets-holdout",
+        "classification_config": {"labels": ["billing", "technical"]},
+    }
+    req = _ADAPTER.validate_python(payload)
+    assert req.holdout_name == "support-tickets-holdout"

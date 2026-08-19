@@ -36,6 +36,14 @@ class TrainingResponse(BaseModel):
     ended_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # Auto-pipeline (auto-export + auto-evaluate after training completes).
+    # `auto_pipeline` is null until the pipeline is kicked off; once running
+    # it holds {"export": {...}, "evaluate": {...}} per-stage progress — see
+    # `api.models.training_job.TrainingJob.auto_pipeline`'s doc for the exact
+    # shape of each stage dict.
+    auto_export: bool
+    auto_evaluate: bool
+    auto_pipeline: dict[str, Any] | None = None
     # queue_state / queue_position / owner_queue_position: project-level GPU
     # queue standing (train/export/eval jobs share one GPU, worker
     # concurrency=1). "processing" = a GPU job for this project is currently

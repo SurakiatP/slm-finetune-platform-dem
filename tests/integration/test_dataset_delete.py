@@ -115,12 +115,18 @@ def test_delete_dataset_with_training_returns_409(client: httpx.Client) -> None:
         r = client.get(f"/api/v1/datasets/{dataset_id}")
         assert r.status_code == 200, r.text
 
-        # And once the project is dropped (cascade), the dataset goes too.
+        # Dataset.project_id is ON DELETE SET NULL (not CASCADE): dropping the
+        # project orphans the dataset instead of removing it. The dataset row
+        # (and its 200 on GET) must survive the project's deletion.
         r = client.delete(f"/api/v1/projects/{project_id}")
         assert r.status_code == 204, r.text
         r = client.get(f"/api/v1/datasets/{dataset_id}")
-        assert r.status_code == 404, r.text
+        assert r.status_code == 200, r.text
+        assert r.json()["project_id"] is None, r.json()
     finally:
-        # Belt-and-braces in case an assertion fired before cascade-delete ran.
+        # Belt-and-braces in case an assertion fired before the project
+        # delete ran above. The dataset is orphaned rather than removed by
+        # the project delete, so it's cleaned up explicitly here too.
         client.delete(f"/api/v1/trainings/{training_id}")
         client.delete(f"/api/v1/projects/{project_id}")
+        client.delete(f"/api/v1/datasets/{dataset_id}")

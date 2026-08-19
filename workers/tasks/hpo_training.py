@@ -405,6 +405,21 @@ def train_hpo(
             # that prefix nor rewrite this run's terminal state.
             committed = True
 
+            # ---- 6c. Auto-pipeline: chain export -> evaluate (W2-T1) ---------
+            # Same hook as `train_manual`'s, fired once for the final
+            # best-params retrain only — never per-trial. Placed after
+            # `committed = True` so the zombie-cancel `discarded` branch above
+            # (which returns early) never reaches this. Best-effort: must
+            # never turn a successful HPO study into a reported failure.
+            try:
+                from workers.tasks.auto_pipeline import enqueue_auto_pipeline
+
+                enqueue_auto_pipeline(training_id=training_id, artifact_id=str(artifact_id))
+            except Exception:  # noqa: BLE001 — never mask a successful HPO run
+                log.warning(
+                    "hpo: job=%s failed to enqueue auto-pipeline", job_id, exc_info=True
+                )
+
             # ---- 7. Publish JobCompleted -------------------------------------
             publish(
                 JobCompleted(

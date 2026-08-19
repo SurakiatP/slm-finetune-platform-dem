@@ -36,6 +36,25 @@ root from a mountable volume (`SPA_DIST_DIR` in `docker-compose.yml`,
 defaulting to a committed placeholder), so it is frontend-agnostic. Whichever
 SPA wins later just points its build output at that mount.
 
+**Update (`feat/web-ui` parity merge):** the "still-open decision" above has
+since been made — `smart-model-tune` is the canonical frontend, not this
+repo's own `frontend/`. `frontend/` (and `docker/frontend.Dockerfile`) are
+kept on `feat/web-ui` as a backup rather than deleted, but they are retained,
+not promoted: the `frontend` compose service that used to serve them with its
+own nginx was removed (it published `0.0.0.0:${FRONTEND_PORT}`, which is
+exactly the "nothing public but `edge`" boundary this ADR establishes),
+`docker/frontend.nginx.conf` was deleted as a duplicate of
+`docker/edge.nginx.conf`'s `/api/`/`/ws/` proxying, and
+`docker/frontend.Dockerfile` now only builds `dist/` for `edge` to mount at
+`SPA_DIST_DIR` — the frontend-agnostic seam this ADR already designed for,
+gated behind the opt-in `build-spa` profile so a plain `docker compose up`
+never starts it. It is also not a drop-in fallback today: like
+`smart-model-tune`, `frontend/`'s API client carries none of the
+`AUTH_REQUIRED` token work this ADR's "fatal in production" section makes a
+release gate — `grep Authorization frontend/` returns nothing. Reaching for
+it as an emergency substitute would reintroduce the exact auth gap this round
+closes, not sidestep it.
+
 ## Decision
 
 ### The edge lives in this repo
