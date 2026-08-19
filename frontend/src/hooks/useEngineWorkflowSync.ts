@@ -4,6 +4,7 @@ import { getEngineMeta, patchEngineMeta, type EngineProjectMeta } from "@/lib/en
 import { useTrainingWebSocket } from "@/hooks/useTrainingWebSocket";
 import {
   EngineApiError,
+  engineCancelModelExport,
   engineExportModel,
   engineGetJobProgress,
   engineGetModelArtifact,
@@ -227,6 +228,12 @@ export function useEngineWorkflowSync(project: Project | null, onUpdate: (next: 
 
   return {
     retryExport: () => void ensureExport(meta?.modelArtifactId, true),
+    cancelExport: async () => {
+      if (meta?.modelArtifactId) {
+        await engineCancelModelExport(meta.modelArtifactId);
+        saveMeta({ phase: "export_failed", error: "Export cancelled by user", failureStep: "export" });
+      }
+    },
     latestProgress: trainingSocket.latestProgress,
   };
 }

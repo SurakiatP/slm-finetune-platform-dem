@@ -8,6 +8,7 @@ import { ArrowLeft, Download, Rocket, MessageSquare, Copy, ExternalLink, CheckCi
 import { taskTypeLabels, baseModelLabels } from "@/data/mockData";
 import { useState, useEffect } from "react";
 import { getModel, type TrainedModelExt } from "@/lib/modelsApi";
+import { engineGetModelDownloadUrl, engineCancelModelExport } from "@/lib/engineApi";
 import { useLanguage } from "@/i18n/LanguageContext";
 
 const exportFormats = [
@@ -217,7 +218,16 @@ export default function ModelDetail() {
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="text-xs text-muted-foreground">{fmt.size}</span>
-                    <Button variant="outline" size="sm" className="gap-2">
+                    <Button variant="outline" size="sm" className="gap-2" onClick={async () => {
+                      if (!model?.id) return;
+                      try {
+                        const formatKey = fmt.format.toLowerCase() === "gguf" ? "gguf" : "safetensors";
+                        const res = await engineGetModelDownloadUrl(model.id, formatKey);
+                        window.open(res.download_url, "_blank");
+                      } catch (err) {
+                        alert("Download error: " + (err instanceof Error ? err.message : String(err)));
+                      }
+                    }}>
                       <Download className="h-3.5 w-3.5" /> {t("modelDetail.download")}
                     </Button>
                   </div>

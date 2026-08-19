@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ติดตั้ง TuneLab บน Ubuntu ด้วย Docker และ ngrok</title>
+  <style>
+    body { max-width: 980px; margin: 40px auto; padding: 0 20px; font: 16px/1.65 system-ui, sans-serif; color: #1f2937; }
+    h1, h2 { color: #111827; } code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    pre { background: #111827; color: #e5e7eb; padding: 16px; overflow-x: auto; border-radius: 8px; }
+    .note, .warning { padding: 12px 16px; margin: 16px 0; border-left: 4px solid; }
+    .note { background: #eff6ff; border-color: #2563eb; }
+    .warning { background: #fff7ed; border-color: #ea580c; }
+  </style>
+</head>
+<body>
+  <h1>ติดตั้ง TuneLab Frontend–Backend บน Ubuntu</h1>
+  <div class="warning"><strong>ห้ามใช้ image เดิมจนกว่าจะ rebuild:</strong> image ปัจจุบันฝัง Supabase project ที่ไม่สามารถ resolve DNS ได้ จึง login และ signup ไม่ได้</div>
+
+  <h2>1. สร้าง Supabase project ของคุณ</h2>
+  <ol>
+    <li>สร้าง hosted project ที่ Supabase Dashboard และเก็บ Project ref, Project URL, publishable key และ database password</li>
+    <li>ใน Authentication → URL Configuration ตั้ง Site URL เป็น <code>https://life-crawling-giver.ngrok-free.dev</code></li>
+    <li>เพิ่ม Redirect URL <code>https://life-crawling-giver.ngrok-free.dev/dashboard</code></li>
+    <li>ใน Authentication → Providers → Email เปิด signup และ Confirm Email</li>
+  </ol>
+  <p>จากเครื่องที่มี source frontend ให้ apply schema:</p>
+  <pre>supabase login
+supabase link --project-ref &lt;PROJECT_REF&gt;
+supabase db push --dry-run
+supabase db push
+supabase migration list</pre>
+  <p>migration สุดท้ายต้องเป็น <code>20260813000000_disable_demo_user_seed.sql</code> เพื่อไม่สร้างข้อมูล demo ให้ผู้ใช้จริง</p>
+
+  <h2>2. ตั้ง Google OAuth</h2>
+  <ol>
+    <li>สร้าง OAuth 2.0 Client แบบ Web application ใน Google Cloud Console</li>
+    <li>เพิ่ม Authorized redirect URI เป็น <code>https://&lt;PROJECT_REF&gt;.supabase.co/auth/v1/callback</code></li>
+    <li>นำ Client ID และ Client Secret ไปใส่ใน Supabase → Authentication → Providers → Google</li>
+  </ol>
+  <div class="note">Google Client Secret และ Supabase service_role key ต้องไม่ใส่ใน frontend, Docker build args หรือ Git</div>
+
+  <h2>3. ตรวจ Supabase และ build frontend image</h2>
+  <p>ตั้งไฟล์ <code>.env</code> ในโฟลเดอร์ frontend:</p>
+  <pre>VITE_SUPABASE_PROJECT_ID="&lt;PROJECT_REF&gt;"
+VITE_SUPABASE_PUBLISHABLE_KEY="&lt;PUBLISHABLE_KEY&gt;"
+VITE_SUPABASE_URL="https://&lt;PROJECT_REF&gt;.supabase.co"
+VITE_ENGINE_HOST=""
+VITE_ENGINE_PROXY_TARGET="http://localhost:8088"</pre>
+  <pre>npm run check:supabase
+
+docker build --pull \
+  --build-arg VITE_ENGINE_HOST= \
+  --build-arg VITE_SUPABASE_PROJECT_ID="&lt;PROJECT_REF&gt;" \
+  --build-arg VITE_SUPABASE_PUBLISHABLE_KEY="&lt;PUBLISHABLE_KEY&gt;" \
+  --build-arg VITE_SUPABASE_URL="https://&lt;PROJECT_REF&gt;.supabase.co" \
+  -t sady567/slm-frontend:&lt;VERSION&gt; \
+  -t sady567/slm-frontend:latest .
+
+docker push sady567/slm-frontend:&lt;VERSION&gt;
+docker push sady567/slm-frontend:latest</pre>
+
+  <h2>4. ตั้ง backend environment</h2>
+  <p>แก้ <code>slm-finetune-platform-dem/.env</code> โดยให้ Supabase URL ตรงกับ frontend:</p>
+  <pre>SUPABASE_URL=https://&lt;PROJECT_REF&gt;.supabase.co
+SUPABASE_JWT_AUDIENCE=authenticated
+SUPABASE_JWT_SECRET=
+AUTH_REQUIRED=false
+API_CORS_ORIGINS=https://life-crawling-giver.ngrok-free.dev
+API_ALLOWED_HOSTS=life-crawling-giver.ngrok-free.dev,localhost,127.0.0.1,api,slm-api,slm-edge</pre>
+  <p>เริ่ม backend และตรวจ health ก่อน:</p>
+  <pre>cd slm-finetune-platform-dem
+docker compose up -d
+docker compose ps
+curl -fsS http://127.0.0.1:8088/health</pre>
+
+  <h2>5. Pull และ run frontend</h2>
+  <p>Frontend ต้องอยู่ network เดียวกับ backend และส่ง API ผ่าน <code>slm-edge</code> เพื่อคง rate limits:</p>
+  <pre>docker pull sady567/slm-frontend:latest
+docker rm -f slm-frontend 2&gt;/dev/null || true
+
+docker run -d \
+  --name slm-frontend \
+  --restart unless-stopped \
+  --network slm-platform_slm-net \
+  -e ENGINE_UPSTREAM=slm-edge:80 \
+  -e ENGINE_UPSTREAM_HOST=edge \
+  -p 127.0.0.1:8082:8080 \
+  sady567/slm-frontend:latest</pre>
+  <pre>docker exec slm-frontend getent hosts slm-edge
+curl -fsS http://127.0.0.1:8082/health
+curl -I http://127.0.0.1:8082/</pre>
+
+  <h2>6. เปิดผ่าน ngrok</h2>
+  <pre>ngrok http --domain=life-crawling-giver.ngrok-free.dev 8082</pre>
+  <pre>curl -fsS https://life-crawling-giver.ngrok-free.dev/health</pre>
+
+  <h2>7. เปิดบังคับ JWT หลัง smoke test</h2>
+  <ol>
+    <li>สมัครด้วยอีเมล ต้องเห็นหน้ารอยืนยันและได้รับอีเมล</li>
+    <li>ยืนยันอีเมลแล้ว login และเปิด dashboard</li>
+    <li>สร้าง project และยืนยันว่า request ไป <code>/api/v1</code> ไม่ได้ 401</li>
+    <li>ทดสอบ Google login และ WebSocket training progress</li>
+    <li>เปลี่ยน backend เป็น <code>AUTH_REQUIRED=true</code> แล้ว restart API/worker</li>
+  </ol>
+  <pre>docker compose up -d --force-recreate api worker worker-cpu
+
+# ต้องได้ 401 เมื่อไม่มี JWT
+curl -i https://life-crawling-giver.ngrok-free.dev/api/v1/projects</pre>
+
+  <h2>Troubleshooting</h2>
+  <pre>docker logs --tail 200 slm-frontend
+docker logs --tail 200 slm-edge
+docker logs --tail 200 slm-api
+docker compose config
+docker network inspect slm-platform_slm-net</pre>
+  <ul>
+    <li><code>ERR_NAME_NOT_RESOLVED</code>: Project URL ผิดหรือ Supabase project ใช้งานไม่ได้</li>
+    <li><code>redirect URL not allowed</code>: Site URL/Redirect URL ใน Supabase ไม่ตรง ngrok domain</li>
+    <li><code>401 invalid token</code>: Backend และ frontend ใช้คนละ Supabase project หรือ JWKS ติดต่อไม่ได้</li>
+    <li><code>502 Bad Gateway</code>: frontend container resolve <code>slm-edge</code> ไม่ได้หรืออยู่คนละ Docker network</li>
+  </ul>
+</body>
+</html>
