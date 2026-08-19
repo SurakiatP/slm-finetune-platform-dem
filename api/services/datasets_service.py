@@ -102,17 +102,19 @@ async def list_datasets(
     # no-op when `user is None`, so nothing here excludes them and nothing
     # 500s.
     #
-    # Once a `user` is present, `scope_datasets_to_owner` INNER JOINs
-    # Dataset -> Project on `Dataset.project_id`; an orphan's NULL FK
-    # matches no Project row, so the join silently drops it from both the
-    # `total` count and the page of `rows` below (not a 403 — it simply
-    # never appears). That is the same "belongs to nobody, invisible to
-    # everyone" posture `ownership.py`'s module docstring already commits
-    # to for `owner_id IS NULL` rows; who *should* own a re-parented orphan
-    # once auth is required is the deferred question noted on
-    # `Dataset.project_id` and on ownership.py, not something to invent
-    # here. Nothing to fix in this function — this comment exists so the
-    # next reader doesn't mistake the silent drop for a bug.
+    # Once a `user` is present, `scope_datasets_to_owner` filters directly
+    # on `Dataset.owner_id` (no join to `Project` needed) — `owner_id` is
+    # copied from the owning Project at creation time and, unlike
+    # `project_id`, is NOT cleared when the project is deleted (see
+    # `Dataset.owner_id`'s own `doc=`). So an orphan a `user` created stays
+    # visible to them: it still carries their `owner_id` even after
+    # `project_id` goes NULL. A dataset with `owner_id IS NULL` (rows that
+    # predate this column, or were created from a project that itself had
+    # no owner yet) is invisible to everyone once a `user` is present —
+    # fails closed, the same posture `ownership.py`'s module docstring
+    # commits to elsewhere. Nothing to fix in this function — this comment
+    # exists so the next reader doesn't go looking for a join that's no
+    # longer here.
     base = ownership.scope_datasets_to_owner(base, user)
     count = ownership.scope_datasets_to_owner(count, user)
     total = (await db.execute(count)).scalar_one()
@@ -570,6 +572,7 @@ async def _persist_jsonl_dataset(
     dataset_name = name or f"seed-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     dataset = Dataset(
         project_id=project.id,
+        owner_id=project.owner_id,
         name=dataset_name,
         task_type=task_type,
         source=DatasetSource.SEED,
@@ -845,6 +848,7 @@ async def _persist_pdf_dataset(
     bucket = settings.minio_datasets_bucket
     dataset = Dataset(
         project_id=project.id,
+        owner_id=project.owner_id,
         name=dataset_name,
         task_type=task_type,
         source=DatasetSource.SEED,

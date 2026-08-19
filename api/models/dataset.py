@@ -27,14 +27,37 @@ class Dataset(Base, TimestampMixin):
     # cascading the delete into the dataset. This decouples dataset
     # lifecycle from project lifecycle (see W1-T1).
     #
-    # NOTE: who "owns" an orphaned dataset (project_id IS NULL) once
-    # AUTH_REQUIRED=true exists is an open question deferred until this
-    # branch merges to dev -- this experiment branch runs with auth off,
-    # so there is no owner/user concept yet to reassign orphaned rows to.
+    # NOTE: who "owns" an orphaned dataset (project_id IS NULL) is answered
+    # by owner_id below -- it is copied from the owning Project's owner_id
+    # at creation time and, unlike project_id, does NOT get cleared when the
+    # project is deleted, so orphaned datasets stay visible to their owner.
     project_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("projects.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
+    )
+    owner_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+        doc=(
+            "Supabase auth 'sub' claim (a UUID string) identifying the user "
+            "who owns this Dataset. Not a foreign key to any local table -- "
+            "there is no local users table and there will not be one; "
+            "identity comes entirely from Supabase (mirrors "
+            "Project.owner_id). "
+            "Copied from the owning Project's owner_id at creation time and, "
+            "critically, SURVIVES the dataset being orphaned (project_id set "
+            "to NULL on project delete) -- that persistence is this "
+            "column's whole purpose: without it, an orphaned dataset would "
+            "have no way to know who it still belongs to. "
+            "Nullable for rows created before this column existed, or "
+            "created from a project that itself had no owner_id yet. "
+            "Enforcement rule for whoever reads this column later: once "
+            "authentication is required, rows with owner_id IS NULL are "
+            "visible to NOBODY -- this fails closed, not open. Do not treat "
+            "null as 'public'."
+        ),
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     task_type: Mapped[TaskType] = mapped_column(
