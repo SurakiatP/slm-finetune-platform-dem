@@ -85,7 +85,9 @@ export function computeStages(
   currentDataset: Dataset | null,
   currentTraining: Training | null,
 ): PipelineStages {
-  const seed: StepperStatus = seedDataset ? "completed" : "pending";
+  // No seed but SDG data exists = a description_only (no-seed) run: the
+  // seed stage was deliberately skipped, not "not done yet".
+  const seed: StepperStatus = seedDataset ? "completed" : currentDataset ? "skipped" : "pending";
 
   let sdg: StepperStatus = "pending";
   if (currentDataset) {

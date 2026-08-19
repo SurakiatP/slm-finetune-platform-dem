@@ -76,7 +76,10 @@ export function PipelineHub({ projectId }: { projectId: string }) {
       <CardContent className="space-y-5">
         <StageStepper stages={stages} labels={stepperLabels} />
 
-        {!seedDataset ? (
+        {/* Only prompt for a seed when nothing has started at all — a
+            description_only (no-seed) project legitimately has SDG datasets
+            with no seed, and must still reach the training CTA below. */}
+        {!seedDataset && !currentDataset ? (
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border py-8 text-center">
             <Upload className="h-5 w-5 text-muted-foreground/50" aria-hidden />
             <p className="text-xs text-muted-foreground max-w-xs">{t("pipelineHub.noSeedYet")}</p>
