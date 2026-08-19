@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import (
@@ -158,13 +158,15 @@ async def get_dataset_download_url(
     dataset_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[CurrentUser | None, Depends(require_user)],
+    disposition: Annotated[Literal["attachment", "inline"], Query()] = "attachment",
 ) -> DatasetDownloadUrlResponse:
     # Additive alongside `GET /{dataset_id}/download` (the existing
     # streaming endpoint stays). Falls back to the seed PDF object when
     # `storage_uri` is null — see `mint_dataset_download_url`'s docstring —
     # which also closes the "PDF-seeded dataset has no download surface"
-    # gap the streaming endpoint has today.
-    return await mint_dataset_download_url(db, dataset_id, user)
+    # gap the streaming endpoint has today. `disposition=inline` mints a
+    # view-in-browser URL (signed into the URL, not overridable client-side).
+    return await mint_dataset_download_url(db, dataset_id, user, disposition)
 
 
 @router.delete(

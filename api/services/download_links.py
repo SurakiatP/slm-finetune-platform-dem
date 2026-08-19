@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -96,7 +97,10 @@ def _expires(ttl_seconds: int) -> tuple[datetime, int]:
 
 
 async def mint_dataset_download_url(
-    db: AsyncSession, dataset_id: UUID, user: CurrentUser | None
+    db: AsyncSession,
+    dataset_id: UUID,
+    user: CurrentUser | None,
+    disposition: Literal["attachment", "inline"] = "attachment",
 ) -> DatasetDownloadUrlResponse:
     """Mint a presigned GET URL for a dataset's stored object.
 
@@ -106,6 +110,10 @@ async def mint_dataset_download_url(
     PDF-seeded datasets have `storage_uri = None` and 409 on the existing
     `/download` endpoint today, so an uploaded PDF has no download surface
     at all — this endpoint gives it one.
+
+    `disposition="inline"` mints a view-in-browser URL (the browser renders
+    the PDF/JSONL instead of saving it); the default stays `attachment`
+    so existing download buttons keep their save-as behaviour.
 
     Checked in this order: presign-client availability (a deployment-wide
     503, independent of any particular dataset — fail fast before touching
@@ -141,6 +149,7 @@ async def mint_dataset_download_url(
         expires=settings.presigned_url_ttl_seconds,
         filename=filename,
         content_type=content_type,
+        disposition=disposition,
     )
 
     audit_service.record(
@@ -151,7 +160,7 @@ async def mint_dataset_download_url(
         project_id=ds.project_id,
         actor_id=request_context.current_user_id(),
         request_id=request_context.current_request_id(),
-        metadata={"filename": filename, "pdf_fallback": is_pdf_fallback},
+        metadata={"filename": filename, "pdf_fallback": is_pdf_fallback, "disposition": disposition},
     )
     await db.commit()
 

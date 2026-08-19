@@ -209,7 +209,12 @@ export function useDeleteDataset() {
 /** Mint a presigned MinIO URL for the dataset's stored object (one-shot, not cached). */
 export function useDatasetDownloadUrl() {
   return useMutation({
-    mutationFn: (id: string) => datasets.getDatasetDownloadUrl(id),
+    // Accepts a bare id (attachment download, the historical shape) or
+    // `{ id, disposition: 'inline' }` for a view-in-browser URL.
+    mutationFn: (input: string | { id: string; disposition?: 'attachment' | 'inline' }) =>
+      typeof input === 'string'
+        ? datasets.getDatasetDownloadUrl(input)
+        : datasets.getDatasetDownloadUrl(input.id, input.disposition),
   })
 }
 

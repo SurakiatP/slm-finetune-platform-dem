@@ -1,9 +1,11 @@
-import { FileText, Loader2 } from "lucide-react";
+import { ExternalLink, FileText, Loader2 } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { JsonlPreview } from "@/components/engine/JsonlPreview";
 import { EngineEmptyState } from "@/components/engine/EngineEmptyState";
-import { useDatasetPreview } from "@/hooks/queries";
+import { useDatasetDownloadUrl, useDatasetPreview } from "@/hooks/queries";
 import { useLanguage } from "@/i18n/LanguageContext";
+import { useToast } from "@/hooks/use-toast";
 
 interface DatasetPreviewTableProps {
   datasetId: string;
@@ -17,14 +19,50 @@ interface DatasetPreviewTableProps {
  *  task-specific shape — JsonlPreview just pretty-prints whatever comes back. */
 export function DatasetPreviewTable({ datasetId, numSamples, limit = 20 }: DatasetPreviewTableProps) {
   const { t } = useLanguage();
+  const { toast } = useToast();
   const enabled = numSamples > 0;
   const { data, isLoading, isError } = useDatasetPreview(datasetId, limit, enabled);
+  const viewUrlMutation = useDatasetDownloadUrl();
+
+  // "No rows to preview" doesn't mean "nothing to see": a PDF-seeded dataset
+  // has 0 canonical rows but a real stored file. Mint an inline-disposition
+  // presigned URL so the browser renders it (PDF viewer / plain text) instead
+  // of saving it. 409 (nothing stored yet) surfaces as a toast.
+  const handleOpenFile = () => {
+    viewUrlMutation.mutate(
+      { id: datasetId, disposition: "inline" },
+      {
+        onSuccess: (res) => {
+          window.open(res.url, "_blank", "noopener,noreferrer");
+        },
+        onError: (err: unknown) => {
+          toast({
+            variant: "destructive",
+            description: err instanceof Error ? err.message : String(err),
+          });
+        },
+      },
+    );
+  };
+
+  const openFileAction = (
+    <Button variant="outline" size="sm" onClick={handleOpenFile} disabled={viewUrlMutation.isPending}>
+      {viewUrlMutation.isPending ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <ExternalLink className="h-3.5 w-3.5" />
+      )}
+      {t("dataset.previewOpenFile")}
+    </Button>
+  );
 
   if (!enabled) {
     return (
       <EngineEmptyState
         icon={FileText}
         title={t("dataset.previewEmpty")}
+        hint={t("dataset.previewOpenFileHint")}
+        action={openFileAction}
       />
     );
   }
@@ -50,6 +88,8 @@ export function DatasetPreviewTable({ datasetId, numSamples, limit = 20 }: Datas
       <EngineEmptyState
         icon={FileText}
         title={t("dataset.previewEmpty")}
+        hint={t("dataset.previewOpenFileHint")}
+        action={openFileAction}
       />
     );
   }

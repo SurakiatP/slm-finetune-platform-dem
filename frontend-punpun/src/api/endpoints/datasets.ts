@@ -51,9 +51,18 @@ export function cancelDatasetGeneration(
  * Mint a presigned MinIO URL for the dataset's stored object. This is the
  * only download surface for PDF-seeded datasets — the streaming
  * `GET /{id}/download` endpoint has no object to stream for those.
+ *
+ * `disposition: 'inline'` mints a view-in-browser URL (renders the PDF/JSONL
+ * in the tab instead of saving it); the disposition is part of the signed
+ * query, so it must be chosen at mint time.
  */
-export function getDatasetDownloadUrl(id: string): Promise<DatasetDownloadUrl> {
-  return api.get(`${BASE}/${id}/download-url`)
+export function getDatasetDownloadUrl(
+  id: string,
+  disposition: 'attachment' | 'inline' = 'attachment',
+): Promise<DatasetDownloadUrl> {
+  return api.get(
+    `${BASE}/${id}/download-url${pageQuery({ disposition: disposition === 'inline' ? disposition : undefined })}`,
+  )
 }
 
 export function uploadSeedDataset(input: {

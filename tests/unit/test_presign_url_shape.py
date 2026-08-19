@@ -163,6 +163,31 @@ class TestPresignedUrlShape:
             parse_qs(urlsplit(without).query)["X-Amz-Signature"][0] != q["X-Amz-Signature"][0]
         ), "the content-disposition override is not covered by the signature"
 
+    def test_inline_disposition_is_signed_too(
+        self, presign_client: Minio, no_network: None
+    ) -> None:
+        """`disposition="inline"` (view-in-browser, e.g. a seed PDF) swaps the
+        disposition token but keeps it inside the signed query — same
+        cannot-rewrite-client-side property as the attachment default."""
+        url = storage.presigned_get_url(
+            presign_client,
+            _BUCKET,
+            _KEY,
+            expires=300,
+            filename="seed.pdf",
+            disposition="inline",
+        )
+        q = parse_qs(urlsplit(url).query)
+        assert q["response-content-disposition"] == ['inline; filename="seed.pdf"']
+
+        as_attachment = storage.presigned_get_url(
+            presign_client, _BUCKET, _KEY, expires=300, filename="seed.pdf"
+        )
+        assert (
+            parse_qs(urlsplit(as_attachment).query)["X-Amz-Signature"][0]
+            != q["X-Amz-Signature"][0]
+        ), "the disposition token is not covered by the signature"
+
 
 class TestRegionIsPinned:
     """The mutation guard for the highest-risk line in the feature.

@@ -91,6 +91,7 @@ def presigned_get_url(
     expires: int,
     filename: str | None = None,
     content_type: str | None = None,
+    disposition: str = "attachment",
 ) -> str:
     """Mint a time-boxed SigV4 GET URL for `bucket/key`.
 
@@ -104,11 +105,13 @@ def presigned_get_url(
     `response-content-type`, when given) so the signed URL preserves the
     download-as-a-file UX the current `StreamingResponse` endpoints give —
     without this, a browser would try to render a JSONL/GGUF blob inline
-    instead of offering it as a download.
+    instead of offering it as a download. `disposition="inline"` flips that
+    on purpose (view-in-browser, e.g. a seed PDF); the disposition is part
+    of the signed query, so it cannot be changed client-side after minting.
     """
     response_headers: dict[str, str] = {}
     if filename is not None:
-        response_headers["response-content-disposition"] = f'attachment; filename="{filename}"'
+        response_headers["response-content-disposition"] = f'{disposition}; filename="{filename}"'
     if content_type is not None:
         response_headers["response-content-type"] = content_type
     return client.presigned_get_object(
