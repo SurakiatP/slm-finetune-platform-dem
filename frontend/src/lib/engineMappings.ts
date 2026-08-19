@@ -46,3 +46,16 @@ export function buildManualConfig(epochs: number, learningRate: number): ManualT
     },
   };
 }
+
+export function toTrainingSlug(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9._-]/g, "")
+    .replace(/^[^a-z0-9]+/, "")
+    .replace(/[._-]+$/, "")
+    .slice(0, 63);
+  return slug || `run-${Date.now()}`;
+}
+
