@@ -7,37 +7,44 @@ ModelArtifact UUID instead of an Ollama tag, and return Ollama's response.
 We deliberately do NOT support streaming (`stream=true`) in this PoC — adding
 SSE proxying is straightforward but out of scope per Phase 7 requirements.
 
-**Ownership decision.** Everything here is scoped by the `slm/` tag
-namespace, which `workers/tasks/model_export.py::_compute_ollama_tag` owns:
-every artifact this platform exports is registered as
-`slm/<first-8-of-uuid>`, so a tag with that prefix always reverse-maps to a
-`ModelArtifact` and therefore always has an owner. Anything else on the
-daemon — a base model someone pulled directly, `llama3.2:3b` and friends —
-maps to no row of ours and has no owner to check against.
+**Ownership decision.** Everything here is scoped by whether an Ollama tag is
+*namespaced* — has a "/" before any ":" — which is exactly the set of shapes
+`workers/tasks/model_export.py::_compute_ollama_tag` can emit for an exported
+artifact: `{owner_id}/{name}` (auth on), `local/{name}` (auth off, a
+caller-supplied training name), and `slm/{first-8-of-uuid}` (auth off,
+legacy unnamed export). Any of these always reverse-maps to a `ModelArtifact`
+row via `ollama_model_tag` and therefore always has an owner to check.
+Anything else on the daemon — a base model someone pulled directly,
+`llama3.2:3b`, `qwen2.5:0.5b`, `nomic-embed-text` and friends — has no "/"
+before its colon, maps to no row of ours, and has no owner to check against.
 
 So:
 
 * `chat_completions` / `text_completions` ownership-check `body.model` when
-  it is a ModelArtifact UUID **and** when it is a literal `slm/` tag
+  it is a ModelArtifact UUID **and** when it is a literal namespaced tag
   (`_resolve_model_tag` -> `ownership.assert_model_access`). Running
   inference against someone else's private fine-tune is the same class of
   attack as reading or exporting it.
-* `list_models` filters `slm/` tags to the caller's own artifacts.
-* Base-model tags stay listed and callable for everyone. Hiding them would
-  make the picker lie about what the daemon can actually serve, and they
-  leak nothing — they are not derived from anyone's data.
+* `list_models` filters namespaced (platform-owned) tags to the caller's own artifacts.
+* Base-model tags (no "/" before the colon) stay listed and callable for
+  everyone. Hiding them would make the picker lie about what the daemon can
+  actually serve, and they leak nothing — they are not derived from anyone's
+  data.
 
-**This was previously the opposite**, and the earlier reasoning is worth
-recording because it was wrong in an instructive way: the listing was left
-unfiltered on the grounds that a bare tag is "a capability from Ollama's own
-namespace, not one of ours", and that dropping unresolvable tags would make
-the listing inconsistent. But the two halves interacted — the unfiltered
-listing handed every caller the exact `slm/<8hex>` strings that
-`_resolve_model_tag` then accepted as literals without any check. Either
-half alone looks defensible; together they were a working cross-tenant read.
-Filtering the listing without also closing the literal path would have been
-theatre, since the tags are short enough to guess and were being published
-anyway.
+**This was previously scoped to the single `slm/` prefix only**, which
+missed the other two shapes `_compute_ollama_tag` can emit —
+`{owner_id}/{name}` and `local/{name}` tags bypassed ownership filtering
+entirely. Before that, listing was left unfiltered on the grounds that a
+bare tag is "a capability from Ollama's own namespace, not one of ours", and
+that dropping unresolvable tags would make the listing inconsistent. Both
+are worth recording because they were wrong in an instructive way: the two
+halves interacted — an unfiltered listing handed every caller the exact
+literal strings that `_resolve_model_tag` then accepted without any check.
+Either half alone looks defensible; together they were a working
+cross-tenant read. Filtering the listing without also closing the literal
+path would have been theatre, since the tags are short enough to guess (or,
+for `{owner_id}/{name}` and `local/{name}`, guessable/known outright) and
+were being published anyway.
 
 `user is None` is a complete no-op throughout, matching the phase-1 rule in
 `api/services/ownership.py` — anonymous callers see and can call exactly
@@ -74,32 +81,53 @@ log = logging.getLogger(__name__)
 # Ollama's OpenAI-compat router lives under /v1; native API under /api.
 _OLLAMA_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=10.0)
 
-# The tag namespace this platform owns. `workers/tasks/model_export.py`'s
-# `_compute_ollama_tag` registers every exported artifact as
-# `slm/<first-8-chars-of-uuid>`, so a tag with this prefix always maps back
-# to a `ModelArtifact` row and therefore always has an owner. Anything else
-# on the daemon (a base model someone pulled directly, e.g. `llama3.2:3b`)
-# does not.
+# Historical single-prefix constant. `_compute_ollama_tag` now emits three
+# namespaced shapes (`{owner_id}/{name}`, `local/{name}`, `slm/{hash8}`), so
+# this alone no longer decides ownership anywhere in this module — see
+# `is_platform_owned_tag` below. Kept only so an external importer of the old
+# name doesn't break; nothing in this file reads it anymore.
 OUR_TAG_PREFIX = "slm/"
 
 
-def canonical_our_tag(tag: str) -> str:
-    """Strip Ollama's version suffix from a tag in our own namespace.
+def is_platform_owned_tag(tag: str) -> bool:
+    """True iff `tag` is one of the namespaced shapes this platform emits.
 
-    `workers/tasks/model_export.py` creates models as `slm/<first-8-of-uuid>`
-    and stores exactly that in `ModelArtifact.ollama_model_tag`. The daemon,
-    however, reports the same model back as `slm/<8hex>:latest` — it appends
-    the implicit version to every untagged create. Comparing the two forms
-    directly is a silent mismatch that only shows up against a real daemon:
-    the owner's own fine-tune gets filtered out of `GET /inference/models` as
-    "not yours", and if the id were listed verbatim, posting it back would
-    404 on the reverse-map. Both were observed on the vast.ai box.
+    "Namespaced" means a "/" appears before any ":" in the tag —
+    `workers/tasks/model_export.py::_compute_ollama_tag` emits exactly three
+    such shapes for an exported artifact: `{owner_id}/{name}` (auth on),
+    `local/{name}` (auth off, caller-supplied training name), and
+    `slm/{first-8-of-uuid}` (auth off, legacy unnamed export). Any of these
+    always reverse-maps to a `ModelArtifact` row via `ollama_model_tag` and
+    therefore always has an owner to check.
 
-    Base-model tags (`llama3.2:1b`) are returned untouched — there the part
-    after the colon is a real parameter-size variant, not a version, and
-    dropping it would conflate `llama3.2:1b` with `llama3.2:3b`.
+    Library tags Ollama serves out of its own namespace — `qwen2.5:0.5b`,
+    `llama3.2:3b`, `nomic-embed-text` — have no "/" before the colon (or no
+    colon at all) and are excluded: they map to no row of ours.
     """
-    if not tag.startswith(OUR_TAG_PREFIX):
+    head = tag.split(":", 1)[0]
+    return "/" in head
+
+
+def canonical_our_tag(tag: str) -> str:
+    """Strip Ollama's version suffix from a tag in a platform namespace.
+
+    `workers/tasks/model_export.py` creates models under one of three
+    namespaced shapes (`{owner_id}/{name}`, `local/{name}`,
+    `slm/<first-8-of-uuid>`) and stores exactly that in
+    `ModelArtifact.ollama_model_tag`. The daemon, however, reports the same
+    model back with an implicit `:latest` appended to every untagged create.
+    Comparing the two forms directly is a silent mismatch that only shows up
+    against a real daemon: the owner's own fine-tune gets filtered out of
+    `GET /inference/models` as "not yours", and if the id were listed
+    verbatim, posting it back would 404 on the reverse-map. Both were
+    observed on the vast.ai box.
+
+    Library tags (`llama3.2:1b`, `qwen2.5:0.5b`) are returned untouched —
+    there the part after the colon is a real parameter-size/variant, not a
+    version, and dropping it would conflate `llama3.2:1b` with
+    `llama3.2:3b`.
+    """
+    if not is_platform_owned_tag(tag):
         return tag
     return tag.split(":", 1)[0]
 
@@ -169,11 +197,11 @@ async def list_models(
 ) -> ModelDescriptorList:
     """List models known to the local Ollama daemon (OpenAI shape).
 
-    Tags in our own namespace (`slm/…`) are filtered to the caller's own
-    artifacts; everything else the daemon knows about — base models pulled
-    straight in — stays visible to everyone, because those carry no ownership
-    information and hiding them would only make the picker lie about what the
-    daemon can actually serve.
+    Namespaced (platform-owned) tags — `{owner_id}/{name}`, `local/{name}`,
+    `slm/…` — are filtered to the caller's own artifacts; everything else the
+    daemon knows about — base models pulled straight in — stays visible to
+    everyone, because those carry no ownership information and hiding them
+    would only make the picker lie about what the daemon can actually serve.
 
     `user is None` returns the unfiltered list, identical to pre-auth
     behaviour (phase-1 rule, `api/services/ownership.py`).
@@ -193,11 +221,11 @@ async def list_models(
 
     items = []
     for entry in entries:
-        # The daemon reports our models as `slm/<8hex>:latest`; the DB holds
-        # `slm/<8hex>`. Compare — and publish — the canonical form, so the id
-        # in this listing is the same string the call path accepts.
+        # The daemon reports our models with an implicit `:latest`; the DB
+        # holds the bare tag. Compare — and publish — the canonical form, so
+        # the id in this listing is the same string the call path accepts.
         tag = canonical_our_tag(entry["id"])
-        if visible is not None and tag.startswith(OUR_TAG_PREFIX) and tag not in visible:
+        if visible is not None and is_platform_owned_tag(tag) and tag not in visible:
             continue
         items.append(
             ModelDescriptor(
@@ -224,7 +252,7 @@ async def _audit_call(
     """
     artifact_id = None
     project_id = None
-    if tag.startswith(OUR_TAG_PREFIX):
+    if is_platform_owned_tag(tag):
         # Canonical form, because an anonymous caller's tag is passed through
         # un-normalised — without this the row would lose its artifact link
         # for exactly the callers phase 1 still allows.
@@ -265,11 +293,12 @@ async def _resolve_model_tag(
 
     * **UUID** → look up `ollama_model_tag` on the artifact (must be exported
       first), ownership-checked exactly like `GET /models/{id}`.
-    * **Literal tag in our namespace** (`slm/…`) → reverse-map it to the
-      `ModelArtifact` it names and run the same ownership check. Skipping this
-      was a real hole: `GET /inference/models` used to hand every caller the
-      full tag list, so anyone could read `slm/<8hex>` off it and pass it here
-      as a literal to run inference on someone else's private fine-tune.
+    * **Literal tag in a platform namespace** (`{owner_id}/…`, `local/…`,
+      `slm/…`) → reverse-map it to the `ModelArtifact` it names and run the
+      same ownership check. Skipping this was a real hole: `GET
+      /inference/models` used to hand every caller the full tag list, so
+      anyone could read a namespaced tag off it and pass it here as a
+      literal to run inference on someone else's private fine-tune.
       Filtering the listing alone would have been theatre — this is the path
       that actually enforced nothing.
     * **Any other literal tag** (`llama3.2:3b`, anything pulled straight into
@@ -282,7 +311,7 @@ async def _resolve_model_tag(
     try:
         artifact_id = UUID(identifier)
     except (ValueError, TypeError):
-        if user is None or not identifier.startswith(OUR_TAG_PREFIX):
+        if user is None or not is_platform_owned_tag(identifier):
             return identifier
         # A caller that copied the id straight out of `GET /inference/models`
         # (or out of `ollama list`) may carry the daemon's `:latest` suffix.
@@ -366,4 +395,10 @@ async def _get_json(path: str) -> dict:
     return resp.json()
 
 
-__all__ = ["chat_completions", "text_completions", "list_models"]
+__all__ = [
+    "chat_completions",
+    "text_completions",
+    "list_models",
+    "is_platform_owned_tag",
+    "canonical_our_tag",
+]

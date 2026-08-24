@@ -72,5 +72,13 @@ class Project(Base, TimestampMixin):
     )
     training_jobs: Mapped[list["TrainingJob"]] = relationship(
         back_populates="project",
-        cascade="all, delete-orphan",
+        # No delete/delete-orphan cascade: training runs (and their
+        # ModelArtifacts) must SURVIVE project deletion as orphans
+        # (project_id -> NULL), per user decision D10. The DB enforces this
+        # via the FK's ondelete="SET NULL" (migration 0012_training_decouple);
+        # passive_deletes="all" stops the ORM unit-of-work from pre-empting
+        # it by loading children and either deleting them or nulling the FK
+        # itself. Mirrors `datasets` above exactly (migration 0010).
+        cascade="save-update, merge",
+        passive_deletes="all",
     )

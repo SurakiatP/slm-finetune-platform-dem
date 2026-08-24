@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.auth import CurrentUser, require_user
 from api.core.database import get_db
-from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse
+from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse, DatasetUpdate
 from api.schemas.download_links import DatasetDownloadUrlResponse
 from api.schemas.enums import TaskType
 from api.schemas.responses import Page
@@ -167,6 +167,20 @@ async def get_dataset_download_url(
     # gap the streaming endpoint has today. `disposition=inline` mints a
     # view-in-browser URL (signed into the URL, not overridable client-side).
     return await mint_dataset_download_url(db, dataset_id, user, disposition)
+
+
+@router.patch(
+    "/{dataset_id}",
+    response_model=DatasetResponse,
+    summary="Rename a dataset",
+)
+async def update_dataset(
+    dataset_id: UUID,
+    body: DatasetUpdate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+) -> DatasetResponse:
+    return await datasets_service.rename_dataset(db, dataset_id, body, user)
 
 
 @router.delete(

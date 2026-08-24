@@ -95,13 +95,26 @@ async def _assert_training_name_available(
     their own bucket rather than either mutually invisible or a free-for-all
     open to every named owner too.
 
+    LEFT OUTER JOIN, not INNER: `TrainingJob.project_id` is nullable
+    (orphaned runs whose `Project` was deleted — migration
+    `0012_training_decouple`). An INNER JOIN would silently drop those rows
+    from this uniqueness check, letting a new submission reuse a
+    `training_name` an orphaned run still holds — exactly the collision
+    this check exists to prevent, since the MLflow run name / Ollama tag it
+    protects don't care whether the row that minted them still has a
+    project. With the outer join, an orphan produces one row with
+    `Project.owner_id` NULL, which the `Project.owner_id.is_(None)` branch
+    below already matches — so orphaned runs land in the same "global/
+    null-owner scope" bucket as projects that predate auth, with no extra
+    branching needed.
+
     A no-op when `training_name` is `None` — untitled runs never collide.
     """
     if training_name is None:
         return
     stmt = (
         select(TrainingJob.id)
-        .join(Project, Project.id == TrainingJob.project_id)
+        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(TrainingJob.training_name == training_name)
     )
     stmt = (

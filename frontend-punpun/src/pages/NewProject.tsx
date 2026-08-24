@@ -6,7 +6,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { TaskPromptStep } from "@/components/new-project/TaskPromptStep";
 import { TaskSelectionStep } from "@/components/new-project/TaskSelectionStep";
 import { DataUploadStep } from "@/components/new-project/DataUploadStep";
-import { ModelSelectionStep } from "@/components/new-project/ModelSelectionStep";
+import { ModelSelectionStep, TRAINING_NAME_PATTERN } from "@/components/new-project/ModelSelectionStep";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { ApiError } from "@/api/client";
 import { useCreateProject, useStartTraining } from "@/hooks/queries";
@@ -20,6 +20,9 @@ export interface ProjectFormData {
   taskType: TaskType | null;
   baseModel: string | null;
   maxSeqLength: number | null;
+  /** Ollama-tag-safe name for this training run; sent as training_name.
+   *  Prefilled once from the project name, then user-editable. */
+  trainingName: string;
   /** Set once the seed file has been uploaded via useUploadSeedDataset. */
   seedDatasetId: string | null;
   /** The dataset actually used for training — the SDG job's target dataset,
@@ -34,6 +37,7 @@ const initialFormData: ProjectFormData = {
   taskType: null,
   baseModel: null,
   maxSeqLength: null,
+  trainingName: "",
   seedDatasetId: null,
   trainingDatasetId: null,
   trainingDatasetStatus: null,
@@ -96,7 +100,7 @@ export default function NewProject() {
       case 2:
         return formData.trainingDatasetId !== null && formData.trainingDatasetStatus === "completed";
       case 3:
-        return formData.baseModel !== null;
+        return formData.baseModel !== null && TRAINING_NAME_PATTERN.test(formData.trainingName.trim());
       default:
         return false;
     }
@@ -134,6 +138,7 @@ export default function NewProject() {
         project_id: engineProject.id,
         dataset_id: formData.trainingDatasetId,
         base_model: formData.baseModel,
+        training_name: formData.trainingName.trim(),
         mode: "manual",
         manual_config: formData.maxSeqLength ? { max_seq_length: formData.maxSeqLength } : undefined,
       });

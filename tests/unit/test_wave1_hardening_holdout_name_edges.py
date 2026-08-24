@@ -272,4 +272,4 @@ class TestHoldoutNamePropagationParityAcrossModes:
 
         children = _holdout_datasets(sync_sessionmaker, dataset_id)
         assert len(children) == 1
-        assert children[0].name == "with-seed-ds-holdout"
+        assert children[0].name == "with-seed-ds-hold-out"

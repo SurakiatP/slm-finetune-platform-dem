@@ -24,11 +24,27 @@ delete cascade to `cascade="save-update, merge"` with
 `passive_deletes="all"`, so the ORM leaves FK handling entirely to the DB
 and datasets survive project deletion as orphans (`project_id -> NULL`).
 
-Contrast with `TrainingJob`: `Project.training_jobs` keeps
-`cascade="all, delete-orphan"` AND the DB FK is still
-`ondelete="CASCADE"` — ORM and DB agree there, by design (see
-`test_wave1_hardening_training_name_edges.py`'s
-`TestProjectDeletionFreesTrainingName`).
+*** UPDATE 2026-08-24 (D10, migration `0012_training_decouple`) ***
+
+The "contrast" this file used to draw against `TrainingJob` no longer
+holds: user decision D10 ("deleting a project must KEEP its trained
+models") gave `TrainingJob.project_id` the exact same treatment as
+`Dataset.project_id` above — nullable, `ondelete="SET NULL"`. `api/models/
+training_job.py` was updated accordingly (owned by the D10 task).
+
+`api/models/project.py`'s `training_jobs` relationship briefly lagged
+behind that (still `cascade="all, delete-orphan"`, no `passive_deletes`)
+— exactly the bug this file's own docstring already tells the story of
+for `datasets` above, reintroduced for `training_jobs`: the ORM would
+hard-delete every `TrainingJob` (and, via `TrainingJob.model_artifact`'s
+own delete-orphan cascade, every `ModelArtifact`) the instant
+`projects_service.delete_project`'s `db.delete(project)` flushed,
+entirely bypassing the new `ondelete="SET NULL"` FK. See
+`tests/unit/test_training_decouple.py` for the full writeup. Now fixed:
+`Project.training_jobs` got the same `cascade="save-update, merge"` +
+`passive_deletes="all"` treatment already applied to `Project.datasets`,
+and `test_contrast_...` below asserts the fixed (post-D10) contract as a
+normal, non-xfail test.
 
 sqlite note: FK actions (including SET NULL) only run under
 `PRAGMA foreign_keys=ON`, which sqlite defaults OFF — the fixture here
@@ -136,16 +152,20 @@ class TestDatasetOrphaningContractViaRealDeleteProjectService:
     async def test_contrast_training_job_cascade_is_internally_consistent(
         self, db: AsyncSession
     ) -> None:
-        """Not a bug — shown for contrast. `TrainingJob`'s FK is
-        `ondelete="CASCADE"` (unchanged by migration 0010) and
-        `Project.training_jobs`'s ORM cascade is also delete-orphan: the two
-        agree, so this one behaves exactly as both layers say it should."""
+        """No longer a contrast — D10 (migration 0012_training_decouple)
+        gave `TrainingJob.project_id` the same nullable/SET NULL treatment
+        as `Dataset.project_id` above, so a training run now survives its
+        project being deleted, exactly like a dataset. `Project.
+        training_jobs`'s ORM cascade was updated to match (`cascade=
+        "save-update, merge"` + `passive_deletes="all"`) — see the module
+        docstring's 2026-08-24 update.
+        """
         from api.models.training_job import TrainingJob
         from api.schemas.enums import TrainingMode
 
         col = TrainingJob.__table__.columns["project_id"]
         fks = list(col.foreign_keys)
-        assert fks[0].ondelete == "CASCADE"
+        assert fks[0].ondelete == "SET NULL"
 
         from api.services import projects_service
 
@@ -179,4 +199,9 @@ class TestDatasetOrphaningContractViaRealDeleteProjectService:
 
         await projects_service.delete_project(db, project.id, user=None)
 
-        assert await db.get(TrainingJob, job_id) is None
+        # Post-D10 expectation (matches test_dataset_survives_project_delete_
+        # as_orphan above): the training run SURVIVES as an orphan.
+        db.expire_all()
+        got = await db.get(TrainingJob, job_id)
+        assert got is not None, "training job must survive project deletion as an orphan"
+        assert got.project_id is None

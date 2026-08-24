@@ -43,6 +43,7 @@ export const translations: Record<Language, Record<string, string>> = {
     "common.retry": "Retry",
     "common.confirm": "Confirm",
     "common.cancel": "Cancel",
+    "common.save": "Save",
     "common.close": "Close",
     "common.copied": "Copied",
     "common.loading": "Loading...",
@@ -66,6 +67,10 @@ export const translations: Record<Language, Record<string, string>> = {
     "dataset.sourceSeed": "Seed",
     "dataset.sourceGenerated": "Generated",
     "dataset.empty": "No datasets yet.",
+    "dataset.rename": "Rename Dataset",
+    "dataset.renameTitle": "Rename dataset",
+    "dataset.renameLabel": "Dataset name",
+    "dataset.renameSaved": "Dataset renamed",
 
     "calc.samples": "samples",
 
@@ -185,6 +190,10 @@ export const translations: Record<Language, Record<string, string>> = {
     "model.exportFailed": "Export failed",
     "model.artifacts": "Artifacts",
     "model.empty": "No models yet.",
+    "model.delete": "Delete Model",
+    "model.deleteConfirm": "This will permanently delete this model and its artifacts. This action cannot be undone.",
+    "model.deleteBlockedExport": "This model has an exported GGUF and can't be deleted until the export is removed.",
+    "model.deleted": "Model deleted",
 
     // New Project
     "newProject.title": "New Fine-Tuning Project",
@@ -197,6 +206,9 @@ export const translations: Record<Language, Record<string, string>> = {
     "newProject.launchTraining": "Launch Training",
     "newProject.launched": "Project Created",
     "newProject.launchFailed": "Could not create project",
+    "newProject.trainingNameLabel": "Training name",
+    "newProject.trainingNameHint": "Lowercase letters, digits, '.', '_', '-' only; must start with a letter or digit.",
+    "newProject.trainingNameError": "Must start with a lowercase letter or digit and contain only lowercase letters, digits, '.', '_', or '-' (max 63 characters).",
 
     // Live training status
     "training.queuedTitle": "Queued for training",
@@ -219,6 +231,11 @@ export const translations: Record<Language, Record<string, string>> = {
     "training.params": "Parameters",
     "training.cancel": "Cancel Training",
     "training.cancelConfirm": "This will stop the training job in progress.",
+    "training.newRun": "New Run",
+    "training.newRunEmptyHint": "No training runs yet for this project. Start one to fine-tune your first model.",
+    "training.delete": "Delete Training Run",
+    "training.deleteConfirm": "This will permanently delete this training run and its logs.",
+    "training.deleteBlocked": "This training run has an exported model and can't be deleted.",
 
     // Hyperparameter Tuning
     "tuning.suggestions": "Auto-Tuning Suggestions",
@@ -348,10 +365,16 @@ export const translations: Record<Language, Record<string, string>> = {
     "project.delete": "Delete Project",
     "project.deleteConfirm": "This will permanently delete this project.",
     "project.deleteCancelsJobs": "Any running jobs for this project will be cancelled.",
+    "project.deleteKeepsModelsNote": "Deleting this project keeps its trained models — they remain available from the Models page.",
     "project.activityTab": "Activity",
     "project.usageTab": "Usage",
     "project.datasetsTab": "Datasets",
     "project.queue": "Queue",
+    "project.edit": "Edit Project",
+    "project.editTitle": "Edit project details",
+    "project.editNameLabel": "Project name",
+    "project.editDescriptionLabel": "Description",
+    "project.editSaved": "Project updated",
 
     // 404
     "notFound.title": "Page not found",
@@ -391,6 +414,8 @@ export const translations: Record<Language, Record<string, string>> = {
     "pipelineHub.autoStatus.completed": "Completed",
     "pipelineHub.autoStatus.failed": "Failed",
     "pipelineHub.autoStatus.skipped": "Skipped",
+    "pipelineHub.retrain": "Retrain",
+    "pipelineHub.retrainHint": "Start a new training run using the same datasets to produce an updated model version.",
 
     // Training create dialog
     "trainCreate.title": "New training run",
@@ -481,12 +506,11 @@ export const translations: Record<Language, Record<string, string>> = {
     "sdgNoSeed.toolsHint": "Array of tools the samples may invoke. Use Format JSON to tidy & validate.",
     "sdgNoSeed.formatJson": "Format JSON",
     "sdgNoSeed.toolsError": "Tool definitions must be a JSON array of at least one tool with unique names.",
-    "sdgNoSeed.datasetNameLabel": "Dataset name",
-    "sdgNoSeed.datasetNameHint": "Required — no default name in no-seed mode.",
-    "sdgNoSeed.holdoutNameLabel": "Holdout dataset name",
-    "sdgNoSeed.holdoutNameHint": "Required when holdout rows > 0.",
     "sdgNoSeed.generateButton": "Generate training dataset",
     "sdgNoSeed.generatingFromDescription": "Generating rows from your task description…",
+    "sdgNoSeed.baseNameLabel": "Base name",
+    "sdgNoSeed.baseNameHint": "Used to derive the training and hold-out dataset names below.",
+    "sdgNoSeed.derivedNamesPreview": "Will create {train} and {holdout}",
 
     // SDG progress phase labels (T-C — live SDG phase + % display)
     "sdgPhase.formatDetection": "Detecting format",
@@ -543,6 +567,7 @@ export const translations: Record<Language, Record<string, string>> = {
     "common.retry": "ลองใหม่",
     "common.confirm": "ยืนยัน",
     "common.cancel": "ยกเลิก",
+    "common.save": "บันทึก",
     "common.close": "ปิด",
     "common.copied": "คัดลอกแล้ว",
     "common.loading": "กำลังโหลด...",
@@ -566,6 +591,10 @@ export const translations: Record<Language, Record<string, string>> = {
     "dataset.sourceSeed": "Seed",
     "dataset.sourceGenerated": "สร้างขึ้น",
     "dataset.empty": "ยังไม่มีชุดข้อมูล",
+    "dataset.rename": "เปลี่ยนชื่อชุดข้อมูล",
+    "dataset.renameTitle": "เปลี่ยนชื่อชุดข้อมูล",
+    "dataset.renameLabel": "ชื่อชุดข้อมูล",
+    "dataset.renameSaved": "เปลี่ยนชื่อชุดข้อมูลแล้ว",
 
     "calc.samples": "ตัวอย่าง",
 
@@ -685,6 +714,10 @@ export const translations: Record<Language, Record<string, string>> = {
     "model.exportFailed": "ส่งออกไม่สำเร็จ",
     "model.artifacts": "ไฟล์ผลลัพธ์",
     "model.empty": "ยังไม่มีโมเดล",
+    "model.delete": "ลบโมเดล",
+    "model.deleteConfirm": "การลบนี้จะลบโมเดลและไฟล์ผลลัพธ์อย่างถาวรและไม่สามารถย้อนกลับได้",
+    "model.deleteBlockedExport": "โมเดลนี้มีไฟล์ GGUF ที่ส่งออกแล้ว ต้องลบไฟล์ส่งออกก่อนจึงจะลบโมเดลได้",
+    "model.deleted": "ลบโมเดลแล้ว",
 
     // New Project
     "newProject.title": "โปรเจกต์ Fine-Tuning ใหม่",
@@ -697,6 +730,9 @@ export const translations: Record<Language, Record<string, string>> = {
     "newProject.launchTraining": "เริ่มการฝึก",
     "newProject.launched": "สร้างโปรเจกต์แล้ว",
     "newProject.launchFailed": "สร้างโปรเจกต์ไม่สำเร็จ",
+    "newProject.trainingNameLabel": "ชื่องานฝึก",
+    "newProject.trainingNameHint": "ใช้ได้เฉพาะตัวพิมพ์เล็ก ตัวเลข '.', '_', '-' เท่านั้น และต้องขึ้นต้นด้วยตัวอักษรหรือตัวเลข",
+    "newProject.trainingNameError": "ต้องขึ้นต้นด้วยตัวพิมพ์เล็กหรือตัวเลข และประกอบด้วยตัวพิมพ์เล็ก ตัวเลข '.', '_', หรือ '-' เท่านั้น (สูงสุด 63 ตัวอักษร)",
 
     // Live training status
     "training.queuedTitle": "อยู่ในคิวการฝึก",
@@ -719,6 +755,11 @@ export const translations: Record<Language, Record<string, string>> = {
     "training.params": "พารามิเตอร์",
     "training.cancel": "ยกเลิกการฝึก",
     "training.cancelConfirm": "การยกเลิกนี้จะหยุดงานฝึกที่กำลังทำงานอยู่",
+    "training.newRun": "เทรนใหม่",
+    "training.newRunEmptyHint": "โปรเจกต์นี้ยังไม่มีการเทรน เริ่มการเทรนครั้งแรกเพื่อสร้างโมเดล",
+    "training.delete": "ลบงานฝึก",
+    "training.deleteConfirm": "การลบนี้จะลบงานฝึกและบันทึกการฝึกนี้อย่างถาวร",
+    "training.deleteBlocked": "งานฝึกนี้มีโมเดลที่ส่งออกแล้ว จึงไม่สามารถลบได้",
 
     // Hyperparameter Tuning
     "tuning.suggestions": "แนะนำค่าอัตโนมัติ",
@@ -848,10 +889,16 @@ export const translations: Record<Language, Record<string, string>> = {
     "project.delete": "ลบโปรเจกต์",
     "project.deleteConfirm": "การลบนี้จะลบโปรเจกต์นี้อย่างถาวร",
     "project.deleteCancelsJobs": "งานที่กำลังทำงานอยู่ของโปรเจกต์นี้จะถูกยกเลิก",
+    "project.deleteKeepsModelsNote": "การลบโปรเจกต์นี้จะไม่ลบโมเดลที่ฝึกแล้ว — ยังคงใช้งานได้จากหน้าโมเดล",
     "project.activityTab": "กิจกรรม",
     "project.usageTab": "การใช้งาน",
     "project.datasetsTab": "ชุดข้อมูล",
     "project.queue": "คิว",
+    "project.edit": "แก้ไขโปรเจกต์",
+    "project.editTitle": "แก้ไขรายละเอียดโปรเจกต์",
+    "project.editNameLabel": "ชื่อโปรเจกต์",
+    "project.editDescriptionLabel": "คำอธิบาย",
+    "project.editSaved": "อัปเดตโปรเจกต์แล้ว",
 
     // 404
     "notFound.title": "ไม่พบหน้านี้",
@@ -891,6 +938,8 @@ export const translations: Record<Language, Record<string, string>> = {
     "pipelineHub.autoStatus.completed": "เสร็จสมบูรณ์",
     "pipelineHub.autoStatus.failed": "ล้มเหลว",
     "pipelineHub.autoStatus.skipped": "ข้าม",
+    "pipelineHub.retrain": "เทรนอีกครั้ง",
+    "pipelineHub.retrainHint": "เริ่มการเทรนใหม่โดยใช้ชุดข้อมูลเดิม เพื่อสร้างโมเดลเวอร์ชันใหม่",
 
     // Training create dialog
     "trainCreate.title": "สร้างงานฝึกใหม่",
@@ -981,12 +1030,11 @@ export const translations: Record<Language, Record<string, string>> = {
     "sdgNoSeed.toolsHint": "อาร์เรย์ของเครื่องมือที่ตัวอย่างข้อมูลอาจเรียกใช้ กด Format JSON เพื่อจัดรูปแบบและตรวจสอบ",
     "sdgNoSeed.formatJson": "จัดรูปแบบ JSON",
     "sdgNoSeed.toolsError": "นิยามเครื่องมือต้องเป็นอาร์เรย์ JSON ที่มีอย่างน้อย 1 เครื่องมือ และชื่อไม่ซ้ำกัน",
-    "sdgNoSeed.datasetNameLabel": "ชื่อชุดข้อมูล",
-    "sdgNoSeed.datasetNameHint": "ต้องระบุ — โหมดไม่มี seed ไม่มีชื่อเริ่มต้นให้",
-    "sdgNoSeed.holdoutNameLabel": "ชื่อชุดข้อมูล Hold-out",
-    "sdgNoSeed.holdoutNameHint": "ต้องระบุเมื่อจำนวนแถว Hold-out มากกว่า 0",
     "sdgNoSeed.generateButton": "สร้างชุดข้อมูลฝึก",
     "sdgNoSeed.generatingFromDescription": "กำลังสร้างข้อมูลจากคำอธิบายงาน…",
+    "sdgNoSeed.baseNameLabel": "ชื่อฐาน",
+    "sdgNoSeed.baseNameHint": "ใช้เพื่อตั้งชื่อชุดข้อมูลฝึกและ hold-out ด้านล่างโดยอัตโนมัติ",
+    "sdgNoSeed.derivedNamesPreview": "จะสร้าง {train} และ {holdout}",
 
     // SDG progress phase labels (T-C — live SDG phase + % display)
     "sdgPhase.formatDetection": "กำลังตรวจรูปแบบข้อมูล",

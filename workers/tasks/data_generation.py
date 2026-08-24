@@ -391,7 +391,7 @@ def generate_synthetic_data(
                             id=holdout_uuid,
                             project_id=parent.project_id,
                             owner_id=parent.owner_id,
-                            name=request.holdout_name or f"{parent.name}-holdout",
+                            name=request.holdout_name or f"{parent.name}-hold-out",
                             task_type=parent.task_type,
                             source=DatasetSource.SDG,
                             num_samples=len(holdout_rows),

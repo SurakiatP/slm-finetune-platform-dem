@@ -8,8 +8,10 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ArrowLeft, Ban, Clock, Cpu, Database, Gauge, Layers } from "lucide-react";
+import { ArrowLeft, Ban, Clock, Cpu, Database, Gauge, Layers, Plus, Trash2 } from "lucide-react";
 import { PipelineSteps } from "@/components/training/PipelineSteps";
+import TrainingCreateDialog from "@/components/training/TrainingCreateDialog";
+import { derivePipelineState } from "@/components/project-pipeline/deriveStages";
 import { LossCurveChart, type LossChartPoint } from "@/components/training/LossCurveChart";
 import { DiagnosticPanel } from "@/components/training/DiagnosticPanel";
 import { EvaluationViewer } from "@/components/training/EvaluationViewer";
@@ -31,10 +33,13 @@ import {
   useLossHistory,
   useTrainingMetrics,
   useCancelTraining,
+  useDeleteTraining,
   useModels,
+  useDatasets,
 } from "@/hooks/queries";
 import { useJobProgress } from "@/hooks/useJobProgress";
 import { isTerminalStatus, type Training, type MetricPoint } from "@/api/types";
+import { ApiError } from "@/api/client";
 import { formatDuration, formatNumber, shortId } from "@/lib/format";
 import { useTaskTypeLabel } from "@/lib/labels";
 import { cn } from "@/lib/utils";
@@ -117,6 +122,8 @@ export default function TrainingMonitor() {
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const { data: project, isLoading: projectLoading } = useProject(projectId ?? "");
 
@@ -142,6 +149,19 @@ export default function TrainingMonitor() {
 
   const selected: Training | null = trainingList.find((tr) => tr.id === selectedId) ?? null;
   const selectedTerminal = selected ? isTerminalStatus(selected.status) : true;
+
+  // Dataset to launch a new run against — same pipeline-derivation logic as
+  // the project overview's TrainingStageCard, so "new run" here targets the
+  // same dataset a fresh training launched from the overview would use.
+  // Falls back to the currently selected run's dataset when no SDG output
+  // exists yet (e.g. project only has older/hold-out datasets on file).
+  const { data: datasetsPage } = useDatasets(projectId, { limit: 100 });
+  const datasetList = useMemo(() => datasetsPage?.items ?? [], [datasetsPage]);
+  const pipelineDataset = useMemo(
+    () => derivePipelineState(datasetList, trainingList).currentDataset,
+    [datasetList, trainingList],
+  );
+  const resolvedDatasetId = pipelineDataset?.id ?? selected?.dataset_id ?? null;
 
   // REST list is authoritative for status; WS enriches with per-step detail
   // while the run is live. No socket is opened once terminal.
@@ -177,6 +197,7 @@ export default function TrainingMonitor() {
   const currentValLoss = liveTraining?.eval_loss ?? lossData.at(-1)?.valLoss ?? null;
 
   const cancelMutation = useCancelTraining();
+  const deleteMutation = useDeleteTraining();
 
   if (projectLoading || trainingsLoading) return <TrainingMonitorSkeleton />;
 
@@ -190,6 +211,7 @@ export default function TrainingMonitor() {
   }
 
   const canCancel = !!selected && (selected.status === "pending" || selected.status === "running");
+  const canDelete = !!selected && isTerminalStatus(selected.status);
 
   const pipelineSteps: PipelineStep[] = selected
     ? [
@@ -239,6 +261,11 @@ export default function TrainingMonitor() {
           </div>
           <p className="text-sm text-muted-foreground mt-0.5">{t("training.title")}</p>
         </div>
+        {resolvedDatasetId && (
+          <Button size="sm" className="gap-2 shrink-0" onClick={() => setCreateOpen(true)}>
+            <Plus className="h-3.5 w-3.5" /> {t("training.newRun")}
+          </Button>
+        )}
       </div>
 
       <Card>
@@ -250,7 +277,14 @@ export default function TrainingMonitor() {
             <EngineEmptyState
               icon={Layers}
               title="No training runs yet"
-              hint="Start a training job from the project overview to see its progress here."
+              hint={t("training.newRunEmptyHint")}
+              action={
+                resolvedDatasetId ? (
+                  <Button size="sm" className="gap-2" onClick={() => setCreateOpen(true)}>
+                    <Plus className="h-3.5 w-3.5" /> {t("training.newRun")}
+                  </Button>
+                ) : undefined
+              }
             />
           ) : (
             <Table>
@@ -305,6 +339,11 @@ export default function TrainingMonitor() {
             {canCancel && (
               <Button variant="destructive" size="sm" onClick={() => setCancelOpen(true)} disabled={cancelMutation.isPending}>
                 <Ban className="h-3.5 w-3.5" /> {t("training.cancel")}
+              </Button>
+            )}
+            {canDelete && (
+              <Button variant="destructive" size="sm" onClick={() => setDeleteOpen(true)} disabled={deleteMutation.isPending}>
+                <Trash2 className="h-3.5 w-3.5" /> {t("training.delete")}
               </Button>
             )}
           </div>
@@ -491,6 +530,20 @@ export default function TrainingMonitor() {
         </>
       )}
 
+      {resolvedDatasetId && (
+        <TrainingCreateDialog
+          projectId={projectId ?? ""}
+          datasetId={resolvedDatasetId}
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          onStarted={() => {
+            setCreateOpen(false);
+            void queryClient.invalidateQueries({ queryKey: ["trainings"] });
+            toast({ title: t("training.newRun") });
+          }}
+        />
+      )}
+
       <ConfirmDialog
         open={cancelOpen}
         onOpenChange={setCancelOpen}
@@ -515,6 +568,42 @@ export default function TrainingMonitor() {
         confirmLabel={t("common.confirm")}
         destructive
         loading={cancelMutation.isPending}
+      />
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        onConfirm={() => {
+          if (!selected) return;
+          deleteMutation.mutate(selected.id, {
+            onSuccess: () => {
+              setDeleteOpen(false);
+              setSelectedId(null);
+              toast({ title: t("training.delete") });
+            },
+            onError: (err) => {
+              setDeleteOpen(false);
+              if (err instanceof ApiError && err.status === 409) {
+                toast({
+                  title: t("training.deleteBlocked"),
+                  description: err.message,
+                  variant: "destructive",
+                });
+              } else {
+                toast({
+                  title: t("common.error"),
+                  description: err instanceof Error ? err.message : String(err),
+                  variant: "destructive",
+                });
+              }
+            },
+          });
+        }}
+        title={t("training.delete")}
+        description={t("training.deleteConfirm")}
+        confirmLabel={t("common.confirm")}
+        destructive
+        loading={deleteMutation.isPending}
       />
     </div>
     </PageTransition>

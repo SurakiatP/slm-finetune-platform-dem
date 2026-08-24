@@ -93,6 +93,10 @@ export interface Dataset {
   updated_at: string
 }
 
+export interface DatasetUpdate {
+  name: string
+}
+
 export interface DatasetPreview {
   dataset_id: string
   task_type: TaskType
@@ -329,7 +333,9 @@ export interface AutoPipelineState {
 
 export interface Training {
   id: string
-  project_id: string
+  /** Null when the owning project was deleted — the training survives as an
+   *  orphan row rather than being cascade-deleted. */
+  project_id: string | null
   dataset_id: string
   mode: TrainingMode
   status: JobStatus

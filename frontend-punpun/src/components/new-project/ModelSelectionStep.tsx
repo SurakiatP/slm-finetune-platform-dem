@@ -1,13 +1,43 @@
+import { useEffect, useRef } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { useBaseModels } from "@/hooks/queries";
 import { toErrorDetail, type ProjectFormData } from "@/pages/NewProject";
+import { useLanguage } from "@/i18n/LanguageContext";
 
 interface ModelSelectionStepProps {
   formData: ProjectFormData;
   updateForm: (p: Partial<ProjectFormData>) => void;
+}
+
+// Mirrors TrainingCreateDialog.tsx:37 / api/schemas/training.py:28 —
+// training_name doubles as the MLflow run name and the derived Ollama model
+// tag, so it must stay ollama-tag-safe: lowercase letters, digits, '.', '_',
+// '-' only, starting with a letter or digit, 1-63 chars total.
+export const TRAINING_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,62}$/;
+
+/** Lowercases and strips anything outside [a-z0-9._-], collapsing runs of
+ *  disallowed characters into a single "-" and trimming leading/trailing "-". */
+function slugify(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** Builds an ollama-tag-safe suggested training name from a project name,
+ *  truncated so the result always satisfies TRAINING_NAME_PATTERN. */
+function suggestTrainingName(projectName: string): string {
+  const suffix = "-v1";
+  const base = slugify(projectName) || "training";
+  const maxBaseLen = 63 - suffix.length;
+  const truncatedBase = base.length > maxBaseLen ? base.slice(0, maxBaseLen).replace(/-+$/, "") : base;
+  return `${truncatedBase}${suffix}`;
 }
 
 const familyTitleColors: Record<string, string> = {
@@ -24,6 +54,21 @@ const detailTitleColors = {
 
 export function ModelSelectionStep({ formData, updateForm }: ModelSelectionStepProps) {
   const { data: models, isLoading, isError, error, refetch } = useBaseModels();
+  const { t } = useLanguage();
+  const hasPrefilledTrainingName = useRef(false);
+
+  useEffect(() => {
+    if (!hasPrefilledTrainingName.current && formData.trainingName === "") {
+      hasPrefilledTrainingName.current = true;
+      updateForm({ trainingName: suggestTrainingName(formData.projectName) });
+    }
+    // Prefill exactly once, on first render with an empty value — never
+    // re-derive after that, so user edits are never clobbered.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const trimmedTrainingName = formData.trainingName.trim();
+  const isTrainingNameValid = TRAINING_NAME_PATTERN.test(trimmedTrainingName);
 
   return (
     <div className="space-y-4">
@@ -32,6 +77,23 @@ export function ModelSelectionStep({ formData, updateForm }: ModelSelectionStepP
         <p className="text-xs text-muted-foreground mt-0.5">
           Select the pre-trained model to fine-tune. Larger models are more capable but slower to train.
         </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="training-name">{t("newProject.trainingNameLabel")}</Label>
+        <Input
+          id="training-name"
+          value={formData.trainingName}
+          onChange={(e) => updateForm({ trainingName: e.target.value })}
+          aria-invalid={!isTrainingNameValid}
+        />
+        {!isTrainingNameValid ? (
+          <p role="alert" className="text-xs text-destructive">
+            {t("newProject.trainingNameError")}
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">{t("newProject.trainingNameHint")}</p>
+        )}
       </div>
 
       {isLoading ? (

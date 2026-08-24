@@ -1,6 +1,6 @@
 """Unit tests for W1-T2: the SDG holdout Dataset's `name` honors the
 request's optional `holdout_name` field, falling back to the existing
-`f"{parent.name}-holdout"` default when omitted.
+`f"{parent.name}-hold-out"` default when omitted.
 
 Same `.apply()` + in-memory sqlite + `fake_minio` harness as
 `tests/unit/test_worker_orphan_cleanup_sdg.py` — trimmed down to just the
@@ -149,7 +149,7 @@ class TestHoldoutNameDefault:
         assert result.successful(), f"task raised: {result.result!r}"
 
         holdout = _holdout_dataset(sync_sessionmaker, dataset_id)
-        assert holdout.name == "sdg-ds-holdout"
+        assert holdout.name == "sdg-ds-hold-out"
 
 
 class TestHoldoutNameExplicit:
@@ -189,7 +189,7 @@ class TestHoldoutNameEmptyStringFallsBackToDefault:
     def test_empty_string_holdout_name_is_falsy_and_falls_back(
         self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
     ) -> None:
-        """`request.holdout_name or f"{parent.name}-holdout"` treats an empty
+        """`request.holdout_name or f"{parent.name}-hold-out"` treats an empty
         string the same as omitted (falsy), matching `dataset_name`'s
         existing `request.dataset_name or <default>` convention.
         """
@@ -217,4 +217,4 @@ class TestHoldoutNameEmptyStringFallsBackToDefault:
         assert result.successful(), f"task raised: {result.result!r}"
 
         holdout = _holdout_dataset(sync_sessionmaker, dataset_id)
-        assert holdout.name == "sdg-ds-holdout"
+        assert holdout.name == "sdg-ds-hold-out"

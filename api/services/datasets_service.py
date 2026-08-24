@@ -57,7 +57,7 @@ from api.schemas.data_formats import (
     parse_samples,
     required_field_names,
 )
-from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse
+from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse, DatasetUpdate
 from api.schemas.enums import DatasetSource, JobStatus, TaskType
 from api.schemas.responses import Page
 from api.schemas.sdg import SeedUploadResponse
@@ -365,6 +365,37 @@ async def cancel_dataset(
     )
     await db.commit()
     return {"dataset_id": str(ds.id), "status": JobStatus.CANCELLED.value}
+
+
+async def rename_dataset(
+    db: AsyncSession,
+    dataset_id: UUID,
+    body: DatasetUpdate,
+    user: CurrentUser | None = None,
+) -> DatasetResponse:
+    """`PATCH /datasets/{id}` — rename only.
+
+    Ownership-gated like every other single-dataset endpoint (404 if
+    missing, 403 if it exists and isn't `user`'s — ADR-012). Records a
+    `dataset.rename` audit row carrying both the old and new name before
+    committing, mirroring `dataset.cancel`/`dataset.delete` above.
+    """
+    ds = await ownership.assert_dataset_access(db, dataset_id, user)
+    old_name = ds.name
+    ds.name = body.name
+    audit_service.record(
+        db,
+        action="dataset.rename",
+        resource_type="dataset",
+        resource_id=str(ds.id),
+        project_id=ds.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"old_name": old_name, "new_name": ds.name},
+    )
+    await db.commit()
+    await db.refresh(ds)
+    return DatasetResponse.model_validate(ds)
 
 
 # ---- upload-seed ----------------------------------------------------------

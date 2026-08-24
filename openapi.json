@@ -773,6 +773,73 @@
           }
         }
       },
+      "patch": {
+        "tags": [
+          "datasets"
+        ],
+        "summary": "Rename a dataset",
+        "operationId": "update_dataset_api_v1_datasets__dataset_id__patch",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Dataset Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DatasetUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "tags": [
           "datasets"
@@ -1322,8 +1389,8 @@
         "tags": [
           "trainings"
         ],
-        "summary": "Cancel a running / pending training job",
-        "operationId": "cancel_training_api_v1_trainings__training_id__delete",
+        "summary": "Hard-delete a finished training job (and its model artifact, if any)",
+        "operationId": "delete_training_api_v1_trainings__training_id__delete",
         "parameters": [
           {
             "name": "training_id",
@@ -1353,19 +1420,8 @@
           }
         ],
         "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Cancel Training Api V1 Trainings  Training Id  Delete"
-                }
-              }
-            }
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -1385,8 +1441,8 @@
         "tags": [
           "trainings"
         ],
-        "summary": "Cancel a running / pending training job (POST alias for DELETE)",
-        "description": "Same idempotent cancel semantics as `DELETE /{training_id}`.\n\nDelegates to the exact same service function — no duplicated logic —\nso both verbs always agree on behaviour.",
+        "summary": "Cancel a running / pending training job",
+        "description": "Cancel an in-flight training job (idempotent on an already-terminal one).\n\n**BREAKING CHANGE note**: this used to be documented as a POST alias for\n`DELETE /{training_id}`, but `DELETE` was repurposed into a hard-delete\n(see that route above) — this is now the *only* cancel entry point for\ntrainings. Callers that used to `DELETE` to cancel (e.g.\n`smart-model-tune`'s `engineApi.ts`) must switch to this endpoint.",
         "operationId": "cancel_training_post_api_v1_trainings__training_id__cancel_post",
         "parameters": [
           {
@@ -1772,6 +1828,56 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Delete a model artifact (purges MinIO/Ollama state, best-effort)",
+        "operationId": "delete_model_api_v1_models__model_id__delete",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Model Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -3758,6 +3864,23 @@
         ],
         "title": "DatasetSource",
         "description": "Where a dataset's rows came from."
+      },
+      "DatasetUpdate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "DatasetUpdate",
+        "description": "Body of `PATCH /datasets/{id}` — rename only.\n\n`extra=\"forbid\"` so a caller trying to smuggle another field through\n(e.g. `project_id`, to re-parent a dataset) gets a 422 instead of that\nfield being silently ignored — this endpoint does exactly one thing.\n`max_length` mirrors `Dataset.name`'s `String(200)` column (see\n`api/models/dataset.py`) so an over-long name 422s here rather than\nsurfacing as a DB error later."
       },
       "EvaluationAcceptedResponse": {
         "properties": {
@@ -6358,7 +6481,7 @@
               }
             ],
             "title": "Holdout Name",
-            "description": "Display name for the holdout dataset; defaults to '<train dataset name>-holdout'."
+            "description": "Display name for the holdout dataset; defaults to '<train dataset name>-hold-out'."
           },
           "sdg_mode": {
             "type": "string",
@@ -6509,7 +6632,7 @@
               }
             ],
             "title": "Holdout Name",
-            "description": "Display name for the holdout dataset; defaults to '<train dataset name>-holdout'."
+            "description": "Display name for the holdout dataset; defaults to '<train dataset name>-hold-out'."
           },
           "sdg_mode": {
             "type": "string",
@@ -7046,8 +7169,15 @@
             "title": "Id"
           },
           "project_id": {
-            "type": "string",
-            "format": "uuid",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id"
           },
           "dataset_id": {

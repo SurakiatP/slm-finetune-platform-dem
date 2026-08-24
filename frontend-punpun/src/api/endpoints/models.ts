@@ -21,6 +21,10 @@ export function getModel(id: string): Promise<ModelArtifact> {
   return api.get(`${BASE}/${id}`)
 }
 
+export function deleteModel(id: string): Promise<void> {
+  return api.delete(`${BASE}/${id}`)
+}
+
 export function exportModel(id: string, body: ModelExportRequest): Promise<ModelExportAccepted> {
   return api.post(`${BASE}/${id}/export`, body)
 }

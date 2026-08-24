@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
-import { Database, Download, Eye, Loader2, Search, Trash2 } from "lucide-react";
+import { Database, Download, Eye, Loader2, Pencil, Search, Trash2 } from "lucide-react";
 
 import { ApiError } from "@/api/client";
 import type { Dataset } from "@/api/types";
@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DatasetPreviewTable } from "@/components/dataset/DatasetPreviewTable";
+import { DatasetRenameDialog } from "@/components/dataset/DatasetRenameDialog";
 import { useDatasetDownloadUrl, useDatasets, useDeleteDataset, useProjects, useTrainings } from "@/hooks/queries";
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/i18n/LanguageContext";
@@ -43,6 +44,7 @@ export default function Datasets() {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Dataset | null>(null);
+  const [renameTarget, setRenameTarget] = useState<Dataset | null>(null);
   const [blockedReasons, setBlockedReasons] = useState<Record<string, string>>({});
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -201,7 +203,10 @@ export default function Datasets() {
                           {formatDateTime(dataset.created_at)}
                         </TableCell>
                         <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-1">
+                          <div
+                            className="flex items-center justify-end gap-1"
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <Button
                               size="icon"
                               variant="ghost"
@@ -225,6 +230,15 @@ export default function Datasets() {
                               ) : (
                                 <Download className="h-3.5 w-3.5" aria-hidden />
                               )}
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              aria-label={t("dataset.rename")}
+                              onClick={() => setRenameTarget(dataset)}
+                            >
+                              <Pencil className="h-3.5 w-3.5" aria-hidden />
                             </Button>
                             {blocked ? (
                               <Tooltip>
@@ -290,6 +304,14 @@ export default function Datasets() {
         destructive
         loading={deleteMutation.isPending}
       />
+
+      {renameTarget && (
+        <DatasetRenameDialog
+          dataset={renameTarget}
+          open={renameTarget !== null}
+          onOpenChange={(open) => !open && setRenameTarget(null)}
+        />
+      )}
     </PageTransition>
   );
 }

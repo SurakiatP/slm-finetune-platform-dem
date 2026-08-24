@@ -72,6 +72,22 @@ class DatasetResponse(BaseModel):
     )
 
 
+class DatasetUpdate(BaseModel):
+    """Body of `PATCH /datasets/{id}` — rename only.
+
+    `extra="forbid"` so a caller trying to smuggle another field through
+    (e.g. `project_id`, to re-parent a dataset) gets a 422 instead of that
+    field being silently ignored — this endpoint does exactly one thing.
+    `max_length` mirrors `Dataset.name`'s `String(200)` column (see
+    `api/models/dataset.py`) so an over-long name 422s here rather than
+    surfacing as a DB error later.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=200)
+
+
 class DatasetPreviewResponse(BaseModel):
     """Body of `GET /datasets/{id}/preview?limit=N`."""
 
@@ -86,4 +102,4 @@ class DatasetPreviewResponse(BaseModel):
     total: int
 
 
-__all__ = ["DatasetResponse", "DatasetPreviewResponse"]
+__all__ = ["DatasetResponse", "DatasetUpdate", "DatasetPreviewResponse"]

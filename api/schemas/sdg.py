@@ -101,7 +101,7 @@ class _SDGRequestBase(BaseModel):
     )
     holdout_name: str | None = Field(
         default=None,
-        description="Display name for the holdout dataset; defaults to '<train dataset name>-holdout'.",
+        description="Display name for the holdout dataset; defaults to '<train dataset name>-hold-out'.",
     )
 
 

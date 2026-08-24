@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
+import { ApiError } from "@/api/client";
 import { PageTransition } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, CheckCircle2, Copy, ExternalLink, FlaskConical, MessageSquare } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Copy, ExternalLink, FlaskConical, MessageSquare, Trash2 } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageContext";
-import { queryKeys, useEvaluations, useModel, useTraining } from "@/hooks/queries";
+import { queryKeys, useDeleteModel, useEvaluations, useModel, useTraining } from "@/hooks/queries";
+import { useToast } from "@/hooks/use-toast";
 import { jobRefetchInterval, useJobProgress } from "@/hooks/useJobProgress";
+import { ConfirmDialog } from "@/components/engine/ConfirmDialog";
 import { QueueBadge } from "@/components/engine/QueueBadge";
 import { AutoPipelineStatus } from "@/components/model/AutoPipelineStatus";
 import { ExportPanel } from "@/components/model/ExportPanel";
@@ -68,7 +71,11 @@ const INFERENCE_URL = "http://localhost:8000/api/v1/inference/chat/completions";
 export default function ModelDetail() {
   const { id } = useParams<{ id: string }>();
   const { t } = useLanguage();
+  const { toast } = useToast();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const deleteMutation = useDeleteModel();
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [codeTab, setCodeTab] = useState<"python" | "curl" | "javascript">("python");
   const [copied, setCopied] = useState(false);
   // Poll the artifact only while an export job is in flight; the cadence
@@ -141,6 +148,35 @@ export default function ModelDetail() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleDelete = () => {
+    deleteMutation.mutate(model.id, {
+      onSuccess: () => {
+        toast({ title: t("model.deleted"), description: displayName });
+        setDeleteOpen(false);
+        navigate("/models");
+      },
+      onError: (err: unknown) => {
+        // A GGUF export still references this artifact — the server refuses
+        // rather than orphaning the exported file. Stay on the page and
+        // surface its own reason instead of a generic error toast.
+        if (err instanceof ApiError && err.status === 409) {
+          toast({
+            title: t("model.deleteBlockedExport"),
+            description: err.message,
+            variant: "destructive",
+          });
+        } else {
+          toast({
+            title: t("common.error"),
+            description: err instanceof Error ? err.message : String(err),
+            variant: "destructive",
+          });
+        }
+        setDeleteOpen(false);
+      },
+    });
+  };
+
   return (
     <PageTransition>
     <div className="space-y-6 max-w-5xl">
@@ -166,6 +202,14 @@ export default function ModelDetail() {
               </Link>
             </Button>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2 text-destructive hover:text-destructive"
+            onClick={() => setDeleteOpen(true)}
+          >
+            <Trash2 className="h-3.5 w-3.5" /> {t("model.delete")}
+          </Button>
         </div>
       </div>
 
@@ -354,6 +398,17 @@ export default function ModelDetail() {
         </TabsContent>
       </Tabs>
     </div>
+
+    <ConfirmDialog
+      open={deleteOpen}
+      onOpenChange={setDeleteOpen}
+      onConfirm={handleDelete}
+      title={t("model.delete")}
+      description={t("model.deleteConfirm")}
+      confirmLabel={t("model.delete")}
+      destructive
+      loading={deleteMutation.isPending}
+    />
     </PageTransition>
   );
 }

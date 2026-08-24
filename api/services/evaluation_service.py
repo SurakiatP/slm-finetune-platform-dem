@@ -63,7 +63,12 @@ async def submit_evaluation_job(
         )
 
     training_job = await db.get(TrainingJob, artifact.training_job_id)
-    if training_job is not None:
+    if training_job is not None and training_job.project_id is not None:
+        # training_job.project_id can be None for an orphaned run (its
+        # Project was deleted — migration 0012_training_decouple);
+        # `db.get(Project, None)` would just return None with a noisy
+        # SQLAlchemy "fully NULL primary key" warning, so skip the lookup
+        # outright instead.
         project = await db.get(Project, training_job.project_id)
         if project is not None and dataset.task_type != project.task_type:
             raise HTTPException(

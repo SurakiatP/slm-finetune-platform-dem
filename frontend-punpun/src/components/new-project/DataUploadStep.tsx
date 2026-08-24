@@ -52,6 +52,9 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
   const [temperature, setTemperature] = useState("0.9");
   const [datasetName, setDatasetName] = useState("");
   const [holdoutName, setHoldoutName] = useState("");
+  // No-seed (description_only) mode only — a single base name, from which
+  // `${base}-training` / `${base}-hold-out` are derived at generate time.
+  const [baseName, setBaseName] = useState("");
   // No-seed (description_only) mode only — per-task-type generation config.
   const [labelsText, setLabelsText] = useState("");
   const [toolsText, setToolsText] = useState("");
@@ -173,32 +176,70 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
     }
   };
 
-  // `datasetName`/`holdoutName` are one pair of state shared by both modes,
-  // but the two modes have opposite naming rules: with-seed prefills
-  // `${seed}-training` / `${seed}-hold-out` on upload, while no-seed mode
-  // requires the user to type both and must show NO prefill. Switching tabs
-  // therefore parks the current mode's names and restores the incoming
-  // mode's own (empty until typed for no-seed) instead of letting the
-  // with-seed prefill leak across.
-  const namesByMode = useRef<Record<SdgMode, { dataset: string; holdout: string }>>({
+  // `datasetName`/`holdoutName` (with-seed) and `baseName` (no-seed) are
+  // separate naming schemes: with-seed prefills `${seed}-training` /
+  // `${seed}-hold-out` on upload, while no-seed mode derives the same
+  // suffixes from a single user-typed base name. Switching tabs therefore
+  // parks the current mode's own name state and restores the incoming
+  // mode's own (empty until typed/uploaded) instead of letting one mode's
+  // values leak into the other's fields.
+  const namesByMode = useRef<{
+    with_seed: { dataset: string; holdout: string };
+    description_only: { base: string };
+  }>({
     with_seed: { dataset: "", holdout: "" },
-    description_only: { dataset: "", holdout: "" },
+    description_only: { base: "" },
   });
 
   const handleModeChange = (next: SdgMode) => {
     if (next === mode) return;
-    namesByMode.current[mode] = { dataset: datasetName, holdout: holdoutName };
-    setDatasetName(namesByMode.current[next].dataset);
-    setHoldoutName(namesByMode.current[next].holdout);
+    if (mode === "with_seed") {
+      namesByMode.current.with_seed = { dataset: datasetName, holdout: holdoutName };
+    } else {
+      namesByMode.current.description_only = { base: baseName };
+    }
+    if (next === "with_seed") {
+      setDatasetName(namesByMode.current.with_seed.dataset);
+      setHoldoutName(namesByMode.current.with_seed.holdout);
+    } else {
+      setBaseName(namesByMode.current.description_only.base);
+    }
     setMode(next);
   };
 
   const holdoutRequired = (Number(holdoutSize) || 0) > 0;
 
+  // No-seed mode names are derived from a single base name rather than
+  // typed separately: `${base}-training` always, `${base}-hold-out` only
+  // when holdout rows > 0 (mirrors the with-seed upload prefill convention).
+  const deriveNoSeedNames = (base: string) => ({
+    dataset: `${base}-training`,
+    holdout: holdoutRequired ? `${base}-hold-out` : undefined,
+  });
+
+  // Renders `t("sdgNoSeed.derivedNamesPreview")` (a "{train} and {holdout}"
+  // style template) with the derived names filled in. When there's no
+  // holdout split, the `{holdout}` placeholder — along with whatever single
+  // connector word/particle precedes it (e.g. "and" / "และ") — is dropped
+  // so the sentence still reads naturally instead of trailing off.
+  const noSeedNamesPreview = (): string | null => {
+    const base = baseName.trim();
+    if (!base) return null;
+    const { dataset, holdout } = deriveNoSeedNames(base);
+    const template = t("sdgNoSeed.derivedNamesPreview");
+    if (holdout) {
+      return template.replace("{train}", dataset).replace("{holdout}", holdout);
+    }
+    const idx = template.indexOf("{holdout}");
+    if (idx === -1) return template.replace("{train}", dataset);
+    const trimmedPrefix = template.slice(0, idx).replace(/\s*\S+\s*$/, " ");
+    const suffix = template.slice(idx + "{holdout}".length);
+    return (trimmedPrefix + suffix).replace("{train}", dataset).replace(/\s+/g, " ").trim();
+  };
+
   const canGenerateNoSeed = (): boolean => {
     if (!projectId || !taskType) return false;
-    if (!datasetName.trim()) return false;
-    if (holdoutRequired && !holdoutName.trim()) return false;
+    if (!baseName.trim()) return false;
     if (taskType === "classification") return parseLabels().length >= 2;
     if (taskType === "tool_calling") return parseTools() !== null;
     return true; // qa needs only the task description already gathered in step 1.
@@ -208,6 +249,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
     if (!projectId || !taskType || !canGenerateNoSeed()) return;
     const labels = taskType === "classification" ? parseLabels() : null;
     const tools = taskType === "tool_calling" ? parseTools() : null;
+    const { dataset, holdout } = deriveNoSeedNames(baseName.trim());
     generateDataset.mutate(
       {
         project_id: projectId,
@@ -215,9 +257,9 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
         task_description: formData.taskPrompt,
         num_samples: Number(numSamples) || 200,
         holdout_size: Number(holdoutSize) || 0,
-        holdout_name: holdoutRequired ? holdoutName.trim() || undefined : undefined,
+        holdout_name: holdout,
         temperature: Number(temperature) || 0.9,
-        dataset_name: datasetName.trim(),
+        dataset_name: dataset,
         sdg_mode: "description_only",
         classification_config: labels ? { labels } : undefined,
         tool_calling_config: tools ? { tool_definitions: tools } : undefined,
@@ -513,21 +555,14 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
 
           <div>
             <Label className="text-xs">
-              {t("sdgNoSeed.datasetNameLabel")} <span className="text-destructive">*</span>
+              {t("sdgNoSeed.baseNameLabel")} <span className="text-destructive">*</span>
             </Label>
-            <Input className="mt-1" value={datasetName} onChange={(e) => setDatasetName(e.target.value)} required />
-            <p className="text-[10px] text-muted-foreground mt-1">{t("sdgNoSeed.datasetNameHint")}</p>
+            <Input className="mt-1" value={baseName} onChange={(e) => setBaseName(e.target.value)} required />
+            <p className="text-[10px] text-muted-foreground mt-1">{t("sdgNoSeed.baseNameHint")}</p>
+            {noSeedNamesPreview() && (
+              <p className="text-[10px] text-muted-foreground mt-1">{noSeedNamesPreview()}</p>
+            )}
           </div>
-
-          {holdoutRequired && (
-            <div>
-              <Label className="text-xs">
-                {t("sdgNoSeed.holdoutNameLabel")} <span className="text-destructive">*</span>
-              </Label>
-              <Input className="mt-1" value={holdoutName} onChange={(e) => setHoldoutName(e.target.value)} required />
-              <p className="text-[10px] text-muted-foreground mt-1">{t("sdgNoSeed.holdoutNameHint")}</p>
-            </div>
-          )}
 
           {pipelineInfoBox}
 

@@ -13,9 +13,11 @@ cancelled. These tests pin the shared semantics all four now implement:
     `except` block already publishes `JobFailed`, and a second one would
     double-deliver
 
-`DELETE /api/v1/trainings/{id}` (which `smart-model-tune` calls today at
-`engineApi.ts:286`) must keep working and must share one implementation with
-the new `POST` alias.
+`DELETE /api/v1/trainings/{id}` used to be a cancel alias (which
+`smart-model-tune` called at `engineApi.ts:286`); it has since been
+repurposed into a hard-delete (see `tests/unit/test_training_delete.py`).
+`POST /{id}/cancel` is now the only cancel entry point for trainings and
+is unaffected by that change — this file still pins its cancel semantics.
 
 In-memory fakes only — no Postgres, no broker, no GPU.
 """
@@ -375,7 +377,11 @@ class TestRoutes:
         assert "post" in paths[path]
 
     def test_delete_trainings_still_exists(self, paths: dict) -> None:
-        """smart-model-tune calls this today (engineApi.ts:286) — do not break it."""
+        """The route still exists, but it is no longer a cancel alias — it is
+        now a hard-delete (see `tests/unit/test_training_delete.py`). Cancel
+        for trainings lives exclusively at `POST /{training_id}/cancel`
+        (parametrized above). `smart-model-tune` (`engineApi.ts:286`) called
+        this route to cancel; that caller must switch to the `POST` alias."""
         assert "delete" in paths["/api/v1/trainings/{training_id}"]
 
     def test_dataset_delete_still_means_delete_not_cancel(self, paths: dict) -> None:

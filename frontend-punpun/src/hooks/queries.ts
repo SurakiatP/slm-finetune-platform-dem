@@ -12,6 +12,7 @@ import type {
   ArtifactFormat,
   AuditEvent,
   Dataset,
+  DatasetUpdate,
   Evaluation,
   EvaluationCompareRequest,
   EvaluationCreate,
@@ -206,6 +207,18 @@ export function useDeleteDataset() {
   })
 }
 
+export function useUpdateDataset() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: DatasetUpdate }): Promise<Dataset> =>
+      datasets.updateDataset(id, body),
+    onSuccess: (_data, { id }) => {
+      void queryClient.invalidateQueries({ queryKey: ['datasets'] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.dataset(id) })
+    },
+  })
+}
+
 /** Mint a presigned MinIO URL for the dataset's stored object (one-shot, not cached). */
 export function useDatasetDownloadUrl() {
   return useMutation({
@@ -289,6 +302,18 @@ export function useCancelTraining() {
   })
 }
 
+/** Hard-deletes a terminal training run. */
+export function useDeleteTraining() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string): Promise<void> => trainings.deleteTraining(id),
+    onSuccess: (_data, id) => {
+      void queryClient.invalidateQueries({ queryKey: ['trainings'] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.training(id) })
+    },
+  })
+}
+
 // --- Models: queries -------------------------------------------------------------
 
 export function useModels(projectId?: string, page: { limit?: number; offset?: number } = {}) {
@@ -327,6 +352,17 @@ export function useCancelModelExport() {
     onSuccess: (_data, id) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.model(id) })
       void queryClient.invalidateQueries({ queryKey: ['models'] })
+    },
+  })
+}
+
+export function useDeleteModel() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string): Promise<void> => models.deleteModel(id),
+    onSuccess: (_data, id) => {
+      void queryClient.invalidateQueries({ queryKey: ['models'] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.model(id) })
     },
   })
 }

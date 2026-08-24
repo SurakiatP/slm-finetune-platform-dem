@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ClipboardList, Database, Loader2, PlayCircle, Trash2 } from "lucide-react";
+import { ArrowLeft, ClipboardList, Database, Loader2, PlayCircle, Pencil, Trash2 } from "lucide-react";
 
 import { PageTransition } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +14,7 @@ import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { QueueBadge } from "@/components/engine/QueueBadge";
 import { StatusBadge } from "@/components/engine/StatusBadge";
 import { EvaluationTable } from "@/components/evaluation/EvaluationTable";
+import { EditProjectDialog } from "@/components/project/EditProjectDialog";
 import { PipelineHub } from "@/components/project-pipeline/PipelineHub";
 import {
   queryKeys,
@@ -44,6 +45,7 @@ export default function ProjectDetail() {
   const taskTypeLabel = useTaskTypeLabel();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   const { data: project, isLoading, isError, error } = useProject(id ?? "");
 
@@ -105,6 +107,14 @@ export default function ProjectDetail() {
               </p>
             )}
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2 shrink-0"
+            onClick={() => setEditOpen(true)}
+          >
+            <Pencil className="h-3.5 w-3.5" /> {t("project.edit")}
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -222,13 +232,16 @@ export default function ProjectDetail() {
         title={t("project.delete")}
         description={
           <>
-            {t("project.deleteConfirm")} {t("project.deleteCancelsJobs")} {t("pipelineHub.deleteDatasetsNote")}
+            {t("project.deleteConfirm")} {t("project.deleteCancelsJobs")} {t("pipelineHub.deleteDatasetsNote")}{" "}
+            {t("project.deleteKeepsModelsNote")}
           </>
         }
         confirmLabel={t("project.delete")}
         destructive
         loading={deleting}
       />
+
+      <EditProjectDialog project={project} open={editOpen} onOpenChange={setEditOpen} />
     </PageTransition>
   );
 }

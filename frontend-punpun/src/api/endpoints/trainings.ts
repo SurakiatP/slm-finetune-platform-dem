@@ -27,6 +27,12 @@ export function startTraining(body: TrainingRequest): Promise<TrainingJobAccepte
 }
 
 export function cancelTraining(id: string): Promise<{ message: string }> {
+  return api.post(`${BASE}/${id}/cancel`)
+}
+
+/** Hard-deletes a terminal (completed/failed/cancelled) training run. 409s if
+ *  the run is still pending/running — cancel it first. */
+export function deleteTraining(id: string): Promise<void> {
   return api.delete(`${BASE}/${id}`)
 }
 

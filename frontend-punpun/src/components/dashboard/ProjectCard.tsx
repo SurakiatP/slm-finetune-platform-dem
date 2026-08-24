@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { Pencil, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/engine/ConfirmDialog";
 import { QueueBadge } from "@/components/engine/QueueBadge";
+import { EditProjectDialog } from "@/components/project/EditProjectDialog";
 import { queryKeys } from "@/hooks/queries";
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/i18n/LanguageContext";
@@ -22,6 +23,7 @@ export function ProjectCard({ project }: { project: Project }) {
   const taskTypeLabel = useTaskTypeLabel();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -52,6 +54,19 @@ export function ProjectCard({ project }: { project: Project }) {
               </div>
               <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.preventDefault()}>
                 <QueueBadge queueState={project.queue_state} queuePosition={project.queue_position} />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                  aria-label={t("project.edit")}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setEditOpen(true);
+                  }}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </Button>
                 <Button
                   variant="ghost"
                   size="icon"
@@ -88,13 +103,15 @@ export function ProjectCard({ project }: { project: Project }) {
         description={
           <>
             {t("project.deleteConfirm")} <strong>{project.name}</strong>. {t("project.deleteCancelsJobs")}{" "}
-            {t("pipelineHub.deleteDatasetsNote")}
+            {t("pipelineHub.deleteDatasetsNote")} {t("project.deleteKeepsModelsNote")}
           </>
         }
         confirmLabel={t("project.delete")}
         destructive
         loading={deleting}
       />
+
+      <EditProjectDialog project={project} open={editOpen} onOpenChange={setEditOpen} />
     </>
   );
 }

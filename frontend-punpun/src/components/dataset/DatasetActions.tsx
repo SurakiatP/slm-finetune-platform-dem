@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Ban, Download, Eye, Loader2, Trash2 } from "lucide-react";
+import { Ban, Download, Eye, Loader2, Pencil, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/engine/ConfirmDialog";
+import { DatasetRenameDialog } from "@/components/dataset/DatasetRenameDialog";
 import {
   useCancelDatasetGeneration,
   useDatasetDownloadUrl,
@@ -30,6 +31,7 @@ export function DatasetActions({ dataset, previewOpen, onTogglePreview, onDelete
   const { toast } = useToast();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
 
   const downloadMutation = useDatasetDownloadUrl();
   const deleteMutation = useDeleteDataset();
@@ -111,12 +113,23 @@ export function DatasetActions({ dataset, previewOpen, onTogglePreview, onDelete
       <Button
         size="icon"
         variant="ghost"
+        className="h-7 w-7"
+        aria-label={t("dataset.rename")}
+        onClick={() => setRenameOpen(true)}
+      >
+        <Pencil className="h-3.5 w-3.5" aria-hidden />
+      </Button>
+      <Button
+        size="icon"
+        variant="ghost"
         className="h-7 w-7 text-muted-foreground hover:text-destructive"
         aria-label={t("dataset.delete")}
         onClick={() => setDeleteOpen(true)}
       >
         <Trash2 className="h-3.5 w-3.5" aria-hidden />
       </Button>
+
+      <DatasetRenameDialog dataset={dataset} open={renameOpen} onOpenChange={setRenameOpen} />
 
       <ConfirmDialog
         open={deleteOpen}

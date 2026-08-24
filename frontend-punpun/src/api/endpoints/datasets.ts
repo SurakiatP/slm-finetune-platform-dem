@@ -3,6 +3,7 @@ import type {
   Dataset,
   DatasetDownloadUrl,
   DatasetPreview,
+  DatasetUpdate,
   JobStatus,
   Page,
   SDGJobAccepted,
@@ -29,6 +30,10 @@ export function previewDataset(id: string, limit = 20): Promise<DatasetPreview> 
 
 export function deleteDataset(id: string): Promise<void> {
   return api.delete(`${BASE}/${id}`)
+}
+
+export function updateDataset(id: string, body: DatasetUpdate): Promise<Dataset> {
+  return api.patch(`${BASE}/${id}`, body)
 }
 
 /** Plain href for streaming download — use in an <a> tag, not fetch. */

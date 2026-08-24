@@ -142,17 +142,30 @@ async def _gpu_global_count(db: AsyncSession) -> int:
 
 
 async def _gpu_actor_count(db: AsyncSession, actor_id: str) -> int:
+    # Outer joins, not inner: `TrainingJob.project_id` is nullable (orphaned
+    # runs whose Project was deleted — migration 0012_training_decouple, see
+    # api/services/ownership.py's orphan-policy section). An INNER JOIN would
+    # silently drop an orphan's row from this per-actor count entirely,
+    # rather than surfacing it with `Project.owner_id` NULL the way the rest
+    # of the codebase reasons about orphans. It doesn't change the RESULT
+    # here — an orphan has no owner to match `actor_id`, so it's excluded
+    # from every per-actor bucket either way (fail-closed: an orphan cannot
+    # be attributed to any actor) — but it keeps that exclusion happening by
+    # construction (NULL != actor_id) rather than by the join silently
+    # dropping the row, matching `ownership.py`'s `scope_trainings_to_owner`
+    # et al. Global counts (`_gpu_global_count` above) don't join Project at
+    # all, so orphans always count there regardless.
     training_stmt = (
         select(func.count())
         .select_from(TrainingJob)
-        .join(Project, Project.id == TrainingJob.project_id)
+        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(TrainingJob.status.in_(_IN_FLIGHT), Project.owner_id == actor_id)
     )
     export_stmt = (
         select(func.count())
         .select_from(ModelArtifact)
         .join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
-        .join(Project, Project.id == TrainingJob.project_id)
+        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(ModelArtifact.export_status.in_(_IN_FLIGHT), Project.owner_id == actor_id)
     )
     eval_stmt = (
@@ -160,7 +173,7 @@ async def _gpu_actor_count(db: AsyncSession, actor_id: str) -> int:
         .select_from(EvaluationRun)
         .join(ModelArtifact, ModelArtifact.id == EvaluationRun.model_artifact_id)
         .join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
-        .join(Project, Project.id == TrainingJob.project_id)
+        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(EvaluationRun.status.in_(_IN_FLIGHT), Project.owner_id == actor_id)
     )
     training = int((await db.execute(training_stmt)).scalar_one())

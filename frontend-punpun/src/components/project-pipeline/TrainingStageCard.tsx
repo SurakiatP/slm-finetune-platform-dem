@@ -85,11 +85,27 @@ export function TrainingStageCard({ projectId, currentDataset, currentTraining }
           </>
         )}
       </p>
-      <Button variant="link" size="sm" className="h-auto p-0 gap-1" asChild>
-        <Link to={`/projects/${projectId}/training`}>
-          <PlayCircle className="h-3.5 w-3.5" /> {t("pipelineHub.viewTrainingMonitor")}
-        </Link>
-      </Button>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <Button variant="link" size="sm" className="h-auto p-0 gap-1" asChild>
+          <Link to={`/projects/${projectId}/training`}>
+            <PlayCircle className="h-3.5 w-3.5" /> {t("pipelineHub.viewTrainingMonitor")}
+          </Link>
+        </Button>
+        {terminal && currentDataset && (
+          <Button size="sm" className="gap-2 shrink-0" onClick={() => setDialogOpen(true)}>
+            <Sparkles className="h-3.5 w-3.5" /> {t("pipelineHub.retrain")}
+          </Button>
+        )}
+      </div>
+      {terminal && currentDataset && (
+        <TrainingCreateDialog
+          projectId={projectId}
+          datasetId={currentDataset.id}
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          onStarted={handleStarted}
+        />
+      )}
     </div>
   );
 }
