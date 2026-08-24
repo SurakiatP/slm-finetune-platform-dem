@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -111,4 +111,118 @@ class DatasetPreviewResponse(BaseModel):
     total: int
 
 
-__all__ = ["DatasetResponse", "DatasetUpdate", "DatasetPreviewResponse"]
+class JudgeDimensionStats(BaseModel):
+    """Aggregate LLM-judge score for a single scored dimension."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mean: float
+    histogram: list[int]
+
+
+class JudgeStats(BaseModel):
+    """LLM-judge aggregates for a dataset (or a subset keyed by `judge_by_key`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    fidelity: JudgeDimensionStats
+    naturalness: JudgeDimensionStats
+    utility: JudgeDimensionStats
+    weighted: JudgeDimensionStats
+
+
+class InsightLabelCount(BaseModel):
+    """One label's share of the scanned rows."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    count: int
+    percent: float
+
+
+class InsightLengthBucket(BaseModel):
+    """One bucket of the sample-length histogram."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bucket: str
+    count: int
+
+
+class InsightIssue(BaseModel):
+    """A single flagged data-quality issue surfaced by the insights scan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    severity: Literal["critical", "warning", "info"]
+    category: str
+    title: str
+    description: str
+    affected_rows: int
+    suggestion: str
+
+
+class GenerationCounts(BaseModel):
+    """SDG generation funnel counts, when available.
+
+    Null for datasets that carry no stored SDG generation metadata (e.g.
+    uploaded/legacy datasets) — every field is independently optional
+    because older generation_metadata payloads may not have recorded all
+    of them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    generated: int | None = None
+    target: int | None = None
+    schema_rejected: int | None = None
+    duplicates_removed: int | None = None
+    judge_rejected: int | None = None
+    judge_parse_failures: int | None = None
+
+
+class DatasetInsightsResponse(BaseModel):
+    """Body of `GET /datasets/{id}/insights` — data-quality scan results."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_id: UUID
+    task_type: TaskType
+    row_count: int
+    scanned_rows: int
+    scan_truncated: bool
+    label_distribution: list[InsightLabelCount]
+    near_duplicate_count: int
+    duplicate_rows: int
+    missing_labels: int
+    outliers: int
+    length_distribution: list[InsightLengthBucket]
+    issues: list[InsightIssue]
+    overall_quality_score: int = Field(..., ge=0, le=100)
+    readiness: Literal["ready", "caveats", "fix"]
+    judge: JudgeStats | None = Field(
+        default=None,
+        description=(
+            "LLM-judge aggregates for this dataset. Null for uploaded/legacy "
+            "datasets that carry no stored SDG aggregates."
+        ),
+    )
+    judge_by_key: dict[str, JudgeStats] | None = None
+    counts: GenerationCounts | None = None
+
+
+__all__ = [
+    "DatasetResponse",
+    "DatasetUpdate",
+    "DatasetPreviewResponse",
+    "JudgeDimensionStats",
+    "JudgeStats",
+    "InsightLabelCount",
+    "InsightLengthBucket",
+    "InsightIssue",
+    "GenerationCounts",
+    "DatasetInsightsResponse",
+]

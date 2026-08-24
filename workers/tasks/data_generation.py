@@ -368,6 +368,39 @@ def generate_synthetic_data(
                             dataset_id,
                         )
                     parent_meta = dict(parent.generation_metadata or {})
+
+                    # Aggregates only, never per-row data — this blob must
+                    # survive a plain `json.dumps` (JSONB column, no migration
+                    # backing it). A malformed aggregate must never fail an
+                    # otherwise-completed SDG run, hence the defensive
+                    # try/except with a `None` fallback rather than letting
+                    # any KeyError/TypeError here propagate into the
+                    # `except BaseException` handler above.
+                    try:
+                        insights_payload: dict[str, Any] | None = {
+                            "schema_version": 1,
+                            "judge": result.judge_scores_summary,
+                            "counts": {
+                                "generated": len(result.valid_rows),
+                                "target": request.num_samples,
+                                "train_rows": len(train_rows),
+                                "holdout_rows": len(holdout_rows),
+                                "schema_rejected": result.rejected_count,
+                                "duplicates_removed": result.duplicate_count,
+                                "judge_rejected": result.judge_rejected_count,
+                                "judge_parse_failures": result.judge_parse_failures,
+                            },
+                            "computed_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    except Exception:  # noqa: BLE001 — never fail a completed run over this
+                        log.warning(
+                            "failed to build SDG insights aggregate (job=%s dataset=%s)",
+                            job_id,
+                            dataset_id,
+                            exc_info=True,
+                        )
+                        insights_payload = None
+
                     parent_meta.update(
                         {
                             "completed_at": datetime.now(timezone.utc).isoformat(),
@@ -382,6 +415,7 @@ def generate_synthetic_data(
                             "holdout_dataset_id": (
                                 str(holdout_uuid) if holdout_uuid else None
                             ),
+                            "insights": insights_payload,
                         }
                     )
                     parent.generation_metadata = parent_meta

@@ -2,6 +2,7 @@ import { api, pageQuery } from '@/api/client'
 import type {
   Dataset,
   DatasetDownloadUrl,
+  DatasetInsights,
   DatasetPreview,
   DatasetUpdate,
   JobStatus,
@@ -26,6 +27,10 @@ export function getDataset(id: string): Promise<Dataset> {
 
 export function previewDataset(id: string, limit = 20): Promise<DatasetPreview> {
   return api.get(`${BASE}/${id}/preview${pageQuery({ limit })}`)
+}
+
+export function getDatasetInsights(id: string): Promise<DatasetInsights> {
+  return api.get(`${BASE}/${id}/insights`)
 }
 
 export function deleteDataset(id: string): Promise<void> {

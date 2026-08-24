@@ -217,11 +217,17 @@
       [Task description]
       ระบบจัดประเภทคำร้องขอของลูกค้า support
       
-      [Row to evaluate]
-      {
-        "text": "อยากขอคืนเงิน",
-        "label": "ปัญหาการเงิน"
-      }
+      [Rows to evaluate]
+      [
+        {
+          "index": 0,
+          "sentinel": false,
+          "row": {
+            "text": "อยากขอคืนเงิน",
+            "label": "ปัญหาการเงิน"
+          }
+        }
+      ]
       
       [Rubric]
       fidelity     — does the text actually belong to the assigned label given the task description?
@@ -232,8 +238,9 @@
       ["ปัญหาเทคนิค", "ปัญหาการเงิน", "คำถามทั่วไป", "unknown"]
       
       [Output Instructions]
-      Output ONLY this JSON object (no markdown, no explanation outside `reasoning`):
-      {"fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>, "reasoning": "<one short sentence>"}
+      Output ONLY this JSON object (no markdown, no prose outside `reasoning`).
+      One entry per input row, same `index` values, in the same order:
+      {"scores": [{"index": 0, "reasoning": "<=120 chars", "fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>}]}
     ''',
   )
 # ---
@@ -244,26 +251,38 @@
       [Task description]
       ระบบจัดประเภทคำร้องขอของลูกค้า support
       
-      [Row to evaluate]
-      {
-        "text": "สวัสดีตอนเช้า",
-        "label": "unknown"
-      }
+      [Rows to evaluate]
+      [
+        {
+          "index": 0,
+          "sentinel": true,
+          "row": {
+            "text": "สวัสดีตอนเช้า",
+            "label": "unknown"
+          }
+        }
+      ]
       
       [Rubric]
+      fidelity     — does the text actually belong to the assigned label given the task description?
+      naturalness  — would a real user write text like this?
+      utility      — is this row useful training material for the described classifier?
+      
+      [Sentinel rows]
+      Rows with "sentinel": true were deliberately produced for the off-topic / out-of-scope sentinel class. Score them HIGH if they genuinely fail to fit any real class/tool (which is what makes them useful training data for teaching the model when to refuse). Do NOT penalise those rows for not matching a real label or tool — that mismatch IS the point.
+      
+      [Sentinel Rubric — apply to rows with "sentinel": true instead of the rubric above]
       fidelity     — is the text genuinely off-topic / out-of-scope for the closed real-label set, making 'unknown' the correct catch-all assignment? Score HIGH (>=0.8) if YES.
       naturalness  — would a real user actually send this kind of off-topic / ambiguous message in any context?
       utility      — is this 'unknown'-labeled row useful training material for teaching the classifier when to refuse classification?
-      
-      [Sentinel row]
-      This row was deliberately produced for the off-topic / out-of-scope sentinel class. Score HIGH if the row genuinely fails to fit any real class/tool (which is what makes it useful training data for teaching the model when to refuse). Do NOT penalise it for not matching a real label or tool — that mismatch IS the point.
       
       [Closed label set]
       ["ปัญหาเทคนิค", "ปัญหาการเงิน", "คำถามทั่วไป", "unknown"]
       
       [Output Instructions]
-      Output ONLY this JSON object (no markdown, no explanation outside `reasoning`):
-      {"fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>, "reasoning": "<one short sentence>"}
+      Output ONLY this JSON object (no markdown, no prose outside `reasoning`).
+      One entry per input row, same `index` values, in the same order:
+      {"scores": [{"index": 0, "reasoning": "<=120 chars", "fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>}]}
     ''',
   )
 # ---
@@ -274,11 +293,17 @@
       [Task description]
       ระบบตอบคำถามนโยบายการคืนสินค้า
       
-      [Row to evaluate]
-      {
-        "question": "คืนสินค้ากี่วัน?",
-        "answer": "7 วันหลังได้รับ"
-      }
+      [Rows to evaluate]
+      [
+        {
+          "index": 0,
+          "sentinel": false,
+          "row": {
+            "question": "คืนสินค้ากี่วัน?",
+            "answer": "7 วันหลังได้รับ"
+          }
+        }
+      ]
       
       [Rubric]
       fidelity     — does the answer correctly answer the question, consistent with the task description?
@@ -286,8 +311,9 @@
       utility      — is this Q&A pair useful training material for the described task?
       
       [Output Instructions]
-      Output ONLY this JSON object (no markdown, no explanation outside `reasoning`):
-      {"fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>, "reasoning": "<one short sentence>"}
+      Output ONLY this JSON object (no markdown, no prose outside `reasoning`).
+      One entry per input row, same `index` values, in the same order:
+      {"scores": [{"index": 0, "reasoning": "<=120 chars", "fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>}]}
     ''',
   )
 # ---
@@ -298,11 +324,17 @@
       [Task description]
       ระบบ smart home สำหรับสั่งงานด้วยภาษาธรรมชาติ
       
-      [Row to evaluate]
-      {
-        "question": "เปิดเสียงดังหน่อย",
-        "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":80}}"
-      }
+      [Rows to evaluate]
+      [
+        {
+          "index": 0,
+          "sentinel": false,
+          "row": {
+            "question": "เปิดเสียงดังหน่อย",
+            "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":80}}"
+          }
+        }
+      ]
       
       [Rubric]
       fidelity     — given the user's question, is the chosen tool + parameter set the correct one?
@@ -330,31 +362,59 @@
       ]
       
       [Output Instructions]
-      Output ONLY this JSON object (no markdown, no explanation outside `reasoning`):
-      {"fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>, "reasoning": "<one short sentence>"}
+      Output ONLY this JSON object (no markdown, no prose outside `reasoning`).
+      One entry per input row, same `index` values, in the same order:
+      {"scores": [{"index": 0, "reasoning": "<=120 chars", "fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>}]}
     ''',
   )
 # ---
-# name: test_judge_prompt_tool_calling_sentinel
+# name: test_judge_prompt_tool_calling_multi_row_mixed_sentinel
   tuple(
     'You are an evaluator of synthetic training data. You score one row on three axes — fidelity, naturalness, utility — each in [0.0, 1.0]. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation outside the `reasoning` field.',
     '''
       [Task description]
       ระบบ smart home สำหรับสั่งงานด้วยภาษาธรรมชาติ
       
-      [Row to evaluate]
-      {
-        "question": "วันนี้อากาศดีไหม",
-        "answer": "{\"name\":\"no_tool_needed\",\"parameters\":{}}"
-      }
+      [Rows to evaluate]
+      [
+        {
+          "index": 0,
+          "sentinel": false,
+          "row": {
+            "question": "เปิดเสียงดังหน่อย",
+            "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":80}}"
+          }
+        },
+        {
+          "index": 1,
+          "sentinel": true,
+          "row": {
+            "question": "วันนี้อากาศดีไหม",
+            "answer": "{\"name\":\"no_tool_needed\",\"parameters\":{}}"
+          }
+        },
+        {
+          "index": 2,
+          "sentinel": false,
+          "row": {
+            "question": "ลดเสียงลงหน่อย",
+            "answer": "{\"name\":\"set_volume\",\"parameters\":{\"level\":20}}"
+          }
+        }
+      ]
       
       [Rubric]
+      fidelity     — given the user's question, is the chosen tool + parameter set the correct one?
+      naturalness  — would a real user phrase the request this way?
+      utility      — is this row useful training material for the described tool-calling task?
+      
+      [Sentinel rows]
+      Rows with "sentinel": true were deliberately produced for the off-topic / out-of-scope sentinel class. Score them HIGH if they genuinely fail to fit any real class/tool (which is what makes them useful training data for teaching the model when to refuse). Do NOT penalise those rows for not matching a real label or tool — that mismatch IS the point.
+      
+      [Sentinel Rubric — apply to rows with "sentinel": true instead of the rubric above]
       fidelity     — is the user's question genuinely outside the available tool catalog (off-topic, ambiguous, or for a tool that simply does not exist in the catalog), making 'no_tool_needed' the correct refusal? Score HIGH (>=0.8) if YES.
       naturalness  — would a real user phrase such an out-of-scope request this way?
       utility      — is this 'no_tool_needed' row useful training material for teaching the model when to refuse to call any tool?
-      
-      [Sentinel row]
-      This row was deliberately produced for the off-topic / out-of-scope sentinel class. Score HIGH if the row genuinely fails to fit any real class/tool (which is what makes it useful training data for teaching the model when to refuse). Do NOT penalise it for not matching a real label or tool — that mismatch IS the point.
       
       [Tool catalog]
       [
@@ -377,8 +437,68 @@
       ]
       
       [Output Instructions]
-      Output ONLY this JSON object (no markdown, no explanation outside `reasoning`):
-      {"fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>, "reasoning": "<one short sentence>"}
+      Output ONLY this JSON object (no markdown, no prose outside `reasoning`).
+      One entry per input row, same `index` values, in the same order:
+      {"scores": [{"index": 0, "reasoning": "<=120 chars", "fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>}]}
+    ''',
+  )
+# ---
+# name: test_judge_prompt_tool_calling_sentinel
+  tuple(
+    'You are an evaluator of synthetic training data. You score one row on three axes — fidelity, naturalness, utility — each in [0.0, 1.0]. You output ONLY a JSON object matching the schema; no prose, no markdown, no explanation outside the `reasoning` field.',
+    '''
+      [Task description]
+      ระบบ smart home สำหรับสั่งงานด้วยภาษาธรรมชาติ
+      
+      [Rows to evaluate]
+      [
+        {
+          "index": 0,
+          "sentinel": true,
+          "row": {
+            "question": "วันนี้อากาศดีไหม",
+            "answer": "{\"name\":\"no_tool_needed\",\"parameters\":{}}"
+          }
+        }
+      ]
+      
+      [Rubric]
+      fidelity     — given the user's question, is the chosen tool + parameter set the correct one?
+      naturalness  — would a real user phrase the request this way?
+      utility      — is this row useful training material for the described tool-calling task?
+      
+      [Sentinel rows]
+      Rows with "sentinel": true were deliberately produced for the off-topic / out-of-scope sentinel class. Score them HIGH if they genuinely fail to fit any real class/tool (which is what makes them useful training data for teaching the model when to refuse). Do NOT penalise those rows for not matching a real label or tool — that mismatch IS the point.
+      
+      [Sentinel Rubric — apply to rows with "sentinel": true instead of the rubric above]
+      fidelity     — is the user's question genuinely outside the available tool catalog (off-topic, ambiguous, or for a tool that simply does not exist in the catalog), making 'no_tool_needed' the correct refusal? Score HIGH (>=0.8) if YES.
+      naturalness  — would a real user phrase such an out-of-scope request this way?
+      utility      — is this 'no_tool_needed' row useful training material for teaching the model when to refuse to call any tool?
+      
+      [Tool catalog]
+      [
+        {
+          "name": "set_volume",
+          "description": "Adjust speaker volume.",
+          "parameters": {
+            "level": {
+              "type": "integer",
+              "description": "0-100",
+              "required": false
+            }
+          }
+        },
+        {
+          "name": "no_tool_needed",
+          "description": "Sentinel — no tool applies.",
+          "parameters": {}
+        }
+      ]
+      
+      [Output Instructions]
+      Output ONLY this JSON object (no markdown, no prose outside `reasoning`).
+      One entry per input row, same `index` values, in the same order:
+      {"scores": [{"index": 0, "reasoning": "<=120 chars", "fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>}]}
     ''',
   )
 # ---

@@ -12,6 +12,7 @@ import type {
   ArtifactFormat,
   AuditEvent,
   Dataset,
+  DatasetInsights,
   DatasetUpdate,
   Evaluation,
   EvaluationCompareRequest,
@@ -49,6 +50,7 @@ export const queryKeys = {
   datasets: (projectId?: string) => ['datasets', { projectId: projectId ?? null }] as const,
   dataset: (id: string) => ['datasets', 'detail', id] as const,
   datasetPreview: (id: string) => ['datasets', 'preview', id] as const,
+  datasetInsights: (id: string) => ['datasets', 'insights', id] as const,
   trainings: (projectId?: string, status?: JobStatus) =>
     ['trainings', { projectId: projectId ?? null, status: status ?? null }] as const,
   training: (id: string) => ['trainings', 'detail', id] as const,
@@ -158,6 +160,14 @@ export function useDatasetPreview(id: string, limit = 20, enabled = true) {
   return useQuery({
     queryKey: [...queryKeys.datasetPreview(id), limit],
     queryFn: () => datasets.previewDataset(id, limit),
+    enabled,
+  })
+}
+
+export function useDatasetInsights(id: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.datasetInsights(id),
+    queryFn: (): Promise<DatasetInsights> => datasets.getDatasetInsights(id),
     enabled,
   })
 }

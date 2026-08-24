@@ -18,8 +18,10 @@ Pipeline (per task type):
     2. Generator chat_batch (concurrency=GENERATOR_BATCH_SIZE)
     3. parse_generator_response per call → exploded candidates
     4. Schema + business validation (label widening for sentinels)
-    5. Judge chat_batch (concurrency=JUDGE_BATCH_SIZE) → keep score >= threshold
-    6. MinHash LSH dedup
+    5. MinHash LSH dedup — runs BEFORE the judge so duplicate candidates
+       never spend a judge call
+    6. Judge chat_batch, batched JUDGE_ROWS_PER_CALL rows/prompt
+       (concurrency=JUDGE_BATCH_SIZE) → keep score >= threshold
     7. Quota-respecting collection
     8. Adaptive over-gen multiplier update (EMA smoothed)
     9. Emit SDGProgress to caller
@@ -52,6 +54,7 @@ from .constants import (
     GENERATOR_BATCH_SIZE,
     INITIAL_OVER_GEN_MULT,
     JUDGE_BATCH_SIZE,
+    JUDGE_ROWS_PER_CALL,
     JUDGE_THRESHOLD,
     MAX_CONSECUTIVE_FAILURES,
     MAX_LOOPS,
@@ -62,7 +65,8 @@ from .constants import (
     TOOL_CALLING_SENTINEL_NAME,
 )
 from .coverage_pool import make_coverage_pool
-from .judge import parse_judge_response
+from .insights import JudgeScoreAggregator
+from .judge import parse_judge_batch_response
 from .meta_prompter import SDGRules, fallback_rules, parse_meta_response
 from .minhash_dedup import MinHashDeduplicator
 from .openrouter_client import AsyncOpenRouterClient, ChatResult, OpenRouterClient, Prompt
@@ -131,6 +135,7 @@ class SDGRunResult:
     judge_parse_failures: int
     api_calls: int
     failed_attempts: list[str] = field(default_factory=list)
+    judge_scores_summary: dict[str, Any] | None = None
 
 
 class SDGAbortedError(RuntimeError):
@@ -336,6 +341,7 @@ class SyntheticDataGenerator:
         duplicates_total = 0
         judge_rejected_total = 0
         judge_parse_total = 0
+        score_aggregator = JudgeScoreAggregator()
         failed_attempts: list[str] = []
         consecutive_failures = 0
         over_gen_mult = INITIAL_OVER_GEN_MULT
@@ -477,7 +483,16 @@ class SyntheticDataGenerator:
             )
             rejected_total += len(failures)
 
-            # 3. Judge batch
+            # 3. MinHash LSH dedup — runs BEFORE the judge so a duplicate
+            # candidate never spends a judge call. Accepted trade-off:
+            # registration happens at filter time, so a row the judge later
+            # rejects still keeps its fingerprint in the LSH index (it can
+            # still block a future near-duplicate from being collected).
+            text_field = _seed_text_field(request.task_type)
+            outcome = dedup.filter(valid_rows, key=text_field)
+            duplicates_total += outcome.duplicates_dropped
+
+            # 4. Judge batch
             emit(
                 "judging",
                 current_loop=loop_idx,
@@ -486,23 +501,19 @@ class SyntheticDataGenerator:
             )
             judge_keep, j_low, j_parse, judge_calls = await self._judge_filter(
                 request=request,
-                rows=valid_rows,
+                rows=outcome.unique,
                 classification_labels=cls_labels,
                 tool_definitions=tool_defs,
                 usage=usage,
+                aggregator=score_aggregator,
             )
             api_calls += judge_calls
             judge_rejected_total += j_low
             judge_parse_total += j_parse
 
-            # 4. MinHash LSH dedup
-            text_field = _seed_text_field(request.task_type)
-            outcome = dedup.filter(judge_keep, key=text_field)
-            duplicates_total += outcome.duplicates_dropped
-
             # 5. Quota-respecting collection
             added = _apply_collection_quota(
-                outcome.unique,
+                judge_keep,
                 accepted=accepted,
                 collected_per_key=collected_per_key,
                 quota=quota,
@@ -546,6 +557,7 @@ class SyntheticDataGenerator:
             judge_parse_failures=judge_parse_total,
             api_calls=api_calls,
             failed_attempts=failed_attempts,
+            judge_scores_summary=score_aggregator.to_dict(),
         )
 
     # -- Internal stages ----------------------------------------------------
@@ -590,22 +602,52 @@ class SyntheticDataGenerator:
         classification_labels: list[str] | None,
         tool_definitions: list[ToolDefinition] | None,
         usage: UsageAccumulator | None = None,
+        aggregator: JudgeScoreAggregator | None = None,
     ) -> tuple[list[dict[str, Any]], int, int, int]:
-        """Score every row; keep those with weighted >= JUDGE_THRESHOLD.
+        """Score every row in batches of JUDGE_ROWS_PER_CALL; keep those with
+        weighted >= JUDGE_THRESHOLD.
 
-        Returns (kept_rows, low_score_count, parse_failure_count, api_calls).
+        Rows are first grouped by their quota key (`_row_quota_key` — label,
+        tool name, or the QA bucket) so one judge prompt never mixes rows
+        that belong to different diversity contexts, then each group is
+        chunked into JUDGE_ROWS_PER_CALL-sized slices — one
+        `build_judge_prompt(..., rows=chunk)` per chunk. Row order is
+        preserved within the returned kept-list where practical (grouped by
+        key, in each group's original order).
+
+        Every successfully parsed score — kept or rejected — is recorded on
+        `aggregator` (if given) under its row's quota key, so the run's
+        judge-score summary reflects the full judged population, not just
+        the rows that passed the quality gate.
+
+        Returns (kept_rows, low_score_count, parse_failure_count, api_calls),
+        where `api_calls` counts chunk prompts (not rows).
         """
         if not rows:
             return [], 0, 0, 0
+
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            key = self._row_quota_key(request.task_type, row)
+            groups.setdefault(key, []).append(row)
+
+        chunks: list[list[dict[str, Any]]] = []
+        chunk_keys: list[str] = []
+        for key, group_rows in groups.items():
+            for i in range(0, len(group_rows), JUDGE_ROWS_PER_CALL):
+                chunk = group_rows[i : i + JUDGE_ROWS_PER_CALL]
+                chunks.append(chunk)
+                chunk_keys.append(key)
+
         prompts = [
             build_judge_prompt(
                 request.task_type,
                 task_description=request.task_description,
-                row=row,
+                rows=chunk,
                 classification_labels=classification_labels,
                 tool_definitions=tool_definitions,
             )
-            for row in rows
+            for chunk in chunks
         ]
         try:
             results = await self._async.chat_batch(
@@ -621,22 +663,26 @@ class SyntheticDataGenerator:
         kept: list[dict[str, Any]] = []
         low = 0
         parse_fail = 0
-        for row, raw in zip(rows, results):
+        for chunk, key, raw in zip(chunks, chunk_keys, results):
             if isinstance(raw, Exception):
                 # chat_batch returns exceptions inline rather than raising —
-                # a failed call burned no billable tokens, so skip it.
-                parse_fail += 1
+                # a failed call burned no billable tokens for this chunk, so
+                # every row it would have scored counts as a parse failure.
+                parse_fail += len(chunk)
                 continue
             if usage is not None:
                 usage.add(raw.model, STAGE_JUDGE, raw.prompt_tokens, raw.completion_tokens)
-            score = parse_judge_response(raw.content)
-            if score is None:
-                parse_fail += 1
-                continue
-            if score.weighted < JUDGE_THRESHOLD:
-                low += 1
-                continue
-            kept.append(row)
+            scores = parse_judge_batch_response(raw.content, expected=len(chunk))
+            for row, score in zip(chunk, scores):
+                if score is None:
+                    parse_fail += 1
+                    continue
+                if aggregator is not None:
+                    aggregator.add(key, score)
+                if score.weighted < JUDGE_THRESHOLD:
+                    low += 1
+                    continue
+                kept.append(row)
         if usage is not None:
             # Outside the try/except above (which only wraps the chat_batch
             # call itself), so a budget breach here is not swallowed by that

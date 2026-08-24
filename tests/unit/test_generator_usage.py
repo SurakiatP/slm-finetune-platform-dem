@@ -66,11 +66,49 @@ def _meta_response_json() -> str:
     )
 
 
-def _judge_response_json() -> str:
+def _judge_response_json(num_rows: int = 1) -> str:
     # weighted = 0.4*0.9 + 0.3*0.9 + 0.3*0.9 = 0.9 >= JUDGE_THRESHOLD (0.7)
     return json.dumps(
-        {"fidelity": 0.9, "naturalness": 0.9, "utility": 0.9, "reasoning": "ok"}
+        {
+            "scores": [
+                {
+                    "index": i,
+                    "reasoning": "ok",
+                    "fidelity": 0.9,
+                    "naturalness": 0.9,
+                    "utility": 0.9,
+                }
+                for i in range(num_rows)
+            ]
+        }
     )
+
+
+def _count_judge_rows(kwargs: dict[str, Any]) -> int:
+    """Extract how many rows the judge prompt asked to score.
+
+    `build_judge_prompt` embeds `[Rows to evaluate]\\n<json list>` in the
+    user message; the responder needs the chunk size so it can emit exactly
+    that many `{"index": i, ...}` entries in the `{"scores": [...]}` reply.
+    """
+    messages = kwargs.get("messages") or []
+    user_msg = ""
+    for m in messages:
+        if m.get("role") == "user":
+            user_msg = m.get("content", "")
+            break
+    marker = "[Rows to evaluate]\n"
+    idx = user_msg.find(marker)
+    if idx == -1:
+        return 1
+    rest = user_msg[idx + len(marker) :]
+    end = rest.find("\n\n[")
+    payload = rest if end == -1 else rest[:end]
+    try:
+        rows = json.loads(payload)
+    except (ValueError, TypeError):
+        return 1
+    return len(rows) if isinstance(rows, list) else 1
 
 
 def _qa_pool() -> list[dict[str, str]]:
@@ -107,8 +145,9 @@ class _StageDispatchResponder:
             )
         if temperature == 0.0:
             self.judge_calls += 1
+            num_rows = _count_judge_rows(kwargs)
             return _response(
-                _judge_response_json(),
+                _judge_response_json(num_rows),
                 prompt_tokens=JUDGE_TOKENS[0],
                 completion_tokens=JUDGE_TOKENS[1],
             )

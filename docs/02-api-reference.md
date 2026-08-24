@@ -12,7 +12,7 @@ changing a router.
 This is the human companion to [`openapi.json`](./openapi.json); regenerate
 that with `scripts/export_openapi.py` when the contract changes. All routes
 are mounted under `/api/v1` except `GET /health` (root-level). The spec
-currently has **41 paths / 50 operations**; this doc covers all of them.
+currently has **42 paths / 51 operations**; this doc covers all of them.
 (That count is asserted against `openapi.json` by
 `tests/unit/test_openapi_spec_is_current.py` — it had drifted twice, and this
 file previously stated two *different* stale numbers in two places.)
@@ -703,6 +703,35 @@ Preview the first N rows. Query: `limit` (1–200, default 20). Success:
 **Errors**: `404` if it doesn't exist; `403` if it exists and belongs to
 another user (ADR-012); `409` dataset has no rows yet (still generating) —
 `storage_uri` is null.
+
+### GET /api/v1/datasets/{dataset_id}/insights
+
+Data-quality scan over the dataset's stored rows: label balance, exact +
+near duplicates, sample-length distribution/outliers, a 0-100 quality
+score, and a `ready`/`caveats`/`fix` readiness verdict. Mirrors
+`frontend-punpun/src/lib/qualityCalculator.ts`'s local computation (same
+six length buckets, same issue ids/severities, same score formula) so the
+two agree. Source: `api/services/dataset_insights.py`.
+
+- **Params**: none besides `dataset_id` in the path.
+- **Success `200`** (`DatasetInsightsResponse`): `row_count` (the
+  dataset's full row count — `num_samples` when set, else the scanned
+  count), `scanned_rows`/`scan_truncated` (the scan caps at 5,000 rows;
+  `scan_truncated=true` means the dataset had more), `label_distribution`
+  (empty for `qa`, which has no label concept), `duplicate_rows` (exact,
+  whitespace-normalised + lowercased match), `near_duplicate_count`
+  (paraphrase-level, via the same MinHash LSH pass the SDG generation loop
+  uses), `missing_labels`, `outliers`, `length_distribution` (six fixed
+  buckets), `issues` (a list of flagged problems, each with a stable `id`
+  like `iss-imbalance`/`iss-duplicates`/`iss-missing`/`iss-outliers`/
+  `iss-length`), `overall_quality_score` (0-100), `readiness`. `judge` /
+  `judge_by_key` / `counts` surface whatever SDG-time LLM-judge aggregates
+  are already stored on the dataset — `null` for uploaded/legacy datasets
+  that carry no such blob (never an error; a missing or malformed stored
+  blob degrades to nulls rather than failing the request).
+- **Errors**: `404` if it doesn't exist; `403` if it exists and belongs to
+  another user (ADR-012); `409` dataset has no rows yet (still
+  generating) — same check as preview.
 
 ### GET /api/v1/datasets/{dataset_id}/download
 
@@ -1751,7 +1780,7 @@ slm_worker_up{queue="gpu"} 0.0
 
 ## Verification notes
 
-`openapi.json` currently enumerates 41 paths / 50 operations, and
+`openapi.json` currently enumerates 42 paths / 51 operations, and
 `tests/unit/test_openapi_spec_is_current.py` now asserts that the count stated
 at the top of this file matches it — regenerate with
 `python scripts/export_openapi.py` and update that one number when routes

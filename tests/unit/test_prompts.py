@@ -108,7 +108,7 @@ def test_judge_prompt_qa_uses_correctness_rubric():
     p = build_judge_prompt(
         TaskType.QA,
         task_description="answer policy questions",
-        row={"question": "What is the return window?", "answer": "30 days."},
+        rows=[{"question": "What is the return window?", "answer": "30 days."}],
     )
     assert "fidelity" in p.user
     assert "answer" in p.user.lower()
@@ -118,7 +118,7 @@ def test_judge_prompt_classification_includes_labels():
     p = build_judge_prompt(
         TaskType.CLASSIFICATION,
         task_description="classify tickets",
-        row={"text": "refund please", "label": "billing"},
+        rows=[{"text": "refund please", "label": "billing"}],
         classification_labels=["billing", "tech"],
     )
     assert "billing" in p.user
@@ -127,13 +127,33 @@ def test_judge_prompt_classification_includes_labels():
 
 def test_judge_prompt_outputs_only_json_object():
     p = build_judge_prompt(
-        TaskType.QA, task_description="x", row={"question": "q", "answer": "a"}
+        TaskType.QA, task_description="x", rows=[{"question": "q", "answer": "a"}]
     )
     # The Judge prompt MUST tell the model "output ONLY a JSON object".
     assert "ONLY" in p.user.upper().replace("ONLY", "ONLY")  # presence check
     assert '"fidelity"' in p.user
     assert '"naturalness"' in p.user
     assert '"utility"' in p.user
+
+
+def test_judge_prompt_empty_rows_raises():
+    with pytest.raises(ValueError):
+        build_judge_prompt(TaskType.QA, task_description="x", rows=[])
+
+
+def test_judge_prompt_multi_row_indexes_and_scores_schema():
+    p = build_judge_prompt(
+        TaskType.QA,
+        task_description="answer policy questions",
+        rows=[
+            {"question": "q0", "answer": "a0"},
+            {"question": "q1", "answer": "a1"},
+        ],
+    )
+    assert '"index": 0' in p.user
+    assert '"index": 1' in p.user
+    assert '"scores"' in p.user
+    assert '"reasoning"' in p.user
 
 
 # ---- Meta-prompter prompts -----------------------------------------------

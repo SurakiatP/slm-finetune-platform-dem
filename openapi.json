@@ -1021,6 +1021,65 @@
         }
       }
     },
+    "/api/v1/datasets/{dataset_id}/insights": {
+      "get": {
+        "tags": [
+          "datasets"
+        ],
+        "summary": "Quality insights for a dataset",
+        "operationId": "get_dataset_insights_api_v1_datasets__dataset_id__insights_get",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Dataset Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetInsightsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/datasets/{dataset_id}/download": {
       "get": {
         "tags": [
@@ -3765,6 +3824,137 @@
         "title": "DatasetDownloadUrlResponse",
         "description": "Body of `GET /api/v1/datasets/{id}/download-url`."
       },
+      "DatasetInsightsResponse": {
+        "properties": {
+          "dataset_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Dataset Id"
+          },
+          "task_type": {
+            "$ref": "#/components/schemas/TaskType"
+          },
+          "row_count": {
+            "type": "integer",
+            "title": "Row Count"
+          },
+          "scanned_rows": {
+            "type": "integer",
+            "title": "Scanned Rows"
+          },
+          "scan_truncated": {
+            "type": "boolean",
+            "title": "Scan Truncated"
+          },
+          "label_distribution": {
+            "items": {
+              "$ref": "#/components/schemas/InsightLabelCount"
+            },
+            "type": "array",
+            "title": "Label Distribution"
+          },
+          "near_duplicate_count": {
+            "type": "integer",
+            "title": "Near Duplicate Count"
+          },
+          "duplicate_rows": {
+            "type": "integer",
+            "title": "Duplicate Rows"
+          },
+          "missing_labels": {
+            "type": "integer",
+            "title": "Missing Labels"
+          },
+          "outliers": {
+            "type": "integer",
+            "title": "Outliers"
+          },
+          "length_distribution": {
+            "items": {
+              "$ref": "#/components/schemas/InsightLengthBucket"
+            },
+            "type": "array",
+            "title": "Length Distribution"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/InsightIssue"
+            },
+            "type": "array",
+            "title": "Issues"
+          },
+          "overall_quality_score": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Overall Quality Score"
+          },
+          "readiness": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "caveats",
+              "fix"
+            ],
+            "title": "Readiness"
+          },
+          "judge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JudgeStats"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "LLM-judge aggregates for this dataset. Null for uploaded/legacy datasets that carry no stored SDG aggregates."
+          },
+          "judge_by_key": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JudgeStats"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge By Key"
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationCounts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dataset_id",
+          "task_type",
+          "row_count",
+          "scanned_rows",
+          "scan_truncated",
+          "label_distribution",
+          "near_duplicate_count",
+          "duplicate_rows",
+          "missing_labels",
+          "outliers",
+          "length_distribution",
+          "issues",
+          "overall_quality_score",
+          "readiness"
+        ],
+        "title": "DatasetInsightsResponse",
+        "description": "Body of `GET /datasets/{id}/insights` — data-quality scan results."
+      },
       "DatasetPreviewResponse": {
         "properties": {
           "dataset_id": {
@@ -4480,6 +4670,80 @@
         "title": "FormatDetectionReport",
         "description": "Audit trail of one Format Detection pass.\n\nPersisted on Dataset.generation_metadata['format_detection'] AND\nreturned in the upload-seed response body."
       },
+      "GenerationCounts": {
+        "properties": {
+          "generated": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target"
+          },
+          "schema_rejected": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Rejected"
+          },
+          "duplicates_removed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duplicates Removed"
+          },
+          "judge_rejected": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Rejected"
+          },
+          "judge_parse_failures": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Parse Failures"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "GenerationCounts",
+        "description": "SDG generation funnel counts, when available.\n\nNull for datasets that carry no stored SDG generation metadata (e.g.\nuploaded/legacy datasets) — every field is independently optional\nbecause older generation_metadata payloads may not have recorded all\nof them."
+      },
       "HPOCategorical": {
         "properties": {
           "type": {
@@ -5070,6 +5334,101 @@
         "title": "HpoChildSummary",
         "description": "Compact view of one HPO trial run (no full series — just final + params)."
       },
+      "InsightIssue": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "warning",
+              "info"
+            ],
+            "title": "Severity"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "affected_rows": {
+            "type": "integer",
+            "title": "Affected Rows"
+          },
+          "suggestion": {
+            "type": "string",
+            "title": "Suggestion"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "severity",
+          "category",
+          "title",
+          "description",
+          "affected_rows",
+          "suggestion"
+        ],
+        "title": "InsightIssue",
+        "description": "A single flagged data-quality issue surfaced by the insights scan."
+      },
+      "InsightLabelCount": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "percent": {
+            "type": "number",
+            "title": "Percent"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "label",
+          "count",
+          "percent"
+        ],
+        "title": "InsightLabelCount",
+        "description": "One label's share of the scanned rows."
+      },
+      "InsightLengthBucket": {
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "title": "Bucket"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "bucket",
+          "count"
+        ],
+        "title": "InsightLengthBucket",
+        "description": "One bucket of the sample-length histogram."
+      },
       "JobCompleted": {
         "properties": {
           "job_id": {
@@ -5206,6 +5565,60 @@
         ],
         "title": "JobStatus",
         "description": "Lifecycle of an async Celery-backed job (SDG / training / evaluation)."
+      },
+      "JudgeDimensionStats": {
+        "properties": {
+          "mean": {
+            "type": "number",
+            "title": "Mean"
+          },
+          "histogram": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Histogram"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "mean",
+          "histogram"
+        ],
+        "title": "JudgeDimensionStats",
+        "description": "Aggregate LLM-judge score for a single scored dimension."
+      },
+      "JudgeStats": {
+        "properties": {
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "fidelity": {
+            "$ref": "#/components/schemas/JudgeDimensionStats"
+          },
+          "naturalness": {
+            "$ref": "#/components/schemas/JudgeDimensionStats"
+          },
+          "utility": {
+            "$ref": "#/components/schemas/JudgeDimensionStats"
+          },
+          "weighted": {
+            "$ref": "#/components/schemas/JudgeDimensionStats"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "count",
+          "fidelity",
+          "naturalness",
+          "utility",
+          "weighted"
+        ],
+        "title": "JudgeStats",
+        "description": "LLM-judge aggregates for a dataset (or a subset keyed by `judge_by_key`)."
       },
       "LoRAConfig": {
         "properties": {

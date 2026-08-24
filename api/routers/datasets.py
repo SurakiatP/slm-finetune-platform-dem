@@ -20,7 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.auth import CurrentUser, require_user
 from api.core.database import get_db
-from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse, DatasetUpdate
+from api.schemas.datasets import (
+    DatasetInsightsResponse,
+    DatasetPreviewResponse,
+    DatasetResponse,
+    DatasetUpdate,
+)
 from api.schemas.download_links import DatasetDownloadUrlResponse
 from api.schemas.enums import TaskType
 from api.schemas.responses import Page
@@ -31,7 +36,7 @@ from api.schemas.sdg import (
     SDGRequestWithSeed,
     SeedUploadResponse,
 )
-from api.services import datasets_service, idempotency, ownership
+from api.services import dataset_insights, datasets_service, idempotency, ownership
 from api.services.download_links import mint_dataset_download_url
 from api.services.sdg_service import submit_sdg_job
 
@@ -158,6 +163,19 @@ async def preview_dataset(
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
 ) -> DatasetPreviewResponse:
     return await datasets_service.preview_dataset(db, dataset_id, limit, user)
+
+
+@router.get(
+    "/{dataset_id}/insights",
+    response_model=DatasetInsightsResponse,
+    summary="Quality insights for a dataset",
+)
+async def get_dataset_insights(
+    dataset_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+) -> DatasetInsightsResponse:
+    return await dataset_insights.get_dataset_insights(db, dataset_id, user)
 
 
 @router.get(

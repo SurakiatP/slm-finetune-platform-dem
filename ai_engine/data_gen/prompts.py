@@ -230,33 +230,49 @@ def build_judge_prompt(
     task_type: TaskType,
     *,
     task_description: str,
-    row: dict[str, Any],
+    rows: list[dict[str, Any]],
     classification_labels: list[str] | None = None,
     tool_definitions: list[ToolDefinition] | None = None,
 ) -> Prompt:
-    """Build one Judge prompt for a single candidate row.
+    """Build one Judge prompt for a batch of candidate rows.
 
     Detects sentinel rows (label="unknown" for classification, answer.name=
-    "no_tool_needed" for tool_calling) and uses a sentinel-specific rubric
-    so the Judge doesn't reject them for "not fitting a real label" — the
-    whole point of a sentinel is to capture off-topic / out-of-scope content.
+    "no_tool_needed" for tool_calling) and layers in a sentinel-specific
+    rubric so the Judge doesn't reject them for "not fitting a real label" —
+    the whole point of a sentinel is to capture off-topic / out-of-scope
+    content. Chunking (how many rows go in one call) is the generator's
+    job — this builder just renders whatever list it is given.
     """
-    is_sentinel = _row_is_sentinel(task_type, row)
-    rubric = _judge_rubric(task_type, is_sentinel=is_sentinel)
+    if not rows:
+        raise ValueError("build_judge_prompt requires at least one row")
+
+    sentinel_flags = [_row_is_sentinel(task_type, row) for row in rows]
+    indexed_rows = [
+        {"index": i, "sentinel": sentinel_flags[i], "row": row}
+        for i, row in enumerate(rows)
+    ]
+    any_sentinel = any(sentinel_flags)
+
+    rubric = _judge_rubric(task_type, is_sentinel=False)
     parts = [
         f"[Task description]\n{task_description.strip()}",
-        f"[Row to evaluate]\n{json.dumps(row, ensure_ascii=False, indent=2)}",
+        f"[Rows to evaluate]\n{json.dumps(indexed_rows, ensure_ascii=False, indent=2)}",
         f"[Rubric]\n{rubric}",
     ]
-    if is_sentinel:
+    if any_sentinel:
         parts.append(
-            "[Sentinel row]\n"
-            "This row was deliberately produced for the off-topic / "
-            "out-of-scope sentinel class. Score HIGH if the row genuinely "
-            "fails to fit any real class/tool (which is what makes it useful "
-            "training data for teaching the model when to refuse). Do NOT "
-            "penalise it for not matching a real label or tool — that "
-            "mismatch IS the point."
+            "[Sentinel rows]\n"
+            'Rows with "sentinel": true were deliberately produced for the '
+            "off-topic / out-of-scope sentinel class. Score them HIGH if "
+            "they genuinely fail to fit any real class/tool (which is what "
+            "makes them useful training data for teaching the model when to "
+            "refuse). Do NOT penalise those rows for not matching a real "
+            "label or tool — that mismatch IS the point."
+        )
+        sentinel_rubric = _judge_rubric(task_type, is_sentinel=True)
+        parts.append(
+            "[Sentinel Rubric — apply to rows with \"sentinel\": true instead "
+            f"of the rubric above]\n{sentinel_rubric}"
         )
     if task_type is TaskType.CLASSIFICATION and classification_labels is not None:
         parts.append(
@@ -274,10 +290,11 @@ def build_judge_prompt(
         )
     parts.append(
         "[Output Instructions]\n"
-        "Output ONLY this JSON object (no markdown, no explanation outside "
-        "`reasoning`):\n"
-        '{"fidelity": <0..1>, "naturalness": <0..1>, "utility": <0..1>, '
-        '"reasoning": "<one short sentence>"}'
+        "Output ONLY this JSON object (no markdown, no prose outside "
+        "`reasoning`).\n"
+        "One entry per input row, same `index` values, in the same order:\n"
+        '{"scores": [{"index": 0, "reasoning": "<=120 chars", "fidelity": '
+        '<0..1>, "naturalness": <0..1>, "utility": <0..1>}]}'
     )
     return Prompt(system=_JUDGE_SYSTEM, user="\n\n".join(parts))
 

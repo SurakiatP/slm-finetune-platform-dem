@@ -18,12 +18,19 @@ import type {
   ChatCompletionResponse,
   Dataset,
   DatasetDownloadUrl,
+  DatasetInsights,
   DatasetPreview,
   Evaluation,
   EvaluationAccepted,
   EvaluationCompareRequest,
   EvaluationCompareResponse,
   EvaluationCreate,
+  GenerationCounts,
+  InsightIssue,
+  InsightLabelCount,
+  InsightLengthBucket,
+  JudgeDimensionStats,
+  JudgeStats,
   MlflowUrlResponse,
   ModelArtifact,
   ModelDescriptorList,
@@ -1491,6 +1498,175 @@ const routes: Route[] = [
                 answer: JSON.stringify({ name: mockTools[i % mockTools.length].name, parameters: { index: i } }),
               }))
       const resp: DatasetPreview = { dataset_id: ds.id, task_type: ds.task_type, samples, total: ds.num_samples }
+      return json(resp)
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/api\/v1\/datasets\/([^/]+)\/insights$/,
+    handler: (m) => {
+      const ds = store.datasets.find((d) => d.id === m[1])
+      if (!ds) return errorResponse(404, 'Dataset not found')
+
+      // Deterministic-but-varied pseudo-random fraction in [0, 1), seeded off
+      // the dataset id + a salt — keeps repeated GETs (e.g. on remount)
+      // stable instead of jittering the UI like Math.random() would.
+      const frac = (salt: number): number => {
+        let h = salt
+        for (let i = 0; i < ds.id.length; i++) h = (h * 31 + ds.id.charCodeAt(i)) >>> 0
+        return (h % 1000) / 1000
+      }
+
+      const scannedRows = Math.min(ds.num_samples, 500)
+      const scanTruncated = ds.num_samples > scannedRows
+
+      // Same label-recovery logic as the /preview handler above — reuse the
+      // no-seed (description_only) user-supplied labels when present so the
+      // label distribution matches what the preview rows actually show.
+      const genMeta = (ds.generation_metadata ?? {}) as {
+        classification_config?: { labels: string[] } | null
+      }
+      const mockLabels = genMeta.classification_config?.labels?.length
+        ? genMeta.classification_config.labels
+        : ['billing', 'shipping_delay', 'account_access', 'refund_request']
+
+      const labelDistribution: InsightLabelCount[] =
+        ds.task_type === 'classification'
+          ? mockLabels.map((label, i) => {
+              const share = 1 / mockLabels.length + (frac(i + 1) - 0.5) * 0.1
+              const count = Math.max(0, Math.round(scannedRows * share))
+              return { label, count, percent: scannedRows ? Math.round((count / scannedRows) * 1000) / 10 : 0 }
+            })
+          : []
+
+      const nearDuplicateCount = Math.round(scannedRows * (0.01 + frac(2) * 0.04))
+      const duplicateRows = Math.round(scannedRows * (0.005 + frac(3) * 0.015))
+      const missingLabels = ds.task_type === 'classification' ? Math.round(scannedRows * frac(4) * 0.03) : 0
+      const outliers = Math.round(scannedRows * (0.005 + frac(5) * 0.02))
+
+      const lengthBuckets = ['<50 chars', '50-150 chars', '150-300 chars', '300+ chars']
+      const lengthWeights = [0.15, 0.45, 0.3, 0.1]
+      let lengthRemaining = scannedRows
+      const lengthDistribution: InsightLengthBucket[] = lengthBuckets.map((bucket, i) => {
+        const isLast = i === lengthBuckets.length - 1
+        const count = isLast ? lengthRemaining : Math.round(scannedRows * lengthWeights[i])
+        lengthRemaining -= count
+        return { bucket, count: Math.max(0, count) }
+      })
+
+      const issues: InsightIssue[] = []
+      if (nearDuplicateCount > 0) {
+        issues.push({
+          id: 'near-duplicates',
+          severity: nearDuplicateCount > scannedRows * 0.03 ? 'warning' : 'info',
+          category: 'duplication',
+          title: 'Near-duplicate rows detected',
+          description: `${nearDuplicateCount} rows are near-duplicates of another row in the scanned sample.`,
+          affected_rows: nearDuplicateCount,
+          suggestion: 'Increase diversity settings or re-run generation with a higher temperature.',
+        })
+      }
+      if (duplicateRows > 0) {
+        issues.push({
+          id: 'exact-duplicates',
+          severity: 'warning',
+          category: 'duplication',
+          title: 'Exact duplicate rows detected',
+          description: `${duplicateRows} rows are byte-for-byte duplicates of another row.`,
+          affected_rows: duplicateRows,
+          suggestion: 'Deduplicate before training to avoid overweighting these rows.',
+        })
+      }
+      if (missingLabels > 0) {
+        issues.push({
+          id: 'missing-labels',
+          severity: 'critical',
+          category: 'labeling',
+          title: 'Rows missing a label',
+          description: `${missingLabels} rows have no label assigned.`,
+          affected_rows: missingLabels,
+          suggestion: 'Drop these rows or backfill labels before training.',
+        })
+      }
+      if (outliers > 0) {
+        issues.push({
+          id: 'length-outliers',
+          severity: 'info',
+          category: 'length',
+          title: 'Unusually long or short samples',
+          description: `${outliers} rows fall well outside the typical length range for this dataset.`,
+          affected_rows: outliers,
+          suggestion: 'Spot-check these rows for truncation or generation artifacts.',
+        })
+      }
+
+      const penalty =
+        missingLabels * 4 + duplicateRows * 2 + nearDuplicateCount * 1.5 + outliers * 1
+      const overallQualityScore = Math.max(0, Math.min(100, Math.round(100 - (scannedRows ? (penalty / scannedRows) * 100 : 0))))
+      const readiness: DatasetInsights['readiness'] =
+        overallQualityScore >= 85 ? 'ready' : overallQualityScore >= 65 ? 'caveats' : 'fix'
+
+      const isSdg = ds.source === 'sdg'
+
+      const makeJudgeStats = (count: number, offset: number): JudgeStats => {
+        const dim = (bump: number): JudgeDimensionStats => {
+          const mean = Math.round((3.6 + frac(offset + bump) * 1.2) * 10) / 10
+          const histogram = [0, 0, 0, 0, 0]
+          for (let i = 0; i < count; i++) {
+            const bucket = Math.min(4, Math.max(0, Math.round(mean) - 1 + (i % 3) - 1))
+            histogram[bucket] += 1
+          }
+          return { mean, histogram }
+        }
+        return {
+          count,
+          fidelity: dim(1),
+          naturalness: dim(2),
+          utility: dim(3),
+          weighted: dim(4),
+        }
+      }
+
+      const judge = isSdg ? makeJudgeStats(scannedRows, 10) : null
+      const judgeByKeyEntries: [string, JudgeStats][] = (
+        labelDistribution.length ? labelDistribution.map((l) => l.label) : ['default']
+      ).map((key, i) => [
+        key,
+        makeJudgeStats(Math.max(1, Math.round(scannedRows / (labelDistribution.length || 1))), 20 + i),
+      ])
+      const judgeByKey: Record<string, JudgeStats> | null = isSdg ? Object.fromEntries(judgeByKeyEntries) : null
+
+      const meta = (ds.generation_metadata ?? {}) as { celery_task_id?: string }
+      const counts: GenerationCounts | null = isSdg
+        ? {
+            generated: ds.num_samples,
+            target: ds.num_samples,
+            schema_rejected: Math.round(ds.num_samples * frac(30) * 0.05),
+            duplicates_removed: duplicateRows,
+            judge_rejected: Math.round(ds.num_samples * frac(31) * 0.04),
+            judge_parse_failures: meta.celery_task_id ? Math.round(frac(32) * 3) : 0,
+          }
+        : null
+
+      const resp: DatasetInsights = {
+        dataset_id: ds.id,
+        task_type: ds.task_type,
+        row_count: ds.num_samples,
+        scanned_rows: scannedRows,
+        scan_truncated: scanTruncated,
+        label_distribution: labelDistribution,
+        near_duplicate_count: nearDuplicateCount,
+        duplicate_rows: duplicateRows,
+        missing_labels: missingLabels,
+        outliers,
+        length_distribution: lengthDistribution,
+        issues,
+        overall_quality_score: overallQualityScore,
+        readiness,
+        judge,
+        judge_by_key: judgeByKey,
+        counts,
+      }
       return json(resp)
     },
   },

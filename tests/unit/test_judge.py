@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from ai_engine.data_gen.judge import JudgeScore, parse_judge_response
+import json
+
+from ai_engine.data_gen.judge import (
+    JudgeScore,
+    parse_judge_batch_response,
+    parse_judge_response,
+)
 
 
 def test_weighted_score_uses_canonical_coefficients():
@@ -55,3 +61,101 @@ def test_parse_malformed_json_returns_none():
 def test_parse_empty_returns_none():
     assert parse_judge_response("") is None
     assert parse_judge_response("   ") is None
+
+
+def _make_entry(index: int, **overrides) -> dict:
+    entry = {
+        "index": index,
+        "reasoning": f"row {index} looks fine",
+        "fidelity": 0.8,
+        "naturalness": 0.7,
+        "utility": 0.6,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_parse_batch_happy_wrapper_shape():
+    entries = [_make_entry(i) for i in range(10)]
+    raw = json.dumps({"scores": entries})
+    results = parse_judge_batch_response(raw, expected=10)
+    assert len(results) == 10
+    for i, s in enumerate(results):
+        assert s is not None
+        assert s.reasoning == f"row {i} looks fine"
+        assert abs(s.weighted - (0.4 * 0.8 + 0.3 * 0.7 + 0.3 * 0.6)) < 1e-9
+
+
+def test_parse_batch_happy_bare_array_shape():
+    entries = [_make_entry(i) for i in range(10)]
+    raw = json.dumps(entries)
+    results = parse_judge_batch_response(raw, expected=10)
+    assert len(results) == 10
+    assert all(s is not None for s in results)
+
+
+def test_parse_batch_out_of_order_indices():
+    entries = [_make_entry(i) for i in reversed(range(10))]
+    raw = json.dumps({"scores": entries})
+    results = parse_judge_batch_response(raw, expected=10)
+    assert len(results) == 10
+    for i, s in enumerate(results):
+        assert s is not None
+        assert s.reasoning == f"row {i} looks fine"
+
+
+def test_parse_batch_missing_index_leaves_that_slot_none():
+    entries = [_make_entry(i) for i in range(10) if i != 3]
+    raw = json.dumps({"scores": entries})
+    results = parse_judge_batch_response(raw, expected=10)
+    assert len(results) == 10
+    assert results[3] is None
+    for i in range(10):
+        if i != 3:
+            assert results[i] is not None
+
+
+def test_parse_batch_extra_unknown_index_ignored():
+    entries = [_make_entry(i) for i in range(10)]
+    entries.append(_make_entry(42))  # out of [0, expected) range
+    raw = json.dumps({"scores": entries})
+    results = parse_judge_batch_response(raw, expected=10)
+    assert len(results) == 10
+    assert all(s is not None for s in results)
+
+
+def test_parse_batch_malformed_entry_only_affects_that_slot():
+    entries = [_make_entry(i) for i in range(10)]
+    entries[4]["fidelity"] = 1.5  # out of range -> fails JudgeScore validation
+    raw = json.dumps({"scores": entries})
+    results = parse_judge_batch_response(raw, expected=10)
+    assert len(results) == 10
+    assert results[4] is None
+    for i in range(10):
+        if i != 4:
+            assert results[i] is not None
+
+
+def test_parse_batch_duplicate_index_first_wins():
+    entries = [_make_entry(0, reasoning="first"), _make_entry(0, reasoning="second")]
+    raw = json.dumps({"scores": entries})
+    results = parse_judge_batch_response(raw, expected=1)
+    assert len(results) == 1
+    assert results[0] is not None
+    assert results[0].reasoning == "first"
+
+
+def test_parse_batch_blank_input_returns_all_none():
+    assert parse_judge_batch_response("", expected=10) == [None] * 10
+    assert parse_judge_batch_response("   ", expected=10) == [None] * 10
+    assert parse_judge_batch_response("not json at all", expected=10) == [None] * 10
+
+
+def test_parse_batch_reasoning_truncated_not_dropped():
+    long_reasoning = "x" * 500
+    entries = [_make_entry(0, reasoning=long_reasoning)]
+    raw = json.dumps({"scores": entries})
+    results = parse_judge_batch_response(raw, expected=1)
+    assert results[0] is not None
+    assert results[0].reasoning == long_reasoning[:120]
+    assert len(results[0].reasoning) == 120

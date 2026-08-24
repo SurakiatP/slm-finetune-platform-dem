@@ -44,6 +44,11 @@ GENERATOR_BATCH_SIZE = 100
 JUDGE_BATCH_SIZE = 100
 """Concurrency for AsyncOpenRouterClient.chat_batch on Judge calls."""
 
+JUDGE_ROWS_PER_CALL = 10
+"""Rows bundled into a single batched Judge prompt/response when using
+parse_judge_batch_response. Locked into the batch prompt template; do not
+change without updating the prompt."""
+
 # ---- Adaptive over-generation ---------------------------------------------
 
 INITIAL_OVER_GEN_MULT = 1.5
@@ -95,6 +100,7 @@ __all__ = [
     "CANDIDATES_PER_GEN_CALL",
     "GENERATOR_BATCH_SIZE",
     "JUDGE_BATCH_SIZE",
+    "JUDGE_ROWS_PER_CALL",
     "INITIAL_OVER_GEN_MULT",
     "MIN_OVER_GEN_MULT",
     "MAX_OVER_GEN_MULT",

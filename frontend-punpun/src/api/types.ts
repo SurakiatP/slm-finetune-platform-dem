@@ -108,6 +108,71 @@ export interface DatasetPreview {
   total: number
 }
 
+// --- Dataset insights (api/schemas/datasets.py) ------------------------------
+
+export interface JudgeDimensionStats {
+  mean: number
+  histogram: number[]
+}
+
+export interface JudgeStats {
+  count: number
+  fidelity: JudgeDimensionStats
+  naturalness: JudgeDimensionStats
+  utility: JudgeDimensionStats
+  weighted: JudgeDimensionStats
+}
+
+export interface InsightLabelCount {
+  label: string
+  count: number
+  percent: number
+}
+
+export interface InsightLengthBucket {
+  bucket: string
+  count: number
+}
+
+export interface InsightIssue {
+  id: string
+  severity: 'critical' | 'warning' | 'info'
+  category: string
+  title: string
+  description: string
+  affected_rows: number
+  suggestion: string
+}
+
+export interface GenerationCounts {
+  generated: number | null
+  target: number | null
+  schema_rejected: number | null
+  duplicates_removed: number | null
+  judge_rejected: number | null
+  judge_parse_failures: number | null
+}
+
+export interface DatasetInsights {
+  dataset_id: string
+  task_type: TaskType
+  row_count: number
+  scanned_rows: number
+  scan_truncated: boolean
+  label_distribution: InsightLabelCount[]
+  near_duplicate_count: number
+  duplicate_rows: number
+  missing_labels: number
+  outliers: number
+  length_distribution: InsightLengthBucket[]
+  issues: InsightIssue[]
+  overall_quality_score: number
+  readiness: 'ready' | 'caveats' | 'fix'
+  judge: JudgeStats | null
+  judge_by_key: Record<string, JudgeStats> | null
+  counts: GenerationCounts | null
+}
+
 // --- Data formats (api/schemas/data_formats.py) ------------------------------
 
 export interface ClassificationSample {
