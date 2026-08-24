@@ -32,6 +32,12 @@ MINHASH_NUM_PERM = 128
 MINHASH_NGRAM_SIZE = 5
 """Character-n-gram width used to build the MinHash signature."""
 
+EMBEDDING_DEDUP_THRESHOLD = 0.90
+"""Cosine similarity at which two rows count as semantic near-duplicates."""
+
+EMBEDDING_BATCH_SIZE = 100
+"""Number of texts embedded per embedding-provider call."""
+
 # ---- Output volumes --------------------------------------------------------
 
 CANDIDATES_PER_GEN_CALL = 5
@@ -97,6 +103,8 @@ __all__ = [
     "MINHASH_THRESHOLD",
     "MINHASH_NUM_PERM",
     "MINHASH_NGRAM_SIZE",
+    "EMBEDDING_DEDUP_THRESHOLD",
+    "EMBEDDING_BATCH_SIZE",
     "CANDIDATES_PER_GEN_CALL",
     "GENERATOR_BATCH_SIZE",
     "JUDGE_BATCH_SIZE",

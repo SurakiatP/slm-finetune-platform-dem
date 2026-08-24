@@ -1643,6 +1643,7 @@ const routes: Route[] = [
             target: ds.num_samples,
             schema_rejected: Math.round(ds.num_samples * frac(30) * 0.05),
             duplicates_removed: duplicateRows,
+            semantic_duplicates_removed: Math.round(ds.num_samples * frac(33) * 0.03),
             judge_rejected: Math.round(ds.num_samples * frac(31) * 0.04),
             judge_parse_failures: meta.celery_task_id ? Math.round(frac(32) * 3) : 0,
           }

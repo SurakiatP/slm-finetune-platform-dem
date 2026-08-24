@@ -148,7 +148,8 @@ _JUDGE_SUMMARY = {
 
 
 def _make_run_generator(*, judge_scores_summary, valid_rows, rejected_count=0,
-                         duplicate_count=0, judge_rejected_count=0,
+                         duplicate_count=0, semantic_duplicate_count=0,
+                         judge_rejected_count=0,
                          judge_parse_failures=0, api_calls=1):
     async def _fake_run_generator(**kwargs):
         usage = kwargs["usage"]
@@ -159,6 +160,7 @@ def _make_run_generator(*, judge_scores_summary, valid_rows, rejected_count=0,
             valid_rows=valid_rows,
             rejected_count=rejected_count,
             duplicate_count=duplicate_count,
+            semantic_duplicate_count=semantic_duplicate_count,
             judge_rejected_count=judge_rejected_count,
             judge_parse_failures=judge_parse_failures,
             api_calls=api_calls,
@@ -190,6 +192,7 @@ class TestInsightsPinnedShape:
                 valid_rows=valid_rows,
                 rejected_count=2,
                 duplicate_count=1,
+                semantic_duplicate_count=3,
                 judge_rejected_count=1,
                 judge_parse_failures=0,
                 api_calls=5,
@@ -221,6 +224,7 @@ class TestInsightsPinnedShape:
             "holdout_rows": 0,
             "schema_rejected": 2,
             "duplicates_removed": 1,
+            "semantic_duplicates_removed": 3,
             "judge_rejected": 1,
             "judge_parse_failures": 0,
         }

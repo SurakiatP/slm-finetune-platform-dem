@@ -171,6 +171,7 @@ class TestStoredJudgeAggregates:
                     "target": 20,
                     "schema_rejected": 2,
                     "duplicates_removed": 3,
+                    "semantic_duplicates_removed": 1,
                     "judge_rejected": 0,
                     "judge_parse_failures": 0,
                 },
@@ -197,12 +198,54 @@ class TestStoredJudgeAggregates:
         assert resp.counts is not None
         assert resp.counts.generated == 25
         assert resp.counts.target == 20
+        assert resp.counts.duplicates_removed == 3
+        assert resp.counts.semantic_duplicates_removed == 1
 
         # Base score (all rows share one label, no dupes/missing/outliers) is
         # 100; blended with a 0.9 judge weighted mean:
         # round(0.75*100 + 0.25*0.9*100) == 98.
         assert resp.overall_quality_score == 98
         assert resp.readiness == "ready"
+
+    async def test_stored_counts_without_semantic_key_yields_none(
+        self, db: AsyncSession, project: Project, patch_minio
+    ) -> None:
+        """Pre-feature datasets stored a `counts` blob with no semantic key at all.
+
+        `semantic_duplicates_removed` must surface as `None` rather than
+        raise or default to 0 -- the field didn't exist when this blob was
+        written.
+        """
+        rows = _classification_rows(20)
+        meta = {
+            "insights": {
+                "schema_version": 1,
+                "judge": _judge_blob(weighted_mean=0.9),
+                "counts": {
+                    "generated": 25,
+                    "target": 20,
+                    "schema_rejected": 2,
+                    "duplicates_removed": 3,
+                    "judge_rejected": 0,
+                    "judge_parse_failures": 0,
+                },
+            }
+        }
+        ds = await _make_dataset(
+            db,
+            project,
+            rows=rows,
+            fake_minio=patch_minio,
+            key="sdg-pre-semantic-feature.jsonl",
+            source=DatasetSource.SDG,
+            generation_metadata=meta,
+        )
+
+        resp = await di_module.get_dataset_insights(db, ds.id, USER_A)
+
+        assert resp.counts is not None
+        assert resp.counts.duplicates_removed == 3
+        assert resp.counts.semantic_duplicates_removed is None
 
 
 class TestUploadedDatasetNoMetadata:

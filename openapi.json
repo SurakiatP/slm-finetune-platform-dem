@@ -4716,6 +4716,17 @@
             ],
             "title": "Duplicates Removed"
           },
+          "semantic_duplicates_removed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Duplicates Removed"
+          },
           "judge_rejected": {
             "anyOf": [
               {

@@ -149,6 +149,7 @@ export interface GenerationCounts {
   target: number | null
   schema_rejected: number | null
   duplicates_removed: number | null
+  semantic_duplicates_removed: number | null
   judge_rejected: number | null
   judge_parse_failures: number | null
 }

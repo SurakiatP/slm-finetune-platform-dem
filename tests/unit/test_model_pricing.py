@@ -81,6 +81,22 @@ class TestCostUsd:
         assert cost == Decimal("0.000000")
 
 
+class TestEmbeddingModelPricing:
+    """openai/text-embedding-3-small — SDG semantic dedup (see
+    ai_engine/data_gen/semantic_dedup.py). $0.02 / 1M input tokens,
+    completion is 0.0 since embeddings return no completion tokens."""
+
+    _EMBEDDING_MODEL = "openai/text-embedding-3-small"
+
+    def test_price_for_embedding_model(self) -> None:
+        price = model_pricing.price_for(self._EMBEDDING_MODEL)
+        assert price == (0.02 / 1_000_000, 0.0)
+
+    def test_cost_usd_for_embedding_model(self) -> None:
+        cost = model_pricing.cost_usd(self._EMBEDDING_MODEL, 1_000_000, 0)
+        assert cost == Decimal("0.020000")
+
+
 class TestModelPricingJsonOverride:
     def test_override_wins_for_a_new_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(

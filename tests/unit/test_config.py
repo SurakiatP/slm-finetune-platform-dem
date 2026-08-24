@@ -10,6 +10,7 @@ If someone removes the annotation, these tests fail.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 
 # A non-empty database_url is required by Settings; supply one for every test.
@@ -145,3 +146,39 @@ def test_budget_can_be_set_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     s = Settings()
     assert s.budget_monthly_usd_per_actor == 10.5
     assert s.budget_monthly_usd_global == 100.0
+
+
+# =============================================================================
+# W1-T3 — SDG semantic dedup fields (see
+# ai_engine/data_gen/semantic_dedup.py, api/services/model_pricing.py).
+# =============================================================================
+
+
+def test_sdg_embedding_defaults() -> None:
+    Settings = _import_settings()
+    s = Settings()
+    assert s.sdg_embedding_model == "openai/text-embedding-3-small"
+    assert s.sdg_embedding_dedup_threshold == 0.90
+
+
+def test_sdg_embedding_model_empty_string_disables(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SDG_EMBEDDING_MODEL", "")
+    Settings = _import_settings()
+    s = Settings()
+    assert s.sdg_embedding_model == ""
+
+
+def test_sdg_embedding_dedup_threshold_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SDG_EMBEDDING_DEDUP_THRESHOLD", "0.75")
+    Settings = _import_settings()
+    s = Settings()
+    assert s.sdg_embedding_dedup_threshold == 0.75
+
+
+def test_sdg_embedding_dedup_threshold_out_of_range_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SDG_EMBEDDING_DEDUP_THRESHOLD", "1.5")
+    Settings = _import_settings()
+    with pytest.raises(ValidationError):
+        Settings()

@@ -79,15 +79,22 @@ def generate_synthetic_data(
     # Prices resolved here, as plain floats, and handed to the accumulator —
     # `ai_engine` must never learn about `api.core.config` (hexagonal rule).
     # A model missing from the pricing map is simply omitted; the
-    # accumulator's `has_unpriced_usage` is how the gap gets surfaced.
-    prices: dict[str, tuple[float, float]] = {}
-    for model_id in {
+    # accumulator's `has_unpriced_usage` is how the gap gets surfaced. The
+    # embedding model is added here (config-sourced) rather than in
+    # `ai_engine.data_gen.models` because it is env-configurable —
+    # `settings.sdg_embedding_model` — and that module is deliberately
+    # left untouched by config concerns.
+    model_ids = {
         sdg_models.DIVERSITY_RULES,
         sdg_models.GENERATOR,
         sdg_models.JUDGE,
         sdg_models.PDF_QA,
         sdg_models.FORMAT_DETECTION,
-    }:
+    }
+    if settings.sdg_embedding_model:
+        model_ids.add(settings.sdg_embedding_model)
+    prices: dict[str, tuple[float, float]] = {}
+    for model_id in model_ids:
         price = model_pricing.price_for(model_id)
         if price is not None:
             prices[model_id] = price
@@ -387,6 +394,7 @@ def generate_synthetic_data(
                                 "holdout_rows": len(holdout_rows),
                                 "schema_rejected": result.rejected_count,
                                 "duplicates_removed": result.duplicate_count,
+                                "semantic_duplicates_removed": result.semantic_duplicate_count,
                                 "judge_rejected": result.judge_rejected_count,
                                 "judge_parse_failures": result.judge_parse_failures,
                             },
@@ -746,7 +754,12 @@ async def _run_generator(
         on_call_failure=circuit_breaker.on_failure,
         on_call_success=circuit_breaker.record_success,
     ) as async_client:
-        gen = SyntheticDataGenerator(async_client, sync_client)
+        gen = SyntheticDataGenerator(
+            async_client,
+            sync_client,
+            embedding_model=settings.sdg_embedding_model,
+            embedding_dedup_threshold=settings.sdg_embedding_dedup_threshold,
+        )
         return await gen.generate(
             effective_request,
             seed_rows=seed_rows,

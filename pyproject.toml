@@ -57,6 +57,13 @@ dependencies = [
     # Phase 9 SDG hardening (ADR-007).
     "datasketch>=1.6.0",
     "pypdf>=5.0.0",
+    # numpy is imported DIRECTLY by ai_engine/data_gen/semantic_dedup.py
+    # (in-memory cosine-similarity matrix) — it must be a declared
+    # dependency, not inherited transitively via mlflow/torch, the same
+    # class of bug the httpx comment above documents: a future dependency
+    # bump that drops numpy from mlflow's own tree would otherwise
+    # crash-loop the worker at import time with no local signal.
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

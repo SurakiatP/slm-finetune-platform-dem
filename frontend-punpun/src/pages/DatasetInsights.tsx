@@ -364,6 +364,7 @@ export default function DatasetInsights() {
                                 },
                                 { label: t("insights.countsJudgeRejected"), value: fmtCount(insights.counts.judge_rejected, t) },
                                 { label: t("insights.countsDuplicatesRemoved"), value: fmtCount(insights.counts.duplicates_removed, t) },
+                                { label: t("insights.countsSemanticDuplicatesRemoved"), value: fmtCount(insights.counts.semantic_duplicates_removed, t) },
                                 { label: t("insights.countsSchemaRejected"), value: fmtCount(insights.counts.schema_rejected, t) },
                               ].map((s) => (
                                 <div key={s.label} className="rounded-lg border border-border p-3">

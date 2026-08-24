@@ -65,6 +65,7 @@ def _worker_envelope(judge: dict | None) -> dict:
                 "holdout_rows": 2,
                 "schema_rejected": 3,
                 "duplicates_removed": 4,
+                "semantic_duplicates_removed": 2,
                 "judge_rejected": 1,
                 "judge_parse_failures": 0,
             },
@@ -101,6 +102,7 @@ class TestAggregatorToReaderRoundTrip:
         assert counts.target == 20
         assert counts.schema_rejected == 3
         assert counts.duplicates_removed == 4
+        assert counts.semantic_duplicates_removed == 2
         assert counts.judge_rejected == 1
         assert counts.judge_parse_failures == 0
 

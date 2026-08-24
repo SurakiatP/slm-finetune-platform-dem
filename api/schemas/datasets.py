@@ -180,6 +180,8 @@ class GenerationCounts(BaseModel):
     target: int | None = None
     schema_rejected: int | None = None
     duplicates_removed: int | None = None
+    # Rows dropped by the embedding-based semantic pass that ran after MinHash; None for datasets generated before the feature or with it disabled.
+    semantic_duplicates_removed: int | None = None
     judge_rejected: int | None = None
     judge_parse_failures: int | None = None
 

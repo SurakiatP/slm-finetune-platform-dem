@@ -87,25 +87,86 @@ def _build_chat_response(content: str, model: str = "stub-model") -> Any:
     )
 
 
+def _build_embeddings_response(
+    vectors: list[list[float]], *, model: str = "stub-embedding-model", prompt_tokens: int = 0
+) -> Any:
+    """Wrap a list of embedding vectors in the SDK's `embeddings.create` response
+    shape (see `ai_engine.data_gen.openrouter_client._to_embedding_result`,
+    which only reads `.data[i].embedding`/`.index`, `.model`, and
+    `.usage.prompt_tokens`)."""
+    return SimpleNamespace(
+        data=[SimpleNamespace(embedding=vec, index=i) for i, vec in enumerate(vectors)],
+        model=model,
+        usage=SimpleNamespace(prompt_tokens=prompt_tokens),
+    )
+
+
+class _FakeEmbeddings:
+    """Programmable fake for ``openai.AsyncOpenAI.embeddings.create``.
+
+    Mirrors ``_FakeCompletions``: captures every call's kwargs into
+    ``self.calls`` so tests can assert on them afterwards. ``responder`` may
+    be:
+
+      • ``None`` (the default) — a safe no-op: returns one all-zero vector
+        per input text (never registers as a near-duplicate of anything,
+        since a zero vector's cosine similarity is always 0), so a test that
+        never wires up an ``embeddings_responder`` doesn't crash if the code
+        under test happens to call embeddings anyway.
+      • a static ``SimpleNamespace`` (returned for every call)
+      • an ``async`` callable ``(kwargs, call_index) -> SimpleNamespace``
+    """
+
+    _ZERO_VECTOR_DIM = 8
+
+    def __init__(self, responder: Any = None) -> None:
+        self._responder = responder
+        self.calls: list[dict[str, Any]] = []
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        if self._responder is None:
+            texts = kwargs.get("input") or []
+            model = kwargs.get("model", "stub-embedding-model")
+            vectors = [[0.0] * self._ZERO_VECTOR_DIM for _ in texts]
+            return _build_embeddings_response(vectors, model=model)
+        if callable(self._responder):
+            return await self._responder(kwargs, len(self.calls) - 1)
+        return self._responder
+
+
 @pytest.fixture
 def openrouter_responder():
-    """Factory: ``install(client, responder) → fake_completions``.
+    """Factory: ``install(client, responder, *, embeddings_responder=None) →
+    fake_completions``.
 
-    Returns the fake so the test can inspect ``.calls`` afterwards.
+    Returns the fake so the test can inspect ``.calls`` afterwards. The
+    installed fake ``_client`` namespace additionally carries an
+    ``embeddings`` attribute (a ``_FakeEmbeddings``, also reachable as
+    ``fake_completions.embeddings``) so code exercising
+    ``AsyncOpenRouterClient.embed()`` (the SDG semantic-dedup layer) has
+    something to call — existing callers that only ever exercise
+    ``chat``/``chat_batch`` and pass positional args are unaffected.
     """
 
     async def _noop_close() -> None:
         return None
 
-    def _install(client: Any, responder: Any) -> _FakeCompletions:
+    def _install(
+        client: Any, responder: Any, *, embeddings_responder: Any = None
+    ) -> _FakeCompletions:
         fake = _FakeCompletions(responder)
+        fake_embeddings = _FakeEmbeddings(embeddings_responder)
+        fake.embeddings = fake_embeddings  # type: ignore[attr-defined]
         client._client = SimpleNamespace(
             chat=SimpleNamespace(completions=fake),
+            embeddings=fake_embeddings,
             close=_noop_close,
         )
         return fake
 
     _install.build_response = _build_chat_response  # type: ignore[attr-defined]
+    _install.build_embeddings_response = _build_embeddings_response  # type: ignore[attr-defined]
     return _install
 
 

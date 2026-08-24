@@ -363,6 +363,7 @@ export const translations: Record<Language, Record<string, string>> = {
     "insights.countsGenerated": "Generated / target",
     "insights.countsJudgeRejected": "Judge rejected",
     "insights.countsDuplicatesRemoved": "Duplicates removed",
+    "insights.countsSemanticDuplicatesRemoved": "Semantic duplicates",
     "insights.countsSchemaRejected": "Schema rejected",
     "insights.countsNA": "No generation counts for this dataset.",
 
@@ -930,6 +931,7 @@ export const translations: Record<Language, Record<string, string>> = {
     "insights.countsGenerated": "สร้างแล้ว / เป้าหมาย",
     "insights.countsJudgeRejected": "ถูกปฏิเสธโดย judge",
     "insights.countsDuplicatesRemoved": "ลบข้อมูลซ้ำ",
+    "insights.countsSemanticDuplicatesRemoved": "ข้อมูลซ้ำเชิงความหมาย",
     "insights.countsSchemaRejected": "ถูกปฏิเสธด้าน schema",
     "insights.countsNA": "ไม่มีข้อมูลจำนวนการสร้างสำหรับชุดข้อมูลนี้",
 

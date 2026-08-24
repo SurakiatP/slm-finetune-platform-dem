@@ -20,11 +20,14 @@ Pipeline (per task type):
     4. Schema + business validation (label widening for sentinels)
     5. MinHash LSH dedup — runs BEFORE the judge so duplicate candidates
        never spend a judge call
-    6. Judge chat_batch, batched JUDGE_ROWS_PER_CALL rows/prompt
+    6. Semantic embedding dedup (optional) — after MinHash, before the
+       judge; catches near-paraphrase duplicates MinHash can't see.
+       Degrades to a pass-through on any embeddings-provider error.
+    7. Judge chat_batch, batched JUDGE_ROWS_PER_CALL rows/prompt
        (concurrency=JUDGE_BATCH_SIZE) → keep score >= threshold
-    7. Quota-respecting collection
-    8. Adaptive over-gen multiplier update (EMA smoothed)
-    9. Emit SDGProgress to caller
+    8. Quota-respecting collection
+    9. Adaptive over-gen multiplier update (EMA smoothed)
+    10. Emit SDGProgress to caller
 
   Termination
     • collected >= target_count → success
@@ -51,6 +54,8 @@ from .constants import (
     CANDIDATES_PER_GEN_CALL,
     CLASSIFICATION_SENTINEL_LABEL,
     DIFFICULTY_LEVELS,
+    EMBEDDING_BATCH_SIZE,
+    EMBEDDING_DEDUP_THRESHOLD,
     GENERATOR_BATCH_SIZE,
     INITIAL_OVER_GEN_MULT,
     JUDGE_BATCH_SIZE,
@@ -77,7 +82,9 @@ from .prompts import (
     build_pdf_qa_messages,
     parse_generator_response,
 )
+from .semantic_dedup import SemanticDeduplicator
 from .usage import (
+    STAGE_EMBED,
     STAGE_GENERATE,
     STAGE_JUDGE,
     STAGE_META_PROMPT,
@@ -136,6 +143,13 @@ class SDGRunResult:
     api_calls: int
     failed_attempts: list[str] = field(default_factory=list)
     judge_scores_summary: dict[str, Any] | None = None
+    # Rows dropped by the semantic (embedding) dedup layer specifically — a
+    # subset of `duplicate_count`, which also folds in MinHash-dropped rows.
+    # Default 0 is load-bearing: every pre-existing construction site (tests,
+    # worker code) that builds an `SDGRunResult` without this field — because
+    # the semantic layer is off by default (see `SyntheticDataGenerator.
+    # __init__`'s `embedding_model` default) — must keep working untouched.
+    semantic_duplicate_count: int = 0
 
 
 class SDGAbortedError(RuntimeError):
@@ -156,10 +170,19 @@ class SyntheticDataGenerator:
         sync_client: OpenRouterClient,
         *,
         rng: random.Random | None = None,
+        embedding_model: str | None = None,
+        embedding_dedup_threshold: float = EMBEDDING_DEDUP_THRESHOLD,
     ) -> None:
         self._async = async_client
         self._sync = sync_client
         self._rng = rng if rng is not None else random.Random()
+        # Semantic (embedding) dedup layer is opt-in. A falsy `embedding_model`
+        # (None, the default, or "") means the layer is never constructed in
+        # `generate()` — zero embeddings calls, `semantic_duplicate_count`
+        # stays 0 — so every pre-existing call site (worker code not yet
+        # opted in, every snapshot/unit test) keeps behaving identically.
+        self._embedding_model = embedding_model
+        self._embedding_threshold = embedding_dedup_threshold
 
     # -- Public entry point -------------------------------------------------
 
@@ -305,6 +328,43 @@ class SyntheticDataGenerator:
             if text:
                 dedup.add(text)
 
+        # ---- Semantic (embedding) dedup layer (optional) ------------------
+        # Constructed only when the caller opted in via `embedding_model` —
+        # see `__init__`. Runs alongside `dedup` (MinHash) rather than
+        # replacing it; both apply independently in the loop below.
+        semantic: SemanticDeduplicator | None = None
+        if self._embedding_model:
+
+            async def _embed(texts: list[str]) -> tuple[list[list[float]], int, str]:
+                res = await self._async.embed(texts=texts, model=self._embedding_model)
+                return res.vectors, (res.prompt_tokens or 0), res.model
+
+            def _on_embed_usage(model_id: str, prompt_tokens: int) -> None:
+                if usage is not None:
+                    usage.add(model_id, STAGE_EMBED, prompt_tokens, 0)
+                    # Deliberately unguarded here (matches the generate/judge/
+                    # pdf_qa usage.check_budget() call sites) — the
+                    # SemanticDeduplicator only wraps the `embed()` call
+                    # itself in its degrade-on-error try/except, not this
+                    # callback, so a budget breach raised here propagates
+                    # straight out of generate() instead of being swallowed
+                    # as an embeddings-provider failure.
+                    usage.check_budget()
+
+            semantic = SemanticDeduplicator(
+                _embed,
+                threshold=self._embedding_threshold,
+                batch_size=EMBEDDING_BATCH_SIZE,
+                on_usage=_on_embed_usage,
+            )
+            await semantic.add_texts(
+                [
+                    str(row.get(seed_text_field, ""))
+                    for row in seed_rows
+                    if row.get(seed_text_field)
+                ]
+            )
+
         # ---- PDF → Q&A first pass (QA + PDF only) ------------------------
         accepted: list[dict[str, Any]] = []
         api_calls = 0
@@ -321,6 +381,8 @@ class SyntheticDataGenerator:
                 pdf_outcome = dedup.filter(pdf_rows, key="question")
                 # Trim to target so we don't overshoot before the loop.
                 kept = pdf_outcome.unique[: target]
+                if semantic is not None:
+                    await semantic.add_texts([str(r.get("question", "")) for r in kept])
                 accepted.extend(kept)
                 # Use the PDF-derived Q&As as in-context examples for the loop.
                 for r in kept:
@@ -339,6 +401,7 @@ class SyntheticDataGenerator:
         # ---- Loop --------------------------------------------------------
         rejected_total = 0
         duplicates_total = 0
+        semantic_duplicates_total = 0
         judge_rejected_total = 0
         judge_parse_total = 0
         score_aggregator = JudgeScoreAggregator()
@@ -492,7 +555,19 @@ class SyntheticDataGenerator:
             outcome = dedup.filter(valid_rows, key=text_field)
             duplicates_total += outcome.duplicates_dropped
 
-            # 4. Judge batch
+            # 4. Semantic (embedding) dedup — after MinHash, before the
+            # judge, so a semantic near-duplicate never spends a judge call
+            # either. Degrades to a pass-through on any embeddings error
+            # (see SemanticDeduplicator's module docstring); a budget breach
+            # still propagates via the on_usage closure built above.
+            sem_rows = outcome.unique
+            if semantic is not None:
+                sem_outcome = await semantic.filter(sem_rows, key=text_field)
+                sem_rows = sem_outcome.unique
+                semantic_duplicates_total += sem_outcome.duplicates_dropped
+                duplicates_total += sem_outcome.duplicates_dropped
+
+            # 5. Judge batch
             emit(
                 "judging",
                 current_loop=loop_idx,
@@ -501,7 +576,7 @@ class SyntheticDataGenerator:
             )
             judge_keep, j_low, j_parse, judge_calls = await self._judge_filter(
                 request=request,
-                rows=outcome.unique,
+                rows=sem_rows,
                 classification_labels=cls_labels,
                 tool_definitions=tool_defs,
                 usage=usage,
@@ -511,7 +586,7 @@ class SyntheticDataGenerator:
             judge_rejected_total += j_low
             judge_parse_total += j_parse
 
-            # 5. Quota-respecting collection
+            # 6. Quota-respecting collection
             added = _apply_collection_quota(
                 judge_keep,
                 accepted=accepted,
@@ -521,12 +596,12 @@ class SyntheticDataGenerator:
                 key_for_row=lambda r: self._row_quota_key(request.task_type, r),
             )
 
-            # 6. Adaptive multiplier (EMA-smoothed)
+            # 7. Adaptive multiplier (EMA-smoothed)
             over_gen_mult = _update_over_gen_mult(
                 over_gen_mult, added=added, batch_size=len(batch_inputs)
             )
 
-            # 7. Failure counter
+            # 8. Failure counter
             if added == 0:
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
@@ -558,6 +633,7 @@ class SyntheticDataGenerator:
             api_calls=api_calls,
             failed_attempts=failed_attempts,
             judge_scores_summary=score_aggregator.to_dict(),
+            semantic_duplicate_count=semantic_duplicates_total,
         )
 
     # -- Internal stages ----------------------------------------------------

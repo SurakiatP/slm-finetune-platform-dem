@@ -18,7 +18,9 @@ from pathlib import Path
 
 import pytest
 
+from ai_engine.data_gen import usage as usage_module
 from ai_engine.data_gen.usage import (
+    STAGE_EMBED,
     STAGE_GENERATE,
     STAGE_JUDGE,
     SDGBudgetExceededError,
@@ -106,6 +108,22 @@ def test_unpriced_model_sets_flag_and_does_not_change_spent_usd() -> None:
     acc.add(MODEL_B, STAGE_JUDGE, 500, 500)  # unpriced model
     assert acc.has_unpriced_usage is True
     assert acc.spent_usd == pytest.approx(spent_before)
+
+
+def test_stage_embed_constant_and_export() -> None:
+    """STAGE_EMBED must exist, be exported, and bucket separately from STAGE_JUDGE."""
+    assert STAGE_EMBED == "embed"
+    assert "STAGE_EMBED" in usage_module.__all__
+
+    acc = UsageAccumulator()
+    acc.add(MODEL_A, STAGE_EMBED, 100, 0)
+    acc.add(MODEL_A, STAGE_JUDGE, 100, 0)
+
+    entries = {(e.model, e.stage): e for e in acc.entries()}
+    assert entries[(MODEL_A, STAGE_EMBED)].prompt_tokens == 100
+    assert entries[(MODEL_A, STAGE_EMBED)].completion_tokens == 0
+    assert entries[(MODEL_A, STAGE_JUDGE)].prompt_tokens == 100
+    assert len(entries) == 2
 
 
 def test_module_has_no_forbidden_imports() -> None:
