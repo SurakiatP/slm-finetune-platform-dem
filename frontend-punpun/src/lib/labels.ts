@@ -65,13 +65,16 @@ export function useBaseModelLabel(): (baseModel: string | null | undefined) => s
  * display (e.g. a badge next to its name). A dataset is "hold-out" when it
  * is a split held out of another dataset — signalled by `parent_dataset_id`
  * being set, or (fallback, in case a given response doesn't populate that
- * field) `generation_metadata.role === 'holdout'`. Otherwise a plain seed
- * upload is "seed", and everything else (SDG-generated training data) is
- * "training".
+ * field) `generation_metadata.role === 'holdout'`. A directly-uploaded
+ * dataset (not a seed upload — `source === 'uploaded'`) is its own
+ * "uploaded" role: it's trainable as-is, unlike a "seed" which only feeds
+ * SDG. Otherwise a plain seed upload is "seed", and everything else
+ * (SDG-generated training data) is "training".
  */
-export function datasetRoleTag(ds: Dataset): 'seed' | 'training' | 'hold-out' {
+export function datasetRoleTag(ds: Dataset): 'seed' | 'training' | 'hold-out' | 'uploaded' {
   const role = (ds.generation_metadata as { role?: string } | null)?.role
   if (ds.parent_dataset_id != null || role === 'holdout') return 'hold-out'
   if (ds.source === 'seed') return 'seed'
+  if (ds.source === 'uploaded') return 'uploaded'
   return 'training'
 }

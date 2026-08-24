@@ -49,20 +49,20 @@ async def start_training(
     body_json = body.model_dump(mode="json")
     if (replayed := await idempotency.replay(request, user, body_json)) is not None:
         return replayed
-    # Parent-check here rather than inside training_service.submit_*_job:
-    # that module is owned by another workstream on this branch and out of
-    # scope for this change. Both submit functions already 400 when
-    # dataset.project_id != project.id, so asserting ownership of
-    # body.project_id alone also gates body.dataset_id transitively — a
-    # caller can't train against someone else's dataset without also
-    # naming that someone else's project, which this call already blocks.
+    # Project and dataset ownership are two independent gates, not one
+    # transitive check: by user decision (G3), a dataset from a different
+    # project (or an orphaned dataset whose project was deleted) is a valid
+    # training input as long as the caller owns *both* rows, so
+    # `body.dataset_id` no longer rides along with the project check below —
+    # `training_service.submit_*_job` asserts dataset ownership itself via
+    # `ownership.assert_dataset_access`, given the same `user`.
     await ownership.assert_project_access(db, body.project_id, user)
     if body.mode is TrainingMode.MANUAL:
         assert isinstance(body, ManualTrainingRequest)
-        resp = await submit_manual_training_job(db, body)
+        resp = await submit_manual_training_job(db, body, user=user)
     else:
         assert isinstance(body, HPOTrainingRequest)
-        resp = await submit_hpo_training_job(db, body)
+        resp = await submit_hpo_training_job(db, body, user=user)
     await idempotency.remember(request, user, body_json, resp.model_dump(mode="json"))
     return resp
 

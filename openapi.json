@@ -493,6 +493,65 @@
         }
       }
     },
+    "/api/v1/datasets/upload": {
+      "post": {
+        "tags": [
+          "datasets"
+        ],
+        "summary": "Upload a ready-to-train dataset (JSONL or JSON)",
+        "operationId": "upload_dataset_api_v1_datasets_upload_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_dataset_api_v1_datasets_upload_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeedUploadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/datasets/upload-seed": {
       "post": {
         "tags": [
@@ -3204,6 +3263,41 @@
         "title": "BaseModelInfo",
         "description": "One Unsloth 4-bit base model that fits the RTX 3060 12 GB target."
       },
+      "Body_upload_dataset_api_v1_datasets_upload_post": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Project Id"
+          },
+          "task_type": {
+            "$ref": "#/components/schemas/TaskType"
+          },
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "task_type",
+          "file"
+        ],
+        "title": "Body_upload_dataset_api_v1_datasets_upload_post"
+      },
       "Body_upload_seed_dataset_api_v1_datasets_upload_seed_post": {
         "properties": {
           "project_id": {
@@ -3739,6 +3833,19 @@
             "title": "Parent Dataset Id",
             "description": "If set, this dataset is a holdout child of another dataset (created by SDG over-generation). Use the parent for training and this one for `POST /evaluations` to get a leak-free judge score."
           },
+          "seed_dataset_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed Dataset Id",
+            "description": "For with_seed SDG generation, the seed dataset this one was bootstrapped from. Null for description_only generations and for datasets that are not themselves SDG output. Also mirrored at generation_metadata.seed_dataset_id for backward compatibility."
+          },
           "name": {
             "type": "string",
             "title": "Name"
@@ -3860,7 +3967,8 @@
         "enum": [
           "seed",
           "sdg",
-          "merged"
+          "merged",
+          "uploaded"
         ],
         "title": "DatasetSource",
         "description": "Where a dataset's rows came from."

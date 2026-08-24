@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { ApiError } from "@/api/client";
 import type {
+  Dataset,
   HPOSearchSpace,
   ManualTrainingConfig,
   TrainingRequest,
@@ -21,7 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useBaseModels, useStartTraining } from "@/hooks/queries";
+import { useBaseModels, useDatasets, useProjects, useStartTraining } from "@/hooks/queries";
 import { useLanguage } from "@/i18n/LanguageContext";
 
 interface TrainingCreateDialogProps {
@@ -185,6 +186,7 @@ export default function TrainingCreateDialog({
 }: TrainingCreateDialogProps) {
   const { t } = useLanguage();
 
+  const [selectedDatasetId, setSelectedDatasetId] = useState(datasetId);
   const [mode, setMode] = useState<"manual" | "hpo">("manual");
   const [trainingName, setTrainingName] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
@@ -199,9 +201,32 @@ export default function TrainingCreateDialog({
   const [formError, setFormError] = useState<string | null>(null);
 
   const { data: baseModels, isLoading: baseModelsLoading } = useBaseModels();
+  const { data: datasetsPage } = useDatasets(undefined, { limit: 200 });
+  const { data: projectsPage } = useProjects({ limit: 200 });
   const startTraining = useStartTraining();
 
+  // Reopening the dialog against a different dataset (e.g. a different
+  // pipeline card) must re-seed the picker instead of sticking on whatever
+  // was last selected.
+  useEffect(() => {
+    if (open) setSelectedDatasetId(datasetId);
+  }, [open, datasetId]);
+
+  const eligibleDatasets: Dataset[] = useMemo(
+    () =>
+      (datasetsPage?.items ?? []).filter(
+        (d) => d.status === "completed" && d.num_samples > 0 && !!d.storage_uri && !d.parent_dataset_id,
+      ),
+    [datasetsPage],
+  );
+
+  const projectNameById = useMemo(
+    () => new Map((projectsPage?.items ?? []).map((p) => [p.id, p.name])),
+    [projectsPage],
+  );
+
   const reset = () => {
+    setSelectedDatasetId(datasetId);
     setMode("manual");
     setTrainingName("");
     setNameError(null);
@@ -238,7 +263,7 @@ export default function TrainingCreateDialog({
 
     const base = {
       project_id: projectId,
-      dataset_id: datasetId,
+      dataset_id: selectedDatasetId,
       base_model: baseModel === PLATFORM_DEFAULT ? null : baseModel,
       training_name: name,
       auto_export: true,
@@ -363,6 +388,30 @@ export default function TrainingCreateDialog({
               </Select>
               <p className="text-xs text-muted-foreground">{t("trainCreate.baseModelHint")}</p>
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="training-dataset">{t("trainCreate.datasetLabel")}</Label>
+            <Select value={selectedDatasetId} onValueChange={setSelectedDatasetId}>
+              <SelectTrigger id="training-dataset">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {eligibleDatasets.length === 0 ? (
+                  <div className="px-2 py-1.5 text-xs text-muted-foreground">{t("trainCreate.datasetEmpty")}</div>
+                ) : (
+                  eligibleDatasets.map((d) => {
+                    const projectLabel = d.project_id ? (projectNameById.get(d.project_id) ?? d.project_id) : "orphaned";
+                    return (
+                      <SelectItem key={d.id} value={d.id}>
+                        {d.name} · {d.num_samples} rows · {projectLabel}
+                      </SelectItem>
+                    );
+                  })
+                )}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">{t("trainCreate.datasetHint")}</p>
           </div>
 
           <div className="space-y-1.5">

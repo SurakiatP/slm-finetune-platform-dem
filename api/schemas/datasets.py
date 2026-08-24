@@ -31,6 +31,15 @@ class DatasetResponse(BaseModel):
             "for `POST /evaluations` to get a leak-free judge score."
         ),
     )
+    seed_dataset_id: UUID | None = Field(
+        default=None,
+        description=(
+            "For with_seed SDG generation, the seed dataset this one was "
+            "bootstrapped from. Null for description_only generations and for "
+            "datasets that are not themselves SDG output. Also mirrored at "
+            "generation_metadata.seed_dataset_id for backward compatibility."
+        ),
+    )
     name: str
     task_type: TaskType
     source: DatasetSource

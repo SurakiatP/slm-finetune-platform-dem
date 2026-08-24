@@ -48,6 +48,7 @@ class DatasetSource(str, Enum):
     SEED = "seed"  # uploaded by the user
     SDG = "sdg"  # generated via OpenRouter
     MERGED = "merged"  # seed + sdg combined
+    UPLOADED = "uploaded"  # uploaded directly for training, not an SDG seed
 
 
 class ArtifactFormat(str, Enum):

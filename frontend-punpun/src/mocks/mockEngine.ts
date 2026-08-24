@@ -179,8 +179,9 @@ function seedStore(): Store {
       // Regular SDG output (not a holdout split) — parent_dataset_id stays
       // null so `datasetRoleTag` doesn't misclassify it as hold-out; the
       // seed used is recorded informationally in generation_metadata.
-      generation_metadata: { celery_task_id: 'job-sdg-p1-done', loops: 3, seed_dataset_id: 'ds-p1-seed' },
+      generation_metadata: { celery_task_id: 'job-sdg-p1-done', loops: 3 },
       parent_dataset_id: null,
+      seed_dataset_id: 'ds-p1-seed',
       created_at: isoAt(8 * DAY),
       updated_at: isoAt(8 * DAY),
     },
@@ -215,8 +216,9 @@ function seedStore(): Store {
       num_samples: 0,
       storage_uri: null,
       size_bytes: null,
-      generation_metadata: { celery_task_id: 'job-sdg-p1-running', seed_dataset_id: 'ds-p1-seed' },
+      generation_metadata: { celery_task_id: 'job-sdg-p1-running' },
       parent_dataset_id: null,
+      seed_dataset_id: 'ds-p1-seed',
       created_at: isoAt(20 * MIN),
       updated_at: isoAt(1 * MIN),
     },
@@ -248,8 +250,9 @@ function seedStore(): Store {
       num_samples: 650,
       storage_uri: 's3://mock-bucket/datasets/ds-p2-sdg-done.jsonl',
       size_bytes: 512_000,
-      generation_metadata: { celery_task_id: 'job-sdg-p2-done', loops: 2, seed_dataset_id: 'ds-p2-seed' },
+      generation_metadata: { celery_task_id: 'job-sdg-p2-done', loops: 2 },
       parent_dataset_id: null,
+      seed_dataset_id: 'ds-p2-seed',
       created_at: isoAt(4 * DAY),
       updated_at: isoAt(4 * DAY),
     },
@@ -281,8 +284,9 @@ function seedStore(): Store {
       num_samples: 500,
       storage_uri: 's3://mock-bucket/datasets/ds-p3-sdg-done.jsonl',
       size_bytes: 220_000,
-      generation_metadata: { celery_task_id: 'job-sdg-p3-done', loops: 1, seed_dataset_id: 'ds-p3-seed' },
+      generation_metadata: { celery_task_id: 'job-sdg-p3-done', loops: 1 },
       parent_dataset_id: null,
+      seed_dataset_id: 'ds-p3-seed',
       created_at: isoAt(23 * HOUR),
       updated_at: isoAt(23 * HOUR),
     },
@@ -298,8 +302,9 @@ function seedStore(): Store {
       num_samples: 0,
       storage_uri: null,
       size_bytes: null,
-      generation_metadata: { celery_task_id: 'job-sdg-p3-failed', seed_dataset_id: 'ds-p3-seed' },
+      generation_metadata: { celery_task_id: 'job-sdg-p3-failed' },
       parent_dataset_id: null,
+      seed_dataset_id: 'ds-p3-seed',
       created_at: isoAt(6 * HOUR),
       updated_at: isoAt(6 * HOUR),
     },
@@ -1271,6 +1276,52 @@ const routes: Route[] = [
         name: (name ? String(name) : file?.name.replace(/\.(jsonl|json|pdf)$/i, '')) || 'uploaded-seed',
         task_type: taskType,
         source: 'seed',
+        status: 'completed',
+        error_message: null,
+        num_samples: numSamples,
+        storage_uri: `s3://mock-bucket/datasets/${genId('obj')}.jsonl`,
+        size_bytes: numSamples * 350,
+        generation_metadata: null,
+        parent_dataset_id: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+      store.datasets.unshift(ds)
+      const resp: SeedUploadResponse = {
+        dataset_id: ds.id,
+        task_type: taskType,
+        num_samples: numSamples,
+        invalid_rows: [],
+        format_detection: {
+          ran: true,
+          model_used: SDG_PIPELINE_MODELS.generator,
+          field_mapping: {},
+          rows_total: numSamples,
+          rows_canonicalised: numSamples,
+          rows_dropped: 0,
+          notes: null,
+        },
+        pdf_uri: null,
+      }
+      return json(resp, 201)
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/api\/v1\/datasets\/upload$/,
+    handler: async (_m, _url, init) => {
+      const form = init?.body as FormData
+      const projectId = String(form.get('project_id') ?? '')
+      const taskType = String(form.get('task_type') ?? 'classification') as TaskType
+      const name = form.get('name')
+      const file = form.get('file') as File | null
+      const numSamples = 50 + Math.floor(Math.random() * 250)
+      const ds: Dataset = {
+        id: genId('ds'),
+        project_id: projectId,
+        name: (name ? String(name) : file?.name.replace(/\.(jsonl|json|pdf)$/i, '')) || 'uploaded-dataset',
+        task_type: taskType,
+        source: 'uploaded',
         status: 'completed',
         error_message: null,
         num_samples: numSamples,

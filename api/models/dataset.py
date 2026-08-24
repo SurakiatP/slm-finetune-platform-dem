@@ -119,6 +119,21 @@ class Dataset(Base, TimestampMixin):
             "constraint here."
         ),
     )
+    seed_dataset_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("datasets.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        doc=(
+            "For with_seed SDG generation, the seed dataset this one was "
+            "bootstrapped from. First-class promotion of the pre-existing "
+            "generation_metadata['seed_dataset_id'] JSONB value (still kept "
+            "in sync there for backward compatibility -- see sdg_service.py). "
+            "Unlike parent_dataset_id (which relates a holdout child to its "
+            "train split and CASCADEs), this is ondelete=SET NULL: deleting "
+            "the seed dataset must not take its generated children down "
+            "with it."
+        ),
+    )
 
     project: Mapped["Project"] = relationship(back_populates="datasets")
     training_jobs: Mapped[list["TrainingJob"]] = relationship(back_populates="dataset")
@@ -126,10 +141,17 @@ class Dataset(Base, TimestampMixin):
     parent: Mapped["Dataset | None"] = relationship(
         "Dataset",
         remote_side="Dataset.id",
+        foreign_keys=[parent_dataset_id],
         back_populates="holdout_children",
     )
     holdout_children: Mapped[list["Dataset"]] = relationship(
         "Dataset",
+        foreign_keys=[parent_dataset_id],
         back_populates="parent",
         cascade="all, delete-orphan",
+    )
+    seed: Mapped["Dataset | None"] = relationship(
+        "Dataset",
+        remote_side="Dataset.id",
+        foreign_keys=[seed_dataset_id],
     )

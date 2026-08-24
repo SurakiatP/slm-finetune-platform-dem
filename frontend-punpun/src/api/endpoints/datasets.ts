@@ -87,3 +87,22 @@ export function uploadSeedDataset(input: {
 export function generateDataset(body: SDGRequest): Promise<SDGJobAccepted> {
   return api.post(`${BASE}/generate`, body)
 }
+
+/**
+ * Upload a dataset directly (source `'uploaded'`) — distinct from
+ * `uploadSeedDataset`'s `'seed'` source, which is reserved for SDG seed
+ * material. The backend returns the same `SeedUploadResponse` shape.
+ */
+export function uploadDataset(input: {
+  project_id: string
+  task_type: TaskType
+  file: File
+  name?: string
+}): Promise<SeedUploadResponse> {
+  const form = new FormData()
+  form.set('project_id', input.project_id)
+  form.set('task_type', input.task_type)
+  form.set('file', input.file)
+  if (input.name) form.set('name', input.name)
+  return api.postForm(`${BASE}/upload`, form)
+}

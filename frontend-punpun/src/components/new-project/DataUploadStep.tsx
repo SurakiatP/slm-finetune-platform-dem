@@ -6,12 +6,24 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Separator } from "@/components/ui/separator";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { Upload, FileText, X, FileCode, Loader2, CheckCircle2, Info, RefreshCw, Wand2 } from "lucide-react";
 import { toErrorDetail, type ProjectFormData } from "@/pages/NewProject";
-import { useTaskExample, useUploadSeedDataset, useGenerateDataset, useSdgPipelineModels, queryKeys } from "@/hooks/queries";
+import {
+  useTaskExample,
+  useUploadSeedDataset,
+  useUploadDataset,
+  useGenerateDataset,
+  useSdgPipelineModels,
+  useDatasets,
+  useProjects,
+  queryKeys,
+} from "@/hooks/queries";
 import { getDataset } from "@/api/endpoints/datasets";
-import type { JobStatus, ToolDefinition } from "@/api/types";
+import { datasetRoleTag } from "@/lib/labels";
+import type { Dataset, JobStatus, ToolDefinition } from "@/api/types";
 import { useLanguage } from "@/i18n/LanguageContext";
 
 const fileIcons: Record<string, React.ElementType> = {
@@ -34,6 +46,7 @@ const toolsPlaceholder = `[
 ]`;
 
 type SdgMode = "with_seed" | "description_only";
+type DataMode = SdgMode | "existing";
 
 interface DataUploadStepProps {
   formData: ProjectFormData;
@@ -44,7 +57,15 @@ interface DataUploadStepProps {
 export function DataUploadStep({ formData, updateForm, projectId }: DataUploadStepProps) {
   const { t } = useLanguage();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [mode, setMode] = useState<SdgMode>("with_seed");
+  // Whether the current trainingDatasetId came from the "existing" tab is
+  // carried on the form itself (`trainingDatasetPicked`), not inferred from
+  // "has a trainingDatasetId but no seed" — a description_only SDG run also
+  // has no seed, so inferring made a real no-seed generation look "picked"
+  // when this step remounts (the wizard unmounts it whenever it leaves step
+  // 2), hiding its progress card. Keeping it on the form also survives that
+  // remount, which a local useState could not.
+  const pickedExisting = formData.trainingDatasetPicked;
+  const [mode, setMode] = useState<DataMode>(pickedExisting ? "existing" : "with_seed");
   const [file, setFile] = useState<File | null>(null);
   const [seedName, setSeedName] = useState("");
   const [numSamples, setNumSamples] = useState("200");
@@ -65,6 +86,25 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
   const { data: pipelineModels } = useSdgPipelineModels();
   const uploadSeed = useUploadSeedDataset();
   const generateDataset = useGenerateDataset();
+  const uploadDataset = useUploadDataset();
+
+  // "existing" tab: any completed, non-empty, non-holdout dataset for this
+  // task type is pickable — including seed uploads and prior SDG output,
+  // but not the internal hold-out splits (those exist only for eval).
+  const { data: existingDatasetsPage } = useDatasets(undefined, { limit: 200 });
+  const { data: existingProjectsPage } = useProjects({ limit: 200 });
+  const pickableDatasets: Dataset[] = (existingDatasetsPage?.items ?? []).filter(
+    (d) =>
+      d.task_type === taskType &&
+      d.status === "completed" &&
+      d.num_samples > 0 &&
+      !!d.storage_uri &&
+      !d.parent_dataset_id,
+  );
+  const projectNameFor = (d: Dataset): string => {
+    const project = existingProjectsPage?.items.find((p) => p.id === d.project_id);
+    return project?.name ?? t("dataUpload.existingOrphan");
+  };
 
   // Poll the SDG target dataset until it leaves pending/running — this is
   // what unblocks "Next" (canProceed requires status === 'completed').
@@ -107,7 +147,14 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
         onSuccess: (res) => {
           setDatasetName(`${effectiveSeedName}-training`);
           setHoldoutName(`${effectiveSeedName}-hold-out`);
-          updateForm({ seedDatasetId: res.dataset_id, trainingDatasetId: null, trainingDatasetStatus: null });
+          updateForm({
+            seedDatasetId: res.dataset_id,
+            trainingDatasetId: null,
+            trainingDatasetStatus: null,
+            // Clears any dataset previously chosen on the "existing" tab —
+            // this seed upload is now the source of truth for this step.
+            trainingDatasetPicked: false,
+          });
         },
       },
     );
@@ -130,7 +177,11 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
       },
       {
         onSuccess: (res) => {
-          updateForm({ trainingDatasetId: res.dataset_id, trainingDatasetStatus: res.status });
+          updateForm({
+            trainingDatasetId: res.dataset_id,
+            trainingDatasetStatus: res.status,
+            trainingDatasetPicked: false,
+          });
         },
       },
     );
@@ -191,20 +242,53 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
     description_only: { base: "" },
   });
 
-  const handleModeChange = (next: SdgMode) => {
+  const handleModeChange = (next: DataMode) => {
     if (next === mode) return;
+    // The name-parking dance only applies between the two SDG modes —
+    // "existing" has no dataset/holdout name fields of its own.
     if (mode === "with_seed") {
       namesByMode.current.with_seed = { dataset: datasetName, holdout: holdoutName };
-    } else {
+    } else if (mode === "description_only") {
       namesByMode.current.description_only = { base: baseName };
     }
     if (next === "with_seed") {
       setDatasetName(namesByMode.current.with_seed.dataset);
       setHoldoutName(namesByMode.current.with_seed.holdout);
-    } else {
+    } else if (next === "description_only") {
       setBaseName(namesByMode.current.description_only.base);
     }
     setMode(next);
+  };
+
+  // --- "existing" mode helpers --------------------------------------------
+
+  const handlePickExisting = (datasetId: string) => {
+    const picked = pickableDatasets.find((d) => d.id === datasetId);
+    if (!picked) return;
+    updateForm({
+      trainingDatasetId: picked.id,
+      trainingDatasetStatus: "completed",
+      trainingDatasetPicked: true,
+    });
+  };
+
+  const handleUploadExisting = () => {
+    if (!file || !projectId || !taskType) return;
+    // No dedicated name field on this tab (unlike the with-seed upload
+    // above) — the backend derives a name from the filename when omitted.
+    uploadDataset.mutate(
+      { project_id: projectId, task_type: taskType, file },
+      {
+        onSuccess: (res) => {
+          updateForm({
+            trainingDatasetId: res.dataset_id,
+            trainingDatasetStatus: "completed",
+            trainingDatasetPicked: true,
+          });
+          setFile(null);
+        },
+      },
+    );
   };
 
   const holdoutRequired = (Number(holdoutSize) || 0) > 0;
@@ -266,7 +350,11 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
       },
       {
         onSuccess: (res) => {
-          updateForm({ trainingDatasetId: res.dataset_id, trainingDatasetStatus: res.status });
+          updateForm({
+            trainingDatasetId: res.dataset_id,
+            trainingDatasetStatus: res.status,
+            trainingDatasetPicked: false,
+          });
         },
       },
     );
@@ -303,7 +391,11 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
 
   const seedUploaded = !!formData.seedDatasetId;
   const status = formData.trainingDatasetStatus;
-  const generationStarted = !!formData.trainingDatasetId;
+  // A dataset picked/uploaded on the "existing" tab also sets
+  // trainingDatasetId, but it never went through SDG generation — gating the
+  // tab strip and the SDG progress card on trainingDatasetId alone would hide
+  // the tabs and show a bogus "Synthetic data generation" card for it.
+  const generationStarted = !!formData.trainingDatasetId && !pickedExisting;
 
   return (
     <div className="space-y-4">
@@ -312,7 +404,9 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
         <p className="text-xs text-muted-foreground mt-0.5">
           {mode === "with_seed"
             ? "Upload a seed file, then generate a full synthetic training set from it."
-            : t("sdgNoSeed.subtitle")}
+            : mode === "existing"
+              ? t("dataUpload.existingHint")
+              : t("sdgNoSeed.subtitle")}
         </p>
       </div>
 
@@ -321,10 +415,11 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
       )}
 
       {!generationStarted && (
-        <Tabs value={mode} onValueChange={(v) => handleModeChange(v as SdgMode)}>
-          <TabsList className="grid w-full grid-cols-2">
+        <Tabs value={mode} onValueChange={(v) => handleModeChange(v as DataMode)}>
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="with_seed">{t("sdgNoSeed.modeWithSeed")}</TabsTrigger>
             <TabsTrigger value="description_only">{t("sdgNoSeed.modeNoSeed")}</TabsTrigger>
+            <TabsTrigger value="existing">{t("dataUpload.modeExisting")}</TabsTrigger>
           </TabsList>
         </Tabs>
       )}
@@ -580,7 +675,107 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
         </div>
       )}
 
-      {formData.trainingDatasetId && (
+      {mode === "existing" && !generationStarted && (
+        <div className="space-y-4">
+          {pickableDatasets.length === 0 ? (
+            <p className="text-xs text-muted-foreground rounded-md border border-border bg-secondary/30 p-3">
+              {t("dataUpload.existingEmpty")}
+            </p>
+          ) : (
+            <RadioGroup
+              value={pickedExisting ? formData.trainingDatasetId ?? undefined : undefined}
+              onValueChange={handlePickExisting}
+              className="gap-2"
+            >
+              {pickableDatasets.map((d) => (
+                <label
+                  key={d.id}
+                  htmlFor={`existing-dataset-${d.id}`}
+                  className="flex items-center gap-3 p-2.5 rounded-md border border-border cursor-pointer hover:bg-accent/50 transition-colors"
+                >
+                  <RadioGroupItem value={d.id} id={`existing-dataset-${d.id}`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-[10px] uppercase shrink-0">
+                        {datasetRoleTag(d)}
+                      </Badge>
+                      <span className="text-sm font-medium text-foreground truncate">{d.name}</span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      {t("dataUpload.existingRows").replace("{n}", d.num_samples.toLocaleString())} · {projectNameFor(d)}
+                    </p>
+                  </div>
+                </label>
+              ))}
+            </RadioGroup>
+          )}
+
+          <div className="relative flex items-center gap-3">
+            <Separator className="flex-1" />
+            <span className="text-[10px] text-muted-foreground shrink-0">{t("dataUpload.orSeparator")}</span>
+            <Separator className="flex-1" />
+          </div>
+
+          <div>
+            <p className="text-sm font-semibold text-foreground">{t("dataUpload.uploadNewTitle")}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{t("dataUpload.uploadNewHint")}</p>
+          </div>
+
+          <div
+            onClick={() => inputRef.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+            onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleFiles(e.dataTransfer.files); }}
+            className="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-primary/50 hover:bg-accent/50 transition-colors"
+          >
+            <Upload className="h-6 w-6 text-muted-foreground mx-auto mb-2" />
+            <p className="text-sm font-medium text-foreground">{t("dataUpload.uploadNewButton")}</p>
+            <p className="text-xs text-muted-foreground mt-1">JSON/JSONL</p>
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".json,.jsonl"
+              className="hidden"
+              onChange={(e) => handleFiles(e.target.files)}
+            />
+          </div>
+
+          {file && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-3 p-2.5 rounded-md bg-secondary/50 border border-border">
+                <div className="text-muted-foreground">{getIcon(file.name)}</div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-foreground truncate">{file.name}</p>
+                  <p className="text-[10px] text-muted-foreground">{(file.size / 1024).toFixed(1)} KB</p>
+                </div>
+                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={removeFile}>
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+
+              <Button
+                type="button"
+                onClick={handleUploadExisting}
+                disabled={!projectId || uploadDataset.isPending}
+                className="gap-2"
+              >
+                {uploadDataset.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                {t("dataUpload.uploadNewButton")}
+              </Button>
+            </div>
+          )}
+
+          {uploadDataset.isError && (
+            <ErrorDetail
+              error={{
+                detail: toErrorDetail(uploadDataset.error).detail || t("dataUpload.uploadNewError"),
+                code: toErrorDetail(uploadDataset.error).code,
+              }}
+            />
+          )}
+        </div>
+      )}
+
+      {generationStarted && (
         <div className="rounded-lg border border-border p-4 space-y-2">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-foreground">Synthetic data generation</p>

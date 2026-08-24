@@ -39,6 +39,30 @@ router = APIRouter()
 
 
 @router.post(
+    "/upload",
+    response_model=SeedUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload a ready-to-train dataset (JSONL or JSON)",
+)
+async def upload_dataset(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+    project_id: Annotated[UUID, Form(...)],
+    task_type: Annotated[TaskType, Form(...)],
+    file: Annotated[UploadFile, File(...)],
+    name: Annotated[str | None, Form()] = None,
+) -> SeedUploadResponse:
+    return await datasets_service.upload_dataset(
+        db,
+        project_id=project_id,
+        task_type=task_type,
+        name=name,
+        file=file,
+        user=user,
+    )
+
+
+@router.post(
     "/upload-seed",
     response_model=SeedUploadResponse,
     status_code=status.HTTP_201_CREATED,

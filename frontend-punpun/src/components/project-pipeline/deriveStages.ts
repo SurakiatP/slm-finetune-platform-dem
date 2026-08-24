@@ -48,11 +48,17 @@ export function pickSeedDataset(datasets: Dataset[]): Dataset | null {
   return byCreatedAtDesc(seeds)[0] ?? null;
 }
 
-/** Latest non-hold-out SDG output dataset — `datasetRoleTag` already treats
- *  hold-out splits as their own category, so plain `.filter` here can't
- *  accidentally pick one up as "the" training dataset. */
+/** Latest non-hold-out SDG output or directly-uploaded dataset —
+ *  `datasetRoleTag` already treats hold-out splits (and seed uploads, which
+ *  only feed SDG rather than being trainable themselves) as their own
+ *  category, so plain `.filter` here can't accidentally pick one up as "the"
+ *  training dataset. An "uploaded" dataset is included because it's directly
+ *  trainable, same as an SDG-generated "training" one. */
 export function pickCurrentDataset(datasets: Dataset[]): Dataset | null {
-  const generated = datasets.filter((d) => datasetRoleTag(d) === "training");
+  const generated = datasets.filter((d) => {
+    const role = datasetRoleTag(d);
+    return role === "training" || role === "uploaded";
+  });
   return byCreatedAtDesc(generated)[0] ?? null;
 }
 

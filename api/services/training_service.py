@@ -2,8 +2,10 @@
 
 Steps:
   1. Validate project exists.
-  2. Validate dataset exists, belongs to the project, has finished generation
-     (storage_uri set) and matches the project's task_type.
+  2. Validate dataset exists, is accessible to the caller (cross-project and
+     orphaned datasets are allowed — see `ownership.assert_dataset_access`),
+     has finished generation (storage_uri set), and matches the project's
+     task_type.
   3. Validate base_model is in the supported allowlist (ADR-002).
   3b. RTX 3060 VRAM safety — reject a per_device_train_batch_size that
       would OOM at the requested max_seq_length (mirrors the HPO guard).
@@ -25,10 +27,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core import request_context
-from api.services import audit_service, quota
+from api.core.auth import CurrentUser
+from api.services import audit_service, ownership, quota
 from api.services.quota import Bucket
 from api.core.config import get_settings
-from api.models.dataset import Dataset
 from api.models.project import Project
 from api.models.training_job import TrainingJob
 from api.routers.tasks_meta import SUPPORTED_BASE_MODELS
@@ -133,6 +135,7 @@ async def _assert_training_name_available(
 async def submit_manual_training_job(
     db: AsyncSession,
     request: ManualTrainingRequest,
+    user: CurrentUser | None = None,
 ) -> TrainingJobAcceptedResponse:
     """Validate the request, persist the TrainingJob row, and enqueue the worker."""
     settings = get_settings()
@@ -145,26 +148,12 @@ async def submit_manual_training_job(
             detail=f"Project {request.project_id} not found",
         )
 
-    # 2. Dataset exists + ready + matches project?
-    dataset = await db.get(Dataset, request.dataset_id)
-    if dataset is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {request.dataset_id} not found",
-        )
-    if dataset.project_id != project.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                # Deliberately does NOT name dataset.project_id. The caller
-                # already knows the two ids they sent; the project the dataset
-                # actually belongs to may be someone else's, and echoing it
-                # would hand over a project UUID they had no way to derive —
-                # the same disclosure ADR-012's exclusions exist to avoid.
-                f"Dataset {dataset.id} belongs to a different project; "
-                f"cannot use it for training in {project.id}"
-            ),
-        )
+    # 2. Dataset exists + accessible to the caller + ready + matches project's
+    # task_type. Cross-project and orphaned (project_id IS NULL) datasets are
+    # allowed by user decision (G3) — ownership, not project membership, is
+    # the gate: auth-off allows any dataset; auth-on requires the caller own
+    # it (including an orphan whose owner_id still matches), 403 otherwise.
+    dataset = await ownership.assert_dataset_access(db, request.dataset_id, user)
     if dataset.task_type != project.task_type:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -278,6 +267,7 @@ async def submit_manual_training_job(
 async def submit_hpo_training_job(
     db: AsyncSession,
     request: HPOTrainingRequest,
+    user: CurrentUser | None = None,
 ) -> TrainingJobAcceptedResponse:
     """Validate the HPO request, persist the TrainingJob row, and enqueue the worker.
 
@@ -285,7 +275,8 @@ async def submit_hpo_training_job(
     objective_metric, search_space, fixed_config, ...) into `config_json` and
     dispatches to the `train.hpo` Celery task. Also mirrors its `training_name`
     uniqueness check (409 within the owning project's owner scope) — see
-    `_assert_training_name_available`.
+    `_assert_training_name_available` — and its dataset ownership gate (G3) —
+    see `ownership.assert_dataset_access`.
     """
     settings = get_settings()
 
@@ -297,21 +288,10 @@ async def submit_hpo_training_job(
             detail=f"Project {request.project_id} not found",
         )
 
-    # 2. Dataset exists + ready + matches project?
-    dataset = await db.get(Dataset, request.dataset_id)
-    if dataset is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dataset {request.dataset_id} not found",
-        )
-    if dataset.project_id != project.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Dataset {dataset.id} belongs to a different project "
-                f"({dataset.project_id}); cannot use it for training in {project.id}"
-            ),
-        )
+    # 2. Dataset exists + accessible to the caller + ready + matches project's
+    # task_type. Cross-project and orphaned (project_id IS NULL) datasets are
+    # allowed by user decision (G3) — see submit_manual_training_job above.
+    dataset = await ownership.assert_dataset_access(db, request.dataset_id, user)
     if dataset.task_type != project.task_type:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

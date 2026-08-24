@@ -17,7 +17,7 @@ export type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancel
  *  same owner's queued projects. The trio is populated only on detail GETs
  *  while in-flight; list endpoints and terminal rows always carry nulls. */
 export type QueueState = 'processing' | 'queued'
-export type DatasetSource = 'seed' | 'sdg' | 'merged'
+export type DatasetSource = 'seed' | 'sdg' | 'merged' | 'uploaded'
 export type ArtifactFormat = 'lora' | 'gguf' | 'safetensors'
 
 export const TASK_TYPES: TaskType[] = ['classification', 'tool_calling', 'qa']
@@ -89,6 +89,10 @@ export interface Dataset {
   size_bytes: number | null
   generation_metadata: Record<string, unknown> | null
   parent_dataset_id?: string | null
+  /** First-class seed reference for SDG-generated datasets. Nullable —
+   *  pre-backfill rows may only carry the seed reference nested inside
+   *  `generation_metadata.seed_dataset_id` instead of this field. */
+  seed_dataset_id?: string | null
   created_at: string
   updated_at: string
 }

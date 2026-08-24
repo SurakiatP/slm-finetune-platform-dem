@@ -210,6 +210,18 @@ export const translations: Record<Language, Record<string, string>> = {
     "newProject.trainingNameHint": "Lowercase letters, digits, '.', '_', '-' only; must start with a letter or digit.",
     "newProject.trainingNameError": "Must start with a lowercase letter or digit and contain only lowercase letters, digits, '.', '_', or '-' (max 63 characters).",
 
+    // Data upload step (existing dataset vs. new upload)
+    "dataUpload.modeExisting": "Use an existing dataset",
+    "dataUpload.existingHint": "Pick a dataset you've already uploaded or generated.",
+    "dataUpload.existingEmpty": "No existing datasets yet — upload one below.",
+    "dataUpload.existingOrphan": "This dataset's original project was deleted.",
+    "dataUpload.existingRows": "{n} rows",
+    "dataUpload.orSeparator": "— or —",
+    "dataUpload.uploadNewTitle": "Upload a new dataset",
+    "dataUpload.uploadNewHint": "CSV or JSONL, seed rows for synthetic data generation.",
+    "dataUpload.uploadNewButton": "Choose file",
+    "dataUpload.uploadNewError": "Could not upload dataset. Please try again.",
+
     // Live training status
     "training.queuedTitle": "Queued for training",
     "training.queuedDesc": "Your job is in line and will start shortly.",
@@ -457,6 +469,9 @@ export const translations: Record<Language, Record<string, string>> = {
     "trainCreate.choicesPlaceholder": "choices, comma-separated",
     "trainCreate.logLabel": "log",
     "trainCreate.toLabel": "to",
+    "trainCreate.datasetLabel": "Dataset",
+    "trainCreate.datasetHint": "Choose the training dataset to use for this run.",
+    "trainCreate.datasetEmpty": "No datasets available — generate or upload one first.",
     "trainCreate.submitCta": "Start training",
 
     // Model naming + eval surfacing (W2-T5)
@@ -482,9 +497,14 @@ export const translations: Record<Language, Record<string, string>> = {
     "datasetsPage.role.seed": "Seed",
     "datasetsPage.role.training": "Training",
     "datasetsPage.role.hold-out": "Hold-out",
+    "datasetsPage.role.uploaded": "Uploaded",
     "datasetsPage.noProject": "No project",
     "datasetsPage.inUseHint": "This dataset is used by an existing training and can't be deleted.",
     "datasetsPage.inUseTitle": "Dataset in use",
+    "datasetsPage.familyMembers": "{n} datasets",
+    "datasetsPage.familyExpand": "Expand",
+    "datasetsPage.familyCollapse": "Collapse",
+    "datasetsPage.familyLatest": "Latest",
 
     // Evaluations (global, cross-project list)
     "evaluationsPage.navLabel": "Evaluations",
@@ -734,6 +754,18 @@ export const translations: Record<Language, Record<string, string>> = {
     "newProject.trainingNameHint": "ใช้ได้เฉพาะตัวพิมพ์เล็ก ตัวเลข '.', '_', '-' เท่านั้น และต้องขึ้นต้นด้วยตัวอักษรหรือตัวเลข",
     "newProject.trainingNameError": "ต้องขึ้นต้นด้วยตัวพิมพ์เล็กหรือตัวเลข และประกอบด้วยตัวพิมพ์เล็ก ตัวเลข '.', '_', หรือ '-' เท่านั้น (สูงสุด 63 ตัวอักษร)",
 
+    // Data upload step (existing dataset vs. new upload)
+    "dataUpload.modeExisting": "ใช้ dataset ที่มีอยู่",
+    "dataUpload.existingHint": "เลือกชุดข้อมูลที่คุณเคยอัปโหลดหรือสร้างไว้แล้ว",
+    "dataUpload.existingEmpty": "ยังไม่มีชุดข้อมูลที่มีอยู่ — อัปโหลดชุดข้อมูลด้านล่าง",
+    "dataUpload.existingOrphan": "โปรเจกต์เดิมของชุดข้อมูลนี้ถูกลบไปแล้ว",
+    "dataUpload.existingRows": "{n} แถว",
+    "dataUpload.orSeparator": "— หรือ —",
+    "dataUpload.uploadNewTitle": "อัปโหลดชุดข้อมูลใหม่",
+    "dataUpload.uploadNewHint": "CSV หรือ JSONL แถวตัวอย่างสำหรับสร้างข้อมูลสังเคราะห์",
+    "dataUpload.uploadNewButton": "เลือกไฟล์",
+    "dataUpload.uploadNewError": "อัปโหลดชุดข้อมูลไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+
     // Live training status
     "training.queuedTitle": "อยู่ในคิวการฝึก",
     "training.queuedDesc": "งานของคุณรออยู่และจะเริ่มในไม่ช้า",
@@ -981,6 +1013,9 @@ export const translations: Record<Language, Record<string, string>> = {
     "trainCreate.choicesPlaceholder": "ตัวเลือก คั่นด้วยจุลภาค",
     "trainCreate.logLabel": "log",
     "trainCreate.toLabel": "ถึง",
+    "trainCreate.datasetLabel": "ชุดข้อมูล",
+    "trainCreate.datasetHint": "เลือกชุดข้อมูลฝึกที่จะใช้สำหรับการฝึกครั้งนี้",
+    "trainCreate.datasetEmpty": "ยังไม่มีชุดข้อมูล — กรุณาสร้างหรืออัปโหลดก่อน",
     "trainCreate.submitCta": "เริ่มฝึก",
 
     // Model naming + eval surfacing (W2-T5)
@@ -1006,9 +1041,14 @@ export const translations: Record<Language, Record<string, string>> = {
     "datasetsPage.role.seed": "Seed",
     "datasetsPage.role.training": "Training",
     "datasetsPage.role.hold-out": "Hold-out",
+    "datasetsPage.role.uploaded": "อัปโหลด",
     "datasetsPage.noProject": "ไม่มีโปรเจกต์",
     "datasetsPage.inUseHint": "ชุดข้อมูลนี้ถูกใช้งานโดยการฝึกที่มีอยู่ ไม่สามารถลบได้",
     "datasetsPage.inUseTitle": "ชุดข้อมูลกำลังถูกใช้งาน",
+    "datasetsPage.familyMembers": "{n} ชุดข้อมูล",
+    "datasetsPage.familyExpand": "ขยาย",
+    "datasetsPage.familyCollapse": "ย่อ",
+    "datasetsPage.familyLatest": "ล่าสุด",
 
     // Evaluations (global, cross-project list)
     "evaluationsPage.navLabel": "ประเมินผล",

@@ -175,6 +175,18 @@ export function useUploadSeedDataset() {
   })
 }
 
+export function useUploadDataset() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: Parameters<typeof datasets.uploadDataset>[0]) =>
+      datasets.uploadDataset(input),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.datasets(variables.project_id) })
+      void queryClient.invalidateQueries({ queryKey: ['datasets'] })
+    },
+  })
+}
+
 export function useGenerateDataset() {
   const queryClient = useQueryClient()
   return useMutation({

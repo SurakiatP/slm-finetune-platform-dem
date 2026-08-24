@@ -12,7 +12,7 @@ changing a router.
 This is the human companion to [`openapi.json`](./openapi.json); regenerate
 that with `scripts/export_openapi.py` when the contract changes. All routes
 are mounted under `/api/v1` except `GET /health` (root-level). The spec
-currently has **40 paths / 49 operations**; this doc covers all of them.
+currently has **41 paths / 50 operations**; this doc covers all of them.
 (That count is asserted against `openapi.json` by
 `tests/unit/test_openapi_spec_is_current.py` — it had drifted twice, and this
 file previously stated two *different* stale numbers in two places.)
@@ -518,6 +518,73 @@ Upload seed examples (multipart form) — JSON array, JSONL, or (QA-only) PDF.
 }
 ```
 
+### POST /api/v1/datasets/upload
+
+Upload a ready-to-train dataset (multipart form) — JSON array or JSONL;
+no PDF path (a PDF has no rows yet, so it's seed-only — use
+`/datasets/upload-seed` instead). `api/routers/datasets.py:42-63`. Sibling
+of `POST /datasets/upload-seed`, reusing the same parse → Format Detection
+→ validate → persist pipeline, parameterised to persist a ready-to-train
+dataset instead of a seed one.
+
+- **Body**: `multipart/form-data`
+  | Field | Type | Notes |
+  |---|---|---|
+  | `project_id` | UUID (form) | required |
+  | `task_type` | enum (form) | required; must match the project's `task_type` or `400` |
+  | `file` | file | required; `.json`/`.jsonl` only — PDF is rejected here |
+  | `name` | string (form) | optional display name |
+
+- **Success**: `201` `SeedUploadResponse` — same shape as `/upload-seed`:
+  `dataset_id`, `task_type`, `num_samples`, `invalid_rows` (indexes that
+  failed schema validation), `format_detection` (audit trail). `pdf_uri`
+  is always `null` on this path. The persisted `Dataset` row is created
+  with `source=uploaded` and `status=completed` immediately (there's no
+  async generation step to wait on — the rows are already final), storage
+  key `uploads/{dataset_id}.jsonl` (vs. `seeds/...` for `/upload-seed`).
+- **Format Detection**: identical to `/upload-seed` — an LLM pass renames/
+  maps fields into the canonical shape when the upload isn't already
+  canonical, with the same audit trail persisted on
+  `generation_metadata.format_detection`.
+- **Caps**: JSON/JSONL ≤ 10 MiB, `413` over the cap — same limit and same
+  code path as `/upload-seed` (`api/services/datasets_service.py:78`).
+- **Errors**:
+  - `404` project doesn't exist; `403` if it exists and belongs to another
+    user (ADR-012) — same ownership contract as `/upload-seed`, asserted
+    on the *project* before `file` is read.
+  - `400` project/upload `task_type` mismatch; empty file; unparseable
+    JSON; top-level JSON not an array; **PDF upload** (`"PDF uploads are
+    seed-only; use /upload-seed instead"` — this is the one error this
+    endpoint has that `/upload-seed` doesn't); no valid rows survive
+    Format Detection + schema validation.
+  - `413` file exceeds the 10 MiB cap.
+  - `422` all rows structurally valid but fail the semantic guard
+    (`assert_semantic_fit`) — same rule as `/upload-seed`: currently only
+    classification has a semantic guard.
+- **Gotcha**: this is the endpoint to use when the caller already has a
+  fully-formed, ready-to-train dataset and wants to skip SDG entirely —
+  the resulting dataset is immediately usable as a `dataset_id` on
+  `POST /trainings` (subject to the ownership-based access rule described
+  there), with no `generate` step in between.
+
+```json
+// multipart fields: project_id=..., task_type=classification, file=labeled.jsonl
+
+// 201 response
+{
+  "dataset_id": "00000000-0000-0000-0000-0000000000aa",
+  "task_type": "classification",
+  "num_samples": 240,
+  "invalid_rows": [],
+  "format_detection": {
+    "ran": false, "model_used": null, "field_mapping": {},
+    "rows_total": 240, "rows_canonicalised": 240, "rows_dropped": 0,
+    "notes": null
+  },
+  "pdf_uri": null
+}
+```
+
 ### POST /api/v1/datasets/generate
 
 Generate a synthetic dataset via OpenRouter. Body is a discriminated union
@@ -783,11 +850,25 @@ Start a training job — `mode` discriminates `manual` vs `hpo`.
   run starts; poll `GET /trainings/{id}` or `GET /trainings/{id}/mlflow-url`.)
 - **Errors** (same checks for both modes,
   `api/services/training_service.py:72-165, 167-283`):
-  - `404` project or dataset not found. **Not ownership-checked** — same
-    known gap as `POST /datasets/generate` above; no `assert_*_access`
-    call on this path, so no 403 either.
-  - `400` dataset belongs to a different project; dataset `task_type` ≠
-    project `task_type`.
+  - `404` project or dataset not found.
+  - **Project ownership**: **not checked** — `project` is loaded with a
+    plain `db.get`, no `assert_*_access` call, so there's no 403 on the
+    project itself; the same known gap as `POST /datasets/generate` above.
+  - **Dataset ownership**: **checked**, via `ownership.assert_dataset_access`
+    — the dataset no longer has to belong to the training's target
+    `project_id`; the gate is ownership of the dataset itself, not project
+    membership. `user=None` (auth off) is a no-op — any existing dataset,
+    from any project or orphaned (`project_id IS NULL`), may be used.
+    An authenticated `user` may only train against a dataset they own
+    (`Dataset.owner_id == user.id`), regardless of which project it
+    currently belongs to (cross-project reuse) or whether it has no
+    project at all — cross-project and orphaned datasets are allowed by
+    design, not a bug. `Dataset.owner_id IS NULL` still fails closed with
+    `403` for an authenticated caller (ADR-012), same as every other
+    ownership check. This replaces the old "dataset must belong to the
+    same project" `400` gate.
+  - `400` dataset `task_type` ≠ project `task_type` — unchanged, still
+    runs after the ownership check.
   - `409` dataset not ready (`storage_uri` unset or `num_samples=0` — SDG
     still running or seed never uploaded).
   - `422` `base_model` not in the supported allowlist; (HPO only)
@@ -1670,7 +1751,7 @@ slm_worker_up{queue="gpu"} 0.0
 
 ## Verification notes
 
-`openapi.json` currently enumerates 40 paths / 49 operations, and
+`openapi.json` currently enumerates 41 paths / 50 operations, and
 `tests/unit/test_openapi_spec_is_current.py` now asserts that the count stated
 at the top of this file matches it — regenerate with
 `python scripts/export_openapi.py` and update that one number when routes

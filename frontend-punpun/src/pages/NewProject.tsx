@@ -29,6 +29,13 @@ export interface ProjectFormData {
    *  produced via useGenerateDataset in with_seed mode. */
   trainingDatasetId: string | null;
   trainingDatasetStatus: JobStatus | null;
+  /** True when `trainingDatasetId` came from the "use an existing dataset"
+   *  tab (picked from the list, or uploaded straight to `/datasets/upload`)
+   *  rather than from an SDG generation. Explicit rather than inferred from
+   *  `seedDatasetId being null`, because description_only SDG runs also have
+   *  no seed — inferring would make a real no-seed generation look "picked"
+   *  on remount and hide its progress card. */
+  trainingDatasetPicked: boolean;
 }
 
 const initialFormData: ProjectFormData = {
@@ -41,6 +48,7 @@ const initialFormData: ProjectFormData = {
   seedDatasetId: null,
   trainingDatasetId: null,
   trainingDatasetStatus: null,
+  trainingDatasetPicked: false,
 };
 
 /** Normalizes a caught error into the ApiErrorLike shape ErrorDetail expects. */
@@ -73,6 +81,7 @@ export default function NewProject() {
         next.seedDatasetId = null;
         next.trainingDatasetId = null;
         next.trainingDatasetStatus = null;
+        next.trainingDatasetPicked = false;
         next.baseModel = null;
         next.maxSeqLength = null;
       }
