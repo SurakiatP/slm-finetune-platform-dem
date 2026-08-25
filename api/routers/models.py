@@ -26,6 +26,7 @@ from api.schemas.responses import Page
 from api.services.download_links import mint_model_download_url
 from api.services.model_service import (
     cancel_export as _cancel_export,
+    delete_model as _delete_model,
     download_artifact,
     get_model as _get_model,
     list_models as _list_models,
@@ -69,6 +70,19 @@ async def get_model(
     user: Annotated[CurrentUser | None, Depends(require_user)],
 ) -> ModelArtifactResponse:
     return await _get_model(db, model_id, user)
+
+
+@router.delete(
+    "/{model_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a model artifact (purges MinIO/Ollama state, best-effort)",
+)
+async def delete_model(
+    model_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+) -> None:
+    await _delete_model(db, model_id, user)
 
 
 @router.post(

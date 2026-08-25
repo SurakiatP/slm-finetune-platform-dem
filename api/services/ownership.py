@@ -7,18 +7,45 @@ column directly (copied from its owning `Project` at creation time, and
 NOT cleared when the project is deleted — see `api/models/dataset.py`):
 
     Dataset                        --(owner_id, direct)-->     [no join]
-    TrainingJob                    --(project_id)-->            Project        (1 hop)
+    TrainingJob                    --(project_id, NULLABLE)-->  Project        (1 hop)
     ModelArtifact                  --(training_job_id)-->
-                                    TrainingJob --(project_id)--> Project        (2 hops)
+                                    TrainingJob --(project_id, NULLABLE)--> Project (2 hops)
     EvaluationRun                  --(model_artifact_id)-->
                                     ModelArtifact --(training_job_id)-->
-                                    TrainingJob --(project_id)--> Project        (3 hops)
+                                    TrainingJob --(project_id, NULLABLE)--> Project (3 hops)
 
 `Dataset.owner_id` being read directly (rather than joined through
 `Project`) is what keeps an orphaned dataset (`project_id IS NULL`, e.g.
 after its project is deleted) reachable by its owner: there is no longer a
 `Project` row to join through, but the copied `owner_id` survives the
 orphaning.
+
+`TrainingJob.project_id` is ALSO nullable (migration
+`0012_training_decouple`, user decision D10 — deleting a project must keep
+its trained models), but unlike `Dataset`, `TrainingJob` does NOT get its
+own `owner_id` column. An orphaned training run (and, transitively, its
+`ModelArtifact`/`EvaluationRun` descendants) therefore has no surviving
+owner to compare against once its `Project` is gone. This module's policy
+for that case, deliberately different from the dataset one:
+
+  * `assert_training_access` / `assert_model_access` / `assert_evaluation_access`
+    on an orphan: `user is None` -> allowed (existence-only, phase-1
+    behaviour unchanged); `user` set -> 403, fail-closed, same as any other
+    unresolvable owner (there is no "public" bucket to fall into).
+  * `scope_trainings_to_owner` / `scope_models_to_owner` /
+    `scope_evaluations_to_owner` on orphans: `user is None` -> included
+    (no filter applied at all, matching the no-op contract everywhere
+    else in this module); `user` set -> excluded from the scoped list,
+    for the same fail-closed reason as the single-row check above.
+
+This falls out of the *implementation* rather than needing special-cased
+orphan branches: every training/model/evaluation lookup below joins (or
+outer-joins) through `TrainingJob.project_id` to `Project.owner_id`, and
+`project_id IS NULL` simply never matches any `Project.id`, so the joined
+`owner_id` comes back `NULL` for an orphan exactly as it would for a
+project that predates auth. The existing "`owner_id IS NULL` fails
+closed" handling below covers both cases identically without having to
+know which one it is.
 
 Two families of helper are provided:
 
@@ -149,15 +176,20 @@ def _check_owner(
         raise _forbidden(label, resource_id)
 
 
-async def _project_owner_id(db: AsyncSession, project_id: UUID) -> str | None:
+async def _project_owner_id(db: AsyncSession, project_id: UUID | None) -> str | None:
     """Read just `Project.owner_id` for `project_id`, without loading the row.
 
     Internal helper for the 1-hop resolvers — they only need the owner to
     compare, so pulling (and discarding) a full `Project` row would be a
-    wasted SELECT. Returns `None` both when the project doesn't exist and
-    when it exists with a null owner; callers that need to distinguish
-    "missing" from "null owner" don't, in practice, care here — either way
-    a present `user` fails the `_check_owner` comparison identically.
+    wasted SELECT. Returns `None` when the project doesn't exist, when it
+    exists with a null owner, AND when `project_id` itself is `None` (an
+    orphaned `TrainingJob` — see the module docstring): `Project.id ==
+    None` is rewritten by SQLAlchemy to `Project.id IS NULL`, which no row
+    (a primary key) ever satisfies, so this returns `None` exactly like the
+    "doesn't exist" case, with no special-casing needed. Callers that need
+    to distinguish "missing"/"orphaned" from "null owner" don't, in
+    practice, care here — either way a present `user` fails the
+    `_check_owner` comparison identically.
     """
     return (
         await db.execute(select(Project.owner_id).where(Project.id == project_id))
@@ -236,6 +268,12 @@ async def assert_training_access(
     """Load `TrainingJob(training_id)`; 404 if missing, 403 if it exists and
     its project isn't owned by `user` (1-hop: TrainingJob -> Project).
     Returns the row.
+
+    `training.project_id` may be `None` (orphaned — its `Project` was
+    deleted, see migration `0012_training_decouple`). `_project_owner_id`
+    resolves that to `None` the same way it resolves a missing project, so
+    `_check_owner` fails closed with 403 for an authenticated `user` and is
+    a no-op (as always) when `user is None` — no extra branch needed here.
     """
     training = await db.get(TrainingJob, training_id)
     if training is None:
@@ -253,6 +291,13 @@ async def assert_model_access(
     """Load `ModelArtifact(model_id)`; 404 if missing, 403 if it exists and
     isn't owned by `user` (2-hop: ModelArtifact -> TrainingJob -> Project).
     Returns the row.
+
+    If the artifact's `TrainingJob` is orphaned (`project_id IS NULL`), the
+    `.join(TrainingJob, TrainingJob.project_id == Project.id)` below never
+    matches any `Project` row (a NULL never equals a primary key), so `row`
+    comes back `None` and `_check_owner(None, ...)` fails closed with 403
+    for an authenticated `user` — same outcome as `assert_training_access`
+    on an orphan, reached the same way (no special-casing).
     """
     artifact = await db.get(ModelArtifact, model_id)
     if artifact is None:
@@ -284,6 +329,10 @@ async def assert_evaluation_access(
     """Load `EvaluationRun(evaluation_id)`; 404 if missing, 403 if it exists
     and isn't owned by `user` (3-hop: EvaluationRun -> ModelArtifact ->
     TrainingJob -> Project). Returns the row.
+
+    Same orphan handling as `assert_model_access`: an orphaned `TrainingJob`
+    (`project_id IS NULL`) makes the join below match no `Project` row, so
+    this fails closed with 403 for an authenticated `user`.
     """
     evaluation = await db.get(EvaluationRun, evaluation_id)
     if evaluation is None:
@@ -355,10 +404,22 @@ def scope_datasets_to_owner(stmt: Select, user: CurrentUser | None) -> Select:
 def scope_trainings_to_owner(stmt: Select, user: CurrentUser | None) -> Select:
     """Restrict a `TrainingJob`-selecting statement to the caller's projects
     (1-hop join: TrainingJob -> Project).
+
+    Outer join, not inner: `TrainingJob.project_id` is nullable (orphaned
+    runs — see the module docstring), and an INNER JOIN on a nullable FK
+    silently drops those rows from the join entirely rather than surfacing
+    them as "no project" the way the rest of this module reasons about
+    orphans. With the LEFT OUTER JOIN below, an orphan still produces one
+    row with `Project.owner_id` NULL, and `.where(Project.owner_id ==
+    user.id)` then excludes it the same way a legacy `owner_id IS NULL`
+    project's rows are excluded -- fail-closed for an authenticated `user`,
+    by construction rather than by a special-cased orphan branch. When
+    `user is None` this is a complete no-op, same as every other `scope_*`
+    helper -- an unauthenticated caller sees orphans too.
     """
     if user is None:
         return stmt
-    return stmt.join(Project, Project.id == TrainingJob.project_id).where(
+    return stmt.outerjoin(Project, Project.id == TrainingJob.project_id).where(
         Project.owner_id == user.id
     )
 
@@ -371,15 +432,25 @@ def scope_models_to_owner(stmt: Select, user: CurrentUser | None) -> Select:
     than assuming the caller already joined `TrainingJob` for its own
     filters, so it never collides with (or duplicates) a join the `list_*`
     service added for an unrelated `project_id`/`training_job_id` filter.
-    Both FKs it joins on (`ModelArtifact.training_job_id`,
-    `TrainingJob.project_id`) are `NOT NULL`, so this INNER JOIN never
-    drops a row that would otherwise have matched.
+
+    `ModelArtifact.training_job_id` is `NOT NULL`, so the first join stays
+    an INNER JOIN -- every artifact has a `TrainingJob`. `TrainingJob.
+    project_id` is nullable now (orphaned runs -- migration
+    `0012_training_decouple`), so the second join is a LEFT OUTER JOIN: an
+    artifact whose training run is orphaned still produces one row here
+    with `Project.owner_id` NULL, and `.where(Project.owner_id ==
+    user.id)` excludes it -- fail-closed for an authenticated `user`, same
+    reasoning as `scope_trainings_to_owner`. An INNER JOIN here would
+    instead have silently dropped the row from the join, which happens to
+    reach the same *filtered* result in this query shape, but the outer
+    join is what keeps that "excluded because unowned" reasoning true by
+    construction rather than by coincidence of SQL NULL semantics.
     """
     if user is None:
         return stmt
     return (
         stmt.join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
-        .join(Project, Project.id == TrainingJob.project_id)
+        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(Project.owner_id == user.id)
     )
 
@@ -388,13 +459,21 @@ def scope_evaluations_to_owner(stmt: Select, user: CurrentUser | None) -> Select
     """Restrict an `EvaluationRun`-selecting statement to the caller's
     projects (3-hop join: EvaluationRun -> ModelArtifact -> TrainingJob ->
     Project). Self-contained for the same reason as `scope_models_to_owner`.
+
+    Same nullability split as `scope_models_to_owner`: the first two joins
+    (`EvaluationRun.model_artifact_id`, `ModelArtifact.training_job_id`)
+    are `NOT NULL` FKs and stay INNER JOINs; the last hop
+    (`TrainingJob.project_id`) is nullable, so it's a LEFT OUTER JOIN —
+    an evaluation whose training run is orphaned still produces one row
+    with `Project.owner_id` NULL, excluded by the `.where(...)` below for
+    an authenticated `user` (fail-closed), included when `user is None`.
     """
     if user is None:
         return stmt
     return (
         stmt.join(ModelArtifact, ModelArtifact.id == EvaluationRun.model_artifact_id)
         .join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
-        .join(Project, Project.id == TrainingJob.project_id)
+        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(Project.owner_id == user.id)
     )
 

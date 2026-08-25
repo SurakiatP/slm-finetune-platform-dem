@@ -12,7 +12,7 @@ changing a router.
 This is the human companion to [`openapi.json`](./openapi.json); regenerate
 that with `scripts/export_openapi.py` when the contract changes. All routes
 are mounted under `/api/v1` except `GET /health` (root-level). The spec
-currently has **40 paths / 47 operations**; this doc covers all of them.
+currently has **42 paths / 51 operations**; this doc covers all of them.
 (That count is asserted against `openapi.json` by
 `tests/unit/test_openapi_spec_is_current.py` — it had drifted twice, and this
 file previously stated two *different* stale numbers in two places.)
@@ -518,6 +518,73 @@ Upload seed examples (multipart form) — JSON array, JSONL, or (QA-only) PDF.
 }
 ```
 
+### POST /api/v1/datasets/upload
+
+Upload a ready-to-train dataset (multipart form) — JSON array or JSONL;
+no PDF path (a PDF has no rows yet, so it's seed-only — use
+`/datasets/upload-seed` instead). `api/routers/datasets.py:42-63`. Sibling
+of `POST /datasets/upload-seed`, reusing the same parse → Format Detection
+→ validate → persist pipeline, parameterised to persist a ready-to-train
+dataset instead of a seed one.
+
+- **Body**: `multipart/form-data`
+  | Field | Type | Notes |
+  |---|---|---|
+  | `project_id` | UUID (form) | required |
+  | `task_type` | enum (form) | required; must match the project's `task_type` or `400` |
+  | `file` | file | required; `.json`/`.jsonl` only — PDF is rejected here |
+  | `name` | string (form) | optional display name |
+
+- **Success**: `201` `SeedUploadResponse` — same shape as `/upload-seed`:
+  `dataset_id`, `task_type`, `num_samples`, `invalid_rows` (indexes that
+  failed schema validation), `format_detection` (audit trail). `pdf_uri`
+  is always `null` on this path. The persisted `Dataset` row is created
+  with `source=uploaded` and `status=completed` immediately (there's no
+  async generation step to wait on — the rows are already final), storage
+  key `uploads/{dataset_id}.jsonl` (vs. `seeds/...` for `/upload-seed`).
+- **Format Detection**: identical to `/upload-seed` — an LLM pass renames/
+  maps fields into the canonical shape when the upload isn't already
+  canonical, with the same audit trail persisted on
+  `generation_metadata.format_detection`.
+- **Caps**: JSON/JSONL ≤ 10 MiB, `413` over the cap — same limit and same
+  code path as `/upload-seed` (`api/services/datasets_service.py:78`).
+- **Errors**:
+  - `404` project doesn't exist; `403` if it exists and belongs to another
+    user (ADR-012) — same ownership contract as `/upload-seed`, asserted
+    on the *project* before `file` is read.
+  - `400` project/upload `task_type` mismatch; empty file; unparseable
+    JSON; top-level JSON not an array; **PDF upload** (`"PDF uploads are
+    seed-only; use /upload-seed instead"` — this is the one error this
+    endpoint has that `/upload-seed` doesn't); no valid rows survive
+    Format Detection + schema validation.
+  - `413` file exceeds the 10 MiB cap.
+  - `422` all rows structurally valid but fail the semantic guard
+    (`assert_semantic_fit`) — same rule as `/upload-seed`: currently only
+    classification has a semantic guard.
+- **Gotcha**: this is the endpoint to use when the caller already has a
+  fully-formed, ready-to-train dataset and wants to skip SDG entirely —
+  the resulting dataset is immediately usable as a `dataset_id` on
+  `POST /trainings` (subject to the ownership-based access rule described
+  there), with no `generate` step in between.
+
+```json
+// multipart fields: project_id=..., task_type=classification, file=labeled.jsonl
+
+// 201 response
+{
+  "dataset_id": "00000000-0000-0000-0000-0000000000aa",
+  "task_type": "classification",
+  "num_samples": 240,
+  "invalid_rows": [],
+  "format_detection": {
+    "ran": false, "model_used": null, "field_mapping": {},
+    "rows_total": 240, "rows_canonicalised": 240, "rows_dropped": 0,
+    "notes": null
+  },
+  "pdf_uri": null
+}
+```
+
 ### POST /api/v1/datasets/generate
 
 Generate a synthetic dataset via OpenRouter. Body is a discriminated union
@@ -533,6 +600,7 @@ on `sdg_mode`. `api/routers/datasets.py:59-70`, `api/schemas/sdg.py`.
   | `holdout_size` | int | default 100, 0–2,000 — extra rows persisted as a **separate child Dataset** (`parent_dataset_id`) for leak-free eval; stratified by label/tool name, random for QA |
   | `temperature` | float | default 0.9, 0.0–2.0 |
   | `dataset_name` | string \| null | optional; defaults to project + timestamp |
+  | `holdout_name` | string \| null | optional; defaults to `<train dataset name>-hold-out` |
 
 - **`sdg_mode: "with_seed"`** (`SDGRequestWithSeed`) — adds
   `seed_dataset_id: UUID` (required). Must reference a dataset from
@@ -636,6 +704,35 @@ Preview the first N rows. Query: `limit` (1–200, default 20). Success:
 another user (ADR-012); `409` dataset has no rows yet (still generating) —
 `storage_uri` is null.
 
+### GET /api/v1/datasets/{dataset_id}/insights
+
+Data-quality scan over the dataset's stored rows: label balance, exact +
+near duplicates, sample-length distribution/outliers, a 0-100 quality
+score, and a `ready`/`caveats`/`fix` readiness verdict. Mirrors
+`frontend-punpun/src/lib/qualityCalculator.ts`'s local computation (same
+six length buckets, same issue ids/severities, same score formula) so the
+two agree. Source: `api/services/dataset_insights.py`.
+
+- **Params**: none besides `dataset_id` in the path.
+- **Success `200`** (`DatasetInsightsResponse`): `row_count` (the
+  dataset's full row count — `num_samples` when set, else the scanned
+  count), `scanned_rows`/`scan_truncated` (the scan caps at 5,000 rows;
+  `scan_truncated=true` means the dataset had more), `label_distribution`
+  (empty for `qa`, which has no label concept), `duplicate_rows` (exact,
+  whitespace-normalised + lowercased match), `near_duplicate_count`
+  (paraphrase-level, via the same MinHash LSH pass the SDG generation loop
+  uses), `missing_labels`, `outliers`, `length_distribution` (six fixed
+  buckets), `issues` (a list of flagged problems, each with a stable `id`
+  like `iss-imbalance`/`iss-duplicates`/`iss-missing`/`iss-outliers`/
+  `iss-length`), `overall_quality_score` (0-100), `readiness`. `judge` /
+  `judge_by_key` / `counts` surface whatever SDG-time LLM-judge aggregates
+  are already stored on the dataset — `null` for uploaded/legacy datasets
+  that carry no such blob (never an error; a missing or malformed stored
+  blob degrades to nulls rather than failing the request).
+- **Errors**: `404` if it doesn't exist; `403` if it exists and belongs to
+  another user (ADR-012); `409` dataset has no rows yet (still
+  generating) — same check as preview.
+
 ### GET /api/v1/datasets/{dataset_id}/download
 
 Stream the raw JSONL file (`application/x-ndjson`, `Content-Disposition:
@@ -685,6 +782,29 @@ works. Source: `api/services/download_links.py::mint_dataset_download_url`.
   the equivalent model endpoint under
   [Models & Export](#models--export) for the full reasoning, which applies
   identically here.
+
+### PATCH /api/v1/datasets/{dataset_id}
+
+Rename a dataset. Rename-only — nothing else about the dataset changes.
+`api/services/datasets_service.py:370-398`.
+
+- **Body** (`DatasetUpdate`): `name` (string, 1–200 chars, required).
+  `extra="forbid"` — sending any other field (e.g. `project_id`, to try to
+  re-parent a dataset) `422`s instead of silently ignoring it; this
+  endpoint does exactly one thing. `max_length=200` mirrors
+  `Dataset.name`'s `String(200)` column so an over-long name `422`s here
+  rather than surfacing as a DB error later.
+- **Success**: `200` `DatasetResponse` (the full updated row).
+- **Errors**: `404` if it doesn't exist; `403` if it exists and belongs to
+  another user (ADR-012); `422` on an empty/over-long `name` or an unknown
+  field in the body.
+- Records a `dataset.rename` audit row carrying both the old and new name
+  before committing (same pattern as `dataset.cancel`/`dataset.delete`).
+
+```json
+// Request
+{ "name": "my-renamed-dataset" }
+```
 
 ### DELETE /api/v1/datasets/{dataset_id}
 
@@ -759,11 +879,25 @@ Start a training job — `mode` discriminates `manual` vs `hpo`.
   run starts; poll `GET /trainings/{id}` or `GET /trainings/{id}/mlflow-url`.)
 - **Errors** (same checks for both modes,
   `api/services/training_service.py:72-165, 167-283`):
-  - `404` project or dataset not found. **Not ownership-checked** — same
-    known gap as `POST /datasets/generate` above; no `assert_*_access`
-    call on this path, so no 403 either.
-  - `400` dataset belongs to a different project; dataset `task_type` ≠
-    project `task_type`.
+  - `404` project or dataset not found.
+  - **Project ownership**: **not checked** — `project` is loaded with a
+    plain `db.get`, no `assert_*_access` call, so there's no 403 on the
+    project itself; the same known gap as `POST /datasets/generate` above.
+  - **Dataset ownership**: **checked**, via `ownership.assert_dataset_access`
+    — the dataset no longer has to belong to the training's target
+    `project_id`; the gate is ownership of the dataset itself, not project
+    membership. `user=None` (auth off) is a no-op — any existing dataset,
+    from any project or orphaned (`project_id IS NULL`), may be used.
+    An authenticated `user` may only train against a dataset they own
+    (`Dataset.owner_id == user.id`), regardless of which project it
+    currently belongs to (cross-project reuse) or whether it has no
+    project at all — cross-project and orphaned datasets are allowed by
+    design, not a bug. `Dataset.owner_id IS NULL` still fails closed with
+    `403` for an authenticated caller (ADR-012), same as every other
+    ownership check. This replaces the old "dataset must belong to the
+    same project" `400` gate.
+  - `400` dataset `task_type` ≠ project `task_type` — unchanged, still
+    runs after the ownership check.
   - `409` dataset not ready (`storage_uri` unset or `num_samples=0` — SDG
     still running or seed never uploaded).
   - `422` `base_model` not in the supported allowlist; (HPO only)
@@ -834,30 +968,51 @@ it exists and belongs to another user (ADR-012). `TrainingResponse` includes
 
 ### DELETE /api/v1/trainings/{training_id}
 
-Cancel a running/pending training job. **Note the status code — 202, not
-204** (unlike Projects/Datasets deletes): the revoke is a request to the
-Celery broker, not a synchronous guarantee. Idempotent — cancelling an
-already-terminal job (`completed`/`failed`/`cancelled`) returns the
-existing status rather than erroring
-(`api/services/trainings_service.py:71-104`). **Errors**: `404` not found;
-`403` if the training exists but belongs to another user (ADR-012).
-Response body: `{"training_id": "...", "status": "cancelled"}`.
+**⚠️ BREAKING CHANGE (2026-08-19-ish, task D9)**: this route used to be a
+cancel alias. **It is now a hard-delete** — it permanently removes the
+`TrainingJob` row (and its `ModelArtifact`, if one exists, plus that
+artifact's dependent `EvaluationRun`s, MinIO objects, and Ollama tag).
+**Any caller that used `DELETE` to mean "cancel" — notably
+`smart-model-tune`'s `engineApi.ts:286` — must switch to
+`POST /api/v1/trainings/{training_id}/cancel` below.** Continuing to call
+`DELETE` expecting cancel semantics will now either 409 (job still
+in-flight) or permanently delete the row (job already terminal) — neither
+is "cancel".
+
+Semantics (mirrors `DELETE /api/v1/models/{model_id}`):
+
+- **Success**: `204`, empty body.
+- **Errors**: `404` if the training doesn't exist; `403` if it exists and
+  belongs to another user (ADR-012); `409` if the job is not yet terminal
+  (`pending`/`running`) — detail names the job and instructs the caller to
+  `POST /api/v1/trainings/{training_id}/cancel` first
+  (`api/services/trainings_service.py`, `delete_training`);
+  **also `409`** if the job *is* terminal but its `ModelArtifact` has an
+  export in flight (`export_status` `pending`/`running`) — detail instructs
+  the caller to `POST /api/v1/models/{model_id}/export/cancel` first. This
+  mirrors the identical guard on `DELETE /api/v1/models/{model_id}`; without
+  it, deleting the parent training would purge the artifact out from under a
+  live export task and trivially bypass that guard.
+- If the training has a `ModelArtifact`, it is purged the same
+  best-effort way `model_service.purge_artifact` does for
+  `DELETE /models/{model_id}` (MinIO objects + Ollama tag best-effort;
+  dependent `EvaluationRun`s and the artifact row deleted for real) before
+  the `TrainingJob` row itself is deleted.
+- A training with no artifact (e.g. it failed before export) deletes
+  cleanly with no artifact-purge step.
 
 ### POST /api/v1/trainings/{training_id}/cancel
 
-**Alias for `DELETE /api/v1/trainings/{training_id}` above** — delegates
-to the exact same service function (`trainings_service.cancel_training`),
-so the two verbs can never disagree on behaviour. Added for clients that
-prefer a `POST .../cancel` shape consistent with the new dataset/
-export/evaluation cancel endpoints, without deprecating the existing
-`DELETE`. **Note the status code differs from its siblings**: `200`, not
-`202` — unlike `DELETE`, which returns `202` because historically it was
-documented as "a request to the broker, not a synchronous guarantee."
-Both verbs perform the identical revoke-then-flip-status work; only the
-documented status code differs, since `DELETE` predates this alias and
-its `202` contract is left unchanged. Same idempotency semantics as
-`DELETE`. **Errors**: `404` not found; `403` if the training exists but
-belongs to another user (ADR-012).
+Cancel a running/pending training job. Revokes the underlying Celery task
+and flips `status=cancelled`. **This is now the only cancel entry point for
+trainings** — see the `DELETE` entry above for why `DELETE` no longer means
+cancel. **Note the status code — 200, not 202/204**: the revoke is a
+request to the Celery broker, not a synchronous guarantee. Idempotent —
+cancelling an already-terminal job (`completed`/`failed`/`cancelled`)
+returns the existing status rather than erroring
+(`api/services/trainings_service.py`, `cancel_training`). **Errors**: `404`
+not found; `403` if the training exists but belongs to another user
+(ADR-012).
 
 ```json
 // 200 response
@@ -1097,6 +1252,39 @@ for why the storage vhost deliberately never logs the query string) can
 use it to fetch the object directly from MinIO until it expires, with no
 further ownership check. Treat `expires_in` as the actual security
 boundary, not the initial mint check.
+
+### DELETE /api/v1/models/{model_id}
+
+Hard-delete a model artifact: purge its external state (MinIO objects for
+every set format URI — `gguf`/`safetensors`/`lora`, each a key prefix —
+then the Ollama tag if one was registered, both best-effort/log-and-swallow
+so a storage or daemon hiccup never blocks the DB delete), then the row
+itself. `api/services/model_service.py:316-354`.
+
+- **Success**: `204`, empty body.
+- **Errors**:
+  - `404` model not found; `403` if it exists and belongs to another user
+    (ADR-012).
+  - **`409 Conflict`** when an export is currently in flight
+    (`export_status` is `pending` or `running`). The detail names the
+    in-flight `job_id` so the caller knows to `POST
+    /models/{id}/export/cancel` first rather than deleting out from under
+    a running Celery task. A *terminal* `export_status` (or `None`, i.e.
+    never exported) does not block deletion.
+- **Cascade**: any `EvaluationRun` rows against this artifact are deleted
+  along with it (`EvaluationRun.model_artifact_id` is
+  `ForeignKey(..., ondelete="CASCADE")`) — no separate cleanup call needed.
+- **Not idempotent**: calling this a second time on an already-deleted
+  artifact 404s, unlike the cancel endpoints above.
+
+```json
+// 409 response (export in flight)
+{
+  "detail": "Model 33333333-...-0000000000cc has an export in flight (job celery-task-id); POST /api/v1/models/33333333-...-0000000000cc/export/cancel first.",
+  "code": "conflict",
+  "extra": null
+}
+```
 
 ---
 
@@ -1592,7 +1780,7 @@ slm_worker_up{queue="gpu"} 0.0
 
 ## Verification notes
 
-`openapi.json` currently enumerates 40 paths / 47 operations, and
+`openapi.json` currently enumerates 42 paths / 51 operations, and
 `tests/unit/test_openapi_spec_is_current.py` now asserts that the count stated
 at the top of this file matches it — regenerate with
 `python scripts/export_openapi.py` and update that one number when routes

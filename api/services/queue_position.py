@@ -165,6 +165,17 @@ async def compute_queue(db: AsyncSession) -> dict[UUID, ProjectQueueInfo]:
          is intentional and inert dead weight until `AUTH_REQUIRED` flips
          to `true` project-wide, exactly like the precedent it mirrors.
     """
+    # Outer joins to Project, not inner: `TrainingJob.project_id` is nullable
+    # (orphaned runs whose Project was deleted — migration
+    # 0012_training_decouple, see api/services/ownership.py's orphan-policy
+    # section). This module is display-only and keyed by `project_id`
+    # itself (see the dict return type), so an INNER JOIN wouldn't just
+    # mis-attribute an orphan's owner — it would drop the orphaned run from
+    # the queue display ENTIRELY, understating queue depth for anyone still
+    # waiting behind it. `Project.owner_id` comes back NULL for an orphan
+    # row here, which lands it in the same shared null-owner group
+    # `owner_queue_position` already treats every anonymous project as
+    # (see the module docstring) — no extra branching needed.
     training_stmt = (
         select(
             TrainingJob.project_id.label("project_id"),
@@ -173,7 +184,7 @@ async def compute_queue(db: AsyncSession) -> dict[UUID, ProjectQueueInfo]:
             TrainingJob.created_at.label("ts"),
         )
         .select_from(TrainingJob)
-        .join(Project, Project.id == TrainingJob.project_id)
+        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(TrainingJob.status.in_(_IN_FLIGHT))
     )
     export_stmt = (
@@ -188,7 +199,7 @@ async def compute_queue(db: AsyncSession) -> dict[UUID, ProjectQueueInfo]:
         )
         .select_from(ModelArtifact)
         .join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
-        .join(Project, Project.id == TrainingJob.project_id)
+        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(ModelArtifact.export_status.in_(_IN_FLIGHT))
     )
     eval_stmt = (
@@ -201,7 +212,7 @@ async def compute_queue(db: AsyncSession) -> dict[UUID, ProjectQueueInfo]:
         .select_from(EvaluationRun)
         .join(ModelArtifact, ModelArtifact.id == EvaluationRun.model_artifact_id)
         .join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
-        .join(Project, Project.id == TrainingJob.project_id)
+        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(EvaluationRun.status.in_(_IN_FLIGHT))
     )
 

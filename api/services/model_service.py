@@ -10,16 +10,19 @@ Endpoints:
 
 from __future__ import annotations
 
+import logging
 from typing import AsyncIterator
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core import request_context
 from api.core.auth import CurrentUser
+from api.core.config import get_settings
+from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
 from api.schemas.artifacts import (
@@ -32,7 +35,10 @@ from api.schemas.responses import Page
 from api.services import audit_service, ownership, quota, queue_position
 from api.services.quota import Bucket
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
-from workers.storage import get_minio_client, parse_s3_uri
+from workers.ollama_client import OllamaClient
+from workers.storage import get_minio_client, parse_s3_uri, remove_prefix
+
+log = logging.getLogger(__name__)
 
 
 # ---- list / get -----------------------------------------------------------
@@ -171,6 +177,11 @@ async def submit_export_job(
     # enqueue -> persist -> commit -> return ordering).
     artifact.export_celery_task_id = job_id
     artifact.export_status = JobStatus.PENDING
+    # A re-export of a previously FAILED (or CANCELLED) artifact must not keep
+    # serving the old failure message while the new job is PENDING/RUNNING —
+    # the frontend reads export_error_message regardless of export_status,
+    # and the worker only clears it on SUCCESS.
+    artifact.export_error_message = None
     audit_service.record(
         db,
         action="export.submit",
@@ -233,6 +244,120 @@ async def cancel_export(
     await db.commit()
     return {"artifact_id": str(artifact.id), "status": JobStatus.CANCELLED.value}
 
+
+# ---- delete -----------------------------------------------------------------
+
+
+async def purge_artifact(
+    db: AsyncSession,
+    artifact: ModelArtifact,
+    *,
+    context: str | None = None,
+) -> None:
+    """Best-effort purge of `artifact`'s external state, then `db.delete()` it.
+
+    PUBLIC + REUSABLE: exported for a later task to import directly (e.g. a
+    training-job/project cascade cleanup, or a retention-policy purge job) —
+    not just `delete_model` below. Ownership/authorization is entirely the
+    CALLER's responsibility; this helper performs no access check of its own.
+
+    Order: MinIO objects (gguf/safetensors/lora, each a key *prefix* — see
+    `download_artifact`'s multi-file-directory handling above) -> Ollama tag
+    -> dependent-row cleanup -> ORM delete. The two external-system steps are
+    log-and-continue best-effort (mirrors `datasets_service.delete_dataset`'s
+    MinIO cleanup and `revoke_celery_task`'s "broker hiccup must not block
+    the DB update" reasoning) so a storage or Ollama daemon hiccup never
+    leaves the DB row behind — the row is the source of truth, not the
+    external copies.
+
+    Dependent-row cleanup, NOT best-effort: `EvaluationRun.model_artifact_id`
+    is `ForeignKey(..., ondelete="CASCADE")` but that column is also
+    `nullable=False`, and `ModelArtifact.evaluation_runs` carries no
+    `passive_deletes` setting — so a plain `await db.delete(artifact)` makes
+    SQLAlchemy's unit-of-work try to NULL that column out first (its default
+    disassociate-before-delete behavior for a non-cascading collection),
+    which sqlite AND Postgres both reject as a NOT NULL violation, on every
+    backend, every time. Deleting the dependent `EvaluationRun` rows
+    ourselves first — via a Core statement so the ORM never attempts to load
+    or nullify them — sidesteps that entirely and leaves the *intent* of the
+    DB's `ondelete="CASCADE"` satisfied (evaluations for a deleted model
+    don't outlive it) without touching `api/models/model_artifact.py`.
+
+    `context` is a `revoke_celery_task`-style free-text label for log lines
+    (defaults to `f"model {artifact.id}"`).
+
+    MUST NOT commit — the caller owns the transaction boundary, exactly like
+    `db.delete(ds)` in `datasets_service.delete_dataset`.
+    """
+    log_ctx = context or f"model {artifact.id}"
+
+    minio = get_minio_client()
+    for uri in (artifact.gguf_uri, artifact.safetensors_uri, artifact.lora_adapter_uri):
+        if not uri:
+            continue
+        try:
+            bucket, prefix = parse_s3_uri(uri)
+            remove_prefix(minio, bucket, prefix)
+        except Exception:  # noqa: BLE001 — best-effort, never block the DB delete
+            log.warning("failed to remove storage for %s (%s)", log_ctx, uri, exc_info=True)
+
+    if artifact.ollama_model_tag:
+        try:
+            OllamaClient(str(get_settings().ollama_base_url)).delete_model(
+                artifact.ollama_model_tag
+            )
+        except Exception:  # noqa: BLE001 — tolerate already-gone/unreachable daemon
+            log.warning(
+                "failed to delete ollama tag for %s (%s)",
+                log_ctx,
+                artifact.ollama_model_tag,
+                exc_info=True,
+            )
+
+    await db.execute(delete(EvaluationRun).where(EvaluationRun.model_artifact_id == artifact.id))
+    await db.delete(artifact)
+
+
+async def delete_model(
+    db: AsyncSession, model_id: UUID, user: CurrentUser | None = None
+) -> None:
+    """Hard-delete a model artifact: purge its external state, then the row.
+
+    409 while an export is in flight (PENDING/RUNNING) — same signal and
+    wording style as `submit_export_job`'s in-flight guard, naming the job so
+    the caller knows to `POST /export/cancel` first rather than deleting out
+    from under a running Celery task. A terminal `export_status` (or `None`,
+    i.e. never exported) does not block deletion, mirroring the "terminal is
+    fine" rule `cancel_export` already documents.
+
+    Cascade note: `EvaluationRun.model_artifact_id` is
+    `ForeignKey(..., ondelete="CASCADE")`, so any evaluation runs against
+    this artifact are removed by the database when the row is deleted —
+    no application-level cleanup needed for that FK.
+    """
+    artifact = await ownership.assert_model_access(db, model_id, user)
+    if artifact.export_status in (JobStatus.PENDING, JobStatus.RUNNING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Model {model_id} has an export in flight "
+                f"(job {artifact.export_celery_task_id}); "
+                f"POST /api/v1/models/{model_id}/export/cancel first."
+            ),
+        )
+
+    audit_service.record(
+        db,
+        action="model.delete",
+        resource_type="model",
+        resource_id=str(artifact.id),
+        project_id=await _project_id_for_artifact(db, artifact),
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"name": artifact.name, "base_model": artifact.base_model},
+    )
+    await purge_artifact(db, artifact, context=f"model delete {model_id}")
+    await db.commit()
 
 
 async def _project_id_for_artifact(db: AsyncSession, artifact: ModelArtifact):
@@ -382,5 +507,7 @@ __all__ = [
     "get_model",
     "submit_export_job",
     "cancel_export",
+    "purge_artifact",
+    "delete_model",
     "download_artifact",
 ]

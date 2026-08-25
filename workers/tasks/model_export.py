@@ -75,6 +75,24 @@ def _project_id_for_artifact(session, artifact):
     return training_job.project_id if training_job is not None else None
 
 
+def _training_id_for_artifact(artifact_uuid: UUID) -> str | None:
+    """ModelArtifact -> TrainingJob id, sync session, self-contained.
+
+    Used only by the auto_pipeline sync hook in `export_model`'s success
+    path — returns None (never raises) if the artifact or its TrainingJob
+    no longer exist, mirroring `_project_id_for_artifact`'s None-returning
+    contract.
+    """
+    with session_scope() as session:
+        artifact = session.get(ModelArtifact, artifact_uuid)
+        if artifact is None:
+            return None
+        training_job = session.get(TrainingJob, artifact.training_job_id)
+        if training_job is None:
+            return None
+        return str(training_job.id)
+
+
 def _ollama_tag_context(artifact_uuid: UUID) -> tuple[str | None, str | None]:
     """Resolve ``(training_name, owner_id)`` needed to compute the Ollama tag.
 
@@ -438,6 +456,22 @@ def export_model(
                 # an orphan, so the `except BaseException` handler's cleanup
                 # below must never fire for them.
                 committed = True
+
+                # Auto-pipeline blob sync + resume (see auto_pipeline.sync_export_success).
+                try:
+                    from workers.tasks import auto_pipeline as _auto_pipeline
+
+                    training_id_for_sync = _training_id_for_artifact(artifact_uuid)
+                    if training_id_for_sync:
+                        _auto_pipeline.sync_export_success(
+                            artifact_id=artifact_id, training_id=training_id_for_sync
+                        )
+                except Exception:  # noqa: BLE001 — bookkeeping must never fail a finished export
+                    log.warning(
+                        "export: auto_pipeline sync failed for artifact %s",
+                        artifact_id,
+                        exc_info=True,
+                    )
 
                 # ---- 8. Publish completion -----------------------------------
                 publish(

@@ -260,10 +260,14 @@ class TestBothHalvesClosed:
 def test_module_docstring_documents_the_current_behaviour() -> None:
     """The previous version of this docstring argued FOR an unfiltered
     listing, i.e. the exact opposite of the code beneath it. A docstring that
-    contradicts its own code is how the next person "fixes" the code back."""
+    contradicts its own code is how the next person "fixes" the code back.
+
+    Generalized from a single `slm/` prefix to "namespaced" tags — the
+    docstring must describe the current (three-shape) predicate, not just
+    the original one, or it drifts back to under-documenting the fix."""
     doc = inference_service.__doc__ or ""
     assert "left UNFILTERED" not in doc
-    assert "filters `slm/` tags to the caller's own artifacts" in doc
+    assert "filters namespaced (platform-owned) tags to the caller's own artifacts" in doc
 
 
 # =============================================================================

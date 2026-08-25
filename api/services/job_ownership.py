@@ -110,43 +110,59 @@ async def resolve_job_owner(db: AsyncSession, job_id: str) -> JobOwnerResult:
         return JobOwnerResult(found=True, owner_id=row[0])
 
     # 2. TrainingJob -> Project.
+    #
+    # Outer join, not inner: TrainingJob.project_id is nullable (orphaned
+    # runs whose Project was deleted -- migration 0012_training_decouple).
+    # An INNER JOIN would make an orphaned-but-still-running training's
+    # celery_task_id resolve to found=False ("no such job") instead of the
+    # correct found=True, owner_id=None ("found, but no owner to check
+    # against") -- the same shape this module already uses for a Project
+    # that predates auth (see JobOwnerResult's docstring), and the two
+    # cases should be indistinguishable to callers for the same reason.
     stmt = (
-        select(Project.owner_id)
+        select(TrainingJob.id, Project.owner_id)
         .select_from(TrainingJob)
-        .join(Project, Project.id == TrainingJob.project_id)
+        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(TrainingJob.celery_task_id == job_id)
         .limit(1)
     )
     row = (await db.execute(stmt)).first()
     if row is not None:
-        return JobOwnerResult(found=True, owner_id=row[0])
+        return JobOwnerResult(found=True, owner_id=row[1])
 
     # 3. EvaluationRun -> ModelArtifact -> TrainingJob -> Project.
+    # Same nullability split as ownership.py's scope_evaluations_to_owner:
+    # the first two joins are NOT NULL FKs and stay INNER JOINs; the last
+    # hop (TrainingJob.project_id) is nullable, so it's an outer join, for
+    # the same orphan reasoning as leg 2 above.
     stmt = (
-        select(Project.owner_id)
+        select(EvaluationRun.id, Project.owner_id)
         .select_from(EvaluationRun)
         .join(ModelArtifact, ModelArtifact.id == EvaluationRun.model_artifact_id)
         .join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
-        .join(Project, Project.id == TrainingJob.project_id)
+        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(EvaluationRun.celery_task_id == job_id)
         .limit(1)
     )
     row = (await db.execute(stmt)).first()
     if row is not None:
-        return JobOwnerResult(found=True, owner_id=row[0])
+        return JobOwnerResult(found=True, owner_id=row[1])
 
     # 4. ModelArtifact (export) -> TrainingJob -> Project.
+    # Same split: ModelArtifact.training_job_id is NOT NULL (inner join);
+    # TrainingJob.project_id is nullable (outer join), same orphan
+    # reasoning as legs 2 and 3 above.
     stmt = (
-        select(Project.owner_id)
+        select(ModelArtifact.id, Project.owner_id)
         .select_from(ModelArtifact)
         .join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
-        .join(Project, Project.id == TrainingJob.project_id)
+        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(ModelArtifact.export_celery_task_id == job_id)
         .limit(1)
     )
     row = (await db.execute(stmt)).first()
     if row is not None:
-        return JobOwnerResult(found=True, owner_id=row[0])
+        return JobOwnerResult(found=True, owner_id=row[1])
 
     return JobOwnerResult(found=False, owner_id=None)
 

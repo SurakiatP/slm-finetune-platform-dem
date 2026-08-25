@@ -270,6 +270,14 @@ class Settings(BaseSettings):
     # unauthenticated requests.
     auth_required: bool = False
 
+    # ---- SDG semantic dedup (see ai_engine/data_gen/semantic_dedup.py) -----
+    # OpenRouter embedding model id used for the post-MinHash semantic dedup
+    # pass. Empty string disables the semantic layer entirely (MinHash-only).
+    sdg_embedding_model: str = "openai/text-embedding-3-small"  # env SDG_EMBEDDING_MODEL ("" disables)
+    # Cosine similarity, on openai/text-embedding-3-small, at/above which
+    # two rows count as semantic duplicates.
+    sdg_embedding_dedup_threshold: float = Field(default=0.90, ge=0.0, le=1.0)  # env SDG_EMBEDDING_DEDUP_THRESHOLD
+
     # ---- Model pricing (see api/services/model_pricing.py) -----------------
     # JSON object of {model_id: {"prompt": usd_per_1m, "completion": usd_per_1m}}
     # overriding/extending the built-in price map. Typed `str`, not `dict`,

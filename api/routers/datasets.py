@@ -20,7 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.auth import CurrentUser, require_user
 from api.core.database import get_db
-from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse
+from api.schemas.datasets import (
+    DatasetInsightsResponse,
+    DatasetPreviewResponse,
+    DatasetResponse,
+    DatasetUpdate,
+)
 from api.schemas.download_links import DatasetDownloadUrlResponse
 from api.schemas.enums import TaskType
 from api.schemas.responses import Page
@@ -31,11 +36,35 @@ from api.schemas.sdg import (
     SDGRequestWithSeed,
     SeedUploadResponse,
 )
-from api.services import datasets_service, idempotency, ownership
+from api.services import dataset_insights, datasets_service, idempotency, ownership
 from api.services.download_links import mint_dataset_download_url
 from api.services.sdg_service import submit_sdg_job
 
 router = APIRouter()
+
+
+@router.post(
+    "/upload",
+    response_model=SeedUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload a ready-to-train dataset (JSONL or JSON)",
+)
+async def upload_dataset(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+    project_id: Annotated[UUID, Form(...)],
+    task_type: Annotated[TaskType, Form(...)],
+    file: Annotated[UploadFile, File(...)],
+    name: Annotated[str | None, Form()] = None,
+) -> SeedUploadResponse:
+    return await datasets_service.upload_dataset(
+        db,
+        project_id=project_id,
+        task_type=task_type,
+        name=name,
+        file=file,
+        user=user,
+    )
 
 
 @router.post(
@@ -137,6 +166,19 @@ async def preview_dataset(
 
 
 @router.get(
+    "/{dataset_id}/insights",
+    response_model=DatasetInsightsResponse,
+    summary="Quality insights for a dataset",
+)
+async def get_dataset_insights(
+    dataset_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+) -> DatasetInsightsResponse:
+    return await dataset_insights.get_dataset_insights(db, dataset_id, user)
+
+
+@router.get(
     "/{dataset_id}/download",
     summary="Download the raw dataset file (JSONL)",
     response_class=StreamingResponse,
@@ -167,6 +209,20 @@ async def get_dataset_download_url(
     # gap the streaming endpoint has today. `disposition=inline` mints a
     # view-in-browser URL (signed into the URL, not overridable client-side).
     return await mint_dataset_download_url(db, dataset_id, user, disposition)
+
+
+@router.patch(
+    "/{dataset_id}",
+    response_model=DatasetResponse,
+    summary="Rename a dataset",
+)
+async def update_dataset(
+    dataset_id: UUID,
+    body: DatasetUpdate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[CurrentUser | None, Depends(require_user)],
+) -> DatasetResponse:
+    return await datasets_service.rename_dataset(db, dataset_id, body, user)
 
 
 @router.delete(

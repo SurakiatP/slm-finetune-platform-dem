@@ -29,6 +29,7 @@ STAGE_GENERATE = "generate"
 STAGE_JUDGE = "judge"
 STAGE_PDF_QA = "pdf_qa"
 STAGE_FORMAT_DETECTION = "format_detection"
+STAGE_EMBED = "embed"  # SDG semantic-dedup embeddings — input tokens only; embeddings have no completion tokens
 # The evaluation run's LLM judge — deliberately NOT `STAGE_JUDGE`, which is
 # the SDG generator's own quality judge. They are different pipelines with
 # different cost profiles (SDG judges each generated row once during
@@ -195,6 +196,7 @@ __all__ = [
     "STAGE_JUDGE",
     "STAGE_PDF_QA",
     "STAGE_FORMAT_DETECTION",
+    "STAGE_EMBED",
     "STAGE_EVAL_JUDGE",
     "UsageEntry",
     "SDGBudgetExceededError",

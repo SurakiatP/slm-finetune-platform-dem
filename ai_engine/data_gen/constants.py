@@ -32,6 +32,12 @@ MINHASH_NUM_PERM = 128
 MINHASH_NGRAM_SIZE = 5
 """Character-n-gram width used to build the MinHash signature."""
 
+EMBEDDING_DEDUP_THRESHOLD = 0.90
+"""Cosine similarity at which two rows count as semantic near-duplicates."""
+
+EMBEDDING_BATCH_SIZE = 100
+"""Number of texts embedded per embedding-provider call."""
+
 # ---- Output volumes --------------------------------------------------------
 
 CANDIDATES_PER_GEN_CALL = 5
@@ -43,6 +49,11 @@ GENERATOR_BATCH_SIZE = 100
 
 JUDGE_BATCH_SIZE = 100
 """Concurrency for AsyncOpenRouterClient.chat_batch on Judge calls."""
+
+JUDGE_ROWS_PER_CALL = 10
+"""Rows bundled into a single batched Judge prompt/response when using
+parse_judge_batch_response. Locked into the batch prompt template; do not
+change without updating the prompt."""
 
 # ---- Adaptive over-generation ---------------------------------------------
 
@@ -92,9 +103,12 @@ __all__ = [
     "MINHASH_THRESHOLD",
     "MINHASH_NUM_PERM",
     "MINHASH_NGRAM_SIZE",
+    "EMBEDDING_DEDUP_THRESHOLD",
+    "EMBEDDING_BATCH_SIZE",
     "CANDIDATES_PER_GEN_CALL",
     "GENERATOR_BATCH_SIZE",
     "JUDGE_BATCH_SIZE",
+    "JUDGE_ROWS_PER_CALL",
     "INITIAL_OVER_GEN_MULT",
     "MIN_OVER_GEN_MULT",
     "MAX_OVER_GEN_MULT",

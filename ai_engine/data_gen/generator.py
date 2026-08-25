@@ -18,11 +18,16 @@ Pipeline (per task type):
     2. Generator chat_batch (concurrency=GENERATOR_BATCH_SIZE)
     3. parse_generator_response per call → exploded candidates
     4. Schema + business validation (label widening for sentinels)
-    5. Judge chat_batch (concurrency=JUDGE_BATCH_SIZE) → keep score >= threshold
-    6. MinHash LSH dedup
-    7. Quota-respecting collection
-    8. Adaptive over-gen multiplier update (EMA smoothed)
-    9. Emit SDGProgress to caller
+    5. MinHash LSH dedup — runs BEFORE the judge so duplicate candidates
+       never spend a judge call
+    6. Semantic embedding dedup (optional) — after MinHash, before the
+       judge; catches near-paraphrase duplicates MinHash can't see.
+       Degrades to a pass-through on any embeddings-provider error.
+    7. Judge chat_batch, batched JUDGE_ROWS_PER_CALL rows/prompt
+       (concurrency=JUDGE_BATCH_SIZE) → keep score >= threshold
+    8. Quota-respecting collection
+    9. Adaptive over-gen multiplier update (EMA smoothed)
+    10. Emit SDGProgress to caller
 
   Termination
     • collected >= target_count → success
@@ -49,9 +54,12 @@ from .constants import (
     CANDIDATES_PER_GEN_CALL,
     CLASSIFICATION_SENTINEL_LABEL,
     DIFFICULTY_LEVELS,
+    EMBEDDING_BATCH_SIZE,
+    EMBEDDING_DEDUP_THRESHOLD,
     GENERATOR_BATCH_SIZE,
     INITIAL_OVER_GEN_MULT,
     JUDGE_BATCH_SIZE,
+    JUDGE_ROWS_PER_CALL,
     JUDGE_THRESHOLD,
     MAX_CONSECUTIVE_FAILURES,
     MAX_LOOPS,
@@ -62,7 +70,8 @@ from .constants import (
     TOOL_CALLING_SENTINEL_NAME,
 )
 from .coverage_pool import make_coverage_pool
-from .judge import parse_judge_response
+from .insights import JudgeScoreAggregator
+from .judge import parse_judge_batch_response
 from .meta_prompter import SDGRules, fallback_rules, parse_meta_response
 from .minhash_dedup import MinHashDeduplicator
 from .openrouter_client import AsyncOpenRouterClient, ChatResult, OpenRouterClient, Prompt
@@ -73,7 +82,9 @@ from .prompts import (
     build_pdf_qa_messages,
     parse_generator_response,
 )
+from .semantic_dedup import SemanticDeduplicator
 from .usage import (
+    STAGE_EMBED,
     STAGE_GENERATE,
     STAGE_JUDGE,
     STAGE_META_PROMPT,
@@ -131,6 +142,14 @@ class SDGRunResult:
     judge_parse_failures: int
     api_calls: int
     failed_attempts: list[str] = field(default_factory=list)
+    judge_scores_summary: dict[str, Any] | None = None
+    # Rows dropped by the semantic (embedding) dedup layer specifically — a
+    # subset of `duplicate_count`, which also folds in MinHash-dropped rows.
+    # Default 0 is load-bearing: every pre-existing construction site (tests,
+    # worker code) that builds an `SDGRunResult` without this field — because
+    # the semantic layer is off by default (see `SyntheticDataGenerator.
+    # __init__`'s `embedding_model` default) — must keep working untouched.
+    semantic_duplicate_count: int = 0
 
 
 class SDGAbortedError(RuntimeError):
@@ -151,10 +170,19 @@ class SyntheticDataGenerator:
         sync_client: OpenRouterClient,
         *,
         rng: random.Random | None = None,
+        embedding_model: str | None = None,
+        embedding_dedup_threshold: float = EMBEDDING_DEDUP_THRESHOLD,
     ) -> None:
         self._async = async_client
         self._sync = sync_client
         self._rng = rng if rng is not None else random.Random()
+        # Semantic (embedding) dedup layer is opt-in. A falsy `embedding_model`
+        # (None, the default, or "") means the layer is never constructed in
+        # `generate()` — zero embeddings calls, `semantic_duplicate_count`
+        # stays 0 — so every pre-existing call site (worker code not yet
+        # opted in, every snapshot/unit test) keeps behaving identically.
+        self._embedding_model = embedding_model
+        self._embedding_threshold = embedding_dedup_threshold
 
     # -- Public entry point -------------------------------------------------
 
@@ -300,6 +328,43 @@ class SyntheticDataGenerator:
             if text:
                 dedup.add(text)
 
+        # ---- Semantic (embedding) dedup layer (optional) ------------------
+        # Constructed only when the caller opted in via `embedding_model` —
+        # see `__init__`. Runs alongside `dedup` (MinHash) rather than
+        # replacing it; both apply independently in the loop below.
+        semantic: SemanticDeduplicator | None = None
+        if self._embedding_model:
+
+            async def _embed(texts: list[str]) -> tuple[list[list[float]], int, str]:
+                res = await self._async.embed(texts=texts, model=self._embedding_model)
+                return res.vectors, (res.prompt_tokens or 0), res.model
+
+            def _on_embed_usage(model_id: str, prompt_tokens: int) -> None:
+                if usage is not None:
+                    usage.add(model_id, STAGE_EMBED, prompt_tokens, 0)
+                    # Deliberately unguarded here (matches the generate/judge/
+                    # pdf_qa usage.check_budget() call sites) — the
+                    # SemanticDeduplicator only wraps the `embed()` call
+                    # itself in its degrade-on-error try/except, not this
+                    # callback, so a budget breach raised here propagates
+                    # straight out of generate() instead of being swallowed
+                    # as an embeddings-provider failure.
+                    usage.check_budget()
+
+            semantic = SemanticDeduplicator(
+                _embed,
+                threshold=self._embedding_threshold,
+                batch_size=EMBEDDING_BATCH_SIZE,
+                on_usage=_on_embed_usage,
+            )
+            await semantic.add_texts(
+                [
+                    str(row.get(seed_text_field, ""))
+                    for row in seed_rows
+                    if row.get(seed_text_field)
+                ]
+            )
+
         # ---- PDF → Q&A first pass (QA + PDF only) ------------------------
         accepted: list[dict[str, Any]] = []
         api_calls = 0
@@ -316,6 +381,8 @@ class SyntheticDataGenerator:
                 pdf_outcome = dedup.filter(pdf_rows, key="question")
                 # Trim to target so we don't overshoot before the loop.
                 kept = pdf_outcome.unique[: target]
+                if semantic is not None:
+                    await semantic.add_texts([str(r.get("question", "")) for r in kept])
                 accepted.extend(kept)
                 # Use the PDF-derived Q&As as in-context examples for the loop.
                 for r in kept:
@@ -334,8 +401,10 @@ class SyntheticDataGenerator:
         # ---- Loop --------------------------------------------------------
         rejected_total = 0
         duplicates_total = 0
+        semantic_duplicates_total = 0
         judge_rejected_total = 0
         judge_parse_total = 0
+        score_aggregator = JudgeScoreAggregator()
         failed_attempts: list[str] = []
         consecutive_failures = 0
         over_gen_mult = INITIAL_OVER_GEN_MULT
@@ -477,7 +546,28 @@ class SyntheticDataGenerator:
             )
             rejected_total += len(failures)
 
-            # 3. Judge batch
+            # 3. MinHash LSH dedup — runs BEFORE the judge so a duplicate
+            # candidate never spends a judge call. Accepted trade-off:
+            # registration happens at filter time, so a row the judge later
+            # rejects still keeps its fingerprint in the LSH index (it can
+            # still block a future near-duplicate from being collected).
+            text_field = _seed_text_field(request.task_type)
+            outcome = dedup.filter(valid_rows, key=text_field)
+            duplicates_total += outcome.duplicates_dropped
+
+            # 4. Semantic (embedding) dedup — after MinHash, before the
+            # judge, so a semantic near-duplicate never spends a judge call
+            # either. Degrades to a pass-through on any embeddings error
+            # (see SemanticDeduplicator's module docstring); a budget breach
+            # still propagates via the on_usage closure built above.
+            sem_rows = outcome.unique
+            if semantic is not None:
+                sem_outcome = await semantic.filter(sem_rows, key=text_field)
+                sem_rows = sem_outcome.unique
+                semantic_duplicates_total += sem_outcome.duplicates_dropped
+                duplicates_total += sem_outcome.duplicates_dropped
+
+            # 5. Judge batch
             emit(
                 "judging",
                 current_loop=loop_idx,
@@ -486,23 +576,19 @@ class SyntheticDataGenerator:
             )
             judge_keep, j_low, j_parse, judge_calls = await self._judge_filter(
                 request=request,
-                rows=valid_rows,
+                rows=sem_rows,
                 classification_labels=cls_labels,
                 tool_definitions=tool_defs,
                 usage=usage,
+                aggregator=score_aggregator,
             )
             api_calls += judge_calls
             judge_rejected_total += j_low
             judge_parse_total += j_parse
 
-            # 4. MinHash LSH dedup
-            text_field = _seed_text_field(request.task_type)
-            outcome = dedup.filter(judge_keep, key=text_field)
-            duplicates_total += outcome.duplicates_dropped
-
-            # 5. Quota-respecting collection
+            # 6. Quota-respecting collection
             added = _apply_collection_quota(
-                outcome.unique,
+                judge_keep,
                 accepted=accepted,
                 collected_per_key=collected_per_key,
                 quota=quota,
@@ -510,12 +596,12 @@ class SyntheticDataGenerator:
                 key_for_row=lambda r: self._row_quota_key(request.task_type, r),
             )
 
-            # 6. Adaptive multiplier (EMA-smoothed)
+            # 7. Adaptive multiplier (EMA-smoothed)
             over_gen_mult = _update_over_gen_mult(
                 over_gen_mult, added=added, batch_size=len(batch_inputs)
             )
 
-            # 7. Failure counter
+            # 8. Failure counter
             if added == 0:
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
@@ -546,6 +632,8 @@ class SyntheticDataGenerator:
             judge_parse_failures=judge_parse_total,
             api_calls=api_calls,
             failed_attempts=failed_attempts,
+            judge_scores_summary=score_aggregator.to_dict(),
+            semantic_duplicate_count=semantic_duplicates_total,
         )
 
     # -- Internal stages ----------------------------------------------------
@@ -590,22 +678,52 @@ class SyntheticDataGenerator:
         classification_labels: list[str] | None,
         tool_definitions: list[ToolDefinition] | None,
         usage: UsageAccumulator | None = None,
+        aggregator: JudgeScoreAggregator | None = None,
     ) -> tuple[list[dict[str, Any]], int, int, int]:
-        """Score every row; keep those with weighted >= JUDGE_THRESHOLD.
+        """Score every row in batches of JUDGE_ROWS_PER_CALL; keep those with
+        weighted >= JUDGE_THRESHOLD.
 
-        Returns (kept_rows, low_score_count, parse_failure_count, api_calls).
+        Rows are first grouped by their quota key (`_row_quota_key` — label,
+        tool name, or the QA bucket) so one judge prompt never mixes rows
+        that belong to different diversity contexts, then each group is
+        chunked into JUDGE_ROWS_PER_CALL-sized slices — one
+        `build_judge_prompt(..., rows=chunk)` per chunk. Row order is
+        preserved within the returned kept-list where practical (grouped by
+        key, in each group's original order).
+
+        Every successfully parsed score — kept or rejected — is recorded on
+        `aggregator` (if given) under its row's quota key, so the run's
+        judge-score summary reflects the full judged population, not just
+        the rows that passed the quality gate.
+
+        Returns (kept_rows, low_score_count, parse_failure_count, api_calls),
+        where `api_calls` counts chunk prompts (not rows).
         """
         if not rows:
             return [], 0, 0, 0
+
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            key = self._row_quota_key(request.task_type, row)
+            groups.setdefault(key, []).append(row)
+
+        chunks: list[list[dict[str, Any]]] = []
+        chunk_keys: list[str] = []
+        for key, group_rows in groups.items():
+            for i in range(0, len(group_rows), JUDGE_ROWS_PER_CALL):
+                chunk = group_rows[i : i + JUDGE_ROWS_PER_CALL]
+                chunks.append(chunk)
+                chunk_keys.append(key)
+
         prompts = [
             build_judge_prompt(
                 request.task_type,
                 task_description=request.task_description,
-                row=row,
+                rows=chunk,
                 classification_labels=classification_labels,
                 tool_definitions=tool_definitions,
             )
-            for row in rows
+            for chunk in chunks
         ]
         try:
             results = await self._async.chat_batch(
@@ -621,22 +739,26 @@ class SyntheticDataGenerator:
         kept: list[dict[str, Any]] = []
         low = 0
         parse_fail = 0
-        for row, raw in zip(rows, results):
+        for chunk, key, raw in zip(chunks, chunk_keys, results):
             if isinstance(raw, Exception):
                 # chat_batch returns exceptions inline rather than raising —
-                # a failed call burned no billable tokens, so skip it.
-                parse_fail += 1
+                # a failed call burned no billable tokens for this chunk, so
+                # every row it would have scored counts as a parse failure.
+                parse_fail += len(chunk)
                 continue
             if usage is not None:
                 usage.add(raw.model, STAGE_JUDGE, raw.prompt_tokens, raw.completion_tokens)
-            score = parse_judge_response(raw.content)
-            if score is None:
-                parse_fail += 1
-                continue
-            if score.weighted < JUDGE_THRESHOLD:
-                low += 1
-                continue
-            kept.append(row)
+            scores = parse_judge_batch_response(raw.content, expected=len(chunk))
+            for row, score in zip(chunk, scores):
+                if score is None:
+                    parse_fail += 1
+                    continue
+                if aggregator is not None:
+                    aggregator.add(key, score)
+                if score.weighted < JUDGE_THRESHOLD:
+                    low += 1
+                    continue
+                kept.append(row)
         if usage is not None:
             # Outside the try/except above (which only wraps the chat_batch
             # call itself), so a budget breach here is not swallowed by that

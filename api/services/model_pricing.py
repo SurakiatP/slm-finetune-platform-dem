@@ -66,6 +66,11 @@ _BUILTIN_PRICING_USD_PER_1M: dict[str, tuple[float, float]] = {
     #                                         the model owner's own list rate
     #   Phala               $0.20 / $0.40   ← most expensive
     "deepseek/deepseek-v4-flash-0731": (0.14, 0.28),
+    # openai/text-embedding-3-small — SDG semantic dedup (see
+    # ai_engine/data_gen/semantic_dedup.py). $0.02 per 1M input tokens via
+    # OpenRouter, checked 2026-08. Completion is 0.0 because the embeddings
+    # endpoint returns no completion tokens.
+    "openai/text-embedding-3-small": (0.02, 0.0),
 }
 
 # Why the standard tier rather than the cheapest or the dearest: OpenRouter

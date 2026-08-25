@@ -19,7 +19,10 @@ class TrainingResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     id: UUID
-    project_id: UUID
+    # Nullable: a training run survives its project being deleted
+    # (ondelete="SET NULL" — see migration 0012_training_decouple, user
+    # decision D10). None means orphaned.
+    project_id: UUID | None
     dataset_id: UUID
     mode: TrainingMode
     status: JobStatus

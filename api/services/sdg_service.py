@@ -95,6 +95,9 @@ async def submit_sdg_job(
         source=DatasetSource.SDG,
         status=JobStatus.PENDING,
         num_samples=0,
+        seed_dataset_id=(
+            request.seed_dataset_id if isinstance(request, SDGRequestWithSeed) else None
+        ),
         generation_metadata={
             "sdg_mode": request.sdg_mode.value,
             "task_description": request.task_description,

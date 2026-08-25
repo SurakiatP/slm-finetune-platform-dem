@@ -31,15 +31,21 @@ Instead:
      `test_max_length_63_enforced` already covers) — the collision check
      must still catch an exact 63-char duplicate.
 
-  4. Project deletion frees the name: `TrainingJob.project_id` is
-     `ondelete="CASCADE"` at the DB level AND `Project.training_jobs` is
-     `cascade="all, delete-orphan"` at the ORM level (api/models/project.py)
-     — both agree, so `projects_service.delete_project` really does
-     delete the old TrainingJob row, and the name becomes available again
-     in a fresh project under the same owner. (Contrast with
-     `test_wave1_hardening_dataset_project_delete_cascade.py`, which
-     finds the analogous Dataset relationship does NOT agree with its own
-     migration's DB-level `ondelete=SET NULL` — that one IS a bug.)
+  4. Project deletion does NOT free the name (updated 2026-08-24, D10,
+     migration `0012_training_decouple`). `TrainingJob.project_id` is now
+     nullable with `ondelete="SET NULL"` at the DB level, and
+     `Project.training_jobs` was fixed to `cascade="save-update, merge"` +
+     `passive_deletes="all"` at the ORM level (api/models/project.py) — the
+     same treatment `Project.datasets` already had. So
+     `projects_service.delete_project` orphans the old `TrainingJob` row
+     (`project_id` -> `NULL`) instead of deleting it, and the row still
+     holds its `training_name`. Because the row's `Project` is gone,
+     `_assert_training_name_available`'s outer join resolves its owner to
+     `NULL`, landing it in the shared "null-owner scope" bucket (same
+     bucket `AUTH_REQUIRED=false` puts every project in today) — so a new
+     submission of the same name in that scope still 409s. This used to be
+     the opposite (name freed) under the old CASCADE-delete contract; this
+     suite now pins the new one.
 
 Same in-memory aiosqlite + JSONB `@compiles` shim harness as
 `test_training_create_contract.py`.
@@ -73,6 +79,22 @@ def _compile_jsonb_sqlite(element, compiler, **kw):  # noqa: ANN001, ANN003
 @pytest.fixture
 async def db():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+
+    from sqlalchemy import event
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable_sqlite_fks(dbapi_conn, _record):  # noqa: ANN001
+        # sqlite defaults FK enforcement OFF per-connection; without this,
+        # `ON DELETE SET NULL` never fires and
+        # `TestProjectDeletionFreesTrainingName` below would exercise the
+        # wrong behavior regardless of api/models/project.py's cascade
+        # setting. Same pragma
+        # `test_wave1_hardening_dataset_project_delete_cascade.py` uses for
+        # the identical reason.
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
@@ -224,18 +246,22 @@ class TestSixtyThreeCharBoundaryCollisionAtServiceLayer:
 
 
 class TestProjectDeletionFreesTrainingName:
-    async def test_deleting_the_owning_project_frees_the_name_for_reuse(
+    async def test_deleting_the_owning_project_does_not_free_the_name(
         self, db: AsyncSession, spy_apply
     ) -> None:
-        """`Project.training_jobs` cascade ("all, delete-orphan") agrees
-        with the DB-level `ondelete="CASCADE"` on `TrainingJob.project_id`
-        — deleting the project via the real `projects_service.delete_project`
-        really does remove the TrainingJob row, so the name becomes free
-        again for a brand-new project under the same owner."""
+        """Post-D10 contract: `Project.training_jobs` now uses
+        `cascade="save-update, merge"` + `passive_deletes="all"`, matching
+        the DB-level `ondelete="SET NULL"` on `TrainingJob.project_id` — so
+        deleting the project via the real `projects_service.delete_project`
+        orphans the TrainingJob row (`project_id` -> `NULL`) instead of
+        deleting it. The row still holds `training_name`, and the outer
+        join in `_assert_training_name_available` resolves the orphan's
+        owner to `NULL` -- the same null-owner scope `AUTH_REQUIRED=false`
+        (auth-off) puts every project in. A same-name resubmit in that
+        scope must therefore still 409, not succeed."""
         from api.services import projects_service
 
-        owner = "owner-a"
-        project1 = await _make_project(db, owner_id=owner)
+        project1 = await _make_project(db, owner_id=None)
         dataset1 = await _make_ready_dataset(db, project=project1)
 
         await training_service.submit_manual_training_job(
@@ -247,8 +273,7 @@ class TestProjectDeletionFreesTrainingName:
 
         await projects_service.delete_project(db, project1.id, user=None)
 
-        # The TrainingJob row is really gone (cascade-deleted), not just
-        # its parent project.
+        # The TrainingJob row survives, orphaned -- not cascade-deleted.
         from sqlalchemy import select
 
         remaining = (
@@ -256,15 +281,17 @@ class TestProjectDeletionFreesTrainingName:
                 select(TrainingJob).where(TrainingJob.training_name == "reusable-name")
             )
         ).scalars().all()
-        assert remaining == []
+        assert len(remaining) == 1
+        assert remaining[0].project_id is None
 
-        project2 = await _make_project(db, owner_id=owner)
+        project2 = await _make_project(db, owner_id=None)
         dataset2 = await _make_ready_dataset(db, project=project2)
-        resp = await training_service.submit_manual_training_job(
-            db,
-            ManualTrainingRequest(
-                project_id=project2.id, dataset_id=dataset2.id, training_name="reusable-name"
-            ),
-        )
-        assert resp.status is JobStatus.PENDING
-        assert len(spy_apply["training"]) == 2
+        with pytest.raises(HTTPException) as excinfo:
+            await training_service.submit_manual_training_job(
+                db,
+                ManualTrainingRequest(
+                    project_id=project2.id, dataset_id=dataset2.id, training_name="reusable-name"
+                ),
+            )
+        assert excinfo.value.status_code == 409
+        assert len(spy_apply["training"]) == 1, "the blocked resubmit must never enqueue"

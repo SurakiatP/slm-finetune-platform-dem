@@ -57,7 +57,7 @@ from api.schemas.data_formats import (
     parse_samples,
     required_field_names,
 )
-from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse
+from api.schemas.datasets import DatasetPreviewResponse, DatasetResponse, DatasetUpdate
 from api.schemas.enums import DatasetSource, JobStatus, TaskType
 from api.schemas.responses import Page
 from api.schemas.sdg import SeedUploadResponse
@@ -367,6 +367,37 @@ async def cancel_dataset(
     return {"dataset_id": str(ds.id), "status": JobStatus.CANCELLED.value}
 
 
+async def rename_dataset(
+    db: AsyncSession,
+    dataset_id: UUID,
+    body: DatasetUpdate,
+    user: CurrentUser | None = None,
+) -> DatasetResponse:
+    """`PATCH /datasets/{id}` — rename only.
+
+    Ownership-gated like every other single-dataset endpoint (404 if
+    missing, 403 if it exists and isn't `user`'s — ADR-012). Records a
+    `dataset.rename` audit row carrying both the old and new name before
+    committing, mirroring `dataset.cancel`/`dataset.delete` above.
+    """
+    ds = await ownership.assert_dataset_access(db, dataset_id, user)
+    old_name = ds.name
+    ds.name = body.name
+    audit_service.record(
+        db,
+        action="dataset.rename",
+        resource_type="dataset",
+        resource_id=str(ds.id),
+        project_id=ds.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"old_name": old_name, "new_name": ds.name},
+    )
+    await db.commit()
+    await db.refresh(ds)
+    return DatasetResponse.model_validate(ds)
+
+
 # ---- upload-seed ----------------------------------------------------------
 
 
@@ -423,6 +454,58 @@ async def upload_seed_dataset(
     )
 
 
+# ---- upload (ready-to-train, non-seed) ------------------------------------
+
+
+async def upload_dataset(
+    db: AsyncSession,
+    *,
+    project_id: UUID,
+    task_type: TaskType,
+    name: str | None,
+    file: UploadFile,
+    user: CurrentUser | None = None,
+) -> SeedUploadResponse:
+    """Upload + persist a ready-to-train JSONL/JSON dataset.
+
+    Sibling of :func:`upload_seed_dataset`, for datasets that are already
+    trainable (as opposed to seed rows meant to be expanded via SDG). Reuses
+    the same JSONL parse -> Format Detection -> validate -> persist pipeline
+    (`_upload_jsonl_seed` / `_persist_jsonl_dataset`), parameterised to
+    persist with `source=UPLOADED`, key prefix `uploads/`, and audit action
+    `dataset.upload` instead of the seed-upload defaults.
+
+    PDF is not accepted here — a PDF has no rows yet (it's SDG's raw
+    material), so it's seed-only; POST to `/upload-seed` instead.
+    """
+    settings = get_settings()
+    project = await ownership.assert_project_access(db, project_id, user)
+    if project.task_type != task_type:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Project task_type is {project.task_type.value} but upload "
+                f"declares {task_type.value}"
+            ),
+        )
+    if _looks_like_pdf(file):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="PDF uploads are seed-only; use /upload-seed instead",
+        )
+    return await _upload_jsonl_seed(
+        db,
+        settings=settings,
+        project=project,
+        task_type=task_type,
+        name=name,
+        file=file,
+        source=DatasetSource.UPLOADED,
+        key_prefix="uploads",
+        audit_action="dataset.upload",
+    )
+
+
 # ---- upload-seed: JSONL/JSON path -----------------------------------------
 
 
@@ -434,6 +517,9 @@ async def _upload_jsonl_seed(
     task_type: TaskType,
     name: str | None,
     file: UploadFile,
+    source: DatasetSource = DatasetSource.SEED,
+    key_prefix: str = "seeds",
+    audit_action: str = "dataset.seed_upload",
 ) -> SeedUploadResponse:
     # Stage 1: read + parse the upload bytes into row candidates.
     candidates = await _read_and_parse_jsonl_upload(file)
@@ -492,6 +578,9 @@ async def _upload_jsonl_seed(
         valid_rows=valid,
         fd_report=fd_report,
         fd_result=fd_result,
+        source=source,
+        key_prefix=key_prefix,
+        audit_action=audit_action,
     )
 
     return SeedUploadResponse(
@@ -559,6 +648,9 @@ async def _persist_jsonl_dataset(
     valid_rows: list[dict],
     fd_report: FormatDetectionReport,
     fd_result: FormatDetectionResult | None = None,
+    source: DatasetSource = DatasetSource.SEED,
+    key_prefix: str = "seeds",
+    audit_action: str = "dataset.seed_upload",
 ) -> Dataset:
     """Create the Dataset row + write the canonicalised JSONL to MinIO.
 
@@ -568,14 +660,20 @@ async def _persist_jsonl_dataset(
     ``fd_result`` is optional only so existing direct callers/tests that
     predate usage tracking keep working unchanged — the real upload path
     (`_upload_jsonl_seed`) always passes it.
+
+    ``source``/``key_prefix``/``audit_action`` are keyword-defaulted to the
+    seed-upload shape so every existing caller (including tests that call
+    this directly) keeps working unchanged; `upload_dataset` overrides all
+    three to persist a ready-to-train (`UPLOADED`) dataset instead.
     """
-    dataset_name = name or f"seed-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    default_prefix = "upload-" if source == DatasetSource.UPLOADED else "seed-"
+    dataset_name = name or f"{default_prefix}{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     dataset = Dataset(
         project_id=project.id,
         owner_id=project.owner_id,
         name=dataset_name,
         task_type=task_type,
-        source=DatasetSource.SEED,
+        source=source,
         status=JobStatus.COMPLETED,
         num_samples=len(valid_rows),
         generation_metadata={"format_detection": fd_report.model_dump()},
@@ -584,14 +682,14 @@ async def _persist_jsonl_dataset(
     await db.flush()
 
     minio = get_minio_client()
-    key = f"seeds/{dataset.id}.jsonl"
+    key = f"{key_prefix}/{dataset.id}.jsonl"
     bucket = settings.minio_datasets_bucket
     size_bytes = put_jsonl(minio, bucket, key, valid_rows)
     dataset.storage_uri = s3_uri(bucket, key)
     dataset.size_bytes = size_bytes
     audit_service.record(
         db,
-        action="dataset.seed_upload",
+        action=audit_action,
         resource_type="dataset",
         resource_id=str(dataset.id),
         project_id=dataset.project_id,

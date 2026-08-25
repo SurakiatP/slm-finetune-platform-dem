@@ -89,6 +89,13 @@ class ChatResult:
     completion_tokens: int | None
 
 
+@dataclass(frozen=True)
+class EmbeddingResult:
+    vectors: list[list[float]]
+    model: str
+    prompt_tokens: int | None
+
+
 # --- Sync client (single-shot calls) ---------------------------------------
 
 
@@ -388,6 +395,61 @@ class AsyncOpenRouterClient:
         # propagated already since gather lets BaseException through).
         return [r if isinstance(r, (ChatResult, Exception)) else Exception(repr(r)) for r in results]
 
+    async def embed(self, *, texts: list[str], model: str) -> EmbeddingResult:
+        """Embed `texts` via OpenRouter's OpenAI-compatible `/api/v1/embeddings`
+        endpoint, using the same `AsyncOpenAI` client/base URL as `chat` (ADR-003
+        unchanged — still OpenRouter only). Retried on connect/timeout/429,
+        same policy as `chat`.
+
+        Embeddings bill prompt tokens only (no `completion_tokens`), hence the
+        narrower `EmbeddingResult` versus `ChatResult`.
+
+        `texts=[]` short-circuits to an empty result with no SDK call and no
+        `precheck`/hook firing — there is nothing to embed and nothing to
+        retry.
+        """
+        if not texts:
+            return EmbeddingResult(vectors=[], model=model, prompt_tokens=0)
+
+        try:
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(4),
+                wait=wait_exponential(multiplier=1, min=2, max=30),
+                retry=retry_if_exception_type(_RETRYABLE),
+                before_sleep=before_sleep_log(log, logging.WARNING),
+                reraise=True,
+            ):
+                with attempt:
+                    if self._precheck is not None:
+                        self._precheck()
+                    try:
+                        resp = await self._client.embeddings.create(model=model, input=texts)
+                    except APIStatusError as exc:
+                        log.error(
+                            "OpenRouter API error (status=%s, model=%s): %s",
+                            exc.status_code,
+                            model,
+                            exc.message,
+                        )
+                        raise
+                    result = _to_embedding_result(resp, model)
+                    break
+            else:
+                # AsyncRetrying with reraise=True always either breaks out of
+                # the loop or raises; exhausting it normally is unreachable.
+                # Mypy can't see that.
+                raise RuntimeError("unreachable: AsyncRetrying exhausted without raising")
+        except BaseException as exc:
+            if self._on_call_failure is not None and is_breaker_failure(exc):
+                self._on_call_failure(exc)
+            raise
+        # Deliberately outside the `try`: a hook that raises is the caller's
+        # bug, and must not be misreported to `on_call_failure` as an
+        # OpenRouter failure.
+        if self._on_call_success is not None:
+            self._on_call_success()
+        return result
+
     async def _call_with_retry(
         self,
         *,
@@ -475,10 +537,20 @@ def _to_chat_result(resp: Any) -> ChatResult:
     )
 
 
+def _to_embedding_result(resp: Any, model: str) -> EmbeddingResult:
+    data = sorted(resp.data, key=lambda d: getattr(d, "index", 0))
+    return EmbeddingResult(
+        vectors=[list(d.embedding) for d in data],
+        model=getattr(resp, "model", model) or model,
+        prompt_tokens=getattr(resp.usage, "prompt_tokens", None),
+    )
+
+
 __all__ = [
     "OpenRouterClient",
     "AsyncOpenRouterClient",
     "ChatResult",
+    "EmbeddingResult",
     "Prompt",
     "OPENROUTER_BASE_URL",
     "is_breaker_failure",

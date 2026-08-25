@@ -137,7 +137,7 @@ def test_judge_prompt_classification(snapshot):
     prompt = build_judge_prompt(
         TaskType.CLASSIFICATION,
         task_description=_TASK_DESC_CLS,
-        row={"text": "อยากขอคืนเงิน", "label": "ปัญหาการเงิน"},
+        rows=[{"text": "อยากขอคืนเงิน", "label": "ปัญหาการเงิน"}],
         classification_labels=_CLS_LABELS,
     )
     assert (prompt.system, prompt.user) == snapshot
@@ -147,7 +147,7 @@ def test_judge_prompt_classification_sentinel(snapshot):
     prompt = build_judge_prompt(
         TaskType.CLASSIFICATION,
         task_description=_TASK_DESC_CLS,
-        row={"text": "สวัสดีตอนเช้า", "label": "unknown"},
+        rows=[{"text": "สวัสดีตอนเช้า", "label": "unknown"}],
         classification_labels=_CLS_LABELS,
     )
     assert (prompt.system, prompt.user) == snapshot
@@ -157,7 +157,7 @@ def test_judge_prompt_qa(snapshot):
     prompt = build_judge_prompt(
         TaskType.QA,
         task_description=_TASK_DESC_QA,
-        row={"question": "คืนสินค้ากี่วัน?", "answer": "7 วันหลังได้รับ"},
+        rows=[{"question": "คืนสินค้ากี่วัน?", "answer": "7 วันหลังได้รับ"}],
     )
     assert (prompt.system, prompt.user) == snapshot
 
@@ -166,10 +166,12 @@ def test_judge_prompt_tool_calling(snapshot):
     prompt = build_judge_prompt(
         TaskType.TOOL_CALLING,
         task_description=_TASK_DESC_TOOL,
-        row={
-            "question": "เปิดเสียงดังหน่อย",
-            "answer": '{"name":"set_volume","parameters":{"level":80}}',
-        },
+        rows=[
+            {
+                "question": "เปิดเสียงดังหน่อย",
+                "answer": '{"name":"set_volume","parameters":{"level":80}}',
+            }
+        ],
         tool_definitions=_TOOL_DEFS,
     )
     assert (prompt.system, prompt.user) == snapshot
@@ -179,10 +181,36 @@ def test_judge_prompt_tool_calling_sentinel(snapshot):
     prompt = build_judge_prompt(
         TaskType.TOOL_CALLING,
         task_description=_TASK_DESC_TOOL,
-        row={
-            "question": "วันนี้อากาศดีไหม",
-            "answer": '{"name":"no_tool_needed","parameters":{}}',
-        },
+        rows=[
+            {
+                "question": "วันนี้อากาศดีไหม",
+                "answer": '{"name":"no_tool_needed","parameters":{}}',
+            }
+        ],
+        tool_definitions=_TOOL_DEFS,
+    )
+    assert (prompt.system, prompt.user) == snapshot
+
+
+def test_judge_prompt_tool_calling_multi_row_mixed_sentinel(snapshot):
+    """3-row batch mixing normal and sentinel rows in one Judge call."""
+    prompt = build_judge_prompt(
+        TaskType.TOOL_CALLING,
+        task_description=_TASK_DESC_TOOL,
+        rows=[
+            {
+                "question": "เปิดเสียงดังหน่อย",
+                "answer": '{"name":"set_volume","parameters":{"level":80}}',
+            },
+            {
+                "question": "วันนี้อากาศดีไหม",
+                "answer": '{"name":"no_tool_needed","parameters":{}}',
+            },
+            {
+                "question": "ลดเสียงลงหน่อย",
+                "answer": '{"name":"set_volume","parameters":{"level":20}}',
+            },
+        ],
         tool_definitions=_TOOL_DEFS,
     )
     assert (prompt.system, prompt.user) == snapshot

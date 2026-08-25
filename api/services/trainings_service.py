@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.core import request_context
 from api.core.auth import CurrentUser
 from api.core.config import get_settings
+from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus, TrainingMode
 from api.schemas.responses import Page
@@ -29,7 +30,7 @@ from api.schemas.trainings import (
     TrainingMetricsResponse,
     TrainingResponse,
 )
-from api.services import audit_service, mlflow_metrics, ownership, queue_position
+from api.services import audit_service, mlflow_metrics, model_service, ownership, queue_position
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 
 log = logging.getLogger(__name__)
@@ -72,7 +73,12 @@ async def get_training(
     # Display-only, in-flight-only: only a PENDING/RUNNING job can meaningfully
     # sit in a GPU queue, so skip the lookup entirely for terminal jobs (and
     # never populate on list_trainings — see queue_position.py).
-    if job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+    if job.status in (JobStatus.PENDING, JobStatus.RUNNING) and job.project_id is not None:
+        # job.project_id can be None for an orphaned run (its Project was
+        # deleted — migration 0012_training_decouple); there is no project
+        # to report a queue position against, so skip the lookup entirely
+        # rather than pass None into project_queue_info (typed UUID, not
+        # UUID | None) — mirrors evaluation_service.get_evaluation's guard.
         info = await queue_position.project_queue_info(db, job.project_id)
         if info is not None:
             response = response.model_copy(
@@ -114,6 +120,73 @@ async def cancel_training(
     )
     await db.commit()
     return {"training_id": str(job.id), "status": JobStatus.CANCELLED.value}
+
+
+async def delete_training(
+    db: AsyncSession, training_id: UUID, user: CurrentUser | None = None
+) -> None:
+    """Hard-delete a training job: purge its `ModelArtifact` (if any), then
+    the `TrainingJob` row itself.
+
+    409 while the job is still PENDING/RUNNING (not yet terminal) — naming
+    the cancel endpoint to call first, same signal/wording style as
+    `model_service.delete_model`'s in-flight-export guard. Only a terminal
+    status (`completed`/`failed`/`cancelled`) may be deleted.
+
+    409 ALSO while the job's `ModelArtifact` has an export in flight. A
+    COMPLETED run can still have a PENDING/RUNNING GGUF export hanging off
+    it, and `purge_artifact` below would delete that artifact's MinIO
+    objects, Ollama tag and row out from under the live Celery task.
+    `model_service.delete_model` already refuses exactly this state; without
+    the same guard here its refusal is bypassable by deleting the parent
+    training instead of the model.
+
+    `POST /{training_id}/cancel` (and this module's `cancel_training`) are
+    untouched by this function — cancel and delete are two different verbs
+    now: cancel stops an in-flight run, delete removes the row (and its
+    artifact) permanently once the run is finished.
+    """
+    job = await ownership.assert_training_access(db, training_id, user)
+    if job.status not in TERMINAL_JOB_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Training {training_id} is {job.status.value}; "
+                f"POST /api/v1/trainings/{training_id}/cancel first"
+            ),
+        )
+
+    artifact = (
+        await db.execute(
+            select(ModelArtifact).where(ModelArtifact.training_job_id == job.id)
+        )
+    ).scalar_one_or_none()
+    if artifact is not None:
+        if artifact.export_status in (JobStatus.PENDING, JobStatus.RUNNING):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Training {training_id}'s model {artifact.id} has an export "
+                    f"in flight (job {artifact.export_celery_task_id}); "
+                    f"POST /api/v1/models/{artifact.id}/export/cancel first."
+                ),
+            )
+        await model_service.purge_artifact(
+            db, artifact, context=f"training delete {training_id}"
+        )
+
+    await db.delete(job)
+    audit_service.record(
+        db,
+        action="training.delete",
+        resource_type="training",
+        resource_id=str(job.id),
+        project_id=job.project_id,
+        actor_id=request_context.current_user_id(),
+        request_id=request_context.current_request_id(),
+        metadata={"job_id": job.celery_task_id},
+    )
+    await db.commit()
 
 
 async def get_mlflow_url(
@@ -271,6 +344,7 @@ __all__ = [
     "list_trainings",
     "get_training",
     "cancel_training",
+    "delete_training",
     "get_mlflow_url",
     "get_training_loss_history",
     "get_training_metrics",
