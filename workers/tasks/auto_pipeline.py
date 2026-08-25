@@ -106,6 +106,14 @@ log = get_task_logger(__name__)
 _EXPORT_FORMAT = "gguf"
 _EXPORT_QUANTIZATION = "q4_k_m"
 
+# T-B2: skip-reason strings shared between `mark_export_failed` (which writes
+# the first one) and `sync_export_success` (which reads it back to decide
+# whether a later successful manual export retry should resume auto-evaluate).
+_EXPORT_FAILED_SKIP_REASON = "export failed; see auto_pipeline.export.error"
+_HOLDOUT_GONE_SKIP_REASON = (
+    "holdout dataset deleted — cannot resume auto-evaluate after the export retry"
+)
+
 
 # ---- auto_pipeline JSONB helpers -------------------------------------------
 
@@ -209,6 +217,99 @@ def enqueue_auto_pipeline(*, training_id: str, artifact_id: str) -> None:
     )
 
 
+def sync_export_success(*, artifact_id: str, training_id: str) -> str:
+    """Mirror a successful `model.export` onto `TrainingJob.auto_pipeline`,
+    and resume the auto-evaluate leg when this export was a retry of a leg
+    that had previously failed.
+
+    Returns one of: "no_pipeline" | "synced" | "resumed" | "holdout_missing".
+    Never raises — best-effort bookkeeping called from the export task's
+    success path.
+    """
+    try:
+        training_uuid = UUID(training_id)
+        wants_resume = False
+
+        with session_scope() as session:
+            job = session.get(TrainingJob, training_uuid)
+            if job is None:
+                return "no_pipeline"
+
+            blob = dict(job.auto_pipeline or {})
+            export_stage = dict(blob.get("export") or {})
+            if not blob or export_stage.get("artifact_id") != artifact_id:
+                # Either no auto-pipeline was ever seeded for this training,
+                # or this export is a manual (non-auto-pipeline) export/retry
+                # that doesn't match the artifact the blob is tracking —
+                # scope guard, never touch the blob in either case.
+                return "no_pipeline"
+
+            eval_stage = dict(blob.get("evaluate") or {})
+            wants_resume = (
+                bool(job.auto_evaluate)
+                and export_stage.get("status") == "failed"
+                and eval_stage.get("status") == "skipped"
+                and eval_stage.get("skip_reason") == _EXPORT_FAILED_SKIP_REASON
+            )
+
+            export_stage.update(status="completed", error=None)
+            blob["export"] = export_stage
+
+            if not wants_resume:
+                job.auto_pipeline = blob
+                return "synced"
+
+            holdout = (
+                session.execute(
+                    select(Dataset).where(
+                        Dataset.parent_dataset_id == job.dataset_id,
+                        Dataset.generation_metadata["role"].astext == "holdout",
+                    )
+                )
+                .scalars()
+                .first()
+            )
+
+            if holdout is None or not holdout.storage_uri or holdout.num_samples == 0:
+                blob["evaluate"] = {
+                    **eval_stage,
+                    "status": "skipped",
+                    "skip_reason": _HOLDOUT_GONE_SKIP_REASON,
+                    "evaluation_id": None,
+                    "error": None,
+                }
+                job.auto_pipeline = blob
+                return "holdout_missing"
+
+            blob["evaluate"] = {
+                **eval_stage,
+                "status": "pending",
+                "skip_reason": None,
+                "evaluation_id": None,
+                "error": None,
+            }
+            job.auto_pipeline = blob
+
+        # Outside/after the session_scope block — same enqueue-after-commit
+        # ordering as `enqueue_auto_pipeline` uses for `export_model`.
+        auto_evaluate.apply_async(kwargs={"training_id": training_id, "artifact_id": artifact_id})
+        log.info(
+            "auto_pipeline: training=%s resumed auto-evaluate after manual export retry "
+            "(artifact=%s)",
+            training_id,
+            artifact_id,
+        )
+        return "resumed"
+    except Exception:  # noqa: BLE001 — best-effort bookkeeping, must never raise
+        log.warning(
+            "auto_pipeline: sync_export_success failed for training=%s artifact=%s",
+            training_id,
+            artifact_id,
+            exc_info=True,
+        )
+        return "no_pipeline"
+
+
 # ---- export-leg continuations ----------------------------------------------
 
 
@@ -243,7 +344,7 @@ def mark_export_failed(
         training_uuid,
         stage="evaluate",
         status="skipped",
-        skip_reason="export failed; see auto_pipeline.export.error",
+        skip_reason=_EXPORT_FAILED_SKIP_REASON,
     )
     log.warning(
         "auto_pipeline: training=%s export failed (task=%s): %s",
@@ -448,6 +549,7 @@ def mark_evaluate_failed(failed_task_id: str, *, training_id: str) -> dict[str, 
 
 __all__ = [
     "enqueue_auto_pipeline",
+    "sync_export_success",
     "auto_evaluate",
     "finalize_export_only",
     "mark_export_failed",

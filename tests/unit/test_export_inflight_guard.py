@@ -33,7 +33,7 @@ _BLOCKED = [JobStatus.PENDING, JobStatus.RUNNING]
 _ALLOWED = [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED, None]
 
 
-def _artifact(export_status) -> ModelArtifact:
+def _artifact(export_status, error_message: str | None = None) -> ModelArtifact:
     return ModelArtifact(
         id=uuid4(),
         training_job_id=uuid4(),
@@ -42,6 +42,7 @@ def _artifact(export_status) -> ModelArtifact:
         lora_adapter_uri="s3://models/adapters/x",
         export_status=export_status,
         export_celery_task_id=IN_FLIGHT_JOB if export_status else None,
+        export_error_message=error_message,
     )
 
 
@@ -157,3 +158,46 @@ class TestReExportIsStillAllowed:
         assert len(spy_apply) == 1
         assert resp.job_id == "job-newly-created"
         assert artifact.export_status is JobStatus.PENDING
+
+
+class TestStaleExportErrorIsCleared:
+    """T-B1 (blocker #10): a re-export must not keep serving a prior export's
+    failure message once a new job is PENDING/RUNNING. `export_error_message`
+    is read by the frontend regardless of `export_status`, and the worker
+    only clears it on SUCCESS — so `submit_export_job` must clear it itself
+    on every successful resubmit.
+    """
+
+    @pytest.mark.parametrize("status", [JobStatus.FAILED, JobStatus.CANCELLED])
+    async def test_stale_error_cleared_on_resubmit(self, spy_apply, status) -> None:
+        artifact = _artifact(status, error_message="old boom")
+
+        resp = await model_service.submit_export_job(
+            _db(artifact),
+            model_id=artifact.id,
+            request=ModelExportRequest(format=ArtifactFormat.GGUF),
+            user=USER,
+        )
+
+        assert artifact.export_error_message is None
+        assert artifact.export_status is JobStatus.PENDING
+        assert artifact.export_celery_task_id == "job-newly-created"
+        assert len(spy_apply) == 1
+        assert resp.job_id == "job-newly-created"
+
+    async def test_refused_submit_does_not_touch_error_message(self, spy_apply) -> None:
+        """A 409-refused submit (export already in flight) must not mutate
+        the row at all — including the stale error message."""
+        artifact = _artifact(JobStatus.RUNNING, error_message="old boom")
+
+        with pytest.raises(HTTPException) as exc:
+            await model_service.submit_export_job(
+                _db(artifact),
+                model_id=artifact.id,
+                request=ModelExportRequest(format=ArtifactFormat.GGUF),
+                user=USER,
+            )
+
+        assert exc.value.status_code == 409
+        assert artifact.export_error_message == "old boom"
+        assert spy_apply == []

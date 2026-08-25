@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ClipboardList, Database, Loader2, PlayCircle, Pencil, Trash2 } from "lucide-react";
+import { ArrowLeft, ClipboardList, Database, FlaskConical, Loader2, PlayCircle, Pencil, Trash2 } from "lucide-react";
 
 import { PageTransition } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +14,7 @@ import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { QueueBadge } from "@/components/engine/QueueBadge";
 import { StatusBadge } from "@/components/engine/StatusBadge";
 import { EvaluationTable } from "@/components/evaluation/EvaluationTable";
+import { StartEvaluationDialog } from "@/components/evaluation/StartEvaluationDialog";
 import { EditProjectDialog } from "@/components/project/EditProjectDialog";
 import { PipelineHub } from "@/components/project-pipeline/PipelineHub";
 import {
@@ -306,6 +307,8 @@ function DatasetsPreview({ projectId }: { projectId: string }) {
  *  project by way of its model artifacts. */
 function ProjectEvaluations({ projectId }: { projectId: string }) {
   const navigate = useNavigate();
+  const { t } = useLanguage();
+  const [evalOpen, setEvalOpen] = useState(false);
   const { data: modelsPage, isLoading: modelsLoading } = useModels(projectId, { limit: 100 });
   const { data: evalsPage, isLoading: evalsLoading } = useEvaluations({ limit: 100 });
 
@@ -322,27 +325,35 @@ function ProjectEvaluations({ projectId }: { projectId: string }) {
   const modelNames = Object.fromEntries(models.map((m) => [m.id, m.name]));
   const rows = (evalsPage?.items ?? []).filter((e) => modelIds.has(e.model_artifact_id));
 
-  if (rows.length === 0) {
-    return (
-      <EngineEmptyState
-        icon={ClipboardList}
-        title="No evaluations yet"
-        hint="Export a model, then evaluation runs automatically and results appear on that model's detail page."
-        action={
-          <Button variant="outline" size="sm" asChild>
-            <Link to="/models">Open Models</Link>
-          </Button>
-        }
-      />
-    );
-  }
-
   return (
-    <EvaluationTable
-      evaluations={rows}
-      modelNames={modelNames}
-      onRowClick={(evaluation) => navigate(`/models/${evaluation.model_artifact_id}`)}
-    />
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" onClick={() => setEvalOpen(true)} className="gap-2">
+          <FlaskConical className="h-3.5 w-3.5" /> {t("eval.start")}
+        </Button>
+      </div>
+
+      {rows.length === 0 ? (
+        <EngineEmptyState
+          icon={ClipboardList}
+          title="No evaluations yet"
+          hint="Export a model, then evaluation runs automatically and results appear on that model's detail page."
+          action={
+            <Button variant="outline" size="sm" onClick={() => setEvalOpen(true)} className="gap-2">
+              <FlaskConical className="h-3.5 w-3.5" /> {t("eval.start")}
+            </Button>
+          }
+        />
+      ) : (
+        <EvaluationTable
+          evaluations={rows}
+          modelNames={modelNames}
+          onRowClick={(evaluation) => navigate(`/models/${evaluation.model_artifact_id}`)}
+        />
+      )}
+
+      <StartEvaluationDialog open={evalOpen} onOpenChange={setEvalOpen} />
+    </div>
   );
 }
 

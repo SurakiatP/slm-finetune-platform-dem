@@ -177,6 +177,11 @@ async def submit_export_job(
     # enqueue -> persist -> commit -> return ordering).
     artifact.export_celery_task_id = job_id
     artifact.export_status = JobStatus.PENDING
+    # A re-export of a previously FAILED (or CANCELLED) artifact must not keep
+    # serving the old failure message while the new job is PENDING/RUNNING —
+    # the frontend reads export_error_message regardless of export_status,
+    # and the worker only clears it on SUCCESS.
+    artifact.export_error_message = None
     audit_service.record(
         db,
         action="export.submit",

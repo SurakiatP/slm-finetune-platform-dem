@@ -85,14 +85,12 @@ export function StartEvaluationDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{t("eval.start")}</DialogTitle>
-          <DialogDescription>
-            Runs the dataset through the model and scores predictions with task-specific metrics.
-          </DialogDescription>
+          <DialogDescription>{t("eval.startDescription")}</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <Label>Model artifact</Label>
+            <Label>{t("eval.modelArtifact")}</Label>
             <Select value={modelId} onValueChange={setModelId} disabled={modelsLoading}>
               <SelectTrigger>
                 <SelectValue
@@ -100,8 +98,8 @@ export function StartEvaluationDialog({
                     modelsLoading
                       ? t("common.loading")
                       : evaluableModels.length
-                        ? "Select a model…"
-                        : "No exportable model artifacts"
+                        ? t("eval.selectModelPlaceholder")
+                        : t("eval.noExportableModels")
                   }
                 />
               </SelectTrigger>
@@ -113,9 +111,7 @@ export function StartEvaluationDialog({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">
-              Only models exported to GGUF (registered with Ollama) can be evaluated.
-            </p>
+            <p className="text-xs text-muted-foreground">{t("eval.modelHint")}</p>
           </div>
 
           <div className="space-y-1.5">
@@ -127,15 +123,15 @@ export function StartEvaluationDialog({
                     datasetsLoading
                       ? t("common.loading")
                       : usableDatasets.length
-                        ? "Select a dataset…"
-                        : "No datasets with rows"
+                        ? t("eval.selectDatasetPlaceholder")
+                        : t("eval.noUsableDatasets")
                   }
                 />
               </SelectTrigger>
               <SelectContent>
                 {usableDatasets.map((d) => (
                   <SelectItem key={d.id} value={d.id}>
-                    {d.name} ({d.num_samples.toLocaleString()} rows)
+                    {d.name} ({t("eval.datasetRows").replace("{n}", d.num_samples.toLocaleString())})
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -145,9 +141,7 @@ export function StartEvaluationDialog({
           <div className="flex items-center justify-between rounded-lg border border-border p-3">
             <div className="space-y-0.5">
               <Label htmlFor="use-judge">{t("eval.llmJudge")}</Label>
-              <p className="text-xs text-muted-foreground">
-                Score free-form responses with the platform&apos;s judge model (skipped for classification).
-              </p>
+              <p className="text-xs text-muted-foreground">{t("eval.judgeHint")}</p>
             </div>
             <Switch id="use-judge" checked={useJudge} onCheckedChange={setUseJudge} />
           </div>

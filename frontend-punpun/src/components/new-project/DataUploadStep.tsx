@@ -9,6 +9,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
+import { SdgJobCard } from "@/components/dataset/SdgJobCard";
 import { Upload, FileText, X, FileCode, Loader2, CheckCircle2, Info, RefreshCw, Wand2 } from "lucide-react";
 import { toErrorDetail, type ProjectFormData } from "@/pages/NewProject";
 import {
@@ -775,37 +776,46 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
         </div>
       )}
 
-      {generationStarted && (
-        <div className="rounded-lg border border-border p-4 space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-foreground">Synthetic data generation</p>
-            <Badge variant={status === "completed" ? "default" : status === "failed" ? "destructive" : "outline"}>
-              {status ?? "pending"}
-            </Badge>
-          </div>
-          {!isTerminal(status) && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              {mode === "with_seed"
-                ? "Generating rows from your seed dataset…"
-                : t("sdgNoSeed.generatingFromDescription")}
+      {generationStarted && (() => {
+        const trainingDatasetRow = trainingDataset ?? null;
+        const showJobCard =
+          trainingDatasetRow !== null &&
+          (status === "pending" || status === "running" || status === "failed");
+        return (
+          <div className="rounded-lg border border-border p-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-foreground">{t("pipelineHub.stageSdg")}</p>
+              <Badge variant={status === "completed" ? "default" : status === "failed" ? "destructive" : "outline"}>
+                {status ?? "pending"}
+              </Badge>
             </div>
-          )}
-          {status === "completed" && trainingDataset && (
-            <p className="text-xs text-muted-foreground">
-              {trainingDataset.num_samples.toLocaleString()} rows ready for training.
-            </p>
-          )}
-          {status === "failed" && (
-            <>
-              <ErrorDetail error={{ detail: trainingDataset?.error_message ?? "Dataset generation failed." }} />
-              <Button type="button" variant="outline" size="sm" className="gap-2" onClick={resetGeneration}>
-                <RefreshCw className="h-3.5 w-3.5" /> Try again
-              </Button>
-            </>
-          )}
-        </div>
-      )}
+            {showJobCard && <SdgJobCard dataset={trainingDatasetRow} />}
+            {!showJobCard && !isTerminal(status) && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {mode === "with_seed"
+                  ? "Generating rows from your seed dataset…"
+                  : t("sdgNoSeed.generatingFromDescription")}
+              </div>
+            )}
+            {status === "completed" && trainingDataset && (
+              <p className="text-xs text-muted-foreground">
+                {trainingDataset.num_samples.toLocaleString()} {t("pipelineHub.samplesReady")}
+              </p>
+            )}
+            {status === "failed" && (
+              <>
+                {!showJobCard && (
+                  <ErrorDetail error={{ detail: trainingDataset?.error_message ?? "Dataset generation failed." }} />
+                )}
+                <Button type="button" variant="outline" size="sm" className="gap-2" onClick={resetGeneration}>
+                  <RefreshCw className="h-3.5 w-3.5" /> {t("common.retry")}
+                </Button>
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Format guide — the sample now comes from the Engine's per-task
           example (GET /api/v1/tasks/{task_type}/example) instead of a

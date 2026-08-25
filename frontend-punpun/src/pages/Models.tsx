@@ -1,11 +1,12 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ModelCard } from "@/components/dashboard/ModelCard";
 import { buildTrainingNameMap, modelDisplayName } from "@/components/model/modelNaming";
 import { PageTransition, FadeIn, StaggerContainer, MotionCard } from "@/components/motion";
 import { ModelCardSkeleton } from "@/components/skeletons/ModelCardSkeleton";
 import { Button } from "@/components/ui/button";
-import { GitCompare, Box } from "lucide-react";
+import { StartEvaluationDialog } from "@/components/evaluation/StartEvaluationDialog";
+import { GitCompare, Box, FlaskConical } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useModels, useTrainings } from "@/hooks/queries";
 
@@ -15,6 +16,7 @@ export default function Models() {
   // per-model GET /trainings/{id} just to resolve training_name.
   const { data: trainingsPage } = useTrainings({ limit: 200 });
   const { t } = useLanguage();
+  const [evalOpen, setEvalOpen] = useState(false);
   const models = data?.items ?? [];
   const trainingNames = useMemo(() => buildTrainingNameMap(trainingsPage?.items), [trainingsPage]);
 
@@ -27,11 +29,16 @@ export default function Models() {
               <h1 className="text-2xl font-bold text-foreground">{t("models.title")}</h1>
               <p className="text-sm text-muted-foreground">{t("models.available").replace("{count}", String(models.length))}</p>
             </div>
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/models/compare" className="gap-2">
-                <GitCompare className="h-4 w-4" /> {t("models.compare")}
-              </Link>
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => setEvalOpen(true)} className="gap-2">
+                <FlaskConical className="h-4 w-4" /> {t("eval.start")}
+              </Button>
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/models/compare" className="gap-2">
+                  <GitCompare className="h-4 w-4" /> {t("models.compare")}
+                </Link>
+              </Button>
+            </div>
           </div>
         </FadeIn>
 
@@ -57,6 +64,8 @@ export default function Models() {
           </StaggerContainer>
         )}
       </div>
+
+      <StartEvaluationDialog open={evalOpen} onOpenChange={setEvalOpen} />
     </PageTransition>
   );
 }
