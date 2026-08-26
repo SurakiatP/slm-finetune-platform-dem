@@ -26,8 +26,8 @@ export function startTraining(body: TrainingRequest, idempotencyKey?: string): P
   return api.post(BASE, body, { idempotencyKey })
 }
 
-export function cancelTraining(id: string): Promise<{ message: string }> {
-  return api.delete(`${BASE}/${id}`)
+export function cancelTraining(id: string): Promise<{ training_id: string; status: JobStatus }> {
+  return api.post(`${BASE}/${id}/cancel`)
 }
 
 export function getMlflowUrl(id: string): Promise<MlflowUrlResponse> {

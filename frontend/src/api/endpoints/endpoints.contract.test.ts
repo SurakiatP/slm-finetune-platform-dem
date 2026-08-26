@@ -93,7 +93,7 @@ describe('OpenAPI endpoint wrappers', () => {
     models.getModelDownloadUrl('m1', 'lora')
 
     expect(mocks.api.post).toHaveBeenCalledWith('/api/v1/trainings', expect.objectContaining({ mode: 'manual' }), { idempotencyKey: 'idem' })
-    expect(mocks.api.delete).toHaveBeenCalledWith('/api/v1/trainings/t1')
+    expect(mocks.api.post).toHaveBeenCalledWith('/api/v1/trainings/t1/cancel')
     expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/trainings/t1/mlflow-url')
     expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/trainings/t1/metrics')
     expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/trainings/t1/loss-history')
