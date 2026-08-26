@@ -2,16 +2,25 @@ import { FolderKanban, Box, Clock } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { StaggerContainer, StaggerItem } from "@/components/motion";
 import { motion } from "framer-motion";
-import { useProjects } from "@/hooks/useProjects";
-import { useModels } from "@/hooks/useUserData";
+import { useModels, useProjects, useTrainings } from "@/hooks/queries";
 
 export function StatsCards() {
-  const { projects } = useProjects();
-  const { models } = useModels();
+  const { data: projectsPage } = useProjects({ limit: 100 });
+  const { data: modelsPage } = useModels(undefined, { limit: 100 });
+  const { data: trainingsPage } = useTrainings({ limit: 100 });
 
-  const totalProjects = projects.length;
-  const modelsTrained = models.length;
-  const trainingHours = projects.reduce((s, p) => s + (p.epochs * 0.5), 0).toFixed(1);
+  const totalProjects = projectsPage?.total ?? 0;
+  const modelsTrained = modelsPage?.total ?? 0;
+  // The original derived "training hours" from a mock `epochs * 0.5`; the
+  // Engine reports real wall-clock start/end per training job instead.
+  const trainingHours = (trainingsPage?.items ?? [])
+    .reduce((s, tr) => {
+      if (!tr.started_at) return s;
+      const end = tr.ended_at ? new Date(tr.ended_at).getTime() : Date.now();
+      const ms = end - new Date(tr.started_at).getTime();
+      return ms > 0 ? s + ms / 3_600_000 : s;
+    }, 0)
+    .toFixed(1);
 
   const stats = [
     { label: "Total Projects", value: totalProjects, icon: FolderKanban, color: "text-primary" },

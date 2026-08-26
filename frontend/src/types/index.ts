@@ -1,5 +1,9 @@
 export type ProjectStatus = "training" | "completed" | "failed" | "queued" | "paused";
-export type TaskType = "classification" | "ner" | "qa" | "function-calling" | "extraction" | "ranking";
+// Task types come from the Engine (`GET /api/v1/tasks`) and are constrained to
+// the three the backend actually supports (ADR-005). Re-exported from the API
+// types rather than redeclared, so there is exactly one definition in the app.
+export type { TaskType } from "@/api/types";
+import type { TaskType } from "@/api/types";
 // Base model identifiers are provided by the Engine catalog at runtime.
 export type BaseModel = string;
 

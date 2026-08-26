@@ -12,7 +12,7 @@ const steps = [
   { key: "newProject", target: null },
   { key: "models", target: null },
   { key: "playground", target: null },
-  { key: "analytics", target: null },
+  { key: "evalUsage", target: null },
   { key: "done", target: null },
 ];
 
@@ -92,7 +92,7 @@ function getStepEmoji(key: string): string {
     newProject: "🚀",
     models: "🤖",
     playground: "🎮",
-    analytics: "📊",
+    evalUsage: "📊",
     done: "🎉",
   };
   return map[key] || "✨";

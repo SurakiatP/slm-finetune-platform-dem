@@ -2,11 +2,10 @@ import { useState, useRef, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Send, Bot, User, Loader2 } from "lucide-react";
-import { EngineApiError, engineChatCompletion } from "@/lib/engineApi";
+import { chatCompletions } from "@/api/endpoints/inference";
+import type { ChatMessage } from "@/api/types";
 
-interface Message {
-  role: "user" | "assistant";
-  content: string;
+interface DisplayMessage extends ChatMessage {
   latencyMs?: number;
   tokens?: number;
 }
@@ -20,7 +19,7 @@ export function ChatPanel({
   displayName: string;
   className?: string;
 }) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,20 +33,22 @@ export function ChatPanel({
     const text = input.trim();
     if (!text || isLoading) return;
 
-    const userMsg: Message = { role: "user", content: text };
-    setMessages((prev) => [...prev, userMsg]);
+    const userMsg: DisplayMessage = { role: "user", content: text };
+    const history = [...messages, userMsg];
+    setMessages(history);
     setInput("");
     setIsLoading(true);
     setError(null);
 
     const start = Date.now();
     try {
-      const history = messages.map((m) => ({ role: m.role, content: m.content }));
-      const response = await engineChatCompletion({
+      // Backend rejects stream=true — collect the full completion at once.
+      const response = await chatCompletions({
         model: modelId,
-        messages: [...history, { role: "user", content: text }],
+        messages: history.map(({ role, content }) => ({ role, content })),
         temperature: 0.7,
         max_tokens: 512,
+        stream: false,
       });
       const content = response.choices[0]?.message?.content ?? "";
       setMessages((prev) => [
@@ -60,10 +61,7 @@ export function ChatPanel({
         },
       ]);
     } catch (reason) {
-      const message = reason instanceof EngineApiError && reason.requestId
-        ? `${reason.message} (request ${reason.requestId})`
-        : reason instanceof Error ? reason.message : "Inference request failed";
-      setError(message);
+      setError(reason instanceof Error ? reason.message : "Inference request failed");
     } finally {
       setIsLoading(false);
     }

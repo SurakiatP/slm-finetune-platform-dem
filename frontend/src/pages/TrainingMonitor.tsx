@@ -1,119 +1,184 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { PageTransition, StaggerContainer, StaggerItem } from "@/components/motion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { ArrowLeft, Clock, Cpu, Database, Gauge, ExternalLink, XCircle, Loader2 } from "lucide-react";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ArrowLeft, Ban, Clock, Cpu, Database, Gauge, Layers } from "lucide-react";
 import { PipelineSteps } from "@/components/training/PipelineSteps";
-import { LossCurveChart } from "@/components/training/LossCurveChart";
-import type { LossCurvePoint, PipelineStep } from "@/data/trainingMockData";
-import { getBaseModelLabel, taskTypeLabels } from "@/data/mockData";
-import { TrainingMonitorSkeleton } from "@/components/skeletons/TrainingMonitorSkeleton";
+import { LossCurveChart, type LossChartPoint } from "@/components/training/LossCurveChart";
 import { DiagnosticPanel } from "@/components/training/DiagnosticPanel";
+import { EvaluationViewer } from "@/components/training/EvaluationViewer";
+import { MetricsTable } from "@/components/training/MetricsTable";
+import { HpoTrialsTable } from "@/components/training/HpoTrialsTable";
+import { TrainingLog } from "@/components/training/TrainingLog";
+import type { PipelineStep, TrainingLogEntry } from "@/data/trainingMockData";
+import { getBaseModelLabel } from "@/data/mockData";
+import { TrainingMonitorSkeleton } from "@/components/skeletons/TrainingMonitorSkeleton";
+import { StatusBadge } from "@/components/engine/StatusBadge";
+import { QueueBadge } from "@/components/engine/QueueBadge";
+import { ConfirmDialog } from "@/components/engine/ConfirmDialog";
+import { EngineEmptyState } from "@/components/engine/EngineEmptyState";
 import { useLanguage } from "@/i18n/LanguageContext";
-import { useProject } from "@/hooks/useProjects";
-import { useEngineWorkflowSync } from "@/hooks/useEngineWorkflowSync";
-import { engineGetLossHistory, engineGetMlflowUrl, engineCancelTraining, engineListEvaluations, type EngineEvaluation } from "@/lib/engineApi";
-import { updateProject as updateSupabaseProject } from "@/lib/projectsApi";
-
-import { getEngineMeta, patchEngineMeta } from "@/lib/engineStore";
 import { useToast } from "@/hooks/use-toast";
+import {
+  useProject,
+  useTrainings,
+  useLossHistory,
+  useTrainingMetrics,
+  useCancelTraining,
+  useModels,
+} from "@/hooks/queries";
+import { useJobProgress } from "@/hooks/useJobProgress";
+import { isTerminalStatus, type Training, type MetricPoint } from "@/api/types";
+import { formatDuration, formatNumber, shortId } from "@/lib/format";
+import { useTaskTypeLabel } from "@/lib/labels";
+import { cn } from "@/lib/utils";
 
+const clockTime = (iso: string | null | undefined) =>
+  iso ? new Date(iso).toLocaleTimeString([], { hour12: false }) : "--:--:--";
+
+/** Builds the terminal-style log feed the original rendered with `TrainingLog`,
+ *  from real Engine state (run lifecycle + live WS steps) instead of the mock
+ *  `mockTrainingLog` fixture. */
+function buildTrainingLog(
+  run: Training,
+  live: { step: number; steps_total: number; epoch: number; epochs_total: number; train_loss: number | null } | null,
+  errorMessage: string | null,
+): TrainingLogEntry[] {
+  const entries: TrainingLogEntry[] = [
+    {
+      timestamp: clockTime(run.created_at),
+      level: "info",
+      message: `Queued ${run.mode === "hpo" ? "HPO search" : "fine-tuning"} run ${shortId(run.id)}`,
+    },
+    {
+      timestamp: clockTime(run.created_at),
+      level: "info",
+      message: `Base model: ${run.base_model} | dataset: ${shortId(run.dataset_id)}`,
+    },
+  ];
+  if (run.started_at) {
+    entries.push({ timestamp: clockTime(run.started_at), level: "info", message: "Training started on the GPU worker" });
+  }
+  if (run.mlflow_run_id) {
+    entries.push({ timestamp: clockTime(run.started_at), level: "info", message: `MLflow run: ${run.mlflow_run_id}` });
+  }
+  if (live) {
+    entries.push({
+      timestamp: clockTime(new Date().toISOString()),
+      level: "info",
+      message:
+        `step ${live.step}/${live.steps_total} · epoch ${live.epoch.toFixed(2)}/${live.epochs_total}` +
+        (live.train_loss !== null ? ` · train_loss ${live.train_loss.toFixed(4)}` : ""),
+    });
+  }
+  if (run.best_metric_value !== null) {
+    entries.push({
+      timestamp: clockTime(run.ended_at ?? run.updated_at),
+      level: "info",
+      message: `Best metric: ${formatNumber(run.best_metric_value)}`,
+    });
+  }
+  if (run.status === "completed") {
+    entries.push({ timestamp: clockTime(run.ended_at), level: "success", message: "Training completed" });
+  } else if (run.status === "failed") {
+    entries.push({ timestamp: clockTime(run.ended_at), level: "error", message: errorMessage ?? "Training failed" });
+  } else if (run.status === "cancelled") {
+    entries.push({ timestamp: clockTime(run.ended_at), level: "warning", message: "Training cancelled" });
+  }
+  return entries;
+}
+
+/** Merges MLflow's separate train/eval loss series (from useLossHistory) into
+ *  one step-indexed array for the chart — used to backfill when the WS
+ *  socket has no history yet (revisits, page reload mid-run). */
+function mergeLossHistory(train: MetricPoint[], evalPts: MetricPoint[]): LossChartPoint[] {
+  const byStep = new Map<number, LossChartPoint>();
+  for (const p of train) byStep.set(p.step, { step: p.step, trainLoss: p.value, valLoss: null });
+  for (const p of evalPts) {
+    const existing = byStep.get(p.step);
+    if (existing) existing.valLoss = p.value;
+    else byStep.set(p.step, { step: p.step, trainLoss: null, valLoss: p.value });
+  }
+  return [...byStep.values()].sort((a, b) => a.step - b.step);
+}
 
 export default function TrainingMonitor() {
-  const { id } = useParams<{ id: string }>();
-  const { project, loading, setProject } = useProject(id);
+  const { id: projectId } = useParams<{ id: string }>();
   const { t } = useLanguage();
   const { toast } = useToast();
-  const { latestProgress } = useEngineWorkflowSync(project, setProject);
+  const queryClient = useQueryClient();
+  const taskTypeLabel = useTaskTypeLabel();
 
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
-  const [isCancelling, setIsCancelling] = useState(false);
 
-  const engineMeta = id ? getEngineMeta(id) : null;
+  const { data: project, isLoading: projectLoading } = useProject(projectId ?? "");
 
-  // Real loss curve from engine — refreshed every 10 s while training
-  const [realLossCurve, setRealLossCurve] = useState<LossCurvePoint[]>([]);
-  const [lossError, setLossError] = useState<string | null>(null);
+  const { data: trainingsPage, isLoading: trainingsLoading } = useTrainings(
+    { project_id: projectId, limit: 50 },
+    {
+      refetchInterval: (query) => {
+        const items = query.state.data?.items ?? [];
+        return items.some((tr) => !isTerminalStatus(tr.status)) ? 6000 : false;
+      },
+    },
+  );
+  const trainingList = useMemo(() => trainingsPage?.items ?? [], [trainingsPage]);
+
+  // Auto-select the active run, falling back to the most recent one; keeps
+  // the current selection if it's still present in a refetched list.
   useEffect(() => {
-    if (!engineMeta?.trainingId) return;
-    let active = true;
-    const fetchLoss = async () => {
-      try {
-        const hist = await engineGetLossHistory(engineMeta.trainingId!);
-        if (!active) return;
-        if (hist.train_loss.length > 0) {
-          const points = hist.train_loss.map((p, i) => ({
-            step: p.step,
-            trainLoss: p.value,
-            valLoss: hist.eval_loss[i]?.value ?? null,
-          }));
-          setRealLossCurve(points as LossCurvePoint[]);
-        }
-        setLossError(null);
-      } catch (error) {
-        setLossError(error instanceof Error ? error.message : "Unable to load loss history");
-      }
-    };
-    void fetchLoss();
-    const interval = project?.status === "training" ? setInterval(fetchLoss, 10000) : null;
-    return () => {
-      active = false;
-      if (interval) clearInterval(interval);
-    };
-  }, [engineMeta?.trainingId, project?.status]);
+    if (trainingList.length === 0) return;
+    if (selectedId && trainingList.some((tr) => tr.id === selectedId)) return;
+    const active = trainingList.find((tr) => !isTerminalStatus(tr.status));
+    setSelectedId((active ?? trainingList[0]).id);
+  }, [trainingList, selectedId]);
 
-  const [evaluationsList, setEvaluationsList] = useState<EngineEvaluation[]>([]);
-  useEffect(() => {
-    if (!engineMeta?.modelArtifactId) return;
-    let active = true;
-    engineListEvaluations({ modelArtifactId: engineMeta.modelArtifactId })
-      .then((res) => {
-        if (active) setEvaluationsList(res.items);
-      })
-      .catch(() => undefined);
-    return () => { active = false; };
-  }, [engineMeta?.modelArtifactId]);
+  const selected: Training | null = trainingList.find((tr) => tr.id === selectedId) ?? null;
+  const selectedTerminal = selected ? isTerminalStatus(selected.status) : true;
 
+  // REST list is authoritative for status; WS enriches with per-step detail
+  // while the run is live. No socket is opened once terminal.
+  const progress = useJobProgress(selectedTerminal ? null : (selected?.celery_task_id ?? null), {
+    onTerminal: () => {
+      void queryClient.invalidateQueries({ queryKey: ["trainings"] });
+    },
+  });
 
-  const handleConfirmCancelTraining = async () => {
-    if (!project) return;
-    setIsCancelling(true);
-    try {
-      if (engineMeta?.trainingId) {
-        await engineCancelTraining(engineMeta.trainingId).catch(() => undefined);
-      }
-      const updated = await updateSupabaseProject(project.id, { status: "paused" });
-      setProject(updated);
-      patchEngineMeta(project.id, { phase: "failed", error: "Training cancelled by user" });
-      toast({ title: "Training cancelled", description: "Project status changed to paused." });
-      setCancelOpen(false);
-    } catch (err) {
-      toast({ title: "Failed to cancel training", description: (err as Error).message, variant: "destructive" });
-    } finally {
-      setIsCancelling(false);
-    }
-  };
+  // MLflow-backed backfill — only needed when the WS has nothing yet
+  // (fresh page load on a run that already has history).
+  const { data: storedLoss } = useLossHistory(
+    selected?.id ?? "",
+    !!selected && !!selected.mlflow_run_id && progress.lossHistory.length === 0,
+  );
 
-  const currentTrainLoss = latestProgress?.train_loss
-    ?? realLossCurve.at(-1)?.trainLoss
-    ?? null;
-  const currentValLoss = latestProgress?.eval_loss
-    ?? realLossCurve.at(-1)?.valLoss
-    ?? null;
+  const { data: trainingMetrics, isLoading: metricsLoading } = useTrainingMetrics(
+    selected?.id ?? "",
+    !!selected,
+  );
+
+  // Model artifact produced by the selected run — feeds the evaluation tab.
+  const { data: projectModels } = useModels(projectId, { limit: 100 });
+  const selectedArtifact = (projectModels?.items ?? []).find((m) => m.training_job_id === selectedId) ?? null;
+
+  const lossData: LossChartPoint[] =
+    progress.lossHistory.length > 0
+      ? progress.lossHistory.map((p) => ({ step: p.step, trainLoss: p.train_loss, valLoss: p.eval_loss }))
+      : mergeLossHistory(storedLoss?.train_loss ?? [], storedLoss?.eval_loss ?? []);
+
+  const liveTraining = progress.hpo?.inner_progress ?? progress.training ?? null;
+  const currentTrainLoss = liveTraining?.train_loss ?? lossData.at(-1)?.trainLoss ?? null;
+  const currentValLoss = liveTraining?.eval_loss ?? lossData.at(-1)?.valLoss ?? null;
+
+  const cancelMutation = useCancelTraining();
+
+  if (projectLoading || trainingsLoading) return <TrainingMonitorSkeleton />;
 
   if (!project) {
     return (
@@ -124,225 +189,333 @@ export default function TrainingMonitor() {
     );
   }
 
-  if (loading) return <TrainingMonitorSkeleton />;
+  const canCancel = !!selected && (selected.status === "pending" || selected.status === "running");
 
-  const isTraining = project.status === "training";
-  const pipelineSteps: PipelineStep[] = [
-    { id: "project", label: "Project", description: "Engine project is linked to this UI project", status: engineMeta?.engineProjectId ? "completed" : "active" },
-    { id: "dataset", label: "Dataset preparation", description: "Seed upload and synthetic data generation", status: engineMeta?.trainDatasetId ? "completed" : project.status === "failed" ? "failed" : "active" },
-    { id: "training", label: "Fine-tuning", description: "LoRA fine-tuning on the selected base model", status: project.status === "completed" ? "completed" : project.status === "failed" ? "failed" : isTraining ? "active" : "pending" },
-    { id: "export", label: "GGUF export", description: "Export and register the trained model with Ollama", status: engineMeta?.phase === "ready" ? "completed" : engineMeta?.phase === "export_failed" ? "failed" : engineMeta?.phase === "exporting" ? "active" : "pending" },
-  ];
+  const pipelineSteps: PipelineStep[] = selected
+    ? [
+        {
+          id: "dataset",
+          label: "Dataset prepared",
+          description: `Dataset ${shortId(selected.dataset_id)} attached to this run`,
+          status: "completed",
+        },
+        {
+          id: "training",
+          label: selected.mode === "hpo" ? "Hyperparameter search" : "Fine-tuning",
+          description:
+            selected.mode === "hpo"
+              ? "LoRA fine-tuning across HPO trials"
+              : "LoRA fine-tuning on the selected base model",
+          status:
+            selected.status === "completed"
+              ? "completed"
+              : selected.status === "failed" || selected.status === "cancelled"
+                ? "failed"
+                : selected.status === "running"
+                  ? "active"
+                  : "pending",
+          duration: selectedTerminal ? formatDuration(selected.started_at, selected.ended_at) : undefined,
+        },
+        {
+          id: "export",
+          label: "Export & registration",
+          description: "GGUF export and Ollama registration",
+          status: progress.completed?.model_artifact_id ? "completed" : "pending",
+        },
+      ]
+    : [];
 
   return (
     <PageTransition>
     <div className="space-y-6 max-w-6xl">
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon" asChild>
-          <Link to={`/projects/${id}`}><ArrowLeft className="h-4 w-4" /></Link>
+          <Link to={`/projects/${projectId}`}><ArrowLeft className="h-4 w-4" /></Link>
         </Button>
         <div className="flex-1">
           <div className="flex items-center gap-3">
             <h1 className="text-xl font-bold text-foreground">{project.name}</h1>
-            <Badge variant={isTraining ? "secondary" : "default"}>
-              {isTraining ? "Training" : project.status}
-            </Badge>
+            {selected && <StatusBadge status={selected.status} />}
           </div>
           <p className="text-sm text-muted-foreground mt-0.5">{t("training.title")}</p>
         </div>
-        <div className="flex items-center gap-2">
-          {isTraining && (
-            <Button variant="destructive" size="sm" onClick={() => setCancelOpen(true)}>
-              <XCircle className="h-4 w-4 mr-1.5" />
-              Cancel Training
-            </Button>
-          )}
-          {engineMeta?.trainingId && (
-            <Button variant="outline" size="sm" onClick={async () => {
-              try {
-                const res = await engineGetMlflowUrl(engineMeta.trainingId!);
-                if (res.mlflow_url) window.open(res.mlflow_url, "_blank");
-                else alert("MLflow URL not ready for this training run.");
-              } catch (err) {
-                alert("MLflow error: " + (err instanceof Error ? err.message : String(err)));
-              }
-            }}>
-              <ExternalLink className="h-4 w-4 mr-2" /> View in MLflow
-            </Button>
-          )}
-        </div>
       </div>
 
-      {/* Cancel Training Alert Dialog */}
-      <AlertDialog open={cancelOpen} onOpenChange={setCancelOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Stop Fine-Tuning Process?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will stop the current training job on the FineTune Engine and set the project status to <strong>paused</strong>.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isCancelling}>Keep Training</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={(e) => {
-                e.preventDefault();
-                void handleConfirmCancelTraining();
-              }}
-              disabled={isCancelling}
-            >
-              {isCancelling && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Cancel Training
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Training runs</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {trainingList.length === 0 ? (
+            <EngineEmptyState
+              icon={Layers}
+              title="No training runs yet"
+              hint="Start a training job from the project overview to see its progress here."
+            />
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Mode</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Base model</TableHead>
+                  <TableHead>Started</TableHead>
+                  <TableHead>Run</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {trainingList.map((tr) => (
+                  <TableRow
+                    key={tr.id}
+                    onClick={() => setSelectedId(tr.id)}
+                    aria-selected={tr.id === selectedId}
+                    className={cn("cursor-pointer", tr.id === selectedId && "bg-accent/60 hover:bg-accent/60")}
+                  >
+                    <TableCell>
+                      <Badge variant={tr.mode === "hpo" ? "secondary" : "outline"} className="text-[10px] capitalize">
+                        {tr.mode}
+                      </Badge>
+                    </TableCell>
+                    <TableCell><StatusBadge status={tr.status} /></TableCell>
+                    <TableCell className="font-mono text-xs">{getBaseModelLabel(tr.base_model)}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {tr.started_at ? new Date(tr.started_at).toLocaleString() : "—"}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {tr.training_name ?? shortId(tr.id)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
+      {selected && (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge variant={selected.mode === "hpo" ? "secondary" : "outline"} className="capitalize">
+                {selected.mode}
+              </Badge>
+              <StatusBadge status={selected.status} />
+              <QueueBadge queueState={selected.queue_state} queuePosition={selected.queue_position} />
+            </div>
+            {canCancel && (
+              <Button variant="destructive" size="sm" onClick={() => setCancelOpen(true)} disabled={cancelMutation.isPending}>
+                <Ban className="h-3.5 w-3.5" /> {t("training.cancel")}
+              </Button>
+            )}
+          </div>
 
-      <StaggerContainer className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: t("training.baseModel"), value: getBaseModelLabel(project.baseModel), icon: Cpu },
-          { label: t("training.taskType"), value: taskTypeLabels[project.taskType], icon: Database },
-          { label: t("training.epochProgress"), value: latestProgress ? `${Math.round(latestProgress.epoch)} / ${latestProgress.epochs_total}` : isTraining ? "… / …" : `${project.epochs} / ${project.epochs}`, icon: Gauge },
-          { label: t("training.elapsedTime"), value: isTraining ? "Live" : "Done", icon: Clock },
-        ].map((s) => (
-          <StaggerItem key={s.label}>
+          <StaggerContainer className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[
+              { label: t("training.baseModel"), value: getBaseModelLabel(selected.base_model), icon: Cpu },
+              { label: t("training.taskType"), value: taskTypeLabel(project.task_type), icon: Database },
+              {
+                label: t("training.epochProgress"),
+                value: liveTraining ? `${liveTraining.epoch.toFixed(1)} / ${liveTraining.epochs_total}` : "—",
+                icon: Gauge,
+              },
+              { label: t("training.elapsedTime"), value: formatDuration(selected.started_at, selected.ended_at), icon: Clock },
+            ].map((s) => (
+              <StaggerItem key={s.label}>
+                <Card>
+                  <CardContent className="p-3.5 flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-accent">
+                      <s.icon className="h-4 w-4 text-accent-foreground" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-foreground">{s.value}</p>
+                      <p className="text-[10px] text-muted-foreground">{s.label}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+              </StaggerItem>
+            ))}
+          </StaggerContainer>
+
+          {liveTraining && (
             <Card>
-              <CardContent className="p-3.5 flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-accent">
-                  <s.icon className="h-4 w-4 text-accent-foreground" />
+              <CardContent className="p-4 space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Steps</span>
+                    <span className="font-semibold text-foreground">
+                      {liveTraining.step} / {liveTraining.steps_total}
+                    </span>
+                  </div>
+                  <Progress
+                    value={liveTraining.steps_total > 0 ? (liveTraining.step / liveTraining.steps_total) * 100 : 0}
+                    className="h-2.5"
+                  />
                 </div>
-                <div>
-                  <p className="text-sm font-bold text-foreground">{s.value}</p>
-                  <p className="text-[10px] text-muted-foreground">{s.label}</p>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">{t("training.epochProgress")}</span>
+                    <span className="font-semibold text-foreground">
+                      {liveTraining.epoch.toFixed(1)} / {liveTraining.epochs_total}
+                    </span>
+                  </div>
+                  <Progress
+                    value={liveTraining.epochs_total > 0 ? (liveTraining.epoch / liveTraining.epochs_total) * 100 : 0}
+                    className="h-2.5"
+                  />
                 </div>
+                {progress.hpo && (
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Trials</span>
+                      <span className="font-semibold text-foreground">
+                        {progress.hpo.trial_number + 1} / {progress.hpo.trials_total}
+                      </span>
+                    </div>
+                    <Progress
+                      value={
+                        progress.hpo.trials_total > 0
+                          ? ((progress.hpo.trial_number + 1) / progress.hpo.trials_total) * 100
+                          : 0
+                      }
+                      className="h-2.5"
+                    />
+                  </div>
+                )}
               </CardContent>
             </Card>
-          </StaggerItem>
-        ))}
-      </StaggerContainer>
+          )}
 
-      {isTraining && (
-        <Card>
-          <CardContent className="p-4 space-y-2">
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">{t("training.overallProgress")}</span>
-              <span className="font-semibold text-foreground">{project.progress}%</span>
-            </div>
-            <Progress value={project.progress} className="h-2.5" />
-            <p className="text-[10px] text-muted-foreground">{t("training.estimatedCompletion")}</p>
-          </CardContent>
-        </Card>
+          <DiagnosticPanel status={selected.status} errorMessage={progress.failed?.error ?? selected.error_message} />
+
+          <Tabs defaultValue="pipeline">
+            <TabsList>
+              <TabsTrigger value="pipeline">{t("training.pipeline")}</TabsTrigger>
+              <TabsTrigger value="loss">{t("training.lossCurve")}</TabsTrigger>
+              <TabsTrigger value="metrics">{t("training.metrics")}</TabsTrigger>
+              <TabsTrigger value="logs">{t("training.trainingLog")}</TabsTrigger>
+              <TabsTrigger value="evaluation">{t("training.evaluation")}</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="pipeline" className="mt-4">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">{t("training.trainingPipeline")}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <PipelineSteps steps={pipelineSteps} />
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="loss" className="mt-4">
+              <Card>
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm">{t("training.lossCurve")}</CardTitle>
+                    <div className="flex gap-3 text-[10px] text-muted-foreground">
+                      <span>Current train loss: <span className="font-bold text-foreground">{formatNumber(currentTrainLoss)}</span></span>
+                      <span>Current val loss: <span className="font-bold text-foreground">{formatNumber(currentValLoss)}</span></span>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {lossData.length > 0 ? (
+                    <LossCurveChart data={lossData} />
+                  ) : (
+                    <p className="py-16 text-center text-sm text-muted-foreground">
+                      No loss metrics have been recorded by the Engine yet.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="metrics" className="mt-4 space-y-4">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">{t("training.metrics")}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {metricsLoading ? (
+                    <p className="py-8 text-center text-sm text-muted-foreground">{t("common.loading")}</p>
+                  ) : (
+                    <MetricsTable metrics={trainingMetrics?.metrics ?? {}} />
+                  )}
+                </CardContent>
+              </Card>
+
+              {selected.mode === "hpo" && trainingMetrics?.hpo_children && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm">{t("training.hpoTrials")}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <HpoTrialsTable trials={trainingMetrics.hpo_children} />
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
+
+            <TabsContent value="logs" className="mt-4">
+              <Card>
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm">{t("training.trainingLog")}</CardTitle>
+                    <Badge variant="outline" className="text-[10px]">Engine data only</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <TrainingLog
+                    logs={buildTrainingLog(
+                      selected,
+                      liveTraining,
+                      progress.failed?.error ?? selected.error_message,
+                    )}
+                  />
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="evaluation" className="mt-4">
+              {selectedArtifact ? (
+                <EvaluationViewer modelArtifactId={selectedArtifact.id} modelName={selectedArtifact.name} />
+              ) : (
+                <Card>
+                  <CardContent className="py-16 text-center text-sm text-muted-foreground">
+                    Export this training run to a model artifact first — evaluations run against an exported model.
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
+          </Tabs>
+        </>
       )}
 
-      <DiagnosticPanel projectStatus={project.status} />
-
-      <Tabs defaultValue="pipeline">
-        <TabsList>
-          <TabsTrigger value="pipeline">{t("training.pipeline")}</TabsTrigger>
-          <TabsTrigger value="loss">{t("training.lossCurve")}</TabsTrigger>
-          <TabsTrigger value="logs">{t("training.trainingLog")}</TabsTrigger>
-          <TabsTrigger value="evaluation">{t("training.evaluation")}</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="pipeline" className="mt-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">{t("training.trainingPipeline")}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <PipelineSteps steps={pipelineSteps} />
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="loss" className="mt-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm">{t("training.lossCurve")}</CardTitle>
-                <div className="flex gap-3 text-[10px] text-muted-foreground">
-                  <span>Current train loss: <span className="font-bold text-foreground">{currentTrainLoss?.toFixed(3) ?? "—"}</span></span>
-                  <span>Current val loss: <span className="font-bold text-foreground">{currentValLoss?.toFixed(3) ?? "—"}</span></span>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {realLossCurve.length > 0 ? (
-                <LossCurveChart data={realLossCurve} />
-              ) : (
-                <p className="py-16 text-center text-sm text-muted-foreground">
-                  {lossError || "No loss metrics have been recorded by the Engine yet."}
-                </p>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="logs" className="mt-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm">{t("training.trainingLog")}</CardTitle>
-                <Badge variant="outline" className="text-[10px]">Engine data only</Badge>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <p className="py-16 text-center text-sm text-muted-foreground">
-                The backend does not expose a training-log endpoint for this workflow.
-              </p>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="evaluation" className="mt-4">
-          <Card>
-            <CardHeader className="pb-2 flex flex-row items-center justify-between">
-              <div>
-                <CardTitle className="text-sm">Model Evaluations</CardTitle>
-                <p className="text-xs text-muted-foreground mt-0.5">Automated benchmark and LLM-as-judge scores for this trained artifact.</p>
-              </div>
-              <Button size="sm" asChild>
-                <Link to="/evaluations">Launch New Evaluation →</Link>
-              </Button>
-            </CardHeader>
-            <CardContent>
-              {evaluationsList.length > 0 ? (
-                <div className="space-y-3">
-                  {evaluationsList.map((ev) => (
-                    <div key={ev.id} className="p-3 rounded-lg border border-border flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-semibold text-foreground">{ev.eval_name || `Eval ${ev.id.slice(0, 8)}`}</p>
-                        <p className="text-xs text-muted-foreground">Status: <span className="font-medium text-foreground">{ev.status}</span> · Created {new Date(ev.created_at).toLocaleString()}</p>
-                      </div>
-                      {ev.metrics ? (
-                        <div className="flex gap-2">
-                          {Object.entries(ev.metrics).slice(0, 3).map(([k, v]) => (
-                            <Badge key={k} variant="secondary" className="text-[10px]">
-                              {k}: {typeof v === "number" ? v.toFixed(3) : String(v)}
-                            </Badge>
-                          ))}
-                        </div>
-                      ) : (
-                        <Badge variant="outline" className="text-[10px]">{ev.status}</Badge>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="py-12 text-center text-sm text-muted-foreground space-y-2">
-                  <p>No evaluations recorded yet for this model artifact.</p>
-                  <Button variant="outline" size="sm" asChild>
-                    <Link to="/evaluations">Go to Evaluations Page</Link>
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-      </Tabs>
+      <ConfirmDialog
+        open={cancelOpen}
+        onOpenChange={setCancelOpen}
+        onConfirm={() => {
+          if (!selected) return;
+          cancelMutation.mutate(selected.id, {
+            onSuccess: () => {
+              setCancelOpen(false);
+              toast({ title: t("training.cancel") });
+            },
+            onError: (err) => {
+              toast({
+                title: t("common.error"),
+                description: err instanceof Error ? err.message : String(err),
+                variant: "destructive",
+              });
+            },
+          });
+        }}
+        title={t("training.cancel")}
+        description={t("training.cancelConfirm")}
+        confirmLabel={t("common.confirm")}
+        destructive
+        loading={cancelMutation.isPending}
+      />
     </div>
     </PageTransition>
   );

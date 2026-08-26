@@ -7,6 +7,7 @@ import { NotificationCenter } from "@/components/NotificationCenter";
 import { CommandPalette } from "@/components/CommandPalette";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { OnboardingTour } from "@/components/OnboardingTour";
+import { BackendStatus } from "@/components/engine/BackendStatus";
 
 function AnimatedOutlet() {
   const location = useLocation();
@@ -38,6 +39,7 @@ export default function DashboardLayout() {
             <SidebarTrigger className="mr-4" />
             <span className="text-sm font-medium text-muted-foreground">SLM Fine-Tuning Platform</span>
             <div className="ml-auto flex items-center gap-1">
+              <BackendStatus />
               <CommandPalette />
               <NotificationCenter />
               <LanguageSwitcher />

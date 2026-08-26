@@ -1,32 +1,32 @@
 import { useState } from "react";
+import { Search } from "lucide-react";
+
+import { NewProjectDialog } from "@/components/dashboard/NewProjectDialog";
+import { ProjectCard } from "@/components/dashboard/ProjectCard";
+import { FadeIn, MotionCard, PageTransition, StaggerContainer } from "@/components/motion";
+import { ProjectCardSkeleton } from "@/components/skeletons/ProjectCardSkeleton";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ProjectCard } from "@/components/dashboard/ProjectCard";
-import { NewProjectDialog } from "@/components/dashboard/NewProjectDialog";
-import { taskTypeLabels } from "@/data/mockData";
-import { Search } from "lucide-react";
-import { PageTransition, FadeIn, StaggerContainer, MotionCard } from "@/components/motion";
-import { ProjectCardSkeleton } from "@/components/skeletons/ProjectCardSkeleton";
+import { useProjects, useTaskTypes } from "@/hooks/queries";
 import { useLanguage } from "@/i18n/LanguageContext";
-import { useProjects } from "@/hooks/useProjects";
+import type { TaskType } from "@/api/types";
 
 export default function Projects() {
   const [search, setSearch] = useState("");
-  const [filterTask, setFilterTask] = useState("all");
+  const [filterTask, setFilterTask] = useState<TaskType | "all">("all");
   const { t } = useLanguage();
-  const { projects, loading } = useProjects();
+  const { data, isLoading, isError, error } = useProjects({ limit: 100 });
+  const { data: taskTypes } = useTaskTypes();
 
-  const allTags = Array.from(new Set(projects.flatMap((p) => p.tags ?? [])));
-  const [filterTag, setFilterTag] = useState("all");
+  const projects = data?.items ?? [];
 
   const filtered = projects
     .filter((p) => {
       const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase());
-      const matchesTask = filterTask === "all" || p.taskType === filterTask;
-      const matchesTag = filterTag === "all" || p.tags?.includes(filterTag);
-      return matchesSearch && matchesTask && matchesTag;
+      const matchesTask = filterTask === "all" || p.task_type === filterTask;
+      return matchesSearch && matchesTask;
     })
-    .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned));
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
   return (
     <PageTransition>
@@ -35,7 +35,9 @@ export default function Projects() {
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <h1 className="text-2xl font-bold text-foreground truncate">{t("projects.title")}</h1>
-              <p className="text-sm text-muted-foreground">{t("projects.total").replace("{count}", String(projects.length))}</p>
+              <p className="text-sm text-muted-foreground">
+                {t("projects.total").replace("{count}", String(data?.total ?? 0))}
+              </p>
             </div>
             <div className="flex-shrink-0">
               <NewProjectDialog />
@@ -55,41 +57,32 @@ export default function Projects() {
                 aria-label={t("projects.searchPlaceholder")}
               />
             </div>
-            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap lg:flex-nowrap">
-              <Select value={filterTask} onValueChange={setFilterTask}>
-                <SelectTrigger className="w-full sm:w-48" aria-label={t("projects.filterByTask")}>
-                  <SelectValue placeholder={t("projects.filterByTask")} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">{t("projects.allTasks")}</SelectItem>
-                  {Object.entries(taskTypeLabels).map(([key, label]) => (
-                    <SelectItem key={key} value={key}>{label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {allTags.length > 0 && (
-                <Select value={filterTag} onValueChange={setFilterTag}>
-                  <SelectTrigger className="w-full sm:w-44" aria-label={t("projects.filterByTag")}>
-                    <SelectValue placeholder={t("projects.filterByTag")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">{t("projects.allTags")}</SelectItem>
-                    {allTags.map((tag) => (
-                      <SelectItem key={tag} value={tag}>{tag}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            </div>
+            <Select value={filterTask} onValueChange={(v) => setFilterTask(v as TaskType | "all")}>
+              <SelectTrigger className="w-full sm:w-48" aria-label={t("projects.filterByTask")}>
+                <SelectValue placeholder={t("projects.filterByTask")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t("projects.allTasks")}</SelectItem>
+                {(taskTypes ?? []).map((info) => (
+                  <SelectItem key={info.task_type} value={info.task_type}>{info.display_name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </FadeIn>
 
-        {loading ? (
+        {isLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {Array.from({ length: 6 }).map((_, i) => (
               <ProjectCardSkeleton key={i} />
             ))}
           </div>
+        ) : isError ? (
+          <FadeIn>
+            <div className="text-center py-12 text-sm text-destructive">
+              {error instanceof Error ? error.message : "Failed to load projects."}
+            </div>
+          </FadeIn>
         ) : (
           <StaggerContainer className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {filtered.map((project) => (
@@ -100,7 +93,7 @@ export default function Projects() {
           </StaggerContainer>
         )}
 
-        {!loading && filtered.length === 0 && (
+        {!isLoading && !isError && filtered.length === 0 && (
           <FadeIn>
             <div className="text-center py-12 text-muted-foreground">
               <p className="text-sm">{t("projects.noResults")}</p>

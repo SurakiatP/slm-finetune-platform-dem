@@ -1,55 +1,16 @@
-import { useState, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Tag, MapPin, HelpCircle, Zap, FileText, ArrowUpDown } from "lucide-react";
-import type { ProjectFormData } from "@/pages/NewProject";
-import type { TaskType } from "@/types";
-import { TASK_TYPE_TO_ENGINE } from "@/lib/engineMappings";
-import { engineListTaskTypes, type EngineTaskTypeInfo } from "@/lib/engineApi";
+import { Button } from "@/components/ui/button";
+import { Tag, HelpCircle, Zap, ListChecks, Loader2, RefreshCw, type LucideIcon } from "lucide-react";
+import { toErrorDetail, type ProjectFormData } from "@/pages/NewProject";
+import type { TaskType } from "@/api/types";
+import { useTaskTypes } from "@/hooks/queries";
+import { ErrorDetail } from "@/components/engine/ErrorDetail";
 
-const tasks: { type: TaskType; label: string; description: string; example: string; icon: React.ElementType }[] = [
-  {
-    type: "classification",
-    label: "Classification",
-    description: "Categorize text into predefined labels or classes",
-    example: "Input: 'My internet is not working' → Output: 'Technical Support'",
-    icon: Tag,
-  },
-  {
-    type: "ner",
-    label: "Named Entity Recognition",
-    description: "Extract entities like names, locations, dates from text",
-    example: "Input: 'John lives in Bangkok' → Output: [John: PERSON, Bangkok: LOCATION]",
-    icon: MapPin,
-  },
-  {
-    type: "qa",
-    label: "Question Answering",
-    description: "Answer questions based on given context or documents",
-    example: "Context: '...' Question: 'What is the return policy?' → Answer: '30 days...'",
-    icon: HelpCircle,
-  },
-  {
-    type: "function-calling",
-    label: "Function Calling",
-    description: "Map natural language to API calls with correct parameters",
-    example: "Input: 'Book a flight to Tokyo' → Call: book_flight(destination='Tokyo')",
-    icon: Zap,
-  },
-  {
-    type: "extraction",
-    label: "Data Extraction",
-    description: "Extract structured data from unstructured text",
-    example: "Input: 'Invoice #123, $500, Jan 5' → {id: 123, amount: 500, date: '2026-01-05'}",
-    icon: FileText,
-  },
-  {
-    type: "ranking",
-    label: "Ranking",
-    description: "Score and rank items by relevance or preference",
-    example: "Query: 'running shoes' → Rank: [Item A: 0.95, Item B: 0.82, Item C: 0.71]",
-    icon: ArrowUpDown,
-  },
-];
+const taskIcons: Record<TaskType, LucideIcon> = {
+  classification: Tag,
+  qa: HelpCircle,
+  tool_calling: Zap,
+};
 
 export function TaskSelectionStep({
   formData,
@@ -58,13 +19,8 @@ export function TaskSelectionStep({
   formData: ProjectFormData;
   updateForm: (p: Partial<ProjectFormData>) => void;
 }) {
-  const [engineTaskTypes, setEngineTaskTypes] = useState<EngineTaskTypeInfo[]>([]);
+  const { data: taskTypes, isLoading, isError, error, refetch } = useTaskTypes();
 
-  useEffect(() => {
-    engineListTaskTypes()
-      .then(setEngineTaskTypes)
-      .catch(() => setEngineTaskTypes([]));
-  }, []);
   return (
     <div className="space-y-4">
       <div>
@@ -74,40 +30,53 @@ export function TaskSelectionStep({
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {tasks.map((task) => {
-          const selected = formData.taskType === task.type;
-          const supported = TASK_TYPE_TO_ENGINE[task.type] !== null;
-          return (
-            <button
-              key={task.type}
-              type="button"
-              disabled={!supported}
-              onClick={() => updateForm({ taskType: task.type })}
-              className={`text-left p-4 rounded-lg border-2 transition-all ${
-                selected
-                  ? "border-primary bg-accent"
-                  : supported
-                  ? "border-border hover:border-primary/40 bg-background"
-                  : "border-border bg-muted/40 opacity-60 cursor-not-allowed"
-              }`}
-            >
-              <div className="flex items-center gap-2.5 mb-2">
-                <div className={`p-1.5 rounded-md ${selected ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground"}`}>
-                  <task.icon className="h-4 w-4" />
+      {isLoading ? (
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading task types…
+        </div>
+      ) : isError ? (
+        <div className="space-y-3">
+          <ErrorDetail error={toErrorDetail(error)} />
+          <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => void refetch()}>
+            <RefreshCw className="h-3.5 w-3.5" /> Try again
+          </Button>
+        </div>
+      ) : !taskTypes || taskTypes.length === 0 ? (
+        <p className="py-8 text-sm text-muted-foreground">No task types are currently available from the Engine.</p>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {taskTypes.map((task) => {
+            const selected = formData.taskType === task.task_type;
+            const Icon = taskIcons[task.task_type] ?? ListChecks;
+            return (
+              <button
+                key={task.task_type}
+                type="button"
+                onClick={() => updateForm({ taskType: task.task_type })}
+                className={`text-left p-4 rounded-lg border-2 transition-all ${
+                  selected
+                    ? "border-primary bg-accent"
+                    : "border-border hover:border-primary/40 bg-background"
+                }`}
+              >
+                <div className="flex items-center gap-2.5 mb-2">
+                  <div className={`p-1.5 rounded-md ${selected ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground"}`}>
+                    <Icon className="h-4 w-4" />
+                  </div>
+                  <span className="font-semibold text-sm text-foreground">{task.display_name}</span>
+                  {selected && <Badge className="ml-auto text-[10px]">Selected</Badge>}
                 </div>
-                <span className="font-semibold text-sm text-foreground">{task.label}</span>
-                {selected && <Badge className="ml-auto text-[10px]">Selected</Badge>}
-                {!supported && <Badge variant="outline" className="ml-auto text-[10px]">Coming soon</Badge>}
-              </div>
-              <p className="text-xs text-muted-foreground mb-2">{task.description}</p>
-              <div className="bg-secondary/50 rounded-md px-2.5 py-1.5">
-                <p className="text-[10px] font-mono text-muted-foreground">{task.example}</p>
-              </div>
-            </button>
-          );
-        })}
-      </div>
+                <p className="text-xs text-muted-foreground mb-2">{task.description}</p>
+                <div className="bg-secondary/50 rounded-md px-2.5 py-1.5">
+                  <p className="text-[10px] font-mono text-muted-foreground line-clamp-2">
+                    {JSON.stringify(task.example)}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

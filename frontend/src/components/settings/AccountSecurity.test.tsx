@@ -11,7 +11,6 @@ const mocks = vi.hoisted(() => ({
   unenrollMfa: vi.fn(),
   deleteAccount: vi.fn(),
   clearLocalAuthSession: vi.fn(),
-  clearAllEngineMeta: vi.fn(),
   clearAppliedTuningRuns: vi.fn(),
   refreshMfa: vi.fn(),
   toast: vi.fn(),
@@ -31,7 +30,6 @@ vi.mock("@/lib/accountSecurity", () => ({
   deleteAccount: mocks.deleteAccount,
   clearLocalAuthSession: mocks.clearLocalAuthSession,
 }));
-vi.mock("@/lib/engineStore", () => ({ clearAllEngineMeta: mocks.clearAllEngineMeta }));
 vi.mock("@/lib/tuningGenerator", () => ({ clearAppliedTuningRuns: mocks.clearAppliedTuningRuns }));
 
 function renderSecurity() {
@@ -120,7 +118,6 @@ describe("AccountSecurity", () => {
     fireEvent.click(deleteButton);
 
     await waitFor(() => expect(mocks.deleteAccount).toHaveBeenCalledWith("user@example.com"));
-    expect(mocks.clearAllEngineMeta).toHaveBeenCalled();
     expect(mocks.clearAppliedTuningRuns).toHaveBeenCalled();
     expect(await screen.findByText("login destination")).toBeInTheDocument();
   });
