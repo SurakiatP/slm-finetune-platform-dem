@@ -40,7 +40,6 @@ import {
   type MfaEnrollment,
   type MfaFactor,
 } from "@/lib/accountSecurity";
-import { clearAllEngineMeta } from "@/lib/engineStore";
 import { clearAppliedTuningRuns } from "@/lib/tuningGenerator";
 
 function errorCode(error: unknown): string | undefined {
@@ -403,7 +402,7 @@ function DeleteAccountControl() {
     setError("");
     try {
       await deleteAccount(email);
-      clearAllEngineMeta();
+      localStorage.removeItem("slm_engine_meta");
       clearAppliedTuningRuns();
       await clearLocalAuthSession().catch(() => undefined);
       navigate("/login", { replace: true });

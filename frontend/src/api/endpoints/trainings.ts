@@ -1,0 +1,47 @@
+import { api, pageQuery } from '@/api/client'
+import type {
+  JobStatus,
+  MlflowUrlResponse,
+  Page,
+  Training,
+  TrainingJobAccepted,
+  TrainingLossHistory,
+  TrainingMetrics,
+  TrainingRequest,
+} from '@/api/types'
+
+const BASE = '/api/v1/trainings'
+
+export function listTrainings(
+  params: { project_id?: string; status?: JobStatus; limit?: number; offset?: number } = {},
+): Promise<Page<Training>> {
+  return api.get(`${BASE}${pageQuery(params)}`)
+}
+
+export function getTraining(id: string): Promise<Training> {
+  return api.get(`${BASE}/${id}`)
+}
+
+export function startTraining(body: TrainingRequest, idempotencyKey?: string): Promise<TrainingJobAccepted> {
+  return api.post(BASE, body, { idempotencyKey })
+}
+
+export function cancelTraining(id: string): Promise<{ training_id: string; status: JobStatus }> {
+  return api.post(`${BASE}/${id}/cancel`)
+}
+
+export function getMlflowUrl(id: string): Promise<MlflowUrlResponse> {
+  return api.get(`${BASE}/${id}/mlflow-url`)
+}
+
+/**
+ * Full metric history (all keys) plus HPO child-run summary — superset of
+ * /loss-history, which stays as the lightweight chart feed.
+ */
+export function getTrainingMetrics(id: string): Promise<TrainingMetrics> {
+  return api.get(`${BASE}/${id}/metrics`)
+}
+
+export function getLossHistory(id: string): Promise<TrainingLossHistory> {
+  return api.get(`${BASE}/${id}/loss-history`)
+}

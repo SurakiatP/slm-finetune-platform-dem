@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "vite --mode mock --port 5174 --strictPort",
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",

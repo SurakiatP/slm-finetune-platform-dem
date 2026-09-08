@@ -9,9 +9,17 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
-import { FolderKanban, Box, LayoutDashboard, Settings, MessageSquare, Plus, Search } from "lucide-react";
-import { useProjects } from "@/hooks/useProjects";
-import { useModels } from "@/hooks/useUserData";
+import {
+  FolderKanban,
+  Box,
+  LayoutDashboard,
+  MessageSquare,
+  Database,
+  Wallet,
+  Plus,
+  Search,
+} from "lucide-react";
+import { useProjects, useModels } from "@/hooks/queries";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/i18n/LanguageContext";
 
@@ -19,8 +27,10 @@ export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const { t } = useLanguage();
-  const { projects } = useProjects();
-  const { models } = useModels();
+  const { data: projectsPage } = useProjects({ limit: 20 });
+  const { data: modelsPage } = useModels(undefined, { limit: 20 });
+  const projects = projectsPage?.items ?? [];
+  const models = modelsPage?.items ?? [];
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -80,13 +90,17 @@ export function CommandPalette() {
               <Box className="mr-2 h-4 w-4" />
               {t("nav.models")}
             </CommandItem>
+            <CommandItem onSelect={() => runCommand("/datasets")}>
+              <Database className="mr-2 h-4 w-4" />
+              {t("datasetsPage.navLabel")}
+            </CommandItem>
             <CommandItem onSelect={() => runCommand("/playground")}>
               <MessageSquare className="mr-2 h-4 w-4" />
               {t("nav.playground")}
             </CommandItem>
-            <CommandItem onSelect={() => runCommand("/settings")}>
-              <Settings className="mr-2 h-4 w-4" />
-              {t("nav.settings")}
+            <CommandItem onSelect={() => runCommand("/usage")}>
+              <Wallet className="mr-2 h-4 w-4" />
+              {t("nav.usage")}
             </CommandItem>
           </CommandGroup>
 

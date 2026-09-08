@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ArrowLeft, ArrowRight, Check, Sparkles, Loader2 } from "lucide-react";
@@ -7,22 +7,25 @@ import { TaskPromptStep } from "@/components/new-project/TaskPromptStep";
 import { TaskSelectionStep } from "@/components/new-project/TaskSelectionStep";
 import { DataUploadStep } from "@/components/new-project/DataUploadStep";
 import { ModelSelectionStep } from "@/components/new-project/ModelSelectionStep";
-import { TemplateLibrary } from "@/components/new-project/TemplateLibrary";
-import type { TaskType, BaseModel } from "@/types";
+import { ErrorDetail } from "@/components/engine/ErrorDetail";
+import { ApiError } from "@/api/client";
+import { useCreateProject, useStartTraining } from "@/hooks/queries";
+import type { JobStatus, Project, TaskType } from "@/api/types";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useToast } from "@/hooks/use-toast";
-import { createProject } from "@/lib/projectsApi";
-import { validatePreflight } from "@/lib/trainingValidation";
-import { runEngineWorkflow } from "@/lib/engineWorkflow";
-import { isEngineTaskSupported, resolveEngineBaseModel } from "@/lib/engineMappings";
-import { engineListBaseModels, type EngineBaseModel } from "@/lib/engineApi";
 
 export interface ProjectFormData {
   projectName: string;
   taskPrompt: string;
   taskType: TaskType | null;
-  baseModel: BaseModel | null;
-  files: File[];
+  baseModel: string | null;
+  maxSeqLength: number | null;
+  /** Set once the seed file has been uploaded via useUploadSeedDataset. */
+  seedDatasetId: string | null;
+  /** The dataset actually used for training — the SDG job's target dataset,
+   *  produced via useGenerateDataset in with_seed mode. */
+  trainingDatasetId: string | null;
+  trainingDatasetStatus: JobStatus | null;
 }
 
 const initialFormData: ProjectFormData = {
@@ -30,136 +33,52 @@ const initialFormData: ProjectFormData = {
   taskPrompt: "",
   taskType: null,
   baseModel: null,
-  files: [],
+  maxSeqLength: null,
+  seedDatasetId: null,
+  trainingDatasetId: null,
+  trainingDatasetStatus: null,
 };
 
-// Auto-tuning heuristic based on dataset size (rows)
-function autoTuneParams(datasetRows: number) {
-  if (datasetRows < 1000) return { epochs: 10, learningRate: 1e-4, batchSize: 8 };
-  if (datasetRows <= 5000) return { epochs: 5, learningRate: 2e-4, batchSize: 16 };
-  return { epochs: 3, learningRate: 3e-4, batchSize: 32 };
+/** Normalizes a caught error into the ApiErrorLike shape ErrorDetail expects. */
+export function toErrorDetail(err: unknown): { detail: string; code?: string | null } {
+  if (err instanceof ApiError) return { detail: err.message, code: err.code };
+  return { detail: err instanceof Error ? err.message : String(err) };
 }
 
 export default function NewProject() {
   const [currentStep, setCurrentStep] = useState(0);
   const [formData, setFormData] = useState<ProjectFormData>(initialFormData);
-  const [showTemplates, setShowTemplates] = useState(false);
+  const [engineProject, setEngineProject] = useState<Project | null>(null);
+  const [projectError, setProjectError] = useState<{ detail: string; code?: string | null } | null>(null);
+  const [launchError, setLaunchError] = useState<{ detail: string; code?: string | null } | null>(null);
   const [launching, setLaunching] = useState(false);
-  const [baseModels, setBaseModels] = useState<EngineBaseModel[]>([]);
-  const [loadingBaseModels, setLoadingBaseModels] = useState(true);
-  const [baseModelsError, setBaseModelsError] = useState<string | null>(null);
   const { t } = useLanguage();
   const { toast } = useToast();
   const navigate = useNavigate();
 
-  const loadBaseModels = useCallback(async () => {
-    setLoadingBaseModels(true);
-    setBaseModelsError(null);
-    try {
-      const models = await engineListBaseModels();
-      setBaseModels(models);
-      setFormData((current) => (
-        current.baseModel && !models.some((model) => model.id === current.baseModel)
-          ? { ...current, baseModel: null }
-          : current
-      ));
-    } catch (error) {
-      setBaseModels([]);
-      setBaseModelsError(error instanceof Error ? error.message : "Unable to load base models");
-    } finally {
-      setLoadingBaseModels(false);
-    }
-  }, []);
+  const createProjectMutation = useCreateProject();
+  const startTrainingMutation = useStartTraining();
 
-  const supportedBaseModelIds = new Set(baseModels.map((model) => model.id));
-
-  const handleLaunch = async () => {
-    if (launching) return;
-
-    // Pre-flight validation — block launch on errors, surface warnings as info toasts
-    const result = validatePreflight(formData, t, supportedBaseModelIds);
-    if (!result.ok) {
-      // Show up to 3 errors so the toast stays readable; remainder summarized
-      const shown = result.errors.slice(0, 3).map((e) => `• ${e.message}`).join("\n");
-      const extra = result.errors.length > 3 ? `\n+${result.errors.length - 3} more` : "";
-      toast({
-        title: t("preflight.failedTitle"),
-        description: shown + extra,
-        variant: "destructive",
-      });
-      return;
-    }
-    for (const w of result.warnings) {
-      toast({ title: t("preflight.heads_up"), description: w.message });
-    }
-
-    setLaunching(true);
-    try {
-      const datasetRows = Math.max(formData.files.length * 500, 100);
-      const tuned = autoTuneParams(datasetRows);
-      const projectName = formData.projectName.trim() || formData.taskPrompt.slice(0, 60) || "Untitled Project";
-
-      // 1. Create Supabase project (source of truth for UI)
-      const created = await createProject({
-        name: projectName,
-        description: formData.taskPrompt,
-        taskType: formData.taskType!,
-        baseModel: formData.baseModel!,
-        epochs: tuned.epochs,
-        learningRate: tuned.learningRate,
-        datasetSize: datasetRows,
-      });
-
-      // 2. Start the recoverable Engine workflow in the background.
-      const seedFile = formData.files[0];
-      if (!seedFile) {
-        throw new Error("Engine task or seed file is missing");
+  const updateForm = (partial: Partial<ProjectFormData>) => {
+    setFormData((prev) => {
+      const next = { ...prev, ...partial };
+      // Task type is immutable on the Engine project once created — if it
+      // changes, every downstream selection (project, datasets, model) is
+      // invalidated so the next "Next" click creates a fresh project.
+      if (partial.taskType !== undefined && partial.taskType !== prev.taskType) {
+        next.seedDatasetId = null;
+        next.trainingDatasetId = null;
+        next.trainingDatasetStatus = null;
+        next.baseModel = null;
+        next.maxSeqLength = null;
       }
-      void runEngineWorkflow({
-        supabaseProjectId: created.id,
-        taskType: formData.taskType!,
-        taskDescription: formData.taskPrompt,
-        seedFile,
-        epochs: tuned.epochs,
-        learningRate: tuned.learningRate,
-        baseModel: formData.baseModel!,
-        projectName,
-      });
-
-      toast({ title: t("newProject.launched"), description: created.name });
-      navigate(`/projects/${created.id}`);
-    } catch (e) {
-      toast({
-        title: t("newProject.launchFailed"),
-        description: (e as Error).message,
-        variant: "destructive",
-      });
-      setLaunching(false);
+      return next;
+    });
+    if (partial.taskType !== undefined) {
+      setEngineProject(null);
+      setProjectError(null);
     }
   };
-
-  useEffect(() => {
-    const stored = sessionStorage.getItem("template-prefill");
-    if (stored) {
-      try {
-        const tpl = JSON.parse(stored);
-        setFormData((p) => ({
-          ...p,
-          projectName: tpl.name ?? p.projectName,
-          taskPrompt: tpl.prompt ?? p.taskPrompt,
-          taskType: tpl.taskType ?? p.taskType,
-          baseModel: tpl.baseModel ? resolveEngineBaseModel(tpl.baseModel) : p.baseModel,
-        }));
-        sessionStorage.removeItem("template-prefill");
-      } catch {
-        // ignore malformed prefill
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadBaseModels();
-  }, [loadBaseModels]);
 
   const steps = [
     { id: "prompt", label: t("newProject.taskPrompt") },
@@ -168,36 +87,65 @@ export default function NewProject() {
     { id: "model", label: t("newProject.baseModel") },
   ];
 
-  const updateForm = (partial: Partial<ProjectFormData>) => {
-    setFormData((prev) => ({ ...prev, ...partial }));
-  };
-
   const canProceed = () => {
     switch (currentStep) {
-      case 0: return formData.taskPrompt.trim().length > 10;
-      case 1: return isEngineTaskSupported(formData.taskType);
-      case 2: return formData.files.length === 1;
-      case 3: return !loadingBaseModels
-        && !baseModelsError
-        && formData.baseModel !== null
-        && supportedBaseModelIds.has(formData.baseModel);
-      default: return false;
+      case 0:
+        return formData.taskPrompt.trim().length > 10;
+      case 1:
+        return formData.taskType !== null;
+      case 2:
+        return formData.trainingDatasetId !== null && formData.trainingDatasetStatus === "completed";
+      case 3:
+        return formData.baseModel !== null;
+      default:
+        return false;
     }
   };
 
-  const handleTemplateSelect = (template: { name: string; prompt: string; taskType: TaskType; baseModel: BaseModel }) => {
-    setFormData({
-      ...initialFormData,
-      projectName: template.name,
-      taskPrompt: template.prompt,
-      taskType: template.taskType,
-      baseModel: resolveEngineBaseModel(template.baseModel),
-    });
-    setShowTemplates(false);
-    setCurrentStep(2);
+  const isLastStep = currentStep === steps.length - 1;
+
+  const handleNext = async () => {
+    // Leaving the task-selection step is what actually creates the Engine
+    // project — it's the first point we have every field ProjectCreate needs.
+    if (currentStep === 1 && !engineProject) {
+      setProjectError(null);
+      try {
+        const created = await createProjectMutation.mutateAsync({
+          name: formData.projectName.trim() || formData.taskPrompt.slice(0, 60) || "Untitled Project",
+          description: formData.taskPrompt,
+          task_type: formData.taskType!,
+        });
+        setEngineProject(created);
+      } catch (e) {
+        setProjectError(toErrorDetail(e));
+        return;
+      }
+    }
+    setCurrentStep((s) => s + 1);
   };
 
-  const isLastStep = currentStep === steps.length - 1;
+  const handleLaunch = async () => {
+    if (launching || !engineProject || !formData.trainingDatasetId || !formData.baseModel) return;
+
+    setLaunching(true);
+    setLaunchError(null);
+    try {
+      await startTrainingMutation.mutateAsync({
+        project_id: engineProject.id,
+        dataset_id: formData.trainingDatasetId,
+        base_model: formData.baseModel,
+        mode: "manual",
+        manual_config: formData.maxSeqLength ? { max_seq_length: formData.maxSeqLength } : undefined,
+      });
+      toast({ title: t("newProject.launched"), description: engineProject.name });
+      navigate(`/projects/${engineProject.id}`);
+    } catch (e) {
+      const detail = toErrorDetail(e);
+      setLaunchError(detail);
+      toast({ title: t("newProject.launchFailed"), description: detail.detail, variant: "destructive" });
+      setLaunching(false);
+    }
+  };
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -211,13 +159,7 @@ export default function NewProject() {
             <p className="text-sm text-muted-foreground">{t("newProject.subtitle")}</p>
           </div>
         </div>
-        <Button variant="outline" size="sm" className="gap-2" onClick={() => setShowTemplates(!showTemplates)}>
-          <Sparkles className="h-3.5 w-3.5" />
-          {showTemplates ? t("newProject.hideTemplates") : t("newProject.useTemplate")}
-        </Button>
       </div>
-
-      {showTemplates && <TemplateLibrary onSelect={handleTemplateSelect} />}
 
       <div className="flex items-center gap-1">
         {steps.map((step, i) => (
@@ -246,19 +188,15 @@ export default function NewProject() {
         <CardContent className="p-6">
           {currentStep === 0 && <TaskPromptStep formData={formData} updateForm={updateForm} />}
           {currentStep === 1 && <TaskSelectionStep formData={formData} updateForm={updateForm} />}
-          {currentStep === 2 && <DataUploadStep formData={formData} updateForm={updateForm} />}
-          {currentStep === 3 && (
-            <ModelSelectionStep
-              formData={formData}
-              updateForm={updateForm}
-              models={baseModels}
-              loading={loadingBaseModels}
-              error={baseModelsError}
-              onRetry={() => void loadBaseModels()}
-            />
+          {currentStep === 2 && (
+            <DataUploadStep formData={formData} updateForm={updateForm} projectId={engineProject?.id ?? null} />
           )}
+          {currentStep === 3 && <ModelSelectionStep formData={formData} updateForm={updateForm} />}
         </CardContent>
       </Card>
+
+      {currentStep === 1 && projectError && <ErrorDetail error={projectError} />}
+      {isLastStep && launchError && <ErrorDetail error={launchError} />}
 
       <div className="flex justify-between">
         <Button
@@ -270,7 +208,8 @@ export default function NewProject() {
           <ArrowLeft className="h-4 w-4" /> {t("common.back")}
         </Button>
         {!isLastStep ? (
-          <Button onClick={() => setCurrentStep((s) => s + 1)} disabled={!canProceed()} className="gap-2">
+          <Button onClick={handleNext} disabled={!canProceed() || createProjectMutation.isPending} className="gap-2">
+            {createProjectMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {t("common.next")} <ArrowRight className="h-4 w-4" />
           </Button>
         ) : (

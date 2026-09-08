@@ -3,7 +3,6 @@ import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Home, ArrowLeft } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageContext";
-import { useAuth } from "@/contexts/AuthContext";
 
 // Paths that were removed — redirect to a sensible replacement instead of 404
 const REMOVED_ROUTE_REDIRECTS: Record<string, string> = {
@@ -12,16 +11,16 @@ const REMOVED_ROUTE_REDIRECTS: Record<string, string> = {
   "/dataset-explorer": "/dashboard",
   "/annotation": "/dashboard",
   "/annotation-tool": "/dashboard",
-  "/billing": "/settings",
-  "/team": "/settings",
-  "/settings/billing": "/settings",
-  "/settings/team": "/settings",
+  "/billing": "/dashboard",
+  "/team": "/dashboard",
+  "/settings": "/dashboard",
+  "/settings/billing": "/dashboard",
+  "/settings/team": "/dashboard",
 };
 
 const NotFound = () => {
   const location = useLocation();
   const { t } = useLanguage();
-  const { user } = useAuth();
 
   const redirectTarget = REMOVED_ROUTE_REDIRECTS[location.pathname];
 
@@ -32,7 +31,7 @@ const NotFound = () => {
   }, [location.pathname, redirectTarget]);
 
   if (redirectTarget) {
-    return <Navigate to={user ? redirectTarget : "/"} replace />;
+    return <Navigate to={redirectTarget} replace />;
   }
 
   return (
@@ -49,7 +48,7 @@ const NotFound = () => {
             <ArrowLeft className="h-4 w-4" /> {t("notFound.back")}
           </Button>
           <Button asChild className="gap-1.5">
-            <Link to={user ? "/dashboard" : "/"}>
+            <Link to="/dashboard">
               <Home className="h-4 w-4" /> {t("notFound.home")}
             </Link>
           </Button>

@@ -3,9 +3,12 @@ import {
   FolderKanban,
   Box,
   MessageSquare,
+  Database,
+  ClipboardList,
+  Wallet,
+  Zap,
   Key,
   Settings,
-  Zap,
   BarChart3,
   Rocket,
   Trophy,
@@ -25,23 +28,25 @@ import {
   SidebarFooter,
 } from "@/components/ui/sidebar";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
 
-
 const navItems = [
   { titleKey: "nav.dashboard", url: "/dashboard", icon: LayoutDashboard },
   { titleKey: "nav.projects", url: "/projects", icon: FolderKanban },
-  { titleKey: "nav.templates", url: "/templates", icon: LayoutTemplate },
   { titleKey: "nav.models", url: "/models", icon: Box },
-  { titleKey: "Evaluations", url: "/evaluations", icon: Zap },
+  { titleKey: "datasetsPage.navLabel", url: "/datasets", icon: Database },
+  { titleKey: "evaluationsPage.navLabel", url: "/evaluations", icon: ClipboardList },
   { titleKey: "nav.playground", url: "/playground", icon: MessageSquare },
-  { titleKey: "nav.analytics", url: "/analytics", icon: BarChart3 },
-  { titleKey: "nav.deployment", url: "/deployment", icon: Rocket },
-  { titleKey: "nav.leaderboard", url: "/leaderboard", icon: Trophy },
-  { titleKey: "nav.apiKeys", url: "/api-keys", icon: Key },
+  { titleKey: "nav.usage", url: "/usage", icon: Wallet },
+  { titleKey: "nav.templates", url: "/templates", icon: LayoutTemplate, prototype: true },
+  { titleKey: "nav.analytics", url: "/analytics", icon: BarChart3, prototype: true },
+  { titleKey: "nav.deployment", url: "/deployment", icon: Rocket, prototype: true },
+  { titleKey: "nav.leaderboard", url: "/leaderboard", icon: Trophy, prototype: true },
+  { titleKey: "nav.apiKeys", url: "/api-keys", icon: Key, prototype: true },
   { titleKey: "nav.settings", url: "/settings", icon: Settings },
 ];
 
@@ -49,14 +54,13 @@ export function AppSidebar() {
   const { t } = useLanguage();
   const { user, profile, signOut } = useAuth();
   const navigate = useNavigate();
+  const displayName = profile?.display_name ?? user?.email?.split("@")[0] ?? "User";
+  const initials = displayName.slice(0, 2).toUpperCase();
 
   const handleSignOut = async () => {
     await signOut();
     navigate("/login", { replace: true });
   };
-
-  const displayName = profile?.display_name ?? user?.email?.split("@")[0] ?? "User";
-  const initials = displayName.slice(0, 2).toUpperCase();
 
   return (
     <Sidebar collapsible="icon">
@@ -80,6 +84,7 @@ export function AppSidebar() {
                     >
                       <item.icon className="h-4 w-4 shrink-0" />
                       <span>{t(item.titleKey)}</span>
+                      {item.prototype ? <Badge variant="outline" className="ml-auto text-[9px]">Prototype</Badge> : null}
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
@@ -88,30 +93,21 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-
-      <SidebarFooter className="p-3 border-t border-border space-y-3">
-        {user && (
-          <div className="flex items-center gap-2 pt-2 border-t border-border group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:border-t-0 group-data-[collapsible=icon]:pt-0">
+      <SidebarFooter className="border-t border-border p-3">
+        {user ? (
+          <div className="flex items-center gap-2">
             <Avatar className="h-7 w-7 shrink-0">
-              <AvatarFallback className="text-[10px] bg-primary/10 text-primary font-semibold">
-                {initials}
-              </AvatarFallback>
+              <AvatarFallback className="bg-primary/10 text-[10px] font-semibold text-primary">{initials}</AvatarFallback>
             </Avatar>
-            <div className="flex-1 min-w-0 group-data-[collapsible=icon]:hidden">
-              <p className="text-xs font-medium text-foreground truncate">{displayName}</p>
-              <p className="text-[10px] text-muted-foreground truncate">{user.email}</p>
+            <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
+              <p className="truncate text-xs font-medium">{displayName}</p>
+              <p className="truncate text-[10px] text-muted-foreground">{user.email}</p>
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 shrink-0"
-              onClick={handleSignOut}
-              title={t("auth.signOut")}
-            >
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void handleSignOut()} title={t("auth.signOut")}>
               <LogOut className="h-3.5 w-3.5" />
             </Button>
           </div>
-        )}
+        ) : null}
       </SidebarFooter>
     </Sidebar>
   );

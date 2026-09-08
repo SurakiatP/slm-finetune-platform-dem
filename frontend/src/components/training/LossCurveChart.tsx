@@ -1,7 +1,15 @@
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import type { LossCurvePoint } from "@/data/trainingMockData";
 
-export function LossCurveChart({ data }: { data: LossCurvePoint[] }) {
+/** One point on the loss chart. Real Engine data can have gaps (e.g. eval
+ *  loss is only recorded every N steps), so both series are nullable —
+ *  recharts simply skips a null point instead of drawing a spurious dip. */
+export interface LossChartPoint {
+  step: number;
+  trainLoss: number | null;
+  valLoss: number | null;
+}
+
+export function LossCurveChart({ data }: { data: LossChartPoint[] }) {
   return (
     <div className="h-[280px]">
       <ResponsiveContainer width="100%" height="100%">
@@ -33,7 +41,7 @@ export function LossCurveChart({ data }: { data: LossCurvePoint[] }) {
               borderRadius: "8px",
               fontSize: 12,
             }}
-            formatter={(value: number) => [value.toFixed(4), ""]}
+            formatter={(value: number | null) => [value === null ? "—" : value.toFixed(4), ""]}
           />
           <Legend verticalAlign="top" height={36} iconType="line" />
           <Area
@@ -43,6 +51,7 @@ export function LossCurveChart({ data }: { data: LossCurvePoint[] }) {
             stroke="hsl(243,75%,59%)"
             fill="url(#trainGrad)"
             strokeWidth={2}
+            connectNulls
             dot={false}
           />
           <Area
@@ -53,6 +62,7 @@ export function LossCurveChart({ data }: { data: LossCurvePoint[] }) {
             fill="url(#valGrad)"
             strokeWidth={2}
             strokeDasharray="4 4"
+            connectNulls
             dot={false}
           />
         </AreaChart>

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { InputHTMLAttributes, ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import MfaChallenge from "./MfaChallenge";
@@ -9,6 +10,20 @@ let authState: Record<string, unknown>;
 vi.mock("@/contexts/AuthContext", () => ({ useAuth: () => authState }));
 vi.mock("@/i18n/LanguageContext", () => ({ useLanguage: () => ({ t: (key: string) => key }) }));
 vi.mock("@/lib/accountSecurity", () => ({ verifyMfa: mocks.verifyMfa }));
+vi.mock("@/components/ui/input-otp", () => ({
+  InputOTP: ({
+    children: _children,
+    containerClassName: _containerClassName,
+    onChange,
+    ...props
+  }: Omit<InputHTMLAttributes<HTMLInputElement>, "onChange"> & {
+    children?: ReactNode;
+    containerClassName?: string;
+    onChange?: (value: string) => void;
+  }) => <input {...props} onChange={(event) => onChange?.(event.target.value)} />,
+  InputOTPGroup: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  InputOTPSlot: () => null,
+}));
 
 function renderChallenge() {
   return render(

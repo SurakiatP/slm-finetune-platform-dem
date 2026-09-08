@@ -20,9 +20,9 @@ export const mockProjects: Project[] = [
   },
   {
     id: "proj-002",
-    name: "Thai NER Extractor",
-    description: "Extract named entities (person, organization, location) from Thai news articles.",
-    taskType: "ner",
+    name: "Thai News Topic Classifier",
+    description: "Label Thai news articles by topic: politics, business, sport, and entertainment.",
+    taskType: "classification",
     baseModel: "gemma-2-2b",
     status: "training",
     progress: 68,
@@ -55,7 +55,7 @@ export const mockProjects: Project[] = [
     id: "proj-004",
     name: "API Function Router",
     description: "Route natural language requests to appropriate API function calls with parameter extraction.",
-    taskType: "function-calling",
+    taskType: "tool_calling",
     baseModel: "qwen2.5-3b",
     status: "queued",
     progress: 0,
@@ -68,9 +68,9 @@ export const mockProjects: Project[] = [
   },
   {
     id: "proj-005",
-    name: "Invoice Data Extractor",
-    description: "Extract structured data (vendor, amount, date, items) from invoice text.",
-    taskType: "extraction",
+    name: "Invoice Q&A Assistant",
+    description: "Answer questions about invoice contents: vendor, amount, due date, and line items.",
+    taskType: "qa",
     baseModel: "smollm2-1.7b",
     status: "failed",
     progress: 42,
@@ -83,9 +83,9 @@ export const mockProjects: Project[] = [
   },
   {
     id: "proj-006",
-    name: "Search Result Ranker",
-    description: "Re-rank search results based on relevance to user queries for e-commerce platform.",
-    taskType: "ranking",
+    name: "Search Relevance Classifier",
+    description: "Label search results as relevant or irrelevant to the user query for an e-commerce platform.",
+    taskType: "classification",
     baseModel: "llama-3.2-1b",
     status: "completed",
     progress: 100,
@@ -127,10 +127,10 @@ export const mockModels: TrainedModel[] = [
   },
   {
     id: "model-003",
-    name: "search-ranker-v1",
+    name: "search-relevance-v1",
     projectId: "proj-006",
     baseModel: "llama-3.2-1b",
-    taskType: "ranking",
+    taskType: "classification",
     accuracy: 91.7,
     f1Score: 90.3,
     fileSize: "0.9 GB",
@@ -178,13 +178,13 @@ export const mockEvalMetrics: Record<string, EvaluationMetrics> = {
   "proj-006": { accuracy: 91.7, f1Score: 90.3, precision: 92.0, recall: 88.7, rouge1: 0, latencyMs: 38 },
 };
 
+/** Static labels for the three task types the backend supports (ADR-005).
+ *  Prefer `useTaskTypeLabel()` from src/lib/labels.ts, which reads
+ *  `GET /api/v1/tasks` and only falls back to a table like this one. */
 export const taskTypeLabels: Record<string, string> = {
   classification: "Classification",
-  ner: "Named Entity Recognition",
+  tool_calling: "Function Calling",
   qa: "Question Answering",
-  "function-calling": "Function Calling",
-  extraction: "Data Extraction",
-  ranking: "Ranking",
 };
 
 export const baseModelLabels: Record<string, string> = {

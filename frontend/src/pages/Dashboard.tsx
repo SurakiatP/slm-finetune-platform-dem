@@ -1,20 +1,21 @@
-import { useState, useEffect } from "react";
 import { StatsCards } from "@/components/dashboard/StatsCards";
 import { RecentProjects } from "@/components/dashboard/RecentProjects";
 import { ActivityChart } from "@/components/dashboard/ActivityChart";
 import { NewProjectDialog } from "@/components/dashboard/NewProjectDialog";
 import { PageTransition, FadeIn } from "@/components/motion";
 import { DashboardSkeleton } from "@/components/skeletons/DashboardSkeleton";
+import { useModels, useProjects, useTrainings } from "@/hooks/queries";
 import { useLanguage } from "@/i18n/LanguageContext";
 
 export default function Dashboard() {
-  const [loading, setLoading] = useState(true);
   const { t } = useLanguage();
-
-  useEffect(() => {
-    const timer = setTimeout(() => setLoading(false), 1500);
-    return () => clearTimeout(timer);
-  }, []);
+  // The original gated the whole page on a fake 1.5s timer; keep the same
+  // skeleton rhythm but drive it off the real Engine queries the sections
+  // below consume (react-query dedupes, so the children reuse these).
+  const { isLoading: projectsLoading } = useProjects({ limit: 100 });
+  const { isLoading: modelsLoading } = useModels(undefined, { limit: 100 });
+  const { isLoading: trainingsLoading } = useTrainings({ limit: 100 });
+  const loading = projectsLoading || modelsLoading || trainingsLoading;
 
   if (loading) return <DashboardSkeleton />;
 

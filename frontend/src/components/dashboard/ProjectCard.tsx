@@ -1,66 +1,100 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
+import { Trash2 } from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
-import { Pin } from "lucide-react";
-import type { Project, ProjectStatus } from "@/types";
-import { getBaseModelLabel, taskTypeLabels } from "@/data/mockData";
-
-const statusVariant: Record<ProjectStatus, "default" | "secondary" | "destructive" | "outline"> = {
-  completed: "default",
-  training: "secondary",
-  queued: "outline",
-  paused: "outline",
-  failed: "destructive",
-};
-
-const tagColor = (tag: string) => {
-  if (tag === "production") return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30";
-  if (tag === "experiment") return "bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/30";
-  if (tag.startsWith("client")) return "bg-purple-500/15 text-purple-700 dark:text-purple-400 border-purple-500/30";
-  return "bg-muted text-muted-foreground";
-};
+import { ConfirmDialog } from "@/components/engine/ConfirmDialog";
+import { QueueBadge } from "@/components/engine/QueueBadge";
+import { queryKeys } from "@/hooks/queries";
+import { useToast } from "@/hooks/use-toast";
+import { useLanguage } from "@/i18n/LanguageContext";
+import { useTaskTypeLabel } from "@/lib/labels";
+import { deleteProjectCascade } from "@/lib/projectDelete";
+import type { Project } from "@/api/types";
 
 export function ProjectCard({ project }: { project: Project }) {
+  const { t } = useLanguage();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const taskTypeLabel = useTaskTypeLabel();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    try {
+      await deleteProjectCascade(project.id);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
+      toast({ title: t("project.delete"), description: project.name });
+      setConfirmOpen(false);
+    } catch (error) {
+      toast({
+        title: t("common.error"),
+        description: error instanceof Error ? error.message : String(error),
+        variant: "destructive",
+      });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
-    <Link to={`/projects/${project.id}`}>
-      <Card className={`hover:shadow-md transition-shadow cursor-pointer h-full ${project.pinned ? "border-primary/40" : ""}`}>
-        <CardHeader className="pb-3">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-start gap-1.5 flex-1 min-w-0">
-              {project.pinned && <Pin className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5 fill-primary" />}
-              <CardTitle className="text-sm font-semibold leading-tight">{project.name}</CardTitle>
-            </div>
-            <Badge variant={statusVariant[project.status]} className="shrink-0 text-[10px]">
-              {project.status}
-            </Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <p className="text-xs text-muted-foreground line-clamp-2">{project.description}</p>
-          <div className="flex flex-wrap gap-1.5">
-            <Badge variant="outline" className="text-[10px]">{taskTypeLabels[project.taskType]}</Badge>
-            <Badge variant="outline" className="text-[10px]">{getBaseModelLabel(project.baseModel)}</Badge>
-            {project.tags?.map((tag) => (
-              <Badge key={tag} variant="outline" className={`text-[10px] ${tagColor(tag)}`}>
-                {tag}
-              </Badge>
-            ))}
-          </div>
-          {project.status === "training" && (
-            <div className="space-y-1">
-              <div className="flex justify-between text-[10px] text-muted-foreground">
-                <span>Progress</span>
-                <span>{project.progress}%</span>
+    <>
+      <Link to={`/projects/${project.id}`}>
+        <Card className="hover:shadow-md transition-shadow cursor-pointer h-full group">
+          <CardHeader className="pb-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-1.5 flex-1 min-w-0">
+                <CardTitle className="text-sm font-semibold leading-tight">{project.name}</CardTitle>
               </div>
-              <Progress value={project.progress} className="h-1.5" />
+              <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.preventDefault()}>
+                <QueueBadge queueState={project.queue_state} queuePosition={project.queue_position} />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+                  aria-label={t("project.delete")}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setConfirmOpen(true);
+                  }}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
             </div>
-          )}
-          <p className="text-[10px] text-muted-foreground">
-            {new Date(project.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-          </p>
-        </CardContent>
-      </Card>
-    </Link>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground line-clamp-2">{project.description}</p>
+            <div className="flex flex-wrap gap-1.5">
+              <Badge variant="outline" className="text-[10px]">{taskTypeLabel(project.task_type)}</Badge>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              {new Date(project.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+            </p>
+          </CardContent>
+        </Card>
+      </Link>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        onConfirm={handleDelete}
+        title={t("project.delete")}
+        description={
+          <>
+            {t("project.deleteConfirm")} <strong>{project.name}</strong>. {t("project.deleteCancelsJobs")}{" "}
+            {t("pipelineHub.deleteDatasetsNote")}
+          </>
+        }
+        confirmLabel={t("project.delete")}
+        destructive
+        loading={deleting}
+      />
+    </>
   );
 }
