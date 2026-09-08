@@ -24,9 +24,19 @@ describe('Engine API client', () => {
       headers: { 'Content-Type': 'application/json' },
     }))
 
-    await expect(api.get<{ status: string }>('/health')).resolves.toEqual({ status: 'ok' })
+    await expect(api.get<{ status: string }>('/api/v1/projects')).resolves.toEqual({ status: 'ok' })
     const [, init] = mocks.fetch.mock.calls[0] as [string, RequestInit]
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer jwt-token')
+  })
+
+  it('calls public probes without requiring a session', async () => {
+    mocks.getSession.mockResolvedValue({ data: { session: null } })
+    mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ status: 'ok' }), { status: 200 }))
+
+    await expect(api.get<{ status: string }>('/health')).resolves.toEqual({ status: 'ok' })
+    const [, init] = mocks.fetch.mock.calls[0] as [string, RequestInit]
+    expect(mocks.getSession).not.toHaveBeenCalled()
+    expect(new Headers(init.headers).get('Authorization')).toBeNull()
   })
 
   it('does not set a multipart content type and handles 204', async () => {

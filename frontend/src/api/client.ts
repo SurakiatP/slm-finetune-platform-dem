@@ -55,7 +55,8 @@ async function parseError(res: Response): Promise<ApiError> {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
-  if (!isMockMode) {
+  const isPublicProbe = path === '/health' || path === '/ready'
+  if (!isMockMode && !isPublicProbe) {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) {
       throw new ApiError(401, {
