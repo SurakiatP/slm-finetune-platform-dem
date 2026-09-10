@@ -42,11 +42,11 @@ const navItems = [
   { titleKey: "evaluationsPage.navLabel", url: "/evaluations", icon: ClipboardList },
   { titleKey: "nav.playground", url: "/playground", icon: MessageSquare },
   { titleKey: "nav.usage", url: "/usage", icon: Wallet },
-  { titleKey: "nav.templates", url: "/templates", icon: LayoutTemplate, prototype: true },
-  { titleKey: "nav.analytics", url: "/analytics", icon: BarChart3, prototype: true },
-  { titleKey: "nav.deployment", url: "/deployment", icon: Rocket, prototype: true },
-  { titleKey: "nav.leaderboard", url: "/leaderboard", icon: Trophy, prototype: true },
-  { titleKey: "nav.apiKeys", url: "/api-keys", icon: Key, prototype: true },
+  { titleKey: "nav.templates", url: "/templates", icon: LayoutTemplate },
+  { titleKey: "nav.analytics", url: "/analytics", icon: BarChart3 },
+  { titleKey: "nav.deployment", url: "/deployment", icon: Rocket },
+  { titleKey: "nav.leaderboard", url: "/leaderboard", icon: Trophy },
+  { titleKey: "nav.apiKeys", url: "/api-keys", icon: Key },
   { titleKey: "nav.settings", url: "/settings", icon: Settings },
 ];
 
