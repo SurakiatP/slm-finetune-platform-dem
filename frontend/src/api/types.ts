@@ -106,6 +106,45 @@ export interface DatasetPreview {
   total: number
 }
 
+export interface DatasetInsightLabelCount {
+  label: string
+  count: number
+  percent: number
+}
+
+export interface DatasetInsightLengthBucket {
+  bucket: string
+  count: number
+}
+
+export interface DatasetInsightIssue {
+  id: string
+  severity: 'critical' | 'warning' | 'info'
+  category: string
+  title: string
+  description: string
+  affected_rows: number
+  suggestion: string
+}
+
+/** Aggregate quality scan from `GET /datasets/{id}/insights`. */
+export interface DatasetInsights {
+  dataset_id: string
+  task_type: TaskType
+  row_count: number
+  scanned_rows: number
+  scan_truncated: boolean
+  label_distribution: DatasetInsightLabelCount[]
+  near_duplicate_count: number
+  duplicate_rows: number
+  missing_labels: number
+  outliers: number
+  length_distribution: DatasetInsightLengthBucket[]
+  issues: DatasetInsightIssue[]
+  overall_quality_score: number
+  readiness: 'ready' | 'caveats' | 'fix'
+}
+
 // --- Data formats (api/schemas/data_formats.py) ------------------------------
 
 export interface ClassificationSample {
