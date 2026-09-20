@@ -32,6 +32,7 @@ from api.routers import (
     models,
     projects,
     tasks_meta,
+    templates,
     trainings,
     usage,
     websocket,
@@ -245,6 +246,8 @@ install_handlers(app)
 # ---- Routers --------------------------------------------------------------
 
 API_V1 = "/api/v1"
+
+app.include_router(templates.router, prefix=f"{API_V1}/templates", tags=["templates"])
 
 _AUTH = [Depends(require_user)]
 

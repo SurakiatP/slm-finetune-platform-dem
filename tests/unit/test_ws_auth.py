@@ -110,6 +110,7 @@ async def seeded_db():
             session.add(
                 Dataset(
                     id=uuid4(), project_id=project.id, name=f"d-{job}",
+                    owner_id=owner,
                     source=DatasetSource.SDG, task_type=TaskType.QA,
                     status=JobStatus.RUNNING, celery_task_id=job,
                 )

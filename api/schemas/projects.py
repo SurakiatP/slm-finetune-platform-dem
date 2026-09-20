@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from api.schemas.enums import TaskType
+from api.schemas.templates import TemplateOverrides
 
 
 class ProjectCreate(BaseModel):
@@ -38,6 +39,9 @@ class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
     task_type: TaskType
+    template_id: str | None = Field(default=None, min_length=1, max_length=64)
+    template_version: str | None = Field(default=None, min_length=1, max_length=64)
+    template_overrides: TemplateOverrides | None = None
     external_project_id: str | None = Field(
         default=None,
         max_length=200,
@@ -49,6 +53,15 @@ class ProjectCreate(BaseModel):
             "returns 409."
         ),
     )
+
+
+    @model_validator(mode="after")
+    def template_fields_require_reference(self) -> Self:
+        if self.template_id is None and (
+            self.template_version is not None or self.template_overrides is not None
+        ):
+            raise ValueError("template_version and template_overrides require template_id")
+        return self
 
 
 class ProjectUpdate(BaseModel):
@@ -77,6 +90,7 @@ class ProjectResponse(BaseModel):
     # existing caller that builds this model from a dict rather than from an
     # ORM row. Additive means additive.
     owner_id: str | None = None
+    template_snapshot: dict[str, Any] | None = None
     # queue_state / queue_position / owner_queue_position: project-level GPU
     # queue standing (train/export/eval jobs share one GPU, worker
     # concurrency=1). "processing" = a GPU job for this project is currently

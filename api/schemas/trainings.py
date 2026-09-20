@@ -32,6 +32,8 @@ class TrainingResponse(BaseModel):
     mlflow_experiment_id: str | None
     mlflow_run_id: str | None
     config_json: dict[str, Any]
+    # Effective immutable prompt/splits; also used by external model consumers.
+    context_snapshot: dict[str, Any] | None = None
     best_metric_value: float | None
     best_params_json: dict[str, Any] | None
     error_message: str | None
@@ -125,10 +127,10 @@ class TrainingLossHistoryResponse(BaseModel):
 
 
 __all__ = [
-    "TrainingResponse",
-    "MlflowUrlResponse",
-    "MetricPoint",
     "HpoChildSummary",
-    "TrainingMetricsResponse",
+    "MetricPoint",
+    "MlflowUrlResponse",
     "TrainingLossHistoryResponse",
+    "TrainingMetricsResponse",
+    "TrainingResponse",
 ]

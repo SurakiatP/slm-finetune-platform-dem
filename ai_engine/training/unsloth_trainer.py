@@ -100,6 +100,29 @@ def _resolve_eos_token(tokenizer: Any, base_model: str) -> str:
     )
 
 
+def _render_rows(
+    tokenizer, formatter, rows, *, max_seq_length: int, role: str, eos_token: str | None = None
+):
+    """Reject overlong complete conversations before SFTTrainer can truncate them."""
+    texts = []
+    for index, row in enumerate(rows):
+        rendered = tokenizer.apply_chat_template(
+            formatter(row), tokenize=False, add_generation_prompt=False
+        )
+        # Include the terminal token in the limit check rather than leaving its
+        # later addition to SFTTrainer, where it could push a row over the limit.
+        if eos_token and not rendered.endswith(eos_token):
+            rendered += eos_token
+        token_ids = tokenizer(rendered, add_special_tokens=False, truncation=False)["input_ids"]
+        if len(token_ids) > max_seq_length:
+            raise ValueError(
+                f"{role} row {index + 1} renders to {len(token_ids)} tokens, exceeding "
+                f"max_seq_length={max_seq_length}; shorten the row/prompt or increase the limit"
+            )
+        texts.append({"text": rendered})
+    return texts
+
+
 # ---- Result type -----------------------------------------------------------
 
 
@@ -137,12 +160,14 @@ class UnslothTrainer:
         config: ManualTrainingConfig,
         task_type: TaskType,
         tool_definitions: list[ToolDefinition] | None = None,
+        system_prompt: str | None = None,
         output_dir: str,
     ) -> None:
         self.base_model = base_model
         self.config = config
         self.task_type = task_type
         self.tool_definitions = tool_definitions
+        self.system_prompt = system_prompt
         self.output_dir = output_dir
 
     # -- Public ----------------------------------------------------------------
@@ -153,6 +178,7 @@ class UnslothTrainer:
         *,
         callbacks: list["TrainerCallback"] | None = None,
         eval_split: float = 0.1,
+        validation_rows: list[dict[str, Any]] | None = None,
     ) -> TrainingResult:
         """Run one fine-tune.
 
@@ -164,6 +190,8 @@ class UnslothTrainer:
         """
         if not rows:
             raise ValueError("UnslothTrainer.train: rows is empty")
+        if validation_rows is not None and not validation_rows:
+            raise ValueError("UnslothTrainer.train: validation_rows is empty")
         if not 0.0 <= eval_split < 0.5:
             raise ValueError("eval_split must be in [0.0, 0.5)")
 
@@ -213,19 +241,20 @@ class UnslothTrainer:
         # `messages` datasets and lets us feed a plain `text` field that all
         # SFTConfig versions (stock TRL + Unsloth-patched) handle uniformly.
         formatter = get_formatter(
-            self.task_type, tool_definitions=self.tool_definitions
+            self.task_type,
+            tool_definitions=self.tool_definitions,
+            **({"system_prompt": self.system_prompt} if self.system_prompt is not None else {}),
         )
-        texts: list[dict[str, str]] = [
-            {
-                "text": tokenizer.apply_chat_template(
-                    formatter(row), tokenize=False, add_generation_prompt=False
-                )
-            }
-            for row in rows
-        ]
-
-        ds = Dataset.from_list(texts)
-        if eval_split > 0.0 and len(ds) >= 4:
+        ds = Dataset.from_list(_render_rows(
+            tokenizer, formatter, rows, max_seq_length=self.config.max_seq_length,
+            role="train", eos_token=eos_token,
+        ))
+        if validation_rows is not None:
+            train_ds, eval_ds = ds, Dataset.from_list(_render_rows(
+                tokenizer, formatter, validation_rows,
+                max_seq_length=self.config.max_seq_length, role="validation", eos_token=eos_token,
+            ))
+        elif eval_split > 0.0 and len(ds) >= 4:
             split = ds.train_test_split(
                 test_size=eval_split, seed=self.config.seed, shuffle=True
             )
@@ -238,7 +267,10 @@ class UnslothTrainer:
 
         # ---- 4. SFTConfig ------------------------------------------------------
         sft_config = self._build_sft_config(
-            SFTConfig, eos_token=eos_token, has_eval=eval_ds is not None
+            SFTConfig,
+            eos_token=eos_token,
+            has_eval=eval_ds is not None,
+            external_validation=validation_rows is not None,
         )
 
         # ---- 5. SFT trainer ----------------------------------------------------
@@ -320,6 +352,7 @@ class UnslothTrainer:
         *,
         eos_token: str,
         has_eval: bool,
+        external_validation: bool = False,
     ) -> Any:
         """Assemble the kwargs dict + instantiate TRL `SFTConfig`.
 
@@ -353,6 +386,11 @@ class UnslothTrainer:
         )
         if self.config.neftune_noise_alpha is not None:
             sft_kwargs["neftune_noise_alpha"] = self.config.neftune_noise_alpha
+        if external_validation:
+            sft_kwargs.update(
+                save_strategy="epoch", save_total_limit=1, load_best_model_at_end=True,
+                metric_for_best_model="eval_loss", greater_is_better=False,
+            )
         return SFTConfig(**sft_kwargs)
 
     def _build_trainer(

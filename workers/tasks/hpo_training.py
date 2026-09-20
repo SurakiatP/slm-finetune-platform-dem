@@ -37,15 +37,15 @@ from ai_engine.training.mlflow_logger import (
     mlflow_run_scope,
 )
 from ai_engine.training.unsloth_trainer import UnslothTrainer
+from api.core import request_context
 from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
-from api.core import request_context
 from api.schemas.progress import HPOProgress, JobCompleted, JobFailed
-from api.services import audit_service
 from api.schemas.training import HPOConfig
+from api.services import audit_service
 from workers.celery_app import celery_app
 from workers.progress import publish_ws_message, sync_redis_scope
 from workers.storage import (
@@ -57,6 +57,7 @@ from workers.storage import (
     s3_uri,
 )
 from workers.sync_db import session_scope
+from workers.tasks.training import _load_template_context, _prepare_training_rows
 from workers.vram import friendly_oom_message, preflight_gpu_vram
 
 log = get_task_logger(__name__)
@@ -134,6 +135,7 @@ def train_hpo(
                     tool_definitions = _extract_tool_definitions(dataset.generation_metadata)
                     dataset_uri = dataset.storage_uri
                     training_name = job.training_name or f"hpo-{job_id[:8]}"
+                    context, validation_uri = _load_template_context(session, job, dataset)
 
                     job.status = JobStatus.RUNNING
                     job.started_at = datetime.now(timezone.utc)
@@ -162,10 +164,18 @@ def train_hpo(
             # ---- 2. Pull rows --------------------------------------------------
             log.info("hpo: job=%s loading dataset %s", job_id, dataset_uri)
             minio = get_minio_client()
-            ds_bucket, ds_key = parse_s3_uri(dataset_uri)
-            rows = get_jsonl(minio, ds_bucket, ds_key)
-            if not rows:
-                raise RuntimeError(f"Dataset {dataset_uri} is empty")
+            rows = []
+            if not context.get("template_id"):
+                ds_bucket, ds_key = parse_s3_uri(dataset_uri)
+                rows = get_jsonl(minio, ds_bucket, ds_key)
+                if not rows:
+                    raise RuntimeError(f"Dataset {dataset_uri} is empty")
+            rows, validation_rows = _prepare_training_rows(
+                minio, rows, task_type, context, validation_uri)
+            prompt_kwargs = ({"system_prompt": context["system_prompt"]}
+                             if context.get("system_prompt") is not None else {})
+            validation_kwargs = ({"validation_rows": validation_rows}
+                                 if validation_rows is not None else {})
 
             # ---- 3. Parent MLflow run ------------------------------------------
             workdir = make_optuna_workdir(prefix=f"hpo-{training_id}-")
@@ -230,6 +240,8 @@ def train_hpo(
                         # the WS firehose would be too chatty across N trials.
                         inner_progress_publish=None,
                         job_id=job_id,
+                        **prompt_kwargs,
+                        **validation_kwargs,
                     )
 
                     study = optuna.create_study(
@@ -287,9 +299,10 @@ def train_hpo(
                                 task_type=task_type,
                                 tool_definitions=tool_definitions,
                                 output_dir=final_workdir,
+                                **prompt_kwargs,
                             )
                             cb = make_progress_callback(job_id=job_id, publish=publish)
-                            final_result = trainer.train(rows, callbacks=[cb])
+                            final_result = trainer.train(rows, callbacks=[cb], **validation_kwargs)
                             log_metrics_dict(
                                 {k: v for k, v in final_result.metrics.items()}
                             )

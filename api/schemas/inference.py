@@ -81,6 +81,10 @@ class CompletionRequest(BaseModel):
 
     model: str
     prompt: str | list[str]
+    system_prompt: str | None = Field(
+        default=None, max_length=32000,
+        description="Override the artifact's saved system prompt; an empty string clears it.",
+    )
     temperature: float = 0.7
     top_p: float = 1.0
     max_tokens: int = Field(default=256, ge=1, le=8192)

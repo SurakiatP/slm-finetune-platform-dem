@@ -15,8 +15,12 @@ Progress is published to `job:{celery_task_id}` — the WebSocket subscribes the
 from __future__ import annotations
 
 import gc
+import hashlib
+import json
+import random
 import shutil
 import tempfile
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -24,6 +28,7 @@ from uuid import UUID
 
 from celery.utils.log import get_task_logger
 
+from ai_engine.data_gen.holdout_split import split_rows
 from ai_engine.training.callbacks import make_progress_callback
 from ai_engine.training.mlflow_logger import (
     log_metrics_dict,
@@ -31,15 +36,15 @@ from ai_engine.training.mlflow_logger import (
     mlflow_run_scope,
 )
 from ai_engine.training.unsloth_trainer import TrainingResult, UnslothTrainer
+from api.core import request_context
 from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
-from api.core import request_context
 from api.schemas.progress import JobCompleted, JobFailed
-from api.services import audit_service
 from api.schemas.training import ManualTrainingConfig
+from api.services import audit_service
 from workers.celery_app import celery_app
 from workers.progress import publish_ws_message, sync_redis_scope
 from workers.storage import (
@@ -136,10 +141,18 @@ def train_manual(
                 dataset_uri,
             )
             minio = get_minio_client()
-            ds_bucket, ds_key = parse_s3_uri(dataset_uri)
-            rows = get_jsonl(minio, ds_bucket, ds_key)
-            if not rows:
-                raise RuntimeError(f"Dataset {dataset_uri} is empty")
+            rows = []
+            if not ctx.context_snapshot.get("template_id"):
+                ds_bucket, ds_key = parse_s3_uri(dataset_uri)
+                rows = get_jsonl(minio, ds_bucket, ds_key)
+                if not rows:
+                    raise RuntimeError(f"Dataset {dataset_uri} is empty")
+            rows, validation_rows = _prepare_training_rows(
+                minio, rows, task_type, ctx.context_snapshot, ctx.validation_uri)
+            prompt_kwargs = ({"system_prompt": ctx.context_snapshot["system_prompt"]}
+                             if ctx.context_snapshot.get("system_prompt") is not None else {})
+            validation_kwargs = ({"validation_rows": validation_rows}
+                                 if validation_rows is not None else {})
 
             # ---- 3. MLflow run -------------------------------------------------
             with mlflow_run_scope(
@@ -178,9 +191,10 @@ def train_manual(
                         task_type=task_type,
                         tool_definitions=tool_definitions,
                         output_dir=workdir,
+                        **prompt_kwargs,
                     )
                     callback = make_progress_callback(job_id=job_id, publish=publish)
-                    result = trainer.train(rows, callbacks=[callback])
+                    result = trainer.train(rows, callbacks=[callback], **validation_kwargs)
 
                     log_metrics_dict({k: v for k, v in result.metrics.items()})
 
@@ -457,6 +471,8 @@ class _TrainContext:
     tool_definitions: list | None
     dataset_uri: str
     training_name: str
+    context_snapshot: dict
+    validation_uri: str | None
 
 
 def _load_train_context(
@@ -497,6 +513,7 @@ def _load_train_context(
                 f"Dataset {dataset.id} has no storage_uri — generation may have failed"
             )
 
+        context, validation_uri = _load_template_context(session, job, dataset)
         ctx = _TrainContext(
             base_model=job.base_model,
             config=ManualTrainingConfig.model_validate(job.config_json),
@@ -504,6 +521,8 @@ def _load_train_context(
             tool_definitions=_extract_tool_definitions(dataset.generation_metadata),
             dataset_uri=dataset.storage_uri,
             training_name=job.training_name or f"manual-{job_id[:8]}",
+            context_snapshot=context,
+            validation_uri=validation_uri,
         )
 
         # Flip RUNNING + record started_at (committed on session-scope exit).
@@ -511,6 +530,68 @@ def _load_train_context(
         job.started_at = datetime.now(timezone.utc)
 
     return ctx
+
+
+def _load_template_context(session, job, dataset):
+    """Recheck frozen roles/ownership before either worker touches training data."""
+    context = deepcopy(job.context_snapshot or {})
+    metadata = dataset.generation_metadata or {}
+    if metadata.get("template_id") and metadata.get("role") != "train":
+        raise RuntimeError("Template heldout datasets cannot be used for training")
+    if not context.get("template_id"):
+        return context, None
+    if str(dataset.id) != context.get("train_dataset_id"):
+        raise RuntimeError("Training dataset differs from frozen template context")
+    validation_uri = None
+    split_ids = [context.get(f"{role}_dataset_id") for role in ("train", "validation", "test")]
+    if len(set(split_ids)) != 3:
+        raise RuntimeError("Template splits must be distinct")
+    for role in ("train", "validation", "test"):
+        split = session.get(Dataset, UUID(context[f"{role}_dataset_id"]))
+        meta = split.generation_metadata or {} if split is not None else {}
+        if (split is None or split.owner_id != job.owner_id or split.task_type != dataset.task_type
+                or split.status != JobStatus.COMPLETED or not split.storage_uri
+                or split.num_samples <= 0 or meta.get("role") != role
+                or meta.get("template_id") != context["template_id"]
+                or meta.get("template_version") != context.get("template_version")
+                or not context.get(f"{role}_sha256")
+                or meta.get("sha256") != context[f"{role}_sha256"]):
+            raise RuntimeError(f"Template {role} dataset differs from frozen context")
+        if role == "validation":
+            validation_uri = split.storage_uri
+        if role == "train":
+            context["train_storage_uri"] = split.storage_uri
+    return context, validation_uri
+
+
+def _verified_template_rows(minio, uri, expected_sha256):
+    bucket, key = parse_s3_uri(uri)
+    response = minio.get_object(bucket_name=bucket, object_name=key)
+    try:
+        body = response.read()
+    finally:
+        response.close()
+        response.release_conn()
+    if hashlib.sha256(body).hexdigest() != expected_sha256:
+        raise RuntimeError("Template dataset SHA256 differs from frozen training context")
+    rows = [json.loads(line) for line in body.decode("utf-8").splitlines() if line.strip()]
+    if not rows or not all(isinstance(row, dict) for row in rows):
+        raise RuntimeError("Template dataset must contain nonempty JSON objects")
+    return rows
+
+
+def _prepare_training_rows(minio, rows, task_type, context, validation_uri):
+    """Hash before sampling; external validation is never sampled or used as train."""
+    validation_rows = None
+    if context.get("template_id"):
+        rows = _verified_template_rows(minio, context["train_storage_uri"], context["train_sha256"])
+        validation_rows = _verified_template_rows(minio, validation_uri, context["validation_sha256"])
+    count = context.get("train_sample_count", len(rows))
+    if not 1 <= count <= len(rows):
+        raise RuntimeError("train_sample_count exceeds the persisted training rows")
+    if count < len(rows):
+        rows = split_rows(rows, task_type, count, random.Random(context.get("sampling_seed", 42)))[1]
+    return rows, validation_rows
 
 
 def _persist_artifact(

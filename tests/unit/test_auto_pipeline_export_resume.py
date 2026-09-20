@@ -627,3 +627,18 @@ class TestNeverRaises:
         assert blob["export"]["status"] == "completed", (
             "the export-stage sync committed before the enqueue attempt and must survive it"
         )
+
+
+def test_template_export_retry_resumes_from_fixed_test_without_holdout(sync_sessionmaker, fake_auto_evaluate):
+    fixture = _make_base_fixture(sync_sessionmaker, auto_pipeline_blob=None)
+    test_id = uuid4()
+    with sync_sessionmaker() as session:
+        session.add(Dataset(id=test_id, name="template test", task_type=TaskType.QA,
+            source=DatasetSource.UPLOADED, status=JobStatus.COMPLETED,
+            num_samples=1, storage_uri="s3://bucket/test.jsonl", generation_metadata={"role": "test"}))
+        job = session.get(TrainingJob, UUID(fixture.training_id))
+        job.context_snapshot = {"template_id": "tpl-004", "test_dataset_id": str(test_id)}
+        job.auto_pipeline = TestResume()._failed_export_blob(fixture.artifact_id)
+        session.commit()
+    assert auto_pipeline.sync_export_success(artifact_id=fixture.artifact_id, training_id=fixture.training_id) == "resumed"
+    assert len(fake_auto_evaluate.apply_async_calls) == 1

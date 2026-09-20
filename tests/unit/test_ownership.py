@@ -84,7 +84,8 @@ async def _world(db: AsyncSession, owner: str | None, tag: str) -> dict:
         celery_task_id=f"sdg-{tag}",
     )
     training = TrainingJob(
-        id=uuid4(), project_id=project.id, dataset_id=dataset.id, mode=TrainingMode.MANUAL,
+        id=uuid4(), project_id=project.id, owner_id=owner,
+        dataset_id=dataset.id, mode=TrainingMode.MANUAL,
         status=JobStatus.COMPLETED, celery_task_id=f"train-{tag}",
         base_model="unsloth/x", config_json={},
     )
@@ -127,6 +128,57 @@ _ASSERTS = [
     ("artifact", ownership.assert_model_access),
     ("evaluation", ownership.assert_evaluation_access),
 ]
+
+
+class TestRetainedOwnership:
+    @pytest.mark.parametrize("owner", [ALICE.id, None])
+    async def test_access_lists_jobs_and_quotas_survive_project_deletion(self, db, owner):
+        from sqlalchemy import delete
+
+        from api.services import quota
+
+        world = await _world(db, owner, "retained")
+        world["dataset"].project_id = None
+        world["dataset"].status = JobStatus.RUNNING
+        world["training"].project_id = None
+        world["training"].status = JobStatus.RUNNING
+        world["artifact"].export_status = JobStatus.RUNNING
+        world["evaluation"].status = JobStatus.RUNNING
+        await db.flush()
+        await db.execute(delete(Project).where(Project.id == world["project"].id))
+        await db.commit()
+
+        for kind, assert_fn in _ASSERTS[1:]:
+            resource_id = world[kind].id
+            assert await assert_fn(db, resource_id, None) is not None
+            if owner:
+                assert await assert_fn(db, resource_id, ALICE) is not None
+            for user in ([BOB] if owner else [ALICE, BOB]):
+                with pytest.raises(HTTPException) as exc:
+                    await assert_fn(db, resource_id, user)
+                assert exc.value.status_code == 403
+
+        for model, scope_fn, kind in [
+            (Dataset, ownership.scope_datasets_to_owner, "dataset"),
+            (TrainingJob, ownership.scope_trainings_to_owner, "training"),
+            (ModelArtifact, ownership.scope_models_to_owner, "artifact"),
+            (EvaluationRun, ownership.scope_evaluations_to_owner, "evaluation"),
+        ]:
+            ids = (await db.execute(scope_fn(select(model.id), ALICE))).scalars().all()
+            assert (world[kind].id in ids) is bool(owner)
+            assert not (await db.execute(scope_fn(select(model.id), BOB))).scalars().all()
+            stmt = select(model.id)
+            assert scope_fn(stmt, None) is stmt
+
+        for job in ["sdg", "train", "export", "eval"]:
+            result = await resolve_job_owner(db, f"{job}-retained")
+            assert result.found
+            assert result.owner_id == owner
+
+        assert await quota._gpu_global_count(db) == 3
+        assert await quota._gpu_actor_count(db, ALICE.id) == (3 if owner else 0)
+        assert await quota._gpu_actor_count(db, BOB.id) == 0
+        assert await quota._sdg_actor_count(db, ALICE.id) == (1 if owner else 0)
 
 
 # =============================================================================

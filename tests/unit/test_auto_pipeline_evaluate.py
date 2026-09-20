@@ -203,6 +203,29 @@ def _add_holdout_dataset(
         session.close()
 
 
+def test_template_evaluates_saved_test_after_project_deletion(
+    sync_sessionmaker, fake_run_evaluation,
+):
+    fixture = _make_base_fixture(sync_sessionmaker)
+    _add_holdout_dataset(sync_sessionmaker, fixture)
+    test_id = uuid4()
+    with sync_sessionmaker() as session:
+        session.add(Dataset(id=test_id, name="template test", task_type=TaskType.QA,
+            source=DatasetSource.UPLOADED, status=JobStatus.COMPLETED,
+            num_samples=1, storage_uri="s3://bucket/template-test.jsonl",
+            generation_metadata={"role": "test"}))
+        job = session.get(TrainingJob, UUID(fixture.training_id))
+        job.context_snapshot = {"template_id": "tpl-004", "test_dataset_id": str(test_id)}
+        job.project_id = None
+        session.commit()
+    result = auto_pipeline.auto_evaluate(training_id=fixture.training_id, artifact_id=fixture.artifact_id)
+    assert result["status"] == "submitted"
+    with sync_sessionmaker() as session:
+        ev = session.get(EvaluationRun, UUID(result["evaluation_id"]))
+        assert ev.dataset_id == test_id
+    assert fake_run_evaluation.apply_async_calls[0]["kwargs"]["use_llm_judge"] is False
+
+
 # ---- holdout resolution ------------------------------------------------
 
 

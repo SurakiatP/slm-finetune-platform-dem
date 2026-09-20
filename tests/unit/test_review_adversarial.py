@@ -141,6 +141,7 @@ async def _seed_job(db: AsyncSession, project: Project | None, dataset: Dataset,
     defaults = dict(
         id=uuid4(),
         project_id=project.id if project is not None else None,
+        owner_id=project.owner_id if project is not None else None,
         dataset_id=dataset.id,
         mode=TrainingMode.MANUAL,
         status=JobStatus.COMPLETED,
@@ -304,13 +305,12 @@ async def test_rename_dataset_rejects_extra_fields(db: AsyncSession):
 # ---- 4. orphaned trainings ---------------------------------------------------
 
 
-async def test_orphaned_training_is_listed_when_auth_off_and_hidden_when_on(db: AsyncSession):
+async def test_unknown_owner_training_is_listed_when_auth_off_and_hidden_when_on(db: AsyncSession):
     """`project_id IS NULL` run (its Project was deleted, migration 0012):
 
       * auth OFF (`user=None`)  -> listed, `project_id` serialises as None.
         This is the playground/join path — an orphan must stay reachable.
-      * auth ON                 -> excluded (fail-closed; the LEFT OUTER JOIN
-        yields `Project.owner_id IS NULL`, which never equals `user.id`).
+      * auth ON                 -> excluded (owner_id IS NULL has no proven owner).
     """
     project, dataset = await _seed(db, owner_id="user-a")
     owned = await _seed_job(db, project, dataset)

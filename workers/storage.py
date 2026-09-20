@@ -6,6 +6,7 @@ Buckets are created by the `minio-init` compose service at stack start
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import timedelta
@@ -161,7 +162,9 @@ def put_jsonl(
     return len(body)
 
 
-def get_jsonl(client: Minio, bucket: str, key: str) -> list[dict[str, Any]]:
+def get_jsonl(
+    client: Minio, bucket: str, key: str, *, expected_sha256: str | None = None
+) -> list[dict[str, Any]]:
     """Download a JSONL object and parse it into a list of dicts.
 
     Skips blank lines. Raises `json.JSONDecodeError` on malformed lines —
@@ -169,12 +172,14 @@ def get_jsonl(client: Minio, bucket: str, key: str) -> list[dict[str, Any]]:
     """
     response = client.get_object(bucket_name=bucket, object_name=key)
     try:
-        body = response.read().decode("utf-8")
+        body = response.read()
     finally:
         response.close()
         response.release_conn()
+    if expected_sha256 is not None and hashlib.sha256(body).hexdigest() != expected_sha256:
+        raise RuntimeError("Dataset SHA256 differs from frozen context")
     rows: list[dict[str, Any]] = []
-    for line in body.splitlines():
+    for line in body.decode("utf-8").splitlines():
         if not line.strip():
             continue
         rows.append(json.loads(line))

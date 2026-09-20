@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.auth import CurrentUser, require_user
@@ -29,8 +29,9 @@ async def create_project(
     body: ProjectCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[CurrentUser | None, Depends(require_user)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key", max_length=200)] = None,
 ) -> ProjectResponse:
-    return await projects_service.create_project(db, body, user)
+    return await projects_service.create_project(db, body, user, idempotency_key=idempotency_key)
 
 
 @router.get(
@@ -84,7 +85,7 @@ async def update_project(
 @router.delete(
     "/{project_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete a project (cascades to datasets / trainings)",
+    summary="Delete a project (preserves datasets and training history)",
 )
 async def delete_project(
     project_id: UUID,

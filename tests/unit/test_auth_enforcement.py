@@ -128,7 +128,7 @@ class TestPublicRoutesStayOpen:
 
 
 class TestPhaseOneStaysOpen:
-    """The compatibility guarantee: with the flag off, nothing 401s on absence.
+    """Legacy routes stay open; new marketplace routes require a real identity.
 
     This is what lets the branch deploy before `smart-model-tune` learns to send
     the header. If it ever fails, the two-phase rollout is broken and shipping
@@ -156,10 +156,17 @@ class TestPhaseOneStaysOpen:
         # 401 would mean auth rejected it.
         with TestClient(app, raise_server_exceptions=False) as tolerant:
             resp = tolerant.request(method, _fill(path))
+        if path.startswith("/api/v1/templates"):
+            assert resp.status_code == 401, "Marketplace never accepts anonymous identities"
+            return
         assert resp.status_code != 401, (
             f"{method} {path} rejected an anonymous caller with AUTH_REQUIRED=false — "
             f"phase 1 must behave exactly as it did before auth existed"
         )
+
+    def test_template_rating_always_requires_identity(self, client: TestClient) -> None:
+        response = client.put("/api/v1/templates/tpl-006/rating", json={"rating": 5})
+        assert response.status_code == 401
 
     def test_invalid_token_is_still_rejected(self, client: TestClient) -> None:
         """Phase 1 tolerates *absence*, never garbage — otherwise it would

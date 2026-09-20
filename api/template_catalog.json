@@ -1,0 +1,76 @@
+[
+  {
+    "id": "tpl-001", "version": "1", "name": "Thai Customer Support Classifier",
+    "description": "Classify Thai customer inquiries into six support categories.",
+    "long_description": "Billing, technical, account, shipping, refund and general support classification. No approved training corpus is available yet.",
+    "category": "Thai Language", "task_type": "classification", "author": "SLM Studio Team",
+    "base_model": "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit", "prompt": "Classify Thai customer support tickets into billing, technical, account, shipping, refund, or general.",
+    "epochs": 2, "learning_rate": 0.0002, "tags": ["thai", "classification", "support"], "featured": true,
+    "data_ready": false, "unavailable_reason": "No verified licensed Thai six-label dataset."
+  },
+  {
+    "id": "tpl-002", "version": "1", "name": "Invoice & Receipt QA Extractor",
+    "description": "Extract invoice and receipt fields through question answering.",
+    "long_description": "Thai/English invoice questions about vendors, dates, line items, totals and taxes. Current data covers English synthetic invoices only.",
+    "category": "Document AI", "task_type": "qa", "author": "SLM Studio Team",
+    "base_model": "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit", "prompt": "Answer questions about vendor, invoice number, date, line items, total and tax using the invoice text.",
+    "epochs": 2, "learning_rate": 0.0002, "tags": ["qa", "document", "invoice"], "featured": true,
+    "data_ready": false, "unavailable_reason": "English synthetic invoices only; Thai coverage is missing."
+  },
+  {
+    "id": "tpl-003", "version": "1", "name": "Function Calling Agent",
+    "description": "Translate requests into API calls for users, orders and products.",
+    "long_description": "Typed API parameter extraction for CRUD operations. The prepared starter data does not cover the complete requested CRUD scope.",
+    "category": "Agents", "task_type": "tool_calling", "author": "SLM Studio Team",
+    "base_model": "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit", "prompt": "Map user requests to function calls with extracted parameters for users, orders and products APIs.",
+    "epochs": 2, "learning_rate": 0.0002, "tags": ["agent", "tool-calling", "api"], "featured": true,
+    "data_ready": false, "unavailable_reason": "Incomplete user/order/product CRUD coverage."
+  },
+  {
+    "id": "tpl-004", "version": "1", "name": "Thai Named Entity QA",
+    "description": "Extract five named entity types from Thai text as JSON spans.",
+    "long_description": "Thai NER 2.2 news and general text, adapted to QA. Answers contain PERSON, ORG, LOC, DATE and MONEY spans with Unicode code-point offsets (end exclusive). Model quality has not yet been evaluated.",
+    "category": "Thai Language", "task_type": "qa", "author": "SLM Studio Team",
+    "base_model": "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit", "prompt": "Extract PERSON, ORG, LOC, DATE and MONEY entities from the supplied Thai text. Return only the requested JSON entities with exact text and Unicode code-point start/end offsets, end exclusive.",
+    "epochs": 2, "learning_rate": 0.0002, "tags": ["thai", "qa", "nlp"], "featured": false,
+    "data_ready": true, "split_counts": {"train": 4240, "validation": 500, "test": 500},
+    "source_sha256": {"train": "68815325192212faef250ced065ab09534edc969db510be897e935b85cced743", "validation": "f2d1914b2a02b846c3c9ca19c09218aadb5b3ac0c6d6dbf65886993727fab7d3", "test": "385031d7965f784a1a3391cc303818c30aa9f98087e757273f296e5119ead69e"}
+  },
+  {
+    "id": "tpl-005", "version": "1", "name": "Product Knowledge Base QA",
+    "description": "Answer product questions using supplied documentation.",
+    "long_description": "Concise question answering grounded in product documentation. The prepared IBM support starter is not a user's private product knowledge base.",
+    "category": "Customer Support", "task_type": "qa", "author": "SLM Studio Team",
+    "base_model": "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit", "prompt": "Answer product questions using provided documentation. Be concise and helpful.",
+    "epochs": 2, "learning_rate": 0.0002, "tags": ["qa", "knowledge-base", "support"], "featured": false,
+    "data_ready": false, "unavailable_reason": "IBM support starter only; private product knowledge is missing."
+  },
+  {
+    "id": "tpl-006", "version": "1", "name": "Thai Sentiment Analyzer",
+    "description": "Classify Thai text as positive, neutral or negative.",
+    "long_description": "Balanced Thai sentiment data adapted from Wisesight. Independent validation and test splits are preserved. Model quality has not yet been evaluated.",
+    "category": "Thai Language", "task_type": "classification", "author": "SLM Studio Team",
+    "base_model": "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit", "prompt": "Classify Thai text sentiment as positive, neutral, or negative. Reply with only the label.",
+    "epochs": 2, "learning_rate": 0.0002, "tags": ["thai", "sentiment", "classification"], "featured": true,
+    "data_ready": true, "split_counts": {"train": 6000, "validation": 600, "test": 900},
+    "source_sha256": {"train": "d8c8e131f223c8e559100ff8d197c6b1671b85180034677a6018f0d101a7072b", "validation": "c6837f34f09e733f8845ad4e4c9eed1d4458d27b5819c45f937338f38fac7e85", "test": "55c0b7de1ad18582ac7920a485614e5d39e25bc3ceb6d302cf3fa4df507f96f9"}
+  },
+  {
+    "id": "tpl-007", "version": "1", "name": "Smart Home Assistant Tool Caller",
+    "description": "Convert smart home commands into device control calls.",
+    "long_description": "Light, temperature, lock and alarm commands. The prepared English starter covers light, lock and temperature; alarm coverage is missing.",
+    "category": "Agents", "task_type": "tool_calling", "author": "SLM Studio Team",
+    "base_model": "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit", "prompt": "Convert natural language smart home commands into structured device control tool calls.",
+    "epochs": 2, "learning_rate": 0.0002, "tags": ["iot", "tool-calling", "agent"], "featured": false,
+    "data_ready": false, "unavailable_reason": "No alarm examples; English synthetic light/lock/temperature data only."
+  },
+  {
+    "id": "tpl-008", "version": "1", "name": "Medical Symptom Triage",
+    "description": "A proposed four-level symptom triage classification template.",
+    "long_description": "Emergency, urgent, routine and self-care labels. No verified training source or clinical validation is available; this template cannot be used.",
+    "category": "NLP", "task_type": "classification", "author": "SLM Studio Team",
+    "base_model": "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit", "prompt": "Classify symptoms as emergency, urgent, routine or self-care.",
+    "epochs": 2, "learning_rate": 0.0002, "tags": ["healthcare", "classification"], "featured": false,
+    "data_ready": false, "unavailable_reason": "No verified four-level clinical triage training source."
+  }
+]

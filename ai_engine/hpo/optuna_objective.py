@@ -81,6 +81,8 @@ class HPOObjective:
     on_trial_done: TrialCallback | None = None
     inner_progress_publish: Any = None  # Optional[PublishFn] from callbacks.py
     job_id: str = ""
+    system_prompt: str | None = None
+    validation_rows: list[dict[str, Any]] | None = None
 
     # Internal state — updated in __call__.
     _best_value: float | None = field(default=None, init=False)
@@ -129,6 +131,7 @@ class HPOObjective:
                         task_type=self.task_type,
                         tool_definitions=self.tool_definitions,
                         output_dir=trial_workdir,
+                        **({"system_prompt": self.system_prompt} if self.system_prompt is not None else {}),
                     )
                     callbacks = []
                     if self.inner_progress_publish is not None and self.job_id:
@@ -138,7 +141,8 @@ class HPOObjective:
                                 publish=self.inner_progress_publish,
                             )
                         )
-                    result = trainer.train(self.rows, callbacks=callbacks)
+                    result = trainer.train(self.rows, callbacks=callbacks,
+                        **({"validation_rows": self.validation_rows} if self.validation_rows is not None else {}))
                     log_metrics_dict({k: v for k, v in result.metrics.items()})
                 finally:
                     # Trial adapters are throwaway — only the final-best run keeps its weights.

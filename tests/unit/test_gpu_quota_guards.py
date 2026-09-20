@@ -168,6 +168,7 @@ async def _make_training_job(
     job = TrainingJob(
         id=uuid4(),
         project_id=project.id,
+        owner_id=project.owner_id,
         dataset_id=dataset.id,
         mode=TrainingMode.MANUAL,
         status=status,

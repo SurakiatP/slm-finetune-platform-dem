@@ -141,6 +141,7 @@ async def _make_training_job(
     job = TrainingJob(
         id=uuid4(),
         project_id=project.id,
+        owner_id=project.owner_id,
         dataset_id=dataset.id,
         mode=TrainingMode.MANUAL,
         status=status,
@@ -156,6 +157,23 @@ async def _make_training_job(
     db.add(job)
     await db.flush()
     return job
+
+
+async def test_retained_runs_keep_separate_owners_and_queue_positions(db):
+    jobs = []
+    for index, owner in enumerate(["alice", "bob", "alice"]):
+        project = await _make_project(db, owner_id=owner, name=f"p-{index}")
+        dataset = await _make_ready_dataset(db, project=project)
+        job = await _make_training_job(
+            db, project=project, dataset=dataset,
+            status=JobStatus.PENDING, created_at=_ts(index),
+        )
+        job.project_id = None
+        jobs.append(job)
+    await db.flush()
+    queue = await compute_queue(db)
+    assert [queue[job.id].queue_position for job in jobs] == [1, 2, 3]
+    assert [queue[job.id].owner_queue_position for job in jobs] == [1, 1, 2]
 
 
 async def _make_artifact(

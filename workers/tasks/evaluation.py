@@ -36,6 +36,7 @@ from celery.utils.log import get_task_logger
 
 from ai_engine.evaluation import (
     metrics_classification,
+    metrics_ner,
     metrics_qa,
     metrics_tool_calling,
 )
@@ -182,6 +183,17 @@ def run_evaluation(
                     task_type = dataset.task_type
                     tool_definitions = _extract_tool_definitions(dataset.generation_metadata)
                     classification_labels = _extract_labels(dataset.generation_metadata)
+                    training = session.get(TrainingJob, artifact.training_job_id)
+                    context = (training.context_snapshot or {}) if training is not None else {}
+                    expected_test_sha256 = None
+                    if context.get("template_id"):
+                        if str(dataset.id) != context.get("test_dataset_id"):
+                            raise RuntimeError("Template evaluation must use the training snapshot's test dataset")
+                        expected_test_sha256 = context.get("test_sha256")
+                        if not expected_test_sha256:
+                            raise RuntimeError("Template evaluation is missing the frozen test dataset SHA256")
+                    if context.get("template_id") == "tpl-004":
+                        use_llm_judge = False
 
                     ev.status = JobStatus.RUNNING
                     ev.started_at = datetime.now(timezone.utc)
@@ -207,7 +219,7 @@ def run_evaluation(
             )
             minio = get_minio_client()
             ds_bucket, ds_key = parse_s3_uri(dataset_uri)
-            rows = get_jsonl(minio, ds_bucket, ds_key)
+            rows = get_jsonl(minio, ds_bucket, ds_key, expected_sha256=expected_test_sha256)
             if not rows:
                 raise RuntimeError(f"Dataset {dataset_uri} is empty")
 
@@ -245,6 +257,7 @@ def run_evaluation(
                 ollama_base_url=ollama_base,
                 ollama_tag=ollama_tag,
                 progress_cb=on_predict_progress,
+                system_prompt=context.get("system_prompt"),
             )
 
             # ---- 4. Per-task metrics ---------------------------------------
@@ -256,6 +269,7 @@ def run_evaluation(
                 predicted=predicted,
                 expected=expected,
                 classification_labels=classification_labels,
+                template_id=context.get("template_id"),
             )
 
             # ---- 5. Optional LLM judge -------------------------------------
@@ -488,12 +502,15 @@ def _compute_metrics_for_task(
     predicted: list[str],
     expected: list[str],
     classification_labels: list[str] | None,
+    template_id: str | None = None,
 ) -> dict[str, Any]:
     """Route to the right metric module based on task_type.
 
     Pulled out of ``run_evaluation`` so the orchestrator stays thin and the
     dispatch contract is easy to characterize in unit tests.
     """
+    if template_id == "tpl-004":
+        return metrics_ner.compute_metrics(predicted=predicted, expected=expected)
     if task_type is TaskType.CLASSIFICATION:
         labels = classification_labels or sorted(set(expected))
         return metrics_classification.compute_metrics(
@@ -613,6 +630,7 @@ def _predict_rows(
     ollama_base_url: str,
     ollama_tag: str,
     progress_cb: Callable[[int, int], None] | None = None,
+    system_prompt: str | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Run inference once per row. Returns parallel `(predicted, expected, questions)`.
 
@@ -633,14 +651,15 @@ def _predict_rows(
     with httpx.Client(timeout=timeout) as client:
         for idx, row in enumerate(rows):
             user_prompt, gold = _prompt_and_gold(row, task_type, tool_definitions)
+            messages = [{"role": "user", "content": user_prompt}]
+            if system_prompt is not None:
+                messages.insert(0, {"role": "system", "content": system_prompt})
             try:
                 resp = client.post(
                     f"{ollama_base_url}/v1/chat/completions",
                     json={
                         "model": ollama_tag,
-                        "messages": [
-                            {"role": "user", "content": user_prompt},
-                        ],
+                        "messages": messages,
                         "temperature": 0.0,
                         "stream": False,
                     },

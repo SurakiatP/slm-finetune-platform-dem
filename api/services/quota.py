@@ -45,9 +45,8 @@ caller precisely how long to back off, without implying the server itself
 is unhealthy.
 
 Why anonymous callers only trip the global cap, never the per-actor cap:
-per-actor scoping is implemented as a join through `Project.owner_id`
-(see the join-depth comments on each `_*_actor_count` helper below), and
-there is no owner to join on for an anonymous caller — the DB has no IP
+per-actor scoping uses the retained Dataset/TrainingJob owner, and
+there is no authenticated owner for an anonymous caller — the DB has no IP
 address to bucket unauthenticated requests by, and this module
 deliberately does not add one. Under today's `AUTH_REQUIRED=false`
 setting this means the per-actor limit is inert (every caller looks
@@ -70,7 +69,6 @@ from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
-from api.models.project import Project
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
 
@@ -85,8 +83,7 @@ class Bucket(str, Enum):
     GPU = "gpu"
 
 
-# ---- SDG bucket: Dataset -> Project is a single hop (Dataset.project_id
-# is a direct FK to projects.id, per api/models/dataset.py). -----------------
+# ---- SDG bucket: direct Dataset ownership. ----
 
 
 async def _sdg_global_count(db: AsyncSession) -> int:
@@ -98,29 +95,12 @@ async def _sdg_actor_count(db: AsyncSession, actor_id: str) -> int:
     stmt = (
         select(func.count())
         .select_from(Dataset)
-        .join(Project, Project.id == Dataset.project_id)
-        .where(Dataset.status.in_(_IN_FLIGHT), Project.owner_id == actor_id)
+        .where(Dataset.status.in_(_IN_FLIGHT), Dataset.owner_id == actor_id)
     )
     return int((await db.execute(stmt)).scalar_one())
 
 
-# ---- GPU bucket: three tables, three different join depths to Project. ----
-#
-#   TrainingJob   -> Project                                  (1 hop)
-#     TrainingJob.project_id is a direct FK to projects.id.
-#   ModelArtifact -> TrainingJob -> Project                    (2 hops)
-#     ModelArtifact.training_job_id -> training_jobs.id, then
-#     TrainingJob.project_id -> projects.id.
-#   EvaluationRun -> ModelArtifact -> TrainingJob -> Project    (3 hops)
-#     EvaluationRun.model_artifact_id -> model_artifacts.id, then the two
-#     hops above. EvaluationRun has no project_id of its own — it only
-#     knows its model_artifact and its (evaluation) dataset.
-#
-# These depths mirror api/services/job_ownership.py's `resolve_job_owner`,
-# which walks the identical FKs for a different purpose (WebSocket auth)
-# and documents the same chain — verified independently against the FK
-# declarations in api/models/{dataset,training_job,evaluation_run,
-# model_artifact,project}.py rather than trusted from that module.
+# ---- GPU bucket: training owns model/export/evaluation descendants. ----
 
 
 async def _gpu_global_count(db: AsyncSession) -> int:
@@ -142,39 +122,24 @@ async def _gpu_global_count(db: AsyncSession) -> int:
 
 
 async def _gpu_actor_count(db: AsyncSession, actor_id: str) -> int:
-    # Outer joins, not inner: `TrainingJob.project_id` is nullable (orphaned
-    # runs whose Project was deleted — migration 0012_training_decouple, see
-    # api/services/ownership.py's orphan-policy section). An INNER JOIN would
-    # silently drop an orphan's row from this per-actor count entirely,
-    # rather than surfacing it with `Project.owner_id` NULL the way the rest
-    # of the codebase reasons about orphans. It doesn't change the RESULT
-    # here — an orphan has no owner to match `actor_id`, so it's excluded
-    # from every per-actor bucket either way (fail-closed: an orphan cannot
-    # be attributed to any actor) — but it keeps that exclusion happening by
-    # construction (NULL != actor_id) rather than by the join silently
-    # dropping the row, matching `ownership.py`'s `scope_trainings_to_owner`
-    # et al. Global counts (`_gpu_global_count` above) don't join Project at
-    # all, so orphans always count there regardless.
+    # Retained training ownership keeps orphaned work in the actor's quota.
     training_stmt = (
         select(func.count())
         .select_from(TrainingJob)
-        .outerjoin(Project, Project.id == TrainingJob.project_id)
-        .where(TrainingJob.status.in_(_IN_FLIGHT), Project.owner_id == actor_id)
+        .where(TrainingJob.status.in_(_IN_FLIGHT), TrainingJob.owner_id == actor_id)
     )
     export_stmt = (
         select(func.count())
         .select_from(ModelArtifact)
         .join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
-        .outerjoin(Project, Project.id == TrainingJob.project_id)
-        .where(ModelArtifact.export_status.in_(_IN_FLIGHT), Project.owner_id == actor_id)
+        .where(ModelArtifact.export_status.in_(_IN_FLIGHT), TrainingJob.owner_id == actor_id)
     )
     eval_stmt = (
         select(func.count())
         .select_from(EvaluationRun)
         .join(ModelArtifact, ModelArtifact.id == EvaluationRun.model_artifact_id)
         .join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
-        .outerjoin(Project, Project.id == TrainingJob.project_id)
-        .where(EvaluationRun.status.in_(_IN_FLIGHT), Project.owner_id == actor_id)
+        .where(EvaluationRun.status.in_(_IN_FLIGHT), TrainingJob.owner_id == actor_id)
     )
     training = int((await db.execute(training_stmt)).scalar_one())
     export = int((await db.execute(export_stmt)).scalar_one())
@@ -187,7 +152,7 @@ async def assert_can_submit(db: AsyncSession, *, bucket: Bucket, actor_id: str |
 
     Global cap is always enforced, regardless of `actor_id`. Per-actor cap
     is only enforced when `actor_id is not None` — an anonymous caller has
-    no `Project.owner_id` to join on (see module docstring) and falls
+    no `TrainingJob.owner_id` to join on (see module docstring) and falls
     under the global cap alone.
 
     Takes a plain `actor_id: str | None` rather than a `CurrentUser`
@@ -199,7 +164,7 @@ async def assert_can_submit(db: AsyncSession, *, bucket: Bucket, actor_id: str |
     module does `import jwt` at module scope — the GPU worker image ships
     no PyJWT, so that import crash-loops any worker process that reaches
     it. This module needs no such import at all: the string id is enough
-    to build the `Project.owner_id == actor_id` filters above.
+    to build the `TrainingJob.owner_id == actor_id` filters above.
     """
     settings = get_settings()
 

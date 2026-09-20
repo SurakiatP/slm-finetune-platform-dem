@@ -134,7 +134,8 @@ async def _project_training_and_artifact(
         source=DatasetSource.SDG, status=JobStatus.COMPLETED,
     )
     training = TrainingJob(
-        id=uuid4(), project_id=project.id, dataset_id=dataset.id, mode=TrainingMode.MANUAL,
+        id=uuid4(), project_id=project.id, owner_id=owner,
+        dataset_id=dataset.id, mode=TrainingMode.MANUAL,
         status=JobStatus.COMPLETED, base_model="unsloth/x", config_json={},
     )
     artifact = ModelArtifact(

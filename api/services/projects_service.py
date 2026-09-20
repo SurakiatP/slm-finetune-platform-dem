@@ -24,8 +24,13 @@ def _actor() -> tuple[str | None, str | None]:
 
 
 async def create_project(
-    db: AsyncSession, body: ProjectCreate, user: CurrentUser | None = None
+    db: AsyncSession, body: ProjectCreate, user: CurrentUser | None = None,
+    *, idempotency_key: str | None = None,
 ) -> ProjectResponse:
+    if body.template_id is not None:
+        from api.services.templates_service import create_template_project
+
+        return await create_template_project(db, body, user, idempotency_key)
     if body.external_project_id is not None:
         existing = (
             await db.execute(
@@ -168,4 +173,3 @@ __all__ = [
     "update_project",
     "delete_project",
 ]
-

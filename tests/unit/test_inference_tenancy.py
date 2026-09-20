@@ -85,6 +85,7 @@ async def _chain(session: AsyncSession, owner_id: str | None, tag: str) -> Model
     training = TrainingJob(
         id=uuid4(),
         project_id=project.id,
+        owner_id=project.owner_id,
         dataset_id=dataset.id,
         mode=TrainingMode.MANUAL,
         status=JobStatus.COMPLETED,

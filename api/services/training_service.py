@@ -22,14 +22,16 @@ HPO mode goes through `submit_hpo_training_job` (Phase 6 — currently 501).
 
 from __future__ import annotations
 
+from copy import deepcopy
+from uuid import UUID
+
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core import request_context
 from api.core.auth import CurrentUser
-from api.services import audit_service, ownership, quota
-from api.services.quota import Bucket
 from api.core.config import get_settings
 from api.models.project import Project
 from api.models.training_job import TrainingJob
@@ -37,9 +39,12 @@ from api.routers.tasks_meta import SUPPORTED_BASE_MODELS
 from api.schemas.enums import JobStatus
 from api.schemas.training import (
     HPOTrainingRequest,
+    ManualTrainingConfig,
     ManualTrainingRequest,
     TrainingJobAcceptedResponse,
 )
+from api.services import audit_service, ownership, quota
+from api.services.quota import Bucket
 
 _SUPPORTED_MODEL_IDS: frozenset[str] = frozenset(m.id for m in SUPPORTED_BASE_MODELS)
 _PARAMS_BY_MODEL_ID: dict[str, float] = {m.id: m.params_billions for m in SUPPORTED_BASE_MODELS}
@@ -85,44 +90,17 @@ def _max_safe_batch_for_3060(params_billions: float, max_seq_length: int) -> int
 async def _assert_training_name_available(
     db: AsyncSession, *, project: Project, training_name: str | None
 ) -> None:
-    """Reject a duplicate `training_name` within the submitting project's
-    owner scope (join TrainingJob -> Project, compared on `owner_id`).
-
-    Scope is the *owner*, not just this one project: `training_name` doubles
-    as the MLflow run name and (downstream) the Ollama export tag, both of
-    which are namespaced per-owner rather than per-project, so two of the
-    same owner's projects must not be able to collide on it either. Projects
-    with `owner_id IS NULL` (phase-1 / auth-disabled rows) all share a single
-    scope — matches `ownership.py`'s fail-closed treatment of null owners as
-    their own bucket rather than either mutually invisible or a free-for-all
-    open to every named owner too.
-
-    LEFT OUTER JOIN, not INNER: `TrainingJob.project_id` is nullable
-    (orphaned runs whose `Project` was deleted — migration
-    `0012_training_decouple`). An INNER JOIN would silently drop those rows
-    from this uniqueness check, letting a new submission reuse a
-    `training_name` an orphaned run still holds — exactly the collision
-    this check exists to prevent, since the MLflow run name / Ollama tag it
-    protects don't care whether the row that minted them still has a
-    project. With the outer join, an orphan produces one row with
-    `Project.owner_id` NULL, which the `Project.owner_id.is_(None)` branch
-    below already matches — so orphaned runs land in the same "global/
-    null-owner scope" bucket as projects that predate auth, with no extra
-    branching needed.
-
-    A no-op when `training_name` is `None` — untitled runs never collide.
-    """
+    """Names remain reserved within their original owner scope after project deletion."""
     if training_name is None:
         return
     stmt = (
         select(TrainingJob.id)
-        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(TrainingJob.training_name == training_name)
     )
     stmt = (
-        stmt.where(Project.owner_id.is_(None))
+        stmt.where(TrainingJob.owner_id.is_(None))
         if project.owner_id is None
-        else stmt.where(Project.owner_id == project.owner_id)
+        else stmt.where(TrainingJob.owner_id == project.owner_id)
     )
     existing = (await db.execute(stmt.limit(1))).scalar_one_or_none()
     if existing is not None:
@@ -132,14 +110,77 @@ async def _assert_training_name_available(
         )
 
 
+async def _effective_training_context(db, project, dataset, request, user):
+    """Validate frozen splits and apply only explicitly supplied overrides."""
+    metadata = dataset.generation_metadata or {}
+    if metadata.get("template_id") and metadata.get("role") != "train":
+        raise HTTPException(422, "Template validation/test datasets cannot be used for training")
+    snapshot = deepcopy(project.template_snapshot or {})
+    if snapshot:
+        if str(dataset.id) != snapshot.get("train_dataset_id"):
+            raise HTTPException(422, "Use this template project's frozen train dataset")
+        ids = [snapshot.get(f"{role}_dataset_id") for role in ("train", "validation", "test")]
+        if len(set(ids)) != 3:
+            raise HTTPException(409, "Template splits must be distinct")
+        for role in ("train", "validation", "test"):
+            try:
+                split_id = UUID(snapshot[f"{role}_dataset_id"])
+            except (KeyError, ValueError, TypeError) as exc:
+                raise HTTPException(409, f"Template {role} dataset snapshot is invalid") from exc
+            split = dataset if role == "train" else await ownership.assert_dataset_access(db, split_id, user)
+            meta = split.generation_metadata or {}
+            if (split.owner_id != project.owner_id or split.task_type != project.task_type
+                    or split.status != JobStatus.COMPLETED or not split.storage_uri
+                    or split.num_samples <= 0 or meta.get("role") != role
+                    or meta.get("template_id") != snapshot.get("template_id")
+                    or meta.get("template_version") != snapshot.get("template_version")
+                    or not snapshot.get(f"{role}_sha256")
+                    or meta.get("sha256") != snapshot[f"{role}_sha256"]):
+                raise HTTPException(409, f"Template {role} dataset no longer matches its snapshot")
+
+    # A null override explicitly restores the platform/default formatter behavior.
+    base_model = (request.base_model if "base_model" in request.model_fields_set
+                  else snapshot.get("base_model")) or get_settings().default_base_model
+    supplied = (request.manual_config if isinstance(request, ManualTrainingRequest)
+                else request.hpo_config.fixed_config)
+    config_data = deepcopy(snapshot.get("manual_config") or {})
+    overrides = supplied.model_dump(mode="json", exclude_unset=True)
+    if "lora" in overrides:
+        overrides["lora"] = {**config_data.get("lora", {}), **overrides["lora"]}
+    config_data.update(overrides)
+    try:
+        config = ManualTrainingConfig.model_validate(config_data)
+    except ValidationError as exc:
+        raise HTTPException(422, f"Invalid template training configuration: {exc}") from exc
+    if isinstance(request, ManualTrainingRequest):
+        request = request.model_copy(update={"manual_config": config})
+    else:
+        request = request.model_copy(update={"hpo_config": request.hpo_config.model_copy(
+            update={"fixed_config": config})})
+
+    from ai_engine.training.unsloth_trainer import _chat_template_for
+
+    context = {key: value for key, value in snapshot.items() if key != "definition"}
+    context.update(base_model=base_model, chat_template=_chat_template_for(base_model),
+                   manual_config=config.model_dump(mode="json"), train_dataset_id=str(dataset.id))
+    for field in ("system_prompt", "train_sample_count", "sampling_seed"):
+        context[field] = (getattr(request, field) if field in request.model_fields_set
+                          else snapshot.get(field))
+    if context["train_sample_count"] is None:
+        context["train_sample_count"] = dataset.num_samples
+    if not 1 <= context["train_sample_count"] <= dataset.num_samples:
+        raise HTTPException(422, "train_sample_count must not exceed available train rows")
+    if context["sampling_seed"] is None:
+        context["sampling_seed"] = config.seed
+    return request, base_model, context
+
+
 async def submit_manual_training_job(
     db: AsyncSession,
     request: ManualTrainingRequest,
     user: CurrentUser | None = None,
 ) -> TrainingJobAcceptedResponse:
     """Validate the request, persist the TrainingJob row, and enqueue the worker."""
-    settings = get_settings()
-
     # 1. Project exists?
     project = await db.get(Project, request.project_id)
     if project is None:
@@ -172,7 +213,9 @@ async def submit_manual_training_job(
         )
 
     # 3. Base model allowlist (ADR-002 — no arbitrary HF models)
-    base_model = request.base_model or settings.default_base_model
+    request, base_model, context = await _effective_training_context(
+        db, project, dataset, request, user
+    )
     if base_model not in _SUPPORTED_MODEL_IDS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -218,6 +261,8 @@ async def submit_manual_training_job(
     # 6. Insert TrainingJob row.
     job_row = TrainingJob(
         project_id=project.id,
+        owner_id=project.owner_id,
+        context_snapshot=context,
         dataset_id=dataset.id,
         mode=request.mode,
         status=JobStatus.PENDING,
@@ -310,7 +355,9 @@ async def submit_hpo_training_job(
         )
 
     # 3. Base model allowlist (ADR-002)
-    base_model = request.base_model or settings.default_base_model
+    request, base_model, context = await _effective_training_context(
+        db, project, dataset, request, user
+    )
     if base_model not in _SUPPORTED_MODEL_IDS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -335,9 +382,9 @@ async def submit_hpo_training_job(
     # `fixed_config.max_seq_length`. A trial that OOMs mid-epoch poisons
     # Optuna's pruner and wastes the wall-clock budget.
     bs_space = request.hpo_config.search_space.per_device_train_batch_size
+    seq = request.hpo_config.fixed_config.max_seq_length
+    params_b = _PARAMS_BY_MODEL_ID.get(base_model)
     if bs_space is not None:
-        seq = request.hpo_config.fixed_config.max_seq_length
-        params_b = _PARAMS_BY_MODEL_ID.get(base_model)
         if params_b is not None:
             max_batch = _max_safe_batch_for_3060(params_b, seq)
             unsafe = [c for c in bs_space.choices if isinstance(c, int) and c > max_batch]
@@ -351,6 +398,14 @@ async def submit_hpo_training_job(
                         f"Lower the choices or shorten max_seq_length."
                     ),
                 )
+    elif params_b is not None:
+        max_batch = _max_safe_batch_for_3060(params_b, seq)
+        if request.hpo_config.fixed_config.per_device_train_batch_size > max_batch:
+            raise HTTPException(
+                422,
+                f"hpo_config.fixed_config.per_device_train_batch_size exceeds the safe "
+                f"ceiling ({max_batch}) for base_model='{base_model}' at max_seq_length={seq}",
+            )
 
     # 5. training_name must be unique within the owning project's owner scope
     # (409 on collision). Runs before the GPU quota gate so a doomed-to-fail
@@ -367,6 +422,8 @@ async def submit_hpo_training_job(
     # 7. Insert TrainingJob row.
     job_row = TrainingJob(
         project_id=project.id,
+        owner_id=project.owner_id,
+        context_snapshot=context,
         dataset_id=dataset.id,
         mode=request.mode,
         status=JobStatus.PENDING,

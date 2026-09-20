@@ -145,6 +145,9 @@ async def chat_completions(
     tag = await _resolve_model_tag(db, body.model, user)
     payload = body.model_dump(exclude_none=True)
     payload["model"] = tag
+    system_prompt = await _saved_system_prompt(db, tag)
+    if system_prompt is not None and not any(m.role == "system" for m in body.messages):
+        payload["messages"].insert(0, {"role": "system", "content": system_prompt})
 
     try:
         raw = await _post_json("/v1/chat/completions", payload)
@@ -174,11 +177,41 @@ async def text_completions(
             detail="streaming is not supported on /api/v1/inference (set stream=false)",
         )
     tag = await _resolve_model_tag(db, body.model, user)
-    payload = body.model_dump(exclude_none=True)
+    payload = body.model_dump(exclude_none=True, exclude={"system_prompt"})
     payload["model"] = tag
+    system_prompt = body.system_prompt
+    if system_prompt is None:
+        system_prompt = await _saved_system_prompt(db, tag)
 
     try:
-        raw = await _post_json("/v1/completions", payload)
+        if system_prompt is None:
+            raw = await _post_json("/v1/completions", payload)
+        else:
+            # The legacy completions API has no system role. Use chat's native
+            # template, then translate the response back to the requested shape.
+            prompts = body.prompt if isinstance(body.prompt, list) else [body.prompt]
+            raw = {
+                "created": 0, "model": tag, "choices": [],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }
+            for index, prompt in enumerate(prompts):
+                chat_payload = {k: v for k, v in payload.items() if k != "prompt"}
+                chat_payload["messages"] = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ]
+                response = await _post_json("/v1/chat/completions", chat_payload)
+                chat = ChatCompletionResponse.model_validate(response)
+                raw["created"] = chat.created
+                choice = chat.choices[0]
+                raw["choices"].append({
+                    "index": index, "text": choice.message.content,
+                    "finish_reason": (
+                        "stop" if choice.finish_reason == "tool_calls" else choice.finish_reason
+                    ),
+                })
+                for key, count in chat.usage.model_dump().items():
+                    raw["usage"][key] += count
     except Exception as exc:
         await _audit_call(
             db,
@@ -282,6 +315,20 @@ async def _audit_call(
 
 
 # ---- helpers ---------------------------------------------------------------
+
+
+async def _saved_system_prompt(db: AsyncSession, tag: str) -> str | None:
+    """Read immutable training context after the caller's model access check."""
+    if not is_platform_owned_tag(tag):
+        return None
+    artifact = (await db.execute(select(ModelArtifact).where(
+        ModelArtifact.ollama_model_tag == canonical_our_tag(tag)
+    ))).scalar_one_or_none()
+    if artifact is None:
+        return None
+    training = await db.get(TrainingJob, artifact.training_job_id)
+    context = training.context_snapshot if training is not None else None
+    return context.get("system_prompt") if isinstance(context, dict) else None
 
 
 async def _resolve_model_tag(

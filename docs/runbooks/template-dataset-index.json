@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "date": "2026-09-19",
+  "artifact_root": "data/template-catalog",
+  "activation_policy": "Only ready data may be activated after registration; all others display ยังไม่พร้อม",
+  "registered_in_database": false,
+  "templates": [
+    {"id": "tpl-001", "data_readiness": "unavailable", "manifest": null, "reason": "No verified licensed Thai six-label dataset"},
+    {"id": "tpl-002", "data_readiness": "partial", "manifest": "prepared/tpl-002/manifest.json", "reason": "English synthetic invoices with model-generated silver labels; no Thai coverage"},
+    {"id": "tpl-003", "data_readiness": "partial", "manifest": "prepared/tpl-003/manifest.json", "reason": "No full user/order/product CRUD; sparse order coverage"},
+    {"id": "tpl-004", "data_readiness": "ready", "manifest": "prepared/tpl-004/manifest.json", "reason": "Five Thai entity types; canonical QA rows validated"},
+    {"id": "tpl-005", "data_readiness": "partial", "manifest": "prepared/tpl-005/manifest.json", "reason": "IBM support starter, not a private product knowledge base"},
+    {"id": "tpl-006", "data_readiness": "ready", "manifest": "prepared/tpl-006/manifest.json", "reason": "Balanced Thai positive/neutral/negative rows validated"},
+    {"id": "tpl-007", "data_readiness": "partial", "manifest": "prepared/tpl-007/manifest.json", "reason": "No alarm examples; English synthetic light/lock/temperature only"},
+    {"id": "tpl-008", "data_readiness": "unavailable", "manifest": null, "reason": "No verified four-level clinical triage training source"}
+  ]
+}

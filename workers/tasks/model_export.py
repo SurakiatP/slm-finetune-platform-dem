@@ -113,9 +113,19 @@ def _ollama_tag_context(artifact_uuid: UUID) -> tuple[str | None, str | None]:
         training_job = session.get(TrainingJob, artifact.training_job_id)
         if training_job is None:
             return None, None
-        project = session.get(Project, training_job.project_id)
-        owner_id = project.owner_id if project is not None else None
+        owner_id = training_job.owner_id
+        if owner_id is None and training_job.project_id is not None:
+            # Legacy rows before owner backfill can still resolve a surviving project.
+            project = session.get(Project, training_job.project_id)
+            owner_id = project.owner_id if project is not None else None
         return training_job.training_name, owner_id
+
+
+def _serving_context(artifact_uuid: UUID) -> dict[str, Any]:
+    with session_scope() as session:
+        artifact = session.get(ModelArtifact, artifact_uuid)
+        training = session.get(TrainingJob, artifact.training_job_id) if artifact is not None else None
+        return dict(training.context_snapshot or {}) if training is not None else {}
 
 
 @celery_app.task(bind=True, name="model.export", max_retries=0)
@@ -295,6 +305,13 @@ def export_model(
                     raise ValueError(f"unsupported export format: {fmt!r}")
 
                 # ---- 5. Upload to MinIO --------------------------------------
+                serving_context = _serving_context(artifact_uuid)
+                if serving_context:
+                    # Ship the HF chat-template identifier and prompt as a sidecar.
+                    # Weights alone cannot require external runtimes to apply them.
+                    export_dir = os.path.dirname(gguf_path) if gguf_path else merged_dir
+                    with open(os.path.join(export_dir, "serving_context.json"), "w", encoding="utf-8") as fh:
+                        json.dump(serving_context, fh, ensure_ascii=False, indent=2)
                 publish_stage("uploading")
                 bucket = settings.minio_models_bucket
                 gguf_uri: str | None = None
@@ -337,6 +354,7 @@ def export_model(
                             ollama=OllamaClient(str(settings.ollama_base_url)),
                             tag=candidate_tag,
                             gguf_path=gguf_path,
+                            system_prompt=serving_context.get("system_prompt"),
                         )
                         ollama_tag = candidate_tag
                         # Registered, but no DB row references this tag yet —
@@ -680,7 +698,8 @@ def _first_gguf(directory: str) -> str:
     raise RuntimeError(f"no .gguf produced in {directory}")
 
 
-def _register_with_ollama(*, ollama: OllamaClient, tag: str, gguf_path: str) -> None:
+def _register_with_ollama(*, ollama: OllamaClient, tag: str, gguf_path: str,
+                          system_prompt: str | None = None) -> None:
     """Register a GGUF with the local Ollama daemon.
 
     Uses the blob-upload + create-with-files flow (Ollama 0.5+); the legacy
@@ -701,6 +720,7 @@ def _register_with_ollama(*, ollama: OllamaClient, tag: str, gguf_path: str) -> 
         tag=tag,
         digest=digest,
         parameters={"temperature": 0.0, "num_ctx": 2048},
+        **({"system": system_prompt} if system_prompt is not None else {}),
     )
 
 

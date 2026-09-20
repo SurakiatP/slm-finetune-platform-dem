@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from api.models.base import Base, TimestampMixin, pg_enum, uuid_pk
@@ -22,6 +23,7 @@ class Project(Base, TimestampMixin):
     id: Mapped[UUID] = uuid_pk()
     name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    template_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     task_type: Mapped[TaskType] = mapped_column(
         pg_enum(TaskType, "task_type"),
         nullable=False,

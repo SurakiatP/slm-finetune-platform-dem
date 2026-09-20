@@ -322,6 +322,7 @@ class TestRestSnapshotOwnership:
                 dataset = Dataset(
                     id=uuid4(),
                     project_id=project.id,
+                    owner_id=project.owner_id,
                     name="d",
                     task_type=TaskType.QA,
                     source=DatasetSource.SDG,

@@ -12,7 +12,7 @@ changing a router.
 This is the human companion to [`openapi.json`](./openapi.json); regenerate
 that with `scripts/export_openapi.py` when the contract changes. All routes
 are mounted under `/api/v1` except `GET /health` (root-level). The spec
-currently has **42 paths / 51 operations**; this doc covers all of them.
+currently has **44 paths / 53 operations**; this doc covers all of them.
 (That count is asserted against `openapi.json` by
 `tests/unit/test_openapi_spec_is_current.py` — it had drifted twice, and this
 file previously stated two *different* stale numbers in two places.)
@@ -68,6 +68,11 @@ resource-state guard instead (see its `409` below).
 Dedupe is best-effort: if Redis is unavailable the request proceeds normally
 rather than failing, since losing dedupe is strictly better than losing a
 submission.
+
+Template-backed `POST /projects` is different: it requires a real user and an
+`Idempotency-Key`, backed by a durable Postgres unique constraint. The same key
+and payload replay the original `201` even after project deletion; a changed
+payload returns `409`. It never uses the 60-second best-effort guarantee above.
 
 ---
 
@@ -218,6 +223,10 @@ API key and no backend login endpoint — Supabase is the only identity source.
 The third row is the one to internalise: *absent* is tolerated in phase 1,
 *invalid* never is. Sending a broken token is worse than sending none.
 
+**Marketplace exception:** `/api/v1/templates` operations and template-backed
+project creation always require a valid user, including when `AUTH_REQUIRED=false`.
+The compatibility behavior above is retained for ordinary project creation.
+
 ### Public routes
 
 `/api/v1/tasks`, `/api/v1/tasks/{task_type}/example`, `/api/v1/base-models` and
@@ -227,10 +236,11 @@ pickers. `/health`, `/docs`, `/redoc` and `/openapi.json` are also open.
 
 ### Ownership
 
-`Project.owner_id` holds the token's `sub`. Every other resource inherits its
-owner by foreign key (`Dataset`/`TrainingJob` → project; `ModelArtifact` →
-training → project; `EvaluationRun` → artifact → training → project). You never
-send `owner_id` — it is set server-side on create and rejected as input.
+`Project.owner_id`, `Dataset.owner_id` and `TrainingJob.owner_id` hold the token's
+`sub` independently. Dataset/training ownership survives project deletion;
+models and evaluations inherit their training's retained owner. Migration only
+backfills owners provable from surviving projects; unknown old orphans remain
+closed. You never send `owner_id` — it is set server-side and rejected as input.
 
 Two responses that will look wrong until you know why:
 
@@ -288,6 +298,39 @@ backend (no row anywhere references it) is `404` — same as "no frame
 published yet", "TTL expired" and "corrupt payload", which are unrelated
 to ownership and still collapse into that one `404` as before — while a
 `job_id` that resolves to a real job owned by someone else is `403`.
+
+## Templates
+
+`GET /api/v1/templates` returns `{items,total,limit,offset}`. Filters: `category`,
+`featured`, `search`, `sort=popular|rating|forks`, `limit`, `offset` and
+`include_unavailable` (default false). Requires a real Supabase user in both auth
+modes. Only registered, matching curated versions are available; request
+`include_unavailable=true` to display all eight definitions and reasons.
+
+Fields use snake_case (`long_description`, `task_type`, `base_model`,
+`learning_rate`, `dataset_size`). Additional fields include `version`, `available`,
+`unavailable_reason`, `split_counts`, `source_attribution`, `rating_count` and
+`my_rating`. An unrated template has `rating: null`; forks count committed,
+successful project creation, never a card click.
+
+`PUT /api/v1/templates/{template_id}/rating` accepts `{"rating": 1..5}` (integer,
+not boolean/string/fraction). Requires prior successful template use; `403` if
+ineligible, `422` for invalid score. Replaces that user's previous score and
+returns committed `rating`, `rating_count` and `my_rating`.
+
+`POST /api/v1/projects` additionally accepts optional `template_id`,
+`template_version`, `template_overrides`. For this path only, `Idempotency-Key`
+and a real user are mandatory. A successful `201` contains `template_snapshot`
+with independently copied train/validation/test dataset IDs and effective defaults.
+Unavailable/version/idempotency conflicts return `409`; storage failure returns
+`503` without claiming success. No SDG or training starts automatically.
+
+Use `GET /api/v1/trainings/{training_id}` → `context_snapshot` for the saved
+effective prompt/chat template/splits of an individual training. A model exposes
+its `training_job_id`, so export consumers can retrieve metadata through this
+existing route even after project deletion. Weights alone do not carry application
+prompt policy. See [marketplace handoff](./runbooks/template-marketplace-handoff.md)
+for request examples, import/test commands and separate GPU/deployment gates.
 
 ## Projects
 
@@ -1780,7 +1823,7 @@ slm_worker_up{queue="gpu"} 0.0
 
 ## Verification notes
 
-`openapi.json` currently enumerates 42 paths / 51 operations, and
+`openapi.json` currently enumerates 44 paths / 53 operations, and
 `tests/unit/test_openapi_spec_is_current.py` now asserts that the count stated
 at the top of this file matches it — regenerate with
 `python scripts/export_openapi.py` and update that one number when routes

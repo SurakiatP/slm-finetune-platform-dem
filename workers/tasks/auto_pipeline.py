@@ -91,7 +91,6 @@ from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
-from api.models.project import Project
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus, TaskType
 from api.services import audit_service
@@ -116,6 +115,18 @@ _HOLDOUT_GONE_SKIP_REASON = (
 
 
 # ---- auto_pipeline JSONB helpers -------------------------------------------
+
+
+def _evaluation_dataset(session, job):
+    """Template test IDs are frozen per training run; never substitute a holdout."""
+    context = job.context_snapshot or {}
+    if context.get("template_id"):
+        test_id = context.get("test_dataset_id")
+        return session.get(Dataset, UUID(test_id)) if test_id else None
+    return session.execute(select(Dataset).where(
+        Dataset.parent_dataset_id == job.dataset_id,
+        Dataset.generation_metadata["role"].astext == "holdout",
+    )).scalars().first()
 
 
 def _initial_pipeline_state(*, artifact_id: str, want_evaluate: bool) -> dict[str, Any]:
@@ -259,22 +270,14 @@ def sync_export_success(*, artifact_id: str, training_id: str) -> str:
                 job.auto_pipeline = blob
                 return "synced"
 
-            holdout = (
-                session.execute(
-                    select(Dataset).where(
-                        Dataset.parent_dataset_id == job.dataset_id,
-                        Dataset.generation_metadata["role"].astext == "holdout",
-                    )
-                )
-                .scalars()
-                .first()
-            )
+            holdout = _evaluation_dataset(session, job)
 
             if holdout is None or not holdout.storage_uri or holdout.num_samples == 0:
                 blob["evaluate"] = {
                     **eval_stage,
                     "status": "skipped",
-                    "skip_reason": _HOLDOUT_GONE_SKIP_REASON,
+                    "skip_reason": ("Template test dataset missing or empty — cannot resume auto-evaluate"
+                                    if (job.context_snapshot or {}).get("template_id") else _HOLDOUT_GONE_SKIP_REASON),
                     "evaluation_id": None,
                     "error": None,
                 }
@@ -409,20 +412,12 @@ def auto_evaluate(*, training_id: str, artifact_id: str) -> dict[str, Any]:
                 "skip_reason": f"TrainingJob {training_id} vanished before auto-evaluate ran",
             }
         else:
-            holdout = (
-                session.execute(
-                    select(Dataset).where(
-                        Dataset.parent_dataset_id == job.dataset_id,
-                        Dataset.generation_metadata["role"].astext == "holdout",
-                    )
-                )
-                .scalars()
-                .first()
-            )
+            holdout = _evaluation_dataset(session, job)
             artifact = session.get(ModelArtifact, artifact_uuid)
 
             if holdout is None:
                 result = _skip(
+                    "Template test dataset missing" if (job.context_snapshot or {}).get("template_id") else
                     f"No holdout dataset found for training {training_id} (dataset "
                     f"{job.dataset_id} has no holdout child — SDG was likely run "
                     "without holdout_size, or a seed-upload dataset was used)"
@@ -435,9 +430,8 @@ def auto_evaluate(*, training_id: str, artifact_id: str) -> dict[str, Any]:
                     "— cannot evaluate"
                 )
             else:
-                project = session.get(Project, job.project_id)
-                task_type = project.task_type if project is not None else holdout.task_type
-                use_llm_judge = task_type is TaskType.QA
+                task_type = holdout.task_type
+                use_llm_judge = task_type is TaskType.QA and (job.context_snapshot or {}).get("template_id") != "tpl-004"
                 settings = get_settings()
                 judge_model = settings.llm_judge_model if use_llm_judge else None
 

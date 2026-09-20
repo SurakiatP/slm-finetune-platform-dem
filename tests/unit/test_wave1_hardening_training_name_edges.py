@@ -39,13 +39,8 @@ Instead:
      same treatment `Project.datasets` already had. So
      `projects_service.delete_project` orphans the old `TrainingJob` row
      (`project_id` -> `NULL`) instead of deleting it, and the row still
-     holds its `training_name`. Because the row's `Project` is gone,
-     `_assert_training_name_available`'s outer join resolves its owner to
-     `NULL`, landing it in the shared "null-owner scope" bucket (same
-     bucket `AUTH_REQUIRED=false` puts every project in today) — so a new
-     submission of the same name in that scope still 409s. This used to be
-     the opposite (name freed) under the old CASCADE-delete contract; this
-     suite now pins the new one.
+     holds its `training_name` and durable `owner_id`, so submitting the
+     same name within the original owner scope still 409s after deletion.
 
 Same in-memory aiosqlite + JSONB `@compiles` shim harness as
 `test_training_create_contract.py`.
@@ -205,6 +200,7 @@ class TestNameCollisionIsCaseSensitive:
         legacy_job = TrainingJob(
             id=uuid4(),
             project_id=project.id,
+            owner_id=project.owner_id,
             dataset_id=dataset.id,
             mode=TrainingMode.MANUAL,
             status=JobStatus.COMPLETED,
@@ -246,22 +242,20 @@ class TestSixtyThreeCharBoundaryCollisionAtServiceLayer:
 
 
 class TestProjectDeletionFreesTrainingName:
+    @pytest.mark.parametrize("owner_id", [None, "owner-a"])
     async def test_deleting_the_owning_project_does_not_free_the_name(
-        self, db: AsyncSession, spy_apply
+        self, db: AsyncSession, spy_apply, owner_id
     ) -> None:
         """Post-D10 contract: `Project.training_jobs` now uses
         `cascade="save-update, merge"` + `passive_deletes="all"`, matching
         the DB-level `ondelete="SET NULL"` on `TrainingJob.project_id` — so
         deleting the project via the real `projects_service.delete_project`
         orphans the TrainingJob row (`project_id` -> `NULL`) instead of
-        deleting it. The row still holds `training_name`, and the outer
-        join in `_assert_training_name_available` resolves the orphan's
-        owner to `NULL` -- the same null-owner scope `AUTH_REQUIRED=false`
-        (auth-off) puts every project in. A same-name resubmit in that
-        scope must therefore still 409, not succeed."""
+        deleting it. The row retains its original owner and training name,
+        so a same-name resubmit in that owner scope must still return 409."""
         from api.services import projects_service
 
-        project1 = await _make_project(db, owner_id=None)
+        project1 = await _make_project(db, owner_id=owner_id)
         dataset1 = await _make_ready_dataset(db, project=project1)
 
         await training_service.submit_manual_training_job(
@@ -283,8 +277,9 @@ class TestProjectDeletionFreesTrainingName:
         ).scalars().all()
         assert len(remaining) == 1
         assert remaining[0].project_id is None
+        assert remaining[0].owner_id == owner_id
 
-        project2 = await _make_project(db, owner_id=None)
+        project2 = await _make_project(db, owner_id=owner_id)
         dataset2 = await _make_ready_dataset(db, project=project2)
         with pytest.raises(HTTPException) as excinfo:
             await training_service.submit_manual_training_job(

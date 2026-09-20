@@ -219,6 +219,9 @@ class _TrainingRequestBase(BaseModel):
 
     project_id: UUID
     dataset_id: UUID
+    system_prompt: str | None = Field(default=None, max_length=20000)
+    train_sample_count: int | None = Field(default=None, ge=1, strict=True)
+    sampling_seed: int | None = Field(default=None, ge=0, strict=True)
     base_model: str | None = Field(
         default=None,
         description="Override DEFAULT_BASE_MODEL (e.g. 'unsloth/Llama-3.2-1B-Instruct-bnb-4bit').",

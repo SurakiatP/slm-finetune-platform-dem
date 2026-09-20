@@ -82,6 +82,7 @@ async def _make_dataset(db: AsyncSession, *, project: Project, status: JobStatus
     dataset = Dataset(
         id=uuid4(),
         project_id=project.id,
+        owner_id=project.owner_id,
         name="ds",
         task_type=TaskType.QA,
         source=DatasetSource.SDG,
@@ -97,6 +98,7 @@ async def _make_training_job(db: AsyncSession, *, project: Project, dataset: Dat
     job = TrainingJob(
         id=uuid4(),
         project_id=project.id,
+        owner_id=project.owner_id,
         dataset_id=dataset.id,
         mode=TrainingMode.MANUAL,
         status=status,

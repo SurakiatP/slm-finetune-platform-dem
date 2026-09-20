@@ -1,43 +1,8 @@
-"""Unit tests for D10 — deleting a project must KEEP its trained models.
+"""Project deletion retains training/model rows and their copied owner.
 
-Decouples `TrainingJob.project_id` from `Project` (migration
-`0012_training_decouple`, mirroring `0010_dataset_decouple`'s treatment of
-`Dataset.project_id`): NOT NULL + ondelete=CASCADE -> nullable +
-ondelete=SET NULL. This file proves the decoupling end-to-end where
-possible, and pins the orphan-handling contract of the code this task
-actually owns (`api/services/ownership.py`, `training_service.py`,
-`trainings_service.py`) directly:
-
-  1. `TestProjectDeleteKeepsTraining` — deleting a project through the real
-     service (`projects_service.delete_project`) leaves the `TrainingJob`
-     row in place with `project_id` set to `NULL`, and its `ModelArtifact`
-     intact. **Previously blocked, now fixed**: `api/models/project.py`'s
-     `training_jobs` relationship used to carry `cascade="all,
-     delete-orphan"` with no `passive_deletes`, which made the ORM eagerly
-     hard-delete every `TrainingJob` (and, via `TrainingJob.model_artifact`'s
-     own delete-orphan cascade, every `ModelArtifact`) the moment
-     `db.delete(project)` flushed — entirely bypassing the `ondelete="SET
-     NULL"` FK this task adds. Fixed by mirroring the `datasets`
-     relationship's treatment from migration 0010 (`cascade="save-update,
-     merge"` + `passive_deletes="all"`) onto `training_jobs` too.
-  2. Everything else constructs the *orphaned* state directly (a
-     `TrainingJob` with `project_id` set to `None`, matching what the DB's
-     `ondelete=SET NULL` produces once the cascade bug above is fixed)
-     rather than going through the broken deletion path, so it tests this
-     task's own code in isolation from that unrelated defect:
-       - `list_trainings` (no project filter, auth off) still returns the
-         orphaned run.
-       - `_assert_training_name_available` still 409s against a name held
-         by an orphaned run (LEFT JOIN, not INNER — see
-         `training_service.py`).
-       - `assert_training_access` / `scope_trainings_to_owner` on an
-         orphan: a no-op when `user is None`, fail-closed (403 / excluded)
-         when `user` is set — same policy `test_ownership.py` already pins
-         for a null-owner `Project`, extended to "no `Project` at all".
-
-In-memory aiosqlite; no Postgres, no GPU, no Celery broker. The
-`@compiles(JSONB, "sqlite")` shim is the same known gotcha
-`test_dataset_status.py` and `test_ownership.py` already document.
+Known owners keep access after project deletion; unknown owners fail closed
+with authentication. Anonymous access retains the legacy existence-only policy.
+SQLite foreign keys are enabled so ON DELETE SET NULL is actually exercised.
 """
 
 from __future__ import annotations
@@ -107,7 +72,8 @@ async def _make_project_with_training(
         num_samples=1, storage_uri="s3://bucket/key",
     )
     training = TrainingJob(
-        id=uuid4(), project_id=project.id, dataset_id=dataset.id, mode=TrainingMode.MANUAL,
+        id=uuid4(), project_id=project.id, owner_id=owner,
+        dataset_id=dataset.id, mode=TrainingMode.MANUAL,
         status=JobStatus.COMPLETED, celery_task_id=f"train-{tag}",
         base_model="unsloth/x", training_name=f"run-{tag}", config_json={},
     )
@@ -122,12 +88,7 @@ async def _make_project_with_training(
 
 
 async def _orphan_training(db: AsyncSession, world: dict) -> None:
-    """Simulate what `ondelete=SET NULL` produces on project delete,
-    without going through the ORM-cascade-broken `delete_project` path
-    (see the module docstring's xfail note): null the FK directly, delete
-    the `Project` row via a bare Core statement (so no ORM relationship
-    cascade ever fires), and commit.
-    """
+    """Delete a project and refresh the retained training row."""
     from sqlalchemy import delete
 
     training = world["training"]
@@ -227,10 +188,7 @@ class TestTrainingNameCollisionAcrossOrphans:
     async def test_orphan_in_a_named_owner_scope_does_not_block_a_different_owner(
         self, db: AsyncSession
     ) -> None:
-        """An orphan's scope is "global/null-owner", not the named owner its
-        (now-deleted) project used to have -- a named-owner project must not
-        collide with it.
-        """
+        """A retained run owned by Alice must not reserve names for Bob."""
         from api.services import training_service
 
         world = await _make_project_with_training(db, owner="alice-sub", tag="named")
@@ -240,9 +198,7 @@ class TestTrainingNameCollisionAcrossOrphans:
         db.add(bob_project)
         await db.flush()
 
-        # Should not raise: bob's scope ("bob-sub") is disjoint from the
-        # orphan's scope (null-owner), even though the orphan's project used
-        # to belong to alice.
+        # The retained owner is Alice; Bob has an independent name scope.
         await training_service._assert_training_name_available(
             db, project=bob_project, training_name="run-named"
         )
@@ -258,8 +214,8 @@ class TestAssertTrainingAccessOnOrphan:
         assert training.id == training_id
         assert training.project_id is None
 
-    async def test_authenticated_caller_is_refused_with_403(self, db: AsyncSession) -> None:
-        world = await _make_project_with_training(db, owner="alice-sub", tag="fail-closed")
+    async def test_unknown_owner_is_refused_with_403(self, db: AsyncSession) -> None:
+        world = await _make_project_with_training(db, owner=None, tag="fail-closed")
         await _orphan_training(db, world)
         training_id = world["training"].id
 
@@ -267,7 +223,7 @@ class TestAssertTrainingAccessOnOrphan:
             await ownership.assert_training_access(db, training_id, ALICE)
         assert exc.value.status_code == 403
 
-    async def test_scoped_list_excludes_orphan_for_authenticated_caller(
+    async def test_scoped_list_includes_retained_owner_for_authenticated_caller(
         self, db: AsyncSession
     ) -> None:
         world = await _make_project_with_training(db, owner="alice-sub", tag="scope")
@@ -276,7 +232,7 @@ class TestAssertTrainingAccessOnOrphan:
 
         stmt = ownership.scope_trainings_to_owner(select(TrainingJob.id), ALICE)
         ids = {r[0] for r in (await db.execute(stmt)).all()}
-        assert training_id not in ids
+        assert training_id in ids
 
     async def test_scoped_list_includes_orphan_when_anonymous(self, db: AsyncSession) -> None:
         world = await _make_project_with_training(db, owner="alice-sub", tag="scope-anon")

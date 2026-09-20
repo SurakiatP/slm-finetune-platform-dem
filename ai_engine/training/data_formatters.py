@@ -83,8 +83,15 @@ def get_formatter(
     task_type: TaskType,
     *,
     tool_definitions: list[ToolDefinition] | None = None,
+    system_prompt: str | None = None,
 ) -> Callable[[dict[str, Any]], list[Message]]:
     """Return `(row) -> list[{role, content}]` for the given task type."""
+    if system_prompt is not None:
+        formatter = get_formatter(task_type, tool_definitions=tool_definitions)
+        return lambda row: [
+            {"role": "system", "content": system_prompt},
+            *[message for message in formatter(row) if message["role"] != "system"],
+        ]
     if task_type is TaskType.CLASSIFICATION:
         return format_classification
     if task_type is TaskType.QA:

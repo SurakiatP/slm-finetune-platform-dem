@@ -18,23 +18,10 @@ OpenRouter's infrastructure, not the local RTX 3060, so a user watching
 future task wants an SDG queue display too, it should be a parallel,
 separately-labelled bucket, not folded into this one.
 
-Same tri-table "GPU bucket" as `api/services/quota.py`, and the same
-`_IN_FLIGHT = (PENDING, RUNNING)` filter — reused directly from there so
-the two modules can never drift on what counts as "in flight". The three
-join depths back to `Project` are IDENTICAL to quota.py's, and are
-re-derived independently here (not just trusted) from the same FK
-declarations in api/models/{training_job,model_artifact,evaluation_run,
-project}.py, matching the provenance note quota.py:119-124 already makes
-about `api/services/job_ownership.py`:
-
-  TrainingJob   -> Project                                  (1 hop)
-    TrainingJob.project_id is a direct FK to projects.id.
-  ModelArtifact -> TrainingJob -> Project                    (2 hops)
-    ModelArtifact.training_job_id -> training_jobs.id, then
-    TrainingJob.project_id -> projects.id.
-  EvaluationRun -> ModelArtifact -> TrainingJob -> Project    (3 hops)
-    EvaluationRun.model_artifact_id -> model_artifacts.id, then the two
-    hops above. EvaluationRun has no project_id of its own.
+The GPU bucket matches quota.py: training, model export and evaluation.
+Ownership is resolved through TrainingJob.owner_id. A retained run without a
+project uses its training ID as an internal queue group, so deleted projects
+do not merge unrelated owners under one NULL key.
 
 Ordering timestamp per leg, and why:
   - training leg: `TrainingJob.created_at` — the row is created at submit
@@ -85,12 +72,11 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import select, union_all
+from sqlalchemy import func, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
-from api.models.project import Project
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
 
@@ -120,7 +106,8 @@ class ProjectQueueInfo:
 async def compute_queue(db: AsyncSession) -> dict[UUID, ProjectQueueInfo]:
     """Compute every project's GPU queue state in one pass.
 
-    Returns a dict keyed by `project_id`; projects with no in-flight GPU
+    Returns a dict keyed by project ID (training ID for retained runs without a
+    project); projects with no in-flight GPU
     row at all (nothing PENDING/RUNNING across the three legs) are simply
     absent from the returned dict — callers should treat a missing key as
     "not in the queue", not as an error. `project_queue_info` below wraps
@@ -128,8 +115,7 @@ async def compute_queue(db: AsyncSession) -> dict[UUID, ProjectQueueInfo]:
 
     Algorithm:
       1. Build three aligned SELECTs (project_id, owner_id, status,
-         timestamp) — one per leg, joined to `Project` at the depth
-         documented in the module docstring — each already filtered to
+         timestamp) — one per leg, resolving owner from TrainingJob — each already filtered to
          `_IN_FLIGHT` so no completed/failed/cancelled rows are pulled in
          at all.
       2. `union_all` them into a single statement and execute once. (An
@@ -165,32 +151,23 @@ async def compute_queue(db: AsyncSession) -> dict[UUID, ProjectQueueInfo]:
          is intentional and inert dead weight until `AUTH_REQUIRED` flips
          to `true` project-wide, exactly like the precedent it mirrors.
     """
-    # Outer joins to Project, not inner: `TrainingJob.project_id` is nullable
-    # (orphaned runs whose Project was deleted — migration
-    # 0012_training_decouple, see api/services/ownership.py's orphan-policy
-    # section). This module is display-only and keyed by `project_id`
-    # itself (see the dict return type), so an INNER JOIN wouldn't just
-    # mis-attribute an orphan's owner — it would drop the orphaned run from
-    # the queue display ENTIRELY, understating queue depth for anyone still
-    # waiting behind it. `Project.owner_id` comes back NULL for an orphan
-    # row here, which lands it in the same shared null-owner group
-    # `owner_queue_position` already treats every anonymous project as
-    # (see the module docstring) — no extra branching needed.
+    # Orphaned runs use their own ID as a queue group; otherwise unrelated
+    # owners collapse into one NULL project and distort both queue ranks.
+    queue_group_id = func.coalesce(TrainingJob.project_id, TrainingJob.id)
     training_stmt = (
         select(
-            TrainingJob.project_id.label("project_id"),
-            Project.owner_id.label("owner_id"),
+            queue_group_id.label("project_id"),
+            TrainingJob.owner_id.label("owner_id"),
             TrainingJob.status.label("status"),
             TrainingJob.created_at.label("ts"),
         )
         .select_from(TrainingJob)
-        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(TrainingJob.status.in_(_IN_FLIGHT))
     )
     export_stmt = (
         select(
-            TrainingJob.project_id.label("project_id"),
-            Project.owner_id.label("owner_id"),
+            queue_group_id.label("project_id"),
+            TrainingJob.owner_id.label("owner_id"),
             ModelArtifact.export_status.label("status"),
             # Trade-off documented in the module docstring: `updated_at`
             # (not `created_at`, which is training-completion time) is the
@@ -199,20 +176,18 @@ async def compute_queue(db: AsyncSession) -> dict[UUID, ProjectQueueInfo]:
         )
         .select_from(ModelArtifact)
         .join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
-        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(ModelArtifact.export_status.in_(_IN_FLIGHT))
     )
     eval_stmt = (
         select(
-            TrainingJob.project_id.label("project_id"),
-            Project.owner_id.label("owner_id"),
+            queue_group_id.label("project_id"),
+            TrainingJob.owner_id.label("owner_id"),
             EvaluationRun.status.label("status"),
             EvaluationRun.created_at.label("ts"),
         )
         .select_from(EvaluationRun)
         .join(ModelArtifact, ModelArtifact.id == EvaluationRun.model_artifact_id)
         .join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
-        .outerjoin(Project, Project.id == TrainingJob.project_id)
         .where(EvaluationRun.status.in_(_IN_FLIGHT))
     )
 

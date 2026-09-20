@@ -28,17 +28,14 @@ class TrainingJob(Base, TimestampMixin):
     # (ondelete="SET NULL") instead of cascading the delete into the run
     # (user decision D10 — "deleting a project must KEEP its trained
     # models"). Mirrors Dataset.project_id (see api/models/dataset.py).
-    #
-    # Unlike Dataset, TrainingJob does NOT get its own owner_id column this
-    # round: an orphaned run (project_id IS NULL) has no way to recover who
-    # it belongs to, and api/services/ownership.py deliberately fails
-    # closed on that -- invisible to authenticated callers (403 on direct
-    # access, excluded from scoped lists), fully visible only while auth is
-    # off. See ownership.py's module docstring for the full reasoning.
     project_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("projects.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
+    )
+    owner_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True,
+        doc="Owner copied at submission; survives project deletion. NULL fails closed with auth.",
     )
     dataset_id: Mapped[UUID] = mapped_column(
         ForeignKey("datasets.id", ondelete="RESTRICT"),
@@ -72,6 +69,10 @@ class TrainingJob(Base, TimestampMixin):
         JSONB,
         nullable=False,
         doc="Full ManualTrainingConfig or HPOConfig payload.",
+    )
+    context_snapshot: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True,
+        doc="Effective template, prompt and dataset split context; separate from strict training config.",
     )
 
     # HPO-only outcome columns; null for manual runs.

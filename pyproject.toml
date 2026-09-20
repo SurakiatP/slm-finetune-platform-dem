@@ -94,6 +94,8 @@ metrics = [
     "prometheus-client>=0.21",
 ]
 dev = [
+    # Offline template tool-call preparation validates original JSON schemas.
+    "jsonschema>=4.26,<5",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
@@ -142,6 +144,9 @@ Documentation = "https://example.com/slm-platform/docs"
 [tool.setuptools.packages.find]
 include = ["api*", "workers*", "ai_engine*"]
 exclude = ["tests*", "examples*", "docs*", "docker*", "alembic*", "scripts*"]
+
+[tool.setuptools.package-data]
+api = ["template_catalog.json"]
 
 # ---- Ruff (lint + format) ---------------------------------------------------
 

@@ -11,9 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core import request_context
 from api.core.auth import CurrentUser
+from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
-from api.models.project import Project
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
 from api.schemas.evaluations import (
@@ -63,19 +63,22 @@ async def submit_evaluation_job(
         )
 
     training_job = await db.get(TrainingJob, artifact.training_job_id)
-    if training_job is not None and training_job.project_id is not None:
-        # training_job.project_id can be None for an orphaned run (its
-        # Project was deleted — migration 0012_training_decouple);
-        # `db.get(Project, None)` would just return None with a noisy
-        # SQLAlchemy "fully NULL primary key" warning, so skip the lookup
-        # outright instead.
-        project = await db.get(Project, training_job.project_id)
-        if project is not None and dataset.task_type != project.task_type:
+    if training_job is not None:
+        context = training_job.context_snapshot or {}
+        if context.get("template_id") and str(dataset.id) != context.get("test_dataset_id"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Template evaluation must use the training snapshot's test dataset",
+            )
+        training_dataset = (
+            await db.get(Dataset, training_job.dataset_id) if training_job.dataset_id else None
+        )
+        if training_dataset is not None and dataset.task_type != training_dataset.task_type:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
                     f"Dataset task_type={dataset.task_type.value} does not match "
-                    f"artifact task_type={project.task_type.value}"
+                    f"artifact task_type={training_dataset.task_type.value}"
                 ),
             )
 

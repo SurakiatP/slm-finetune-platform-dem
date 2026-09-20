@@ -2,8 +2,8 @@
 
 วันที่: 2026-09-20 | Branch: `feat/frontend-contract-sync`
 
-สถานะ: ข้อกำหนดจากการสัมภาษณ์ครบแล้ว เอกสารฉบับรวมรอผู้ใช้ตรวจ
-ยังไม่ได้ implement Template API, ลงข้อมูลใน DB, train หรือ deploy
+สถานะ: ผู้ใช้อนุมัติให้ลงมือแล้ว กำลัง implement ตาม implementation ledger
+ยังไม่ได้ train หรือ deploy; ผลผ่านต้องมีหลักฐานการทดสอบและ independent review
 
 ## 1. ผลลัพธ์ที่ต้องส่งมอบ
 
