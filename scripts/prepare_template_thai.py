@@ -23,32 +23,6 @@ TOKEN_LIMIT = 2048
 TOKENIZER_REPO = "Qwen/Qwen2.5-1.5B-Instruct"
 TOKENIZER_REVISION = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
 SENTIMENT_LABELS = {"pos": "positive", "neu": "neutral", "neg": "negative"}
-NER_LABELS = {
-    "PERSON": "PERSON",
-    "ORGANIZATION": "ORG",
-    "LOCATION": "LOC",
-    "DATE": "DATE",
-    "MONEY": "MONEY",
-}
-SOURCE_ENTITY_TYPES = set(NER_LABELS) | {
-    "TIME",
-    "FACILITY",
-    "URL",
-    "PERCENT",
-    "LEN",
-    "AGO",
-    "LAW",
-    "PHONE",
-    "EMAIL",
-    "ZIP",
-    "TEMPERATURE",
-}
-NER_INSTRUCTION = (
-    "ดึงชื่อเอนทิตี PERSON, ORG, LOC, DATE, MONEY จากข้อความต่อไปนี้ "
-    "ตอบเฉพาะ JSON array ของ object ที่มี text, type, start, end "
-    "โดย start และ end เป็นตำแหน่งอักขระแบบเริ่มนับจาก 0 "
-    "และ end ไม่รวมอักขระตำแหน่งนั้น ถ้าไม่พบให้ตอบ []\n\nข้อความ:\n"
-)
 SOURCES = {
     "tpl-006": {
         "directory": "wisesight",
@@ -59,16 +33,6 @@ SOURCES = {
         "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
         "attribution": "Wisesight (Thailand) Co., Ltd. and PyThaiNLP contributors",
         "task": TaskType.CLASSIFICATION,
-    },
-    "tpl-004": {
-        "directory": "thainer",
-        "subdirectory": "data",
-        "repo": "pythainlp/thainer-corpus-v2.2",
-        "revision": "e516176cf83d96526e407a7652205d6620837600",
-        "license": "CC-BY-3.0",
-        "license_url": "https://creativecommons.org/licenses/by/3.0/",
-        "attribution": "Wannaphong Phatthiyaphaibun (2024), Thai NER 2.2, DOI:10.5281/zenodo.10795907",
-        "task": TaskType.QA,
     },
 }
 
@@ -84,18 +48,16 @@ def text_hash(text: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def source_text(row: dict, template_id: str) -> str:
-    if template_id == "tpl-006":
-        return row["texts"]
-    return "".join(row["words"])
+def source_text(row: dict) -> str:
+    return row["texts"]
 
 
-def preferred_partitions(partitions: dict[str, list[dict]], template_id: str) -> dict[str, str]:
+def preferred_partitions(partitions: dict[str, list[dict]]) -> dict[str, str]:
     """Reserve every raw held-out input, even if later conversion rejects that row."""
     owners = {}
     for split in reversed(SPLITS):
         for row in partitions[split]:
-            owners.setdefault(text_hash(source_text(row, template_id)), split)
+            owners.setdefault(text_hash(source_text(row)), split)
     return owners
 
 
@@ -114,46 +76,6 @@ def convert_sentiment(row: dict, names: list[str]) -> dict:
     return {"text": row["texts"], "label": SENTIMENT_LABELS[label]}
 
 
-def convert_ner(row: dict, names: list[str]) -> dict:
-    words, ids = row["words"], row["ner"]
-    if not words or len(words) != len(ids):
-        raise ValueError("unaligned_ner_tokens")
-    if any(not isinstance(word, str) or not word for word in words):
-        raise ValueError("empty_or_invalid_ner_token")
-    text = "".join(words)
-    entities, active, start, offset = [], None, 0, 0
-
-    def finish(end: int) -> None:
-        if active in NER_LABELS:
-            entities.append(
-                {"text": text[start:end], "type": NER_LABELS[active], "start": start, "end": end}
-            )
-
-    for word, index in zip(words, ids, strict=True):
-        tag = class_name(index, names)
-        if tag != "O" and (
-            len(tag) < 3 or tag[:2] not in {"B-", "I-"} or tag[2:] not in SOURCE_ENTITY_TYPES
-        ):
-            raise ValueError("invalid_bio_tag")
-        if tag == "O":
-            finish(offset)
-            active = None
-        elif tag.startswith("B-") and len(tag) > 2:
-            finish(offset)
-            active, start = tag[2:], offset
-        elif tag.startswith("I-") and len(tag) > 2:
-            if active != tag[2:]:
-                raise ValueError("invalid_bio_continuation")
-        else:
-            raise ValueError("invalid_bio_tag")
-        offset += len(word)
-    finish(offset)
-    return {
-        "question": NER_INSTRUCTION + text,
-        "answer": json.dumps(entities, ensure_ascii=False, separators=(",", ":")),
-    }
-
-
 def prepare_partition(
     rows: list[dict],
     *,
@@ -164,11 +86,10 @@ def prepare_partition(
     tokenizer: Any,
 ) -> tuple[list[dict], Counter]:
     task = SOURCES[template_id]["task"]
-    converter = convert_sentiment if template_id == "tpl-006" else convert_ner
     formatter, model = get_formatter(task), sample_model_for(task)
     candidates, seen, drops = [], set(), Counter()
     for index, original in enumerate(rows):
-        text = source_text(original, template_id)
+        text = source_text(original)
         fingerprint = text_hash(text)
         if not text.strip():
             drops["empty_input"] += 1
@@ -181,7 +102,7 @@ def prepare_partition(
             continue
         seen.add(fingerprint)
         try:
-            row = converter(original, names)
+            row = convert_sentiment(original, names)
         except ValueError as exc:
             drops[str(exc)] += 1
             continue
@@ -207,15 +128,13 @@ def prepare_partition(
     return candidates, drops
 
 
-def select_rows(candidates: list[dict], template_id: str, split: str) -> list[dict]:
+def select_rows(candidates: list[dict], split: str) -> list[dict]:
     ordered = sorted(
         candidates,
         key=lambda item: hashlib.sha256(
             ("template-thai-v1:" + item["source_id"]).encode()
         ).hexdigest(),
     )
-    if template_id == "tpl-004":
-        return ordered if split == "train" else ordered[:500]
     per_class = {"train": 2000, "validation": 200, "test": 300}[split]
     groups = {
         label: [item for item in ordered if item["row"]["label"] == label]
@@ -246,9 +165,7 @@ def prepare(root: Path, template_id: str, tokenizer: Any, tokenizer_hashes: dict
         path = source_root / relative
         table = pq.read_table(path)
         feature = json.loads(table.schema.metadata[b"huggingface"])["info"]["features"]
-        label_feature = (
-            feature["category"] if template_id == "tpl-006" else feature["ner"]["feature"]
-        )
+        label_feature = feature["category"]
         names_by_split[split] = label_feature["names"]
         partitions[split] = table.to_pylist()
         raw_files.append(
@@ -258,7 +175,7 @@ def prepare(root: Path, template_id: str, tokenizer: Any, tokenizer_hashes: dict
                 "url": f"https://huggingface.co/datasets/{source['repo']}/resolve/{source['revision']}/{relative}",
             }
         )
-    owners = preferred_partitions(partitions, template_id)
+    owners = preferred_partitions(partitions)
     output = root / "prepared" / template_id
     output.mkdir(parents=True, exist_ok=True)
     manifest = {
@@ -280,26 +197,14 @@ def prepare(root: Path, template_id: str, tokenizer: Any, tokenizer_hashes: dict
         "normalization": "NFKC, casefold, collapse whitespace for fingerprint only; original text retained.",
         "splits": {},
     }
-    if template_id == "tpl-006":
-        manifest["transformation"] = (
-            "Drop question class, map pos/neu/neg to positive/neutral/negative, equal class sampling, no text rewriting."
-        )
-        manifest["limitations"] = [
-            "Informal social posts are not a representative product-review population.",
-            "Source anonymization can leave residual personal data.",
-            "Prepared and token-validated; model quality has not been evaluated.",
-        ]
-    else:
-        manifest["transformation"] = (
-            "Join original tokens without inserted spaces; strictly decode BIO; map ORGANIZATION to ORG and LOCATION to LOC; keep PERSON/DATE/MONEY; ignore other entity types; one QA row per source sequence, answer JSON spans with Unicode code-point offsets, end exclusive."
-        )
-        manifest["limitations"] = [
-            "NER source is news/PR/general text, not a dedicated customer-support corpus.",
-            "Author states some original source lists were lost.",
-            "README prose counts differ from parquet counts; manifest uses actual parquet rows.",
-            "Exact normalized input deduplication does not detect every paraphrase or related document.",
-            "Prepared and token-validated; model quality has not been evaluated.",
-        ]
+    manifest["transformation"] = (
+        "Drop question class, map pos/neu/neg to positive/neutral/negative, equal class sampling, no text rewriting."
+    )
+    manifest["limitations"] = [
+        "Informal social posts are not a representative product-review population.",
+        "Source anonymization can leave residual personal data.",
+        "Prepared and token-validated; model quality has not been evaluated.",
+    ]
     readme = source_root / "README.md"
     license_note = output / "SOURCE_LICENSE.md"
     license_note.write_text(
@@ -321,7 +226,7 @@ def prepare(root: Path, template_id: str, tokenizer: Any, tokenizer_hashes: dict
             owners=owners,
             tokenizer=tokenizer,
         )
-        selected = select_rows(candidates, template_id, split)
+        selected = select_rows(candidates, split)
         rows = [item["row"] for item in selected]
         sidecars = [
             {key: value for key, value in item.items() if key != "row"} for item in selected
@@ -329,16 +234,8 @@ def prepare(root: Path, template_id: str, tokenizer: Any, tokenizer_hashes: dict
         rows_path, ids_path = output / f"{split}.jsonl", output / f"{split}.provenance.jsonl"
         write_jsonl(rows_path, rows)
         write_jsonl(ids_path, sidecars)
-        requested = (
-            {"train": 6000, "validation": 600, "test": 900}[split]
-            if template_id == "tpl-006"
-            else (None if split == "train" else 500)
-        )
-        counts = (
-            Counter(row["label"] for row in rows)
-            if template_id == "tpl-006"
-            else Counter(entity["type"] for row in rows for entity in json.loads(row["answer"]))
-        )
+        requested = {"train": 6000, "validation": 600, "test": 900}[split]
+        counts = Counter(row["label"] for row in rows)
         manifest["splits"][split] = {
             "source_rows": len(partitions[split]),
             "eligible_rows": len(candidates),
@@ -347,19 +244,13 @@ def prepare(root: Path, template_id: str, tokenizer: Any, tokenizer_hashes: dict
             "shortfall": max(0, requested - len(rows)) if requested is not None else 0,
             "dropped": dict(sorted(drops.items())),
             "not_selected": len(candidates) - len(rows),
-            "label_counts" if template_id == "tpl-006" else "entity_counts": dict(
-                sorted(counts.items())
-            ),
+            "label_counts": dict(sorted(counts.items())),
             "max_tokens": max((item["tokens"] for item in selected), default=0),
             "path": rows_path.name,
             "sha256": sha256_file(rows_path),
             "provenance_path": ids_path.name,
             "provenance_sha256": sha256_file(ids_path),
         }
-        if template_id == "tpl-004":
-            manifest["splits"][split]["empty_entity_rows"] = sum(
-                row["answer"] == "[]" for row in rows
-            )
     manifest["status"] = (
         "prepared"
         if not any(split["shortfall"] for split in manifest["splits"].values())

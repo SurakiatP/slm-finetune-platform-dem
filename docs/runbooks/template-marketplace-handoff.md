@@ -1,17 +1,19 @@
 # Template marketplace handoff
 
-Status: implementation waves and focused final repair review passed locally:
-2,173 unit tests passed, with the same four pre-existing unit failures, and 11
-real-service/offline integration checks passed. Template evaluation now requires
-and verifies frozen `test_sha256` against raw MinIO bytes before parsing or
-inference. Regression: 3 passed; focused suite: 95 passed; independent review
-returned PASS with no P0–P3 findings.
+Status: after removing unsupported NER scope, focused tests pass 110/110,
+real Postgres/MinIO integration passes 10/10, and the full unit suite reports
+2,160 passed with the same four pre-existing failures and four skips. Template
+evaluation requires and verifies frozen `test_sha256` against raw MinIO bytes
+before parsing or inference.
 The requested gpt-5.6-sol/high security audit completed its scoped source pass:
 0 confirmed vulnerabilities, 5 needs_validation, 4 rejected candidates. This is
 not deployed-runtime clearance; actual image/SBOM and bounded validation remain.
 See the implementation ledger and
 `/Users/parksurakiat/security-audit-skill/slm-finetune-platform-dem/run-1/REPORT.md`.
-No GPU training or production deployment is implied by this document.
+Vast.ai validation at commit `56f9fd5` completed the Thai Sentiment flow:
+train, GGUF export, Ollama registration, evaluation and inference. Macro-F1
+improved from 0.4152 to 0.6458 and accuracy from 0.5022 to 0.6589 on the frozen
+900-row test split. Production deployment is not implied by this document.
 
 ## Frontend contract
 
@@ -21,9 +23,9 @@ The backend does not accept a client-supplied owner ID.
 
 `GET /api/v1/templates?include_unavailable=true&limit=50&offset=0` returns
 `{items,total,limit,offset}`. Without `include_unavailable`, only registered ready
-templates appear. The eight curated definitions are not eight trained models.
-Only `tpl-004` (Thai NER represented as QA) and `tpl-006` (Thai sentiment) are ready
-for dataset import; the other six remain unavailable with an explanation.
+templates appear. The seven curated definitions are not seven trained models.
+Only `tpl-006` (Thai sentiment) is ready for dataset import; the other six remain
+unavailable with an explanation. The product has no NER template or NER task type.
 
 The minimum handoff fields use **snake_case**: `long_description`, `task_type`,
 `base_model`, `learning_rate`, `dataset_size`. Map these to the frontend's internal
@@ -116,16 +118,14 @@ environment; do not paste secrets into commands, documentation or chat):
 Repeat import is safe only for matching immutable content/version. Changed source
 or definition requires a new curated version, not overwriting an existing registration.
 
-After independent local review and security/CVE review, GPU validation still needs
-the user's new vast.ai SSH host/port. Run sequentially, one manual two-epoch run per
-ready template, no paid SDG/HPO or automatic quality-tuning retries. Record exact
+After independent local review and security/CVE review, run one manual two-epoch
+Thai Sentiment job on Vast.ai, with no paid SDG/HPO or automatic quality-tuning retries. Record exact
 code/data/model revisions, prompt, seed, token limit and actual runtime versions.
 Evaluate baseline and final served artifact on the same fixed test inputs and
-decoding settings: sentiment Macro-F1; NER exact Unicode code-point start/end and
-entity-type micro-F1 plus invalid-JSON rate. Baseline and exported quantization may
+decoding settings and sentiment Macro-F1. Baseline and exported quantization may
 differ: record that limitation instead of attributing every score change to training.
 
-Both workflows and their primary scores must pass before wetty deployment to
+The workflow and its primary score must pass before wetty deployment to
 slmpc. A regression stops the release and requires a user decision. Check slmpc's
 actual GPU/runtime separately; a vast.ai result does not prove that hardware works.
 Frontend team owns UI changes/deployment; backend tests do not prove UI wiring.

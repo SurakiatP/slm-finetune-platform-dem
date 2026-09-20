@@ -54,10 +54,10 @@ async def seed(db):
     db.add(project)
     await db.flush()
     snapshot = dict(
-        template_id="tpl-004",
+        template_id="tpl-005",
         template_version="1",
         base_model=MODEL,
-        system_prompt="Extract entities exactly.",
+        system_prompt="Answer from the supplied documentation.",
         chat_template="chatml",
         manual_config={"num_train_epochs": 2, "learning_rate": 0.0001},
         train_sample_count=5,
@@ -76,7 +76,7 @@ async def seed(db):
             num_samples=count,
             storage_uri=f"s3://datasets/{role}.jsonl",
             generation_metadata=dict(
-                template_id="tpl-004", template_version="1", role=role, sha256=role[0] * 64
+                template_id="tpl-005", template_version="1", role=role, sha256=role[0] * 64
             ),
         )
         db.add(row)
@@ -115,7 +115,7 @@ async def test_template_defaults_are_frozen_and_owned(db, mode):
     job = await submit(db, request_for(mode, project, datasets))
     assert job.owner_id == USER.id
     assert job.base_model == MODEL
-    assert job.context_snapshot["system_prompt"] == "Extract entities exactly."
+    assert job.context_snapshot["system_prompt"] == "Answer from the supplied documentation."
     config = job.config_json if mode == "manual" else job.config_json["fixed_config"]
     assert config["num_train_epochs"] == 2
     assert config["learning_rate"] == 0.0001

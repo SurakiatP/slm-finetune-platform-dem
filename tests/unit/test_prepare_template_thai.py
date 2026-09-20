@@ -1,49 +1,14 @@
 """Synthetic-only checks for offline Thai template data conversion."""
 
-import json
-
 import pytest
 
 from scripts.prepare_template_thai import (
-    NER_INSTRUCTION,
-    convert_ner,
     convert_sentiment,
     preferred_partitions,
     prepare_partition,
     select_rows,
     text_hash,
 )
-
-
-def test_ner_spans_preserve_spaces_offsets_and_exclude_unrequested_types():
-    names = ["B-PERSON", "I-PERSON", "O", "B-ORGANIZATION", "B-TIME", "B-MONEY"]
-    words = ["สมชาย", " ", "ใจดี", " พบ ", "บริษัททดสอบ", " เวลา ", "เที่ยง", " ได้ ", "100บาท"]
-    row = convert_ner({"words": words, "ner": [0, 1, 1, 2, 3, 2, 4, 2, 5]}, names)
-    text = "".join(words)
-    assert row["question"] == NER_INSTRUCTION + text
-    entities = json.loads(row["answer"])
-    assert [entity["type"] for entity in entities] == ["PERSON", "ORG", "MONEY"]
-    assert entities[0]["text"] == "สมชาย ใจดี"
-    for entity in entities:
-        assert text[entity["start"] : entity["end"]] == entity["text"]
-    assert convert_ner({"words": ["ข้อความ"], "ner": [2]}, names)["answer"] == "[]"
-
-
-@pytest.mark.parametrize(
-    "words,ids,names,error",
-    [
-        (["x"], [0], ["I-PERSON"], "invalid_bio_continuation"),
-        (["x", "y"], [0, 1], ["B-PERSON", "I-MONEY"], "invalid_bio_continuation"),
-        (["x"], [], ["O"], "unaligned_ner_tokens"),
-        ([""], [0], ["O"], "empty_or_invalid_ner_token"),
-        (["x"], [0], ["S-PERSON"], "invalid_bio_tag"),
-        (["x"], [0], ["B-DTAE"], "invalid_bio_tag"),
-        (["x"], [-1], ["O"], "invalid_label_id"),
-    ],
-)
-def test_ner_rejects_bad_tags_and_alignment(words, ids, names, error):
-    with pytest.raises(ValueError, match=error):
-        convert_ner({"words": words, "ner": ids}, names)
 
 
 def test_sentiment_maps_only_three_classes():
@@ -72,7 +37,7 @@ def test_raw_test_partition_reserved_even_when_its_row_is_rejected():
         "validation": [{"texts": "hello world", "category": 1}],
         "test": [{"texts": "Hello World", "category": 3}],
     }
-    owners = preferred_partitions(partitions, "tpl-006")
+    owners = preferred_partitions(partitions)
     assert set(owners.values()) == {"test"}
     for split in partitions:
         candidates, drops = prepare_partition(
@@ -105,9 +70,9 @@ def test_sampling_balanced_deterministic_and_reports_available_not_fabricated_ro
         for index in range(3)
     ]
     candidates.append({"source_id": "train:extra", "row": {"label": "positive"}})
-    selected = select_rows(candidates, "tpl-006", "train")
+    selected = select_rows(candidates, "train")
     assert len(selected) == 9
-    assert selected == select_rows(list(reversed(candidates)), "tpl-006", "train")
+    assert selected == select_rows(list(reversed(candidates)), "train")
     assert all(
         sum(item["row"]["label"] == label for item in selected) == 3
         for label in ("positive", "neutral", "negative")

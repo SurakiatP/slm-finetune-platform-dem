@@ -637,7 +637,7 @@ def test_template_export_retry_resumes_from_fixed_test_without_holdout(sync_sess
             source=DatasetSource.UPLOADED, status=JobStatus.COMPLETED,
             num_samples=1, storage_uri="s3://bucket/test.jsonl", generation_metadata={"role": "test"}))
         job = session.get(TrainingJob, UUID(fixture.training_id))
-        job.context_snapshot = {"template_id": "tpl-004", "test_dataset_id": str(test_id)}
+        job.context_snapshot = {"template_id": "tpl-005", "test_dataset_id": str(test_id)}
         job.auto_pipeline = TestResume()._failed_export_blob(fixture.artifact_id)
         session.commit()
     assert auto_pipeline.sync_export_success(artifact_id=fixture.artifact_id, training_id=fixture.training_id) == "resumed"

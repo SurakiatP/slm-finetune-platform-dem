@@ -16,7 +16,7 @@ from tests.unit.test_worker_zombie_cancel_eval import sync_sessionmaker as sync_
 
 
 @pytest.mark.parametrize("wrong_dataset", [False, True])
-def test_evaluation_worker_uses_snapshot_prompt_and_ner_metric(
+def test_evaluation_worker_uses_snapshot_prompt_and_qa_metric(
     monkeypatch,
     sync_sessionmaker,
     fake_minio,
@@ -36,25 +36,23 @@ def test_evaluation_worker_uses_snapshot_prompt_and_ner_metric(
         evaluation_id=evaluation_id,
         eval_status=JobStatus.PENDING,
     )
-    gold = json.dumps([{"text": "ไทย", "type": "LOCATION", "start": 0, "end": 3}])
-    payload = json.dumps({"question": "ไทย", "answer": gold}).encode() + b"\n"
+    gold = "คำตอบ"
+    payload = json.dumps({"question": "คำถาม", "answer": gold}).encode() + b"\n"
     fake_minio.put_object("datasets", "eval/ds.jsonl", BytesIO(payload), len(payload))
     with sync_sessionmaker() as session:
         job = session.get(TrainingJob, training_id)
         job.project_id = None
         job.context_snapshot = {
-            "template_id": "tpl-004",
+            "template_id": "tpl-005",
             "system_prompt": "frozen",
             "test_dataset_id": str(uuid4() if wrong_dataset else dataset_id),
             "test_sha256": hashlib.sha256(payload).hexdigest(),
         }
         session.commit()
-    predict = MagicMock(return_value=([gold], [gold], ["ไทย"]))
+    predict = MagicMock(return_value=([gold], [gold], ["คำถาม"]))
     monkeypatch.setattr(module, "_predict_rows", predict)
-    judge = MagicMock(side_effect=AssertionError("NER must not call paid judge"))
-    monkeypatch.setattr(module, "_build_judge_client", judge)
     result = module.run_evaluation.apply(
-        kwargs={"evaluation_id": str(evaluation_id), "use_llm_judge": True}
+        kwargs={"evaluation_id": str(evaluation_id), "use_llm_judge": False}
     )
     if wrong_dataset:
         assert result.failed()
@@ -62,9 +60,8 @@ def test_evaluation_worker_uses_snapshot_prompt_and_ner_metric(
         predict.assert_not_called()
     else:
         assert result.successful(), result.result
-        assert result.result["metrics"]["f1_micro"] == 1
+        assert result.result["metrics"]["exact_match"] == 1
         assert predict.call_args.kwargs["system_prompt"] == "frozen"
-    judge.assert_not_called()
 
 
 @pytest.mark.parametrize("format", ["gguf", "safetensors"])
@@ -84,7 +81,7 @@ def test_export_ships_saved_context_with_both_formats(
         sync_sessionmaker, project_id=project_id, training_id=training_id, artifact_id=artifact_id
     )
     export_harness._seed_adapter_files(fake_minio, training_id=training_id)
-    context = {"template_id": "tpl-004", "system_prompt": "frozen", "chat_template": "qwen-2.5"}
+    context = {"template_id": "tpl-005", "system_prompt": "frozen", "chat_template": "qwen-2.5"}
     with sync_sessionmaker() as session:
         job = session.get(TrainingJob, training_id)
         job.owner_id, job.project_id, job.training_name = "owner", None, "kept"

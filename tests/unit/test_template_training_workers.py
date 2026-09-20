@@ -38,7 +38,7 @@ def test_workers_pass_frozen_prompt_validation_and_only_train_rows(
     validation = [{"question": "validation", "answer": "validation-only"}]
     test = [{"question": "test", "answer": "never-train"}]
     context = dict(
-        template_id="tpl-004",
+        template_id="tpl-005",
         template_version="1",
         system_prompt="Frozen prompt",
         train_sample_count=4,
@@ -65,7 +65,7 @@ def test_workers_pass_frozen_prompt_validation_and_only_train_rows(
             body = "\n".join(json.dumps(row, ensure_ascii=False) for row in values).encode()
             sha = hashlib.sha256(body).hexdigest()
             dataset.generation_metadata = dict(
-                template_id="tpl-004", template_version="1", role=role, sha256=sha
+                template_id="tpl-005", template_version="1", role=role, sha256=sha
             )
             context[f"{role}_dataset_id"] = str(dataset.id)
             context[f"{role}_sha256"] = sha

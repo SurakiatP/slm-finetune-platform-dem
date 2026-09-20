@@ -28,7 +28,7 @@ def test_template_constraints_and_independence_from_project():
     Base.metadata.create_all(engine)
     with Session(engine) as db:
         registration = TemplateDatasetVersion(
-            template_id="tpl-004",
+            template_id="tpl-006",
             version="v1",
             definition_sha256="a" * 64,
             manifest_json={},
@@ -38,7 +38,7 @@ def test_template_constraints_and_independence_from_project():
         db.add(
             TemplateUse(
                 user_id="alice",
-                template_id="tpl-004",
+                template_id="tpl-006",
                 template_version="v1",
                 idempotency_key="request-1",
                 request_sha256="b" * 64,
@@ -46,9 +46,9 @@ def test_template_constraints_and_independence_from_project():
                 response_json={"created": True},
             )
         )
-        db.add(TemplateRating(template_id="tpl-004", user_id="alice", rating=5))
+        db.add(TemplateRating(template_id="tpl-006", user_id="alice", rating=5))
         db.commit()
-        assert db.get(TemplateDatasetVersion, ("tpl-004", "v1")) is registration
+        assert db.get(TemplateDatasetVersion, ("tpl-006", "v1")) is registration
 
         db.add(
             TemplateUse(
@@ -66,11 +66,11 @@ def test_template_constraints_and_independence_from_project():
         db.rollback()
 
         for rating in [0, 6]:
-            db.add(TemplateRating(template_id="tpl-004", user_id="bob", rating=rating))
+            db.add(TemplateRating(template_id="tpl-006", user_id="bob", rating=rating))
             with pytest.raises(IntegrityError):
                 db.commit()
             db.rollback()
-        db.add(TemplateRating(template_id="tpl-004", user_id="alice", rating=4))
+        db.add(TemplateRating(template_id="tpl-006", user_id="alice", rating=4))
         with pytest.raises(IntegrityError):
             db.commit()
         db.rollback()

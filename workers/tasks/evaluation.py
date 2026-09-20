@@ -24,7 +24,6 @@ mechanism (e.g. asking Ollama's own API), which is out of scope here.
 from __future__ import annotations
 
 import json
-import logging
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -34,21 +33,20 @@ from uuid import UUID
 import httpx
 from celery.utils.log import get_task_logger
 
+from ai_engine.data_gen.usage import UsageAccumulator
 from ai_engine.evaluation import (
     metrics_classification,
-    metrics_ner,
     metrics_qa,
     metrics_tool_calling,
 )
+from api.core import request_context
 from api.core.config import get_settings
 from api.models.dataset import Dataset
 from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus, TaskType
-from api.core import request_context
 from api.schemas.progress import EvaluationProgress, JobCompleted, JobFailed
-from ai_engine.data_gen.usage import UsageAccumulator
 from api.services import audit_service, model_pricing, usage_service
 from workers.celery_app import celery_app
 from workers.progress import publish_ws_message, sync_redis_scope
@@ -192,9 +190,6 @@ def run_evaluation(
                         expected_test_sha256 = context.get("test_sha256")
                         if not expected_test_sha256:
                             raise RuntimeError("Template evaluation is missing the frozen test dataset SHA256")
-                    if context.get("template_id") == "tpl-004":
-                        use_llm_judge = False
-
                     ev.status = JobStatus.RUNNING
                     ev.started_at = datetime.now(timezone.utc)
 
@@ -269,7 +264,6 @@ def run_evaluation(
                 predicted=predicted,
                 expected=expected,
                 classification_labels=classification_labels,
-                template_id=context.get("template_id"),
             )
 
             # ---- 5. Optional LLM judge -------------------------------------
@@ -502,15 +496,12 @@ def _compute_metrics_for_task(
     predicted: list[str],
     expected: list[str],
     classification_labels: list[str] | None,
-    template_id: str | None = None,
 ) -> dict[str, Any]:
     """Route to the right metric module based on task_type.
 
     Pulled out of ``run_evaluation`` so the orchestrator stays thin and the
     dispatch contract is easy to characterize in unit tests.
     """
-    if template_id == "tpl-004":
-        return metrics_ner.compute_metrics(predicted=predicted, expected=expected)
     if task_type is TaskType.CLASSIFICATION:
         labels = classification_labels or sorted(set(expected))
         return metrics_classification.compute_metrics(
@@ -605,7 +596,6 @@ def _build_judge_client(settings: Any, judge_model: str) -> Any:
     wiring all three, not two, is deliberate).
     """
     from ai_engine.data_gen.openrouter_client import OpenRouterClient
-
     from api.services import circuit_breaker
 
     return OpenRouterClient(

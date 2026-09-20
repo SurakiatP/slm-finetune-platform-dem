@@ -128,14 +128,14 @@ async def test_catalog_auth_readiness_and_real_statistics(marketplace):
     result = await http.get("/api/v1/templates", headers=_headers(actor))
     assert result.status_code == 200, result.text
     page = result.json()
-    assert {item["id"] for item in page["items"]} == {"tpl-004", "tpl-006"}
+    assert {item["id"] for item in page["items"]} == {"tpl-006"}
     assert all(item["author"] == "SLM Studio Team" for item in page["items"])
     assert all(item["my_rating"] is None for item in page["items"])
     all_items = (
         await http.get("/api/v1/templates?include_unavailable=true", headers=_headers(actor))
     ).json()
-    assert all_items["total"] == 8
-    assert len(all_items["items"]) == 8
+    assert all_items["total"] == 7
+    assert len(all_items["items"]) == 7
 
 
 async def test_concurrent_replay_copies_exactly_once_and_conflicts(marketplace):

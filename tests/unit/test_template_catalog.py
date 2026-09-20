@@ -17,13 +17,24 @@ from api.services import templates_service as service
 from scripts.import_template_catalog import verify_prepared
 
 
-def test_curated_catalog_has_eight_truthful_definitions():
+def test_curated_catalog_excludes_unsupported_ner_template():
     definitions = service.load_catalog()
-    assert len(definitions) == 8
-    assert {d["id"] for d in definitions if d["data_ready"]} == {"tpl-004", "tpl-006"}
+    assert len(definitions) == 7
+    assert {d["id"] for d in definitions if d["data_ready"]} == {"tpl-006"}
+    assert {d["id"] for d in definitions} == {
+        "tpl-001",
+        "tpl-002",
+        "tpl-003",
+        "tpl-005",
+        "tpl-006",
+        "tpl-007",
+        "tpl-008",
+    }
     assert all(d["author"] == "SLM Studio Team" for d in definitions)
     assert all("rating" not in d and "forks" not in d for d in definitions)
-    assert service.get_definition("tpl-004")["task_type"] == "qa"
+    with pytest.raises(HTTPException) as exc:
+        service.get_definition("tpl-004")
+    assert exc.value.status_code == 404
 
 
 @pytest.mark.parametrize("rating", [True, 1.0, "5", 0, 6])
@@ -69,12 +80,9 @@ def test_real_prepared_manifests_verify_without_network():
     root = Path(__file__).parents[2] / "data/template-catalog/prepared"
     if not (root / "tpl-006/manifest.json").exists():
         pytest.skip("prepared source data is intentionally not distributed in git")
-    for template_id, counts in [("tpl-004", [4240, 500, 500]), ("tpl-006", [6000, 600, 900])]:
-        manifest, payloads = verify_prepared(
-            root / template_id, service.get_definition(template_id)
-        )
-        assert [len(payloads[r].splitlines()) for r in service.ROLES] == counts
-        assert manifest["template_id"] == template_id
+    manifest, payloads = verify_prepared(root / "tpl-006", service.get_definition("tpl-006"))
+    assert [len(payloads[r].splitlines()) for r in service.ROLES] == [6000, 600, 900]
+    assert manifest["template_id"] == "tpl-006"
 
 
 def test_catalog_definition_hash_is_order_independent():

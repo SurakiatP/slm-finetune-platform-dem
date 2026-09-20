@@ -1,24 +1,16 @@
 """Independent final-review regressions: no external services or GPU execution."""
 
 import hashlib
-import json
 from io import BytesIO
 from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
 
-from ai_engine.evaluation.metrics_ner import compute_metrics
 from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
 from tests.unit import test_worker_zombie_cancel_eval as harness
 from tests.unit.test_worker_zombie_cancel_eval import sync_sessionmaker as sync_sessionmaker
-
-
-def test_ner_offsets_are_not_interchangeable_with_matching_surface_text():
-    gold = json.dumps([{"text": "ไทย", "type": "LOC", "start": 0, "end": 3}])
-    wrong = json.dumps([{"text": "ไทย", "type": "LOC", "start": 4, "end": 7}])
-    assert compute_metrics(predicted=[wrong], expected=[gold])["f1_micro"] == 0
 
 
 @pytest.mark.parametrize("tampered", [False, True])
@@ -43,8 +35,8 @@ def test_evaluation_verifies_frozen_test_content_before_inference(
     with sync_sessionmaker() as session:
         job = session.get(TrainingJob, training_id)
         job.context_snapshot = {
-            "template_id": "tpl-004",
-            "system_prompt": "Extract entities.",
+            "template_id": "tpl-005",
+            "system_prompt": "Answer from the supplied documentation.",
             "test_dataset_id": str(dataset_id),
             "test_sha256": hashlib.sha256(original).hexdigest(),
         }
@@ -60,4 +52,4 @@ def test_evaluation_verifies_frozen_test_content_before_inference(
     else:
         assert result.successful(), result.result
         assert predict.call_args.kwargs["rows"][0]["question"] == "original held-out input"
-        assert predict.call_args.kwargs["system_prompt"] == "Extract entities."
+        assert predict.call_args.kwargs["system_prompt"] == "Answer from the supplied documentation."

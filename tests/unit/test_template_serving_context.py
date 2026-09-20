@@ -1,6 +1,5 @@
 """CPU contracts for immutable template evaluation and serving context."""
 
-import json
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -16,32 +15,6 @@ from api.schemas.evaluations import EvaluationCreate
 from api.schemas.inference import ChatCompletionRequest, CompletionRequest
 from api.services import evaluation_service, inference_service
 from workers.tasks import auto_pipeline, evaluation, model_export
-
-
-def test_ner_exact_spans_and_invalid_json():
-    gold = json.dumps([{"text": "ไทย", "type": "LOCATION", "start": 2, "end": 5}])
-    wrong = json.dumps([{"text": "ไทย", "type": "PERSON", "start": 2, "end": 5}])
-    result = evaluation._compute_metrics_for_task(
-        task_type=TaskType.QA,
-        predicted=[gold, wrong, "oops"],
-        expected=[gold, gold, gold],
-        classification_labels=None,
-        template_id="tpl-004",
-    )
-    assert result["precision_micro"] == 0.5
-    assert result["recall_micro"] == pytest.approx(1 / 3)
-    assert result["f1_micro"] == pytest.approx(0.4)
-    assert result["invalid_json_rate"] == pytest.approx(1 / 3)
-    assert "rouge1" not in result
-
-
-@pytest.mark.parametrize(
-    "prediction", ["{}", '[{"type":"X","start":true,"end":2,"text":"a"}]', "```json\n[]\n```"]
-)
-def test_ner_rejects_malformed_entity_output(prediction):
-    from ai_engine.evaluation.metrics_ner import compute_metrics
-
-    assert compute_metrics(predicted=[prediction], expected=["[]"])["invalid_json_rate"] == 1
 
 
 def test_prediction_passes_saved_system_prompt(monkeypatch):
@@ -143,7 +116,7 @@ def test_template_test_dataset_resolution_does_not_fall_back():
     session = MagicMock()
     session.get.return_value = None
     job = SimpleNamespace(
-        context_snapshot={"template_id": "tpl-004", "test_dataset_id": str(test_id)}
+        context_snapshot={"template_id": "tpl-005", "test_dataset_id": str(test_id)}
     )
     assert auto_pipeline._evaluation_dataset(session, job) is None
     session.get.assert_called_once_with(auto_pipeline.Dataset, test_id)
@@ -183,7 +156,7 @@ async def test_manual_template_evaluation_rejects_other_datasets(monkeypatch):
     db = AsyncMock()
     db.get.return_value = SimpleNamespace(
         context_snapshot={
-            "template_id": "tpl-004",
+            "template_id": "tpl-005",
             "test_dataset_id": str(uuid4()),
         }
     )

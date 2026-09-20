@@ -431,7 +431,7 @@ def auto_evaluate(*, training_id: str, artifact_id: str) -> dict[str, Any]:
                 )
             else:
                 task_type = holdout.task_type
-                use_llm_judge = task_type is TaskType.QA and (job.context_snapshot or {}).get("template_id") != "tpl-004"
+                use_llm_judge = task_type is TaskType.QA
                 settings = get_settings()
                 judge_model = settings.llm_judge_model if use_llm_judge else None
 

@@ -215,7 +215,7 @@ def test_template_evaluates_saved_test_after_project_deletion(
             num_samples=1, storage_uri="s3://bucket/template-test.jsonl",
             generation_metadata={"role": "test"}))
         job = session.get(TrainingJob, UUID(fixture.training_id))
-        job.context_snapshot = {"template_id": "tpl-004", "test_dataset_id": str(test_id)}
+        job.context_snapshot = {"template_id": "tpl-005", "test_dataset_id": str(test_id)}
         job.project_id = None
         session.commit()
     result = auto_pipeline.auto_evaluate(training_id=fixture.training_id, artifact_id=fixture.artifact_id)
@@ -223,7 +223,7 @@ def test_template_evaluates_saved_test_after_project_deletion(
     with sync_sessionmaker() as session:
         ev = session.get(EvaluationRun, UUID(result["evaluation_id"]))
         assert ev.dataset_id == test_id
-    assert fake_run_evaluation.apply_async_calls[0]["kwargs"]["use_llm_judge"] is False
+    assert fake_run_evaluation.apply_async_calls[0]["kwargs"]["use_llm_judge"] is True
 
 
 # ---- holdout resolution ------------------------------------------------

@@ -101,7 +101,7 @@ async def _verify_registration(client, registration, definition, manifest):
 
 
 async def import_catalog(
-    db, prepared_root: Path, *, template_ids=("tpl-004", "tpl-006"), bucket=None, client=None
+    db, prepared_root: Path, *, template_ids=("tpl-006",), bucket=None, client=None
 ) -> list[TemplateDatasetVersion]:
     client = client or service.get_minio_client()
     bucket = bucket or service.get_settings().minio_datasets_bucket
@@ -190,7 +190,7 @@ async def _main(args):
             rows = await import_catalog(
                 db,
                 args.prepared_root,
-                template_ids=args.template_ids or ("tpl-004", "tpl-006"),
+                template_ids=args.template_ids or ("tpl-006",),
                 bucket=args.bucket,
             )
             for row in rows:

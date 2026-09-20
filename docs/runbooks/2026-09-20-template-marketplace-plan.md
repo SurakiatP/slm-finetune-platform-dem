@@ -27,7 +27,7 @@ snapshots. These must not be represented as a green baseline.
 2. **Three disjoint parallel tasks**, only after foundation completes:
    - Catalog/materialization: template catalog/schema/service/router; project
      schema/service/router; main router wiring; import/cleanup scripts and tests.
-     Acceptance: all eight definitions, two registered-ready only; real statistics,
+     Acceptance: seven supported definitions, one registered-ready only; real statistics,
      eligible rating, durable concurrent idempotency and independent split copies.
    - Training: training schema/service, manual/HPO workers, formatters/trainer,
      Optuna objective and tests. Acceptance: immutable effective context; heldout
@@ -35,8 +35,8 @@ snapshots. These must not be represented as a green baseline.
      legacy defaults remain compatible. Training owner/name scope fixed here.
    - Serving/evaluation: evaluation service/worker, inference service/schema,
      export worker, automatic pipeline dispatch, Ollama helper as needed,
-     exact NER metric and tests. Acceptance: saved prompt on UUID/tag chat/text,
-     explicit overrides, fixed test evaluation, span/type F1, retained namespace.
+     Acceptance: saved prompt on UUID/tag chat/text, explicit overrides,
+     fixed test evaluation and retained namespace.
 3. **Parent integration**: dedicated real PG/MinIO tests, package JSON inclusion,
    OpenAPI export, frontend examples, import/cleanup and GPU runbook. Check
    concurrency, conflicting payload, failed copies/cleanup, replay after deletion,
@@ -82,15 +82,15 @@ when global AUTH_REQUIRED is false. Ordinary project create remains unchanged.
 - Planner completed and interfaces frozen; foundation complete (253 focused tests).
 - Real Postgres migration/backfill/retention/downgrade/reupgrade test: PASS.
 - Wave 2 catalog, training and serving complete; no code commits yet.
-- Aggregate unit suite after hash repair: 2,173 passed, the same 4 baseline
+- Aggregate unit suite after NER removal: 2,160 passed, the same 4 baseline
   failures, 4 skipped; 152 snapshots passed. No new full-suite failure.
-- Real PG/MinIO and offline full-chat integration suite: 11 passed. Covers
+- Real PG/MinIO and offline full-chat integration suite: 10 passed. Covers
   migration/backfill, real imports, concurrent durable create/replay, rating,
   private split copies, copy-failure cleanup, retained ownership and training
-  submission snapshots. The 12,740 ready rows fit their actual catalog prompts
-  within 2,048 cached-tokenizer tokens; actual GPU runtime remains unverified.
-- Both ready sources registered only in the disposable local test stack, not
-  production.
+  submission snapshots. The 7,500 ready rows fit their actual catalog prompt
+  within 2,048 cached-tokenizer tokens.
+- Thai Sentiment passed Vast.ai train/export/evaluate/inference; its prepared
+  source is registered on Vast.ai and the disposable local stack, not production.
 - Independent delegate-build review initially found missing `test_sha256`
   verification before evaluation inference. User authorized the scoped repair:
   `get_jsonl` now verifies optional raw-byte SHA256, and template evaluation
@@ -106,5 +106,5 @@ when global AUTH_REQUIRED is false. Ordinary project create remains unchanged.
   OSV inventory queried 201 public local distributions; 9 packages matched
   advisories. Local versions/Dockerfile declarations are not deployed SBOMs or
   exploitability proof. No dependency upgrades, runtime repairs or deployment.
-- GPU validation pending new vast.ai SSH; production deployment remains gated.
+- Vast.ai GPU validation passed for the only ready template; production deployment remains gated.
 - Frontend wiring belongs to frontend team and is not backend completion evidence.

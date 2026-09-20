@@ -2,8 +2,8 @@
 
 วันที่: 2026-09-20 | Branch: `feat/frontend-contract-sync`
 
-สถานะ: ผู้ใช้อนุมัติให้ลงมือแล้ว กำลัง implement ตาม implementation ledger
-ยังไม่ได้ train หรือ deploy; ผลผ่านต้องมีหลักฐานการทดสอบและ independent review
+สถานะ: implementation และ Vast.ai validation ของ Thai Sentiment ผ่านแล้ว;
+ผู้ใช้ยืนยันภายหลังว่า product ไม่มี NER จึงถอด `tpl-004` ออกจาก catalog และ release gate
 
 ## 1. ผลลัพธ์ที่ต้องส่งมอบ
 
@@ -25,7 +25,7 @@ prefill wizard, การแสดง “ยังไม่มีคะแนน
 |---|---|
 | ผู้จัดทำ template | `SLM Studio Team`; เครดิต/สิทธิ์ dataset แยกตามแหล่งจริง |
 | Catalog | ทีมแก้ curated file แล้ว deploy; ไม่มี CRUD template สำหรับผู้ใช้ |
-| เปิดใช้ | เฉพาะ Thai NER `tpl-004` และ Thai Sentiment `tpl-006` หลังลงทะเบียนข้อมูลสำเร็จ อีก 6 รายการแสดง “ยังไม่พร้อม” พร้อมเหตุผล |
+| เปิดใช้ | เฉพาะ Thai Sentiment `tpl-006` หลังลงทะเบียนข้อมูลสำเร็จ อีก 6 รายการแสดง “ยังไม่พร้อม” พร้อมเหตุผล; ไม่มี NER ใน product |
 | โมเดลตั้งต้น | Qwen2.5-1.5B-Instruct; ใช้ ID ที่ backend รองรับจริง `unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit` |
 | สำเนาข้อมูล | แยก DB rows และไฟล์ MinIO ต่อโปรเจกต์ ไม่ใช้ object ต้นฉบับร่วมกัน |
 | การใช้ข้อมูล | ฝึกจากข้อมูลที่เตรียมไว้โดยตรง ไม่เรียก SDG และไม่เริ่ม Train เมื่อสร้างโปรเจกต์ |
@@ -42,13 +42,12 @@ prefill wizard, การแสดง “ยังไม่มีคะแนน
 | ประวัติสถิติ | ลบโปรเจกต์แล้วไม่ลด forks และไม่ลบคะแนน/สิทธิ์ให้คะแนนที่ได้มาแล้ว |
 | Retry | สร้างซ้ำด้วย idempotency key เดิมต้องไม่เกิดโปรเจกต์/สำเนา/จำนวน forks ซ้ำ |
 | Environment | Local สำหรับ CPU/API/DB → vast.ai สำหรับ GPU → slmpc ผ่าน wetty หลังผ่านเกณฑ์ |
-| GPU รอบแรก | ฝึกหนึ่งครั้งต่อ template, 2 epochs, รันทีละงาน ไม่ HPO; ไม่ปรับวนเองเมื่อไม่ผ่าน |
+| GPU รอบแรก | ฝึก Thai Sentiment หนึ่งครั้ง, 2 epochs, ไม่ HPO; ไม่ปรับวนเองเมื่อไม่ผ่าน |
 
 ## 3. ข้อมูลที่มีจริง
 
 | Template | Train | Validation | Test | การใช้รอบนี้ |
 |---|---:|---:|---:|---|
-| Thai NER | 4,240 | 500 | 500 | เปิดเมื่อ import/ตรวจสอบครบ |
 | Thai Sentiment | 6,000 | 600 | 900 | เปิดเมื่อ import/ตรวจสอบครบ |
 | Invoice QA | 317 | 44 | 16 | เก็บเป็น partial; English synthetic ไม่ครบ Thai/English |
 | Function Calling | 162 | 17 | 41 | partial; CRUD ไม่ครบ |
@@ -77,7 +76,7 @@ prefill wizard, การแสดง “ยังไม่มีคะแนน
   `include_unavailable=true` เพื่อแสดงครบพร้อมการ์ด “ยังไม่พร้อม” ได้
 - ใช้ auth/Supabase identity ที่มีอยู่สำหรับ catalog และการกระทำของผู้ใช้
   ไม่รับ `owner_id` จาก request และไม่ใช้ IP/anonymous identity แทนผู้ให้คะแนน
-- คง task enum เดิม: classification/tool_calling/qa; NER เป็น QA
+- คง task enum เดิม: classification/tool_calling/qa; ไม่มี NER หรือ task type แฝง
 - เก็บ curated definition/version ในไฟล์; เก็บ registration, usage และคะแนน
   ใน Postgres ไม่เพิ่มหน้าจอ admin หรือระบบ CMS
 
@@ -163,15 +162,14 @@ Backfill เฉพาะรายการที่พิสูจน์ owner �
 - ตรวจรุ่น GPU/VRAM/driver/storage ก่อนเริ่ม ไม่สมมติว่าเครื่องเก่าใน hub ยังอยู่
 - ใช้ branch/artifact version ที่ผ่าน Local; ไม่เช่าเครื่องหรือสร้างค่าใช้จ่าย
   ใหม่เอง และไม่ส่งข้อมูลไป SDG/OpenRouter อัตโนมัติ
-- Qwen 1.5B, manual training 2 epochs หนึ่งครั้งต่อ template รันทีละงาน
+- Qwen 1.5B, manual training 2 epochs สำหรับ Thai Sentiment หนึ่งครั้ง
   ค่าอื่นใช้ค่าปลอดภัยของ backend; บันทึก seed/config/data hashes/prompt
-- ทดสอบ Train → Evaluate → Export → Inference ทั้งสอง template และตรวจ
+- ทดสอบ Train → Evaluate → Export → Inference สำหรับ template ที่เปิดใช้ และตรวจ
   ชุด validation ถูกใช้จริง ไม่ใช่ internal random split ที่มาแทนเงียบ ๆ
 - เทียบ base และ finetuned model บน test เดียวกันด้วย preprocessing/prompt/
   decoding settings ที่สอดคล้องกัน ใช้ final artifact ที่จะ serve จริง
-- Sentiment ใช้ Macro-F1; NER ใช้ exact entity type + start/end span micro-F1
-  พร้อมรายงาน precision/recall และอัตราคำตอบ JSON ผิดรูป ไม่ใช้ QA ROUGE แทน
-- ต้องผ่านเส้นทางการทำงาน และคะแนนหลักหลังฝึกไม่ต่ำกว่า base สำหรับทั้งสองชุด
+- Sentiment ใช้ Macro-F1 และ accuracy บน test split ที่ตรึง hash ไว้
+- ต้องผ่านเส้นทางการทำงาน และคะแนนหลักหลังฝึกไม่ต่ำกว่า base
   คะแนนเท่าฐานไม่ใช่หลักฐานว่าปรับปรุงขึ้น; รายงาน absolute scores ด้วย
 - ถ้าคุณภาพแย่ลง/งานฝึกล้มเหลว ให้หยุดและเสนอทางเลือก ไม่ฝึกวนหรือปรับตาม test
   เอง การทดลองเพิ่มต้องขอผู้ใช้ก่อน ไม่ขยายเป็น HPO อัตโนมัติ
