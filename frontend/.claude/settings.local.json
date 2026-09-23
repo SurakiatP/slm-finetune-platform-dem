@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import openpyxl; print\\('openpyxl ok'\\)\")",
+      "Bash(pip install *)",
+      "Bash(python generate_api_doc.py)",
+      "Bash(python -c \"import reportlab; print\\('ok', reportlab.Version\\)\")",
+      "Bash(python generate_api_pdf.py)",
+      "Bash(python gen_api_doc_v2.py)",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "Bash(python -c ' *)"
+    ]
+  }
+}
