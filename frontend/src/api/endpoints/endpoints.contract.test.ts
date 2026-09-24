@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
     get: vi.fn(),
     post: vi.fn(),
     patch: vi.fn(),
+    put: vi.fn(),
     delete: vi.fn(),
     postForm: vi.fn(),
   },
@@ -30,6 +31,7 @@ import * as meta from '@/api/endpoints/meta'
 import * as models from '@/api/endpoints/models'
 import * as projects from '@/api/endpoints/projects'
 import * as system from '@/api/endpoints/system'
+import * as templates from '@/api/endpoints/templates'
 import * as trainings from '@/api/endpoints/trainings'
 import * as usage from '@/api/endpoints/usage'
 
@@ -132,5 +134,15 @@ describe('OpenAPI endpoint wrappers', () => {
     expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/usage')
     expect(mocks.api.get).toHaveBeenCalledWith('/health')
     expect(mocks.api.get).toHaveBeenCalledWith('/ready')
+  })
+
+  it('covers the backend-owned template marketplace', () => {
+    templates.listTemplates({ category: 'Thai Language', featured: true, search: 'sentiment', sort: 'rating' })
+    templates.rateTemplate('tpl-006', 5)
+
+    expect(mocks.api.get).toHaveBeenCalledWith(
+      '/api/v1/templates?category=Thai+Language&featured=true&search=sentiment&sort=rating',
+    )
+    expect(mocks.api.put).toHaveBeenCalledWith('/api/v1/templates/tpl-006/rating', { rating: 5 })
   })
 })

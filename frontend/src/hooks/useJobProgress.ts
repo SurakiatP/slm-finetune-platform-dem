@@ -204,16 +204,11 @@ export function useJobProgress(jobId: string | null, options: UseJobProgressOpti
         }
       }
 
-      socket.onclose = (event) => {
+      socket.onclose = () => {
         dispatch({ type: 'socket', open: false })
-        if (event.code === 4401) {
-          dispatch({ type: 'connection-error', error: 'unauthorized' })
-          return
-        }
-        if (event.code === 4403) {
-          dispatch({ type: 'connection-error', error: 'forbidden' })
-          return
-        }
+        // A rejected pre-accept WebSocket handshake is exposed by browsers
+        // as code 1006.  Backend codes 4401/4403 are therefore not a usable
+        // browser signal; treat every unexpected close as reconnectable.
         if (!opened) {
           handshakeFailures += 1
           if (handshakeFailures >= 3) return

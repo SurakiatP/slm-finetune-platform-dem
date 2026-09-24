@@ -106,6 +106,83 @@ export interface DatasetPreview {
   total: number
 }
 
+// --- Template marketplace (api/schemas/templates.py) ------------------------
+
+export type TemplateSort = 'popular' | 'rating' | 'forks'
+
+/** Curated, backend-owned template metadata. `available` is authoritative:
+ * an unavailable template must remain viewable but cannot start a project. */
+export interface Template {
+  id: string
+  version: string
+  name: string
+  description: string
+  long_description: string
+  category: string
+  task_type: TaskType
+  base_model: string
+  prompt: string
+  epochs: number
+  learning_rate: number
+  dataset_size: number
+  forks: number
+  author: string
+  tags: string[]
+  featured: boolean
+  available: boolean
+  unavailable_reason: string | null
+  split_counts: Record<string, number>
+  source_attribution: Record<string, unknown> | null
+  rating: number | null
+  rating_count: number
+  my_rating: number | null
+}
+
+export interface TemplateRatingResponse {
+  rating: number | null
+  rating_count: number
+  my_rating: number | null
+}
+
+export interface DatasetInsightLabelCount {
+  label: string
+  count: number
+  percent: number
+}
+
+export interface DatasetInsightLengthBucket {
+  bucket: string
+  count: number
+}
+
+export interface DatasetInsightIssue {
+  id: string
+  severity: 'critical' | 'warning' | 'info'
+  category: string
+  title: string
+  description: string
+  affected_rows: number
+  suggestion: string
+}
+
+/** Aggregate quality scan from `GET /datasets/{id}/insights`. */
+export interface DatasetInsights {
+  dataset_id: string
+  task_type: TaskType
+  row_count: number
+  scanned_rows: number
+  scan_truncated: boolean
+  label_distribution: DatasetInsightLabelCount[]
+  near_duplicate_count: number
+  duplicate_rows: number
+  missing_labels: number
+  outliers: number
+  length_distribution: DatasetInsightLengthBucket[]
+  issues: DatasetInsightIssue[]
+  overall_quality_score: number
+  readiness: 'ready' | 'caveats' | 'fix'
+}
+
 // --- Data formats (api/schemas/data_formats.py) ------------------------------
 
 export interface ClassificationSample {

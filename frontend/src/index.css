@@ -97,11 +97,40 @@
 }
 
 @layer base {
+  html {
+    scrollbar-color: hsl(var(--muted-foreground) / 0.5) hsl(var(--muted));
+    scrollbar-width: thin;
+  }
+
   * {
     @apply border-border;
   }
   body {
     @apply bg-background text-foreground font-sans antialiased;
+  }
+}
+
+/* One application-wide scrollbar baseline. Component classes may only alter
+ * geometry; colours and operability are inherited by every owned scroller. */
+@media (forced-colors: none) {
+  *::-webkit-scrollbar {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: hsl(var(--muted));
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.5);
+    border: 0.2rem solid hsl(var(--muted));
+    border-radius: 999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover,
+  *::-webkit-scrollbar-thumb:active {
+    background: hsl(var(--primary) / 0.75);
   }
 }
 

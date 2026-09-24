@@ -28,7 +28,6 @@ import {
   SidebarFooter,
 } from "@/components/ui/sidebar";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -42,11 +41,11 @@ const navItems = [
   { titleKey: "evaluationsPage.navLabel", url: "/evaluations", icon: ClipboardList },
   { titleKey: "nav.playground", url: "/playground", icon: MessageSquare },
   { titleKey: "nav.usage", url: "/usage", icon: Wallet },
-  { titleKey: "nav.templates", url: "/templates", icon: LayoutTemplate, prototype: true },
-  { titleKey: "nav.analytics", url: "/analytics", icon: BarChart3, prototype: true },
-  { titleKey: "nav.deployment", url: "/deployment", icon: Rocket, prototype: true },
-  { titleKey: "nav.leaderboard", url: "/leaderboard", icon: Trophy, prototype: true },
-  { titleKey: "nav.apiKeys", url: "/api-keys", icon: Key, prototype: true },
+  { titleKey: "nav.templates", url: "/templates", icon: LayoutTemplate },
+  { titleKey: "nav.analytics", url: "/analytics", icon: BarChart3 },
+  { titleKey: "nav.deployment", url: "/deployment", icon: Rocket },
+  { titleKey: "nav.leaderboard", url: "/leaderboard", icon: Trophy },
+  { titleKey: "nav.apiKeys", url: "/api-keys", icon: Key },
   { titleKey: "nav.settings", url: "/settings", icon: Settings },
 ];
 
@@ -84,7 +83,6 @@ export function AppSidebar() {
                     >
                       <item.icon className="h-4 w-4 shrink-0" />
                       <span>{t(item.titleKey)}</span>
-                      {item.prototype ? <Badge variant="outline" className="ml-auto text-[9px]">Prototype</Badge> : null}
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
