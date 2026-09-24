@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { PageTransition, FadeIn } from "@/components/motion";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -11,10 +11,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, Database, CheckCircle2, AlertTriangle, Tag, Activity, FileText, Loader2, Sparkles } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from "recharts";
 import { DatasetList } from "@/components/dataset/DatasetList";
-import { mockDatasets } from "@/data/datasetMockData";
-import { computeQualityReport } from "@/lib/qualityCalculator";
 import { useLanguage } from "@/i18n/LanguageContext";
-import { useProject } from "@/hooks/queries";
+import { useDatasetInsights, useDatasets, useProject } from "@/hooks/queries";
+import type { Dataset } from "@/api/types";
 
 const READINESS_BANDS = (score: number, t: (k: string) => string) => {
   if (score >= 85) return { label: t("insights.readyToTrain"), color: "text-emerald-500", icon: CheckCircle2 };
@@ -23,29 +22,38 @@ const READINESS_BANDS = (score: number, t: (k: string) => string) => {
 };
 
 const PIE_COLORS = ["hsl(var(--primary))", "hsl(var(--primary)/0.85)", "hsl(var(--primary)/0.7)", "hsl(var(--primary)/0.55)", "hsl(var(--primary)/0.4)", "hsl(var(--destructive)/0.7)"];
+const EMPTY_DATASETS: Dataset[] = [];
 
 export default function DatasetInsights() {
   const { id } = useParams<{ id: string }>();
   const { data: project, isLoading } = useProject(id ?? "");
   const { t } = useLanguage();
-  const [selectedDataset, setSelectedDataset] = useState(mockDatasets[0].id);
+  const [selectedDataset, setSelectedDataset] = useState<string>();
+  const { data: datasetsPage, isLoading: datasetsLoading } = useDatasets(project?.id, { limit: 100 });
+  const datasets = datasetsPage?.items ?? EMPTY_DATASETS;
+  const { data: report, isLoading: insightsLoading } = useDatasetInsights(selectedDataset);
 
-  const report = useMemo(() => computeQualityReport(selectedDataset), [selectedDataset]);
-  const datasetMeta = mockDatasets.find((d) => d.id === selectedDataset)!;
-  const band = READINESS_BANDS(report.overallScore, t);
-  const BandIcon = band.icon;
+  useEffect(() => {
+    if (!selectedDataset || !datasets.some((dataset) => dataset.id === selectedDataset)) {
+      setSelectedDataset(datasets[0]?.id);
+    }
+  }, [datasets, selectedDataset]);
+
+  const band = report ? READINESS_BANDS(report.overall_quality_score, t) : null;
+  const BandIcon = band?.icon;
 
   // Coverage = how many class samples meet a healthy minimum (assume 30 per class as min target for fine-tune)
   const minPerClass = 30;
-  const classesAboveMin = report.classDistribution.filter((c) => c.count >= minPerClass).length;
-  const coveragePct = report.classDistribution.length
-    ? Math.round((classesAboveMin / report.classDistribution.length) * 100)
+  const classesAboveMin = report?.label_distribution.filter((c) => c.count >= minPerClass).length ?? 0;
+  const coveragePct = report?.label_distribution.length
+    ? Math.round((classesAboveMin / report.label_distribution.length) * 100)
     : 0;
 
-  const labelCoverage = report.classDistribution.map((c) => ({
+  const labelCoverage = (report?.label_distribution ?? []).map((c) => ({
     ...c,
     healthy: c.count >= minPerClass,
   }));
+  const datasetMeta = datasets.find((dataset) => dataset.id === selectedDataset);
 
   if (isLoading) {
     return (
@@ -99,25 +107,31 @@ export default function DatasetInsights() {
             <DatasetList projectId={project.id} />
           </TabsContent>
 
-          {/* The original insights report. Still computed over a sample dataset —
-              the Engine does not expose per-row statistics yet. */}
           <TabsContent value="quality" className="mt-4 space-y-6">
-            <FadeIn>
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs text-muted-foreground">
-                  Illustrative quality analysis over a sample dataset — not yet wired to a real
-                  dataset's rows.
-                </p>
-                <Select value={selectedDataset} onValueChange={setSelectedDataset}>
-                  <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {mockDatasets.map((d) => (
-                      <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </FadeIn>
+            {datasetsLoading ? (
+              <div className="flex justify-center py-12"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
+            ) : datasets.length === 0 ? (
+              <p className="py-12 text-center text-sm text-muted-foreground">Upload or generate a dataset to view its quality insights.</p>
+            ) : insightsLoading || !report || !band || !BandIcon ? (
+              <div className="flex justify-center py-12"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
+            ) : (
+              <>
+                <FadeIn>
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs text-muted-foreground">
+                      Quality analysis is calculated from the selected dataset in the Engine.
+                      {report.scan_truncated ? ` Sampled ${report.scanned_rows.toLocaleString()} rows.` : ""}
+                    </p>
+                    <Select value={selectedDataset} onValueChange={setSelectedDataset}>
+                      <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {datasets.map((dataset) => (
+                          <SelectItem key={dataset.id} value={dataset.id}>{dataset.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </FadeIn>
 
             {/* Readiness Banner */}
             <FadeIn delay={0.05}>
@@ -128,11 +142,11 @@ export default function DatasetInsights() {
                     <div>
                       <p className="text-sm font-semibold text-foreground">{band.label}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {t("insights.readinessDesc").replace("{score}", String(report.overallScore))}
+                      {t("insights.readinessDesc").replace("{score}", String(report.overall_quality_score))}
                       </p>
                     </div>
                     <Badge variant="outline" className="text-xs shrink-0">
-                      {t("insights.qualityScore")}: <span className={`ml-1 font-bold ${band.color}`}>{report.overallScore}/100</span>
+                      {t("insights.qualityScore")}: <span className={`ml-1 font-bold ${band.color}`}>{report.overall_quality_score}/100</span>
                     </Badge>
                   </div>
                 </AlertDescription>
@@ -143,10 +157,10 @@ export default function DatasetInsights() {
             <FadeIn delay={0.1}>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {[
-                  { label: t("insights.totalRows"), value: report.totalRows.toLocaleString(), icon: FileText },
-                  { label: t("insights.uniqueLabels"), value: report.classDistribution.length || "—", icon: Tag },
+                  { label: t("insights.totalRows"), value: report.row_count.toLocaleString(), icon: FileText },
+                  { label: t("insights.uniqueLabels"), value: report.label_distribution.length || "—", icon: Tag },
                   { label: t("insights.coverage"), value: `${coveragePct}%`, icon: Activity },
-                  { label: t("insights.duplicates"), value: report.duplicateRows, icon: AlertTriangle },
+                  { label: t("insights.duplicates"), value: report.duplicate_rows, icon: AlertTriangle },
                 ].map((s) => (
                   <Card key={s.label}>
                     <CardContent className="p-4 flex items-center gap-3">
@@ -164,7 +178,7 @@ export default function DatasetInsights() {
             </FadeIn>
 
             {/* Label Coverage */}
-            {report.classDistribution.length > 0 && (
+            {report.label_distribution.length > 0 && (
               <FadeIn delay={0.15}>
                 <Card>
                   <CardHeader>
@@ -201,7 +215,7 @@ export default function DatasetInsights() {
                         <ResponsiveContainer width="100%" height="100%">
                           <PieChart>
                             <Pie
-                              data={report.classDistribution}
+                              data={report.label_distribution}
                               dataKey="count"
                               nameKey="label"
                               cx="50%"
@@ -210,7 +224,7 @@ export default function DatasetInsights() {
                               label={(entry) => entry.label}
                               labelLine={false}
                             >
-                              {report.classDistribution.map((_, i) => (
+                              {report.label_distribution.map((_, i) => (
                                 <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                               ))}
                             </Pie>
@@ -234,7 +248,7 @@ export default function DatasetInsights() {
                 <CardContent>
                   <div className="h-[220px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={report.lengthDistribution}>
+                      <BarChart data={report.length_distribution}>
                         <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
                         <XAxis dataKey="bucket" tick={{ fontSize: 10 }} />
                         <YAxis tick={{ fontSize: 10 }} />
@@ -282,13 +296,15 @@ export default function DatasetInsights() {
             <FadeIn delay={0.3}>
               <div className="flex justify-between items-center pt-2">
                 <p className="text-xs text-muted-foreground">
-                  {datasetMeta.name} · {datasetMeta.format} · {datasetMeta.fileSize}
+                  {datasetMeta?.name} · {datasetMeta?.num_samples.toLocaleString()} rows
                 </p>
                 <Button asChild>
                   <Link to={`/projects/${id}/training`}>{t("insights.startTraining")} →</Link>
                 </Button>
               </div>
             </FadeIn>
+              </>
+            )}
           </TabsContent>
         </Tabs>
       </div>
