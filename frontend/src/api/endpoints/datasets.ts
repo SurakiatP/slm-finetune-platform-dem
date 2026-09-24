@@ -2,6 +2,7 @@ import { api, pageQuery } from '@/api/client'
 import type {
   Dataset,
   DatasetDownloadUrl,
+  DatasetInsights,
   DatasetPreview,
   JobStatus,
   Page,
@@ -82,3 +83,8 @@ export function uploadSeedDataset(input: {
 export function generateDataset(body: SDGRequest, idempotencyKey?: string): Promise<SDGJobAccepted> {
   return api.post(`${BASE}/generate`, body, { idempotencyKey })
 }
+
+export function getDatasetInsights(id: string): Promise<DatasetInsights> {
+  return api.get(`${BASE}/${id}/insights`)
+}
+

@@ -42,18 +42,18 @@ supabase migration list</pre>
 
   <h2>3. ตรวจ Supabase และ build frontend image</h2>
   <p>ตั้งไฟล์ <code>.env</code> ในโฟลเดอร์ frontend:</p>
-  <pre>VITE_SUPABASE_PROJECT_ID="&lt;PROJECT_REF&gt;"
-VITE_SUPABASE_PUBLISHABLE_KEY="&lt;PUBLISHABLE_KEY&gt;"
-VITE_SUPABASE_URL="https://&lt;PROJECT_REF&gt;.supabase.co"
+  <pre>VITE_SUPABASE_PROJECT_ID="mqoftavekwbsgpwzjdfb"
+VITE_SUPABASE_PUBLISHABLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xb2Z0YXZla3dic2dwd3pqZGZiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0Njk0OTksImV4cCI6MjA5MzA0NTQ5OX0.MQ7wsVQ-Xhsp_Xc-S64DxdYHa-ogjAF2Ij_PR1Tqeak"
+VITE_SUPABASE_URL="https://mqoftavekwbsgpwzjdfb.supabase.co"
 VITE_ENGINE_HOST=""
 VITE_ENGINE_PROXY_TARGET="http://localhost:8088"</pre>
   <pre>npm run check:supabase
 
 docker build --pull \
   --build-arg VITE_ENGINE_HOST= \
-  --build-arg VITE_SUPABASE_PROJECT_ID="&lt;PROJECT_REF&gt;" \
-  --build-arg VITE_SUPABASE_PUBLISHABLE_KEY="&lt;PUBLISHABLE_KEY&gt;" \
-  --build-arg VITE_SUPABASE_URL="https://&lt;PROJECT_REF&gt;.supabase.co" \
+  --build-arg VITE_SUPABASE_PROJECT_ID="mqoftavekwbsgpwzjdfb" \
+  --build-arg VITE_SUPABASE_PUBLISHABLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xb2Z0YXZla3dic2dwd3pqZGZiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0Njk0OTksImV4cCI6MjA5MzA0NTQ5OX0.MQ7wsVQ-Xhsp_Xc-S64DxdYHa-ogjAF2Ij_PR1Tqeak" \
+  --build-arg VITE_SUPABASE_URL="https://mqoftavekwbsgpwzjdfb.supabase.co" \
   -t sady567/slm-frontend:&lt;VERSION&gt; \
   -t sady567/slm-frontend:latest .
 
@@ -62,7 +62,7 @@ docker push sady567/slm-frontend:latest</pre>
 
   <h2>4. ตั้ง backend environment</h2>
   <p>แก้ <code>slm-finetune-platform-dem/.env</code> โดยให้ Supabase URL ตรงกับ frontend:</p>
-  <pre>SUPABASE_URL=https://&lt;PROJECT_REF&gt;.supabase.co
+  <pre>SUPABASE_URL=https://mqoftavekwbsgpwzjdfb.supabase.co
 SUPABASE_JWT_AUDIENCE=authenticated
 SUPABASE_JWT_SECRET=
 AUTH_REQUIRED=false
@@ -116,6 +116,7 @@ docker compose config
 docker network inspect slm-platform_slm-net</pre>
   <ul>
     <li><code>ERR_NAME_NOT_RESOLVED</code>: Project URL ผิดหรือ Supabase project ใช้งานไม่ได้</li>
+    <li><code>Invalid API Key</code>: frontend ที่กำลังเปิดอยู่ฝัง publishable/anon key เก่าไว้ตั้งแต่ขั้น <code>docker build</code> ให้ build และ push image ใหม่โดยส่ง <code>VITE_SUPABASE_URL</code>, <code>VITE_SUPABASE_PROJECT_ID</code> และ <code>VITE_SUPABASE_PUBLISHABLE_KEY</code> เป็น <code>--build-arg</code> ตามขั้นตอนที่ 3 แล้ว pull และ recreate container ตามขั้นตอนที่ 5; การใส่ <code>-e VITE_...</code> ตอน <code>docker run</code> อย่างเดียวไม่เปลี่ยนไฟล์ JavaScript ที่ build ไปแล้ว</li>
     <li><code>redirect URL not allowed</code>: Site URL/Redirect URL ใน Supabase ไม่ตรง ngrok domain</li>
     <li><code>401 invalid token</code>: Backend และ frontend ใช้คนละ Supabase project หรือ JWKS ติดต่อไม่ได้</li>
     <li><code>502 Bad Gateway</code>: frontend container resolve <code>slm-edge</code> ไม่ได้หรืออยู่คนละ Docker network</li>

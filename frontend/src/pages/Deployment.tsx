@@ -1,9 +1,16 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { PageTransition, FadeIn } from "@/components/motion";
 import {
   Rocket,
@@ -18,11 +25,15 @@ import {
   Code2,
   ExternalLink,
   Zap,
+  Key,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { useModels, useTrainings, useModelDownloadUrl } from "@/hooks/queries";
 import { buildTrainingNameMap, modelDisplayName } from "@/components/model/modelNaming";
 import { EngineEmptyState } from "@/components/engine/EngineEmptyState";
 import { useToast } from "@/hooks/use-toast";
+import { listApiKeys, type ApiKey } from "@/lib/apiKeysApi";
 import type { ModelArtifact } from "@/api/types";
 
 export default function Deployment() {
@@ -32,6 +43,22 @@ export default function Deployment() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const { toast } = useToast();
   const downloadMutation = useModelDownloadUrl();
+
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
+  const [selectedApiKeyId, setSelectedApiKeyId] = useState<string>("");
+  const [showRealApiKey, setShowRealApiKey] = useState(false);
+
+  useEffect(() => {
+    listApiKeys()
+      .then((res) => {
+        const active = res.filter((k) => k.status === "active");
+        setApiKeys(active);
+        if (active.length > 0) {
+          setSelectedApiKeyId(active[0].id);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const models = useMemo(() => modelsPage?.items ?? [], [modelsPage?.items]);
   const trainingNames = useMemo(() => buildTrainingNameMap(trainingsPage?.items), [trainingsPage]);
@@ -76,9 +103,14 @@ export default function Deployment() {
 
   const activeTag = selectedModel?.ollama_model_tag ?? (selectedModel ? `smt-model-${selectedModel.id.slice(0, 8)}` : "my-model");
 
+  const activeKeyObj = apiKeys.find((k) => k.id === selectedApiKeyId);
+  const snippetApiKey = activeKeyObj
+    ? (showRealApiKey ? activeKeyObj.rawKey : `${activeKeyObj.keyPrefix}••••••••${activeKeyObj.keySuffix.slice(-4)}`)
+    : "YOUR_API_KEY";
+
   const curlSnippet = `curl -X POST http://localhost:8000/api/v1/inference/chat/completions \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Authorization: Bearer ${snippetApiKey}" \\
   -d '{
     "model": "${activeTag}",
     "messages": [
@@ -91,7 +123,7 @@ export default function Deployment() {
 
 client = openai.OpenAI(
     base_url="http://localhost:8000/api/v1/inference",
-    api_key="YOUR_API_KEY"  # Or local bearer token
+    api_key="${snippetApiKey}"  # Or local bearer token
 )
 
 response = client.chat.completions.create(
@@ -108,7 +140,7 @@ print(response.choices[0].message.content)`;
 
 const client = new OpenAI({
   baseURL: "http://localhost:8000/api/v1/inference",
-  apiKey: "YOUR_API_KEY",
+  apiKey: "${snippetApiKey}",
 });
 
 async function main() {
@@ -359,10 +391,48 @@ main();`;
 
                       {/* API Endpoints & Code Snippets Tabs */}
                       <div className="space-y-2 pt-2">
-                        <div className="flex items-center justify-between">
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b pb-2">
                           <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                             <Code2 className="h-4 w-4 text-primary" /> Integration Snippets (OpenAI Compatible)
                           </span>
+
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {apiKeys.length > 0 ? (
+                              <>
+                                <div className="flex items-center gap-1.5">
+                                  <Key className="h-3.5 w-3.5 text-primary shrink-0" />
+                                  <Select value={selectedApiKeyId} onValueChange={setSelectedApiKeyId}>
+                                    <SelectTrigger className="h-7 text-xs w-[140px] sm:w-[170px]">
+                                      <SelectValue placeholder="Select API Key" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {apiKeys.map((k) => (
+                                        <SelectItem key={k.id} value={k.id} className="text-xs">
+                                          {k.name}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 text-xs gap-1"
+                                  onClick={() => setShowRealApiKey((v) => !v)}
+                                  title={showRealApiKey ? "Mask API key" : "Show real API key in snippets"}
+                                >
+                                  {showRealApiKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                                  {showRealApiKey ? "Mask Key" : "Show Real Key"}
+                                </Button>
+                              </>
+                            ) : (
+                              <Button variant="ghost" size="sm" asChild className="h-7 text-xs gap-1 text-primary hover:text-primary">
+                                <Link to="/api-keys">
+                                  <Key className="h-3 w-3" /> + Manage API Keys
+                                </Link>
+                              </Button>
+                            )}
+                          </div>
                         </div>
 
                         <Tabs defaultValue="curl" className="w-full">

@@ -17,5 +17,8 @@ export function describeAuthError(error: unknown): string {
   ) {
     return "Authentication service is unreachable. Check the Supabase project URL and project availability.";
   }
+  if (normalized.includes("invalid api key")) {
+    return "This deployed frontend has an invalid or outdated Supabase API key. Rebuild and redeploy it with the current VITE_SUPABASE_URL, VITE_SUPABASE_PROJECT_ID, and VITE_SUPABASE_PUBLISHABLE_KEY values.";
+  }
   return message;
 }
