@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ArrowLeft, ArrowRight, Check, Sparkles, Loader2 } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { TaskPromptStep } from "@/components/new-project/TaskPromptStep";
 import { TaskSelectionStep } from "@/components/new-project/TaskSelectionStep";
 import { DataUploadStep } from "@/components/new-project/DataUploadStep";
@@ -46,8 +46,22 @@ export function toErrorDetail(err: unknown): { detail: string; code?: string | n
 }
 
 export default function NewProject() {
+  const location = useLocation();
+  const templateState = (location.state as { template?: { name: string; taskType: TaskType; prompt: string; baseModel?: string } } | undefined)?.template;
+
   const [currentStep, setCurrentStep] = useState(0);
-  const [formData, setFormData] = useState<ProjectFormData>(initialFormData);
+  const [formData, setFormData] = useState<ProjectFormData>(() => {
+    if (templateState) {
+      return {
+        ...initialFormData,
+        projectName: templateState.name,
+        taskPrompt: templateState.prompt,
+        taskType: templateState.taskType,
+        baseModel: templateState.baseModel ?? null,
+      };
+    }
+    return initialFormData;
+  });
   const [engineProject, setEngineProject] = useState<Project | null>(null);
   const [projectError, setProjectError] = useState<{ detail: string; code?: string | null } | null>(null);
   const [launchError, setLaunchError] = useState<{ detail: string; code?: string | null } | null>(null);
@@ -159,6 +173,12 @@ export default function NewProject() {
             <p className="text-sm text-muted-foreground">{t("newProject.subtitle")}</p>
           </div>
         </div>
+        {templateState && (
+          <div className="flex items-center gap-1.5 text-xs bg-primary/10 text-primary px-3 py-1.5 rounded-full border border-primary/20">
+            <Sparkles className="h-3.5 w-3.5 shrink-0" />
+            <span className="font-medium">Template: {templateState.name}</span>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-1">
