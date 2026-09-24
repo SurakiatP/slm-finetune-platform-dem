@@ -6,6 +6,7 @@ import * as inference from '@/api/endpoints/inference'
 import * as meta from '@/api/endpoints/meta'
 import * as models from '@/api/endpoints/models'
 import * as projects from '@/api/endpoints/projects'
+import * as templates from '@/api/endpoints/templates'
 import * as trainings from '@/api/endpoints/trainings'
 import * as usage from '@/api/endpoints/usage'
 import type {
@@ -26,6 +27,8 @@ import type {
   SDGRequest,
   TaskType,
   Training,
+  Template,
+  TemplateSort,
   TrainingMetrics,
   TrainingRequest,
   UsageEvent,
@@ -67,6 +70,7 @@ export const queryKeys = {
   projectActivity: (id: string) => ['projects', id, 'activity'] as const,
   projectUsage: (id: string) => ['projects', id, 'usage'] as const,
   trainingMetrics: (id: string) => ['trainings', 'metrics', id] as const,
+  templates: (params: Record<string, unknown>) => ['templates', params] as const,
 }
 
 // --- Projects: queries -------------------------------------------------------
@@ -409,6 +413,36 @@ export function useUsageSummary() {
     queryKey: queryKeys.usageSummary,
     queryFn: (): Promise<UsageSummaryResponse> => usage.getUsageSummary(),
     staleTime: 60_000,
+  })
+}
+
+// --- Template marketplace ----------------------------------------------------
+
+export function useTemplates(
+  params: {
+    category?: string
+    featured?: boolean
+    search?: string
+    sort?: TemplateSort
+    include_unavailable?: boolean
+    limit?: number
+    offset?: number
+  } = {},
+) {
+  return useQuery({
+    queryKey: queryKeys.templates(params),
+    queryFn: (): Promise<Page<Template>> => templates.listTemplates(params),
+    placeholderData: (previousData) => previousData,
+  })
+}
+
+export function useRateTemplate() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, rating }: { id: string; rating: number }) => templates.rateTemplate(id, rating),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['templates'] })
+    },
   })
 }
 

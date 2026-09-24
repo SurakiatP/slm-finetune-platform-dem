@@ -106,6 +106,44 @@ export interface DatasetPreview {
   total: number
 }
 
+// --- Template marketplace (api/schemas/templates.py) ------------------------
+
+export type TemplateSort = 'popular' | 'rating' | 'forks'
+
+/** Curated, backend-owned template metadata. `available` is authoritative:
+ * an unavailable template must remain viewable but cannot start a project. */
+export interface Template {
+  id: string
+  version: string
+  name: string
+  description: string
+  long_description: string
+  category: string
+  task_type: TaskType
+  base_model: string
+  prompt: string
+  epochs: number
+  learning_rate: number
+  dataset_size: number
+  forks: number
+  author: string
+  tags: string[]
+  featured: boolean
+  available: boolean
+  unavailable_reason: string | null
+  split_counts: Record<string, number>
+  source_attribution: Record<string, unknown> | null
+  rating: number | null
+  rating_count: number
+  my_rating: number | null
+}
+
+export interface TemplateRatingResponse {
+  rating: number | null
+  rating_count: number
+  my_rating: number | null
+}
+
 export interface DatasetInsightLabelCount {
   label: string
   count: number

@@ -90,6 +90,16 @@ describe('Engine API client', () => {
     })
   })
 
+  it('keeps a quota cooldown from Retry-After for actionable errors', async () => {
+    mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ detail: 'Too many active jobs' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '30' },
+    }))
+
+    const error = await api.post('/api/v1/trainings', {}).catch((value: unknown) => value)
+    expect(error).toMatchObject({ status: 429, retryAfter: 30 })
+  })
+
   it('sends an explicit idempotency key on submit requests', async () => {
     mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
       status: 200,

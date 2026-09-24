@@ -28,7 +28,6 @@ import {
   SidebarFooter,
 } from "@/components/ui/sidebar";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -84,7 +83,6 @@ export function AppSidebar() {
                     >
                       <item.icon className="h-4 w-4 shrink-0" />
                       <span>{t(item.titleKey)}</span>
-                      {item.prototype ? <Badge variant="outline" className="ml-auto text-[9px]">Prototype</Badge> : null}
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

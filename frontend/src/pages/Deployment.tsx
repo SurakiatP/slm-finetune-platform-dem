@@ -33,7 +33,7 @@ export default function Deployment() {
   const { toast } = useToast();
   const downloadMutation = useModelDownloadUrl();
 
-  const models = modelsPage?.items ?? [];
+  const models = useMemo(() => modelsPage?.items ?? [], [modelsPage?.items]);
   const trainingNames = useMemo(() => buildTrainingNameMap(trainingsPage?.items), [trainingsPage]);
 
   // Models with GGUF or Ollama tag are considered ready for deployment

@@ -26,14 +26,22 @@ export class ApiError extends Error {
   readonly code: string | null
   readonly extra: Record<string, unknown> | null
   readonly requestId: string | null
+  /** Server-provided cooldown, in seconds. Present on quota responses only. */
+  readonly retryAfter: number | null
 
-  constructor(status: number, body: ErrorBody, requestId: string | null = null) {
+  constructor(
+    status: number,
+    body: ErrorBody,
+    requestId: string | null = null,
+    retryAfter: number | null = null,
+  ) {
     super(body.detail)
     this.name = 'ApiError'
     this.status = status
     this.code = body.code ?? null
     this.extra = body.extra ?? null
     this.requestId = requestId
+    this.retryAfter = retryAfter
   }
 }
 
@@ -50,7 +58,11 @@ async function parseError(res: Response): Promise<ApiError> {
   } catch {
     // Non-JSON error body; keep the status line.
   }
-  return new ApiError(res.status, body, res.headers.get('X-Request-ID'))
+  const retryAfterHeader = res.headers.get('Retry-After')
+  const retryAfter = retryAfterHeader && /^\d+$/.test(retryAfterHeader)
+    ? Number(retryAfterHeader)
+    : null
+  return new ApiError(res.status, body, res.headers.get('X-Request-ID'), retryAfter)
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -96,6 +108,14 @@ export const api = {
     })
   },
 
+  put<T>(path: string, body: unknown): Promise<T> {
+    return request<T>(path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  },
+
   delete<T = void>(path: string): Promise<T> {
     return request<T>(path, { method: 'DELETE' })
   },
@@ -105,7 +125,7 @@ export const api = {
   },
 }
 
-export function pageQuery(params: Record<string, string | number | undefined | null>): string {
+export function pageQuery(params: Record<string, string | number | boolean | undefined | null>): string {
   const qs = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== null && value !== '') qs.set(key, String(value))

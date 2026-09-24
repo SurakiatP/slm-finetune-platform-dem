@@ -46,7 +46,7 @@ describe('useJobProgress', () => {
     expect(jobSocketUrl('job id')).toContain('/ws/jobs/job%20id')
   })
 
-  it('offers the bearer subprotocol and distinguishes authorization failures', async () => {
+  it('offers the bearer subprotocol and retries a rejected handshake', async () => {
     const { result, unmount } = renderHook(() => useJobProgress('job-1'))
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
     const socket = FakeWebSocket.instances[0]
@@ -55,17 +55,17 @@ describe('useJobProgress', () => {
     act(() => socket.onopen?.(new Event('open')))
     expect(result.current.socketOpen).toBe(true)
 
-    act(() => socket.onclose?.({ code: 4401 } as CloseEvent))
-    expect(result.current.connectionError).toBe('unauthorized')
+    act(() => socket.onclose?.({ code: 1006 } as CloseEvent))
+    expect(result.current.connectionError).toBe('network')
     unmount()
   })
 
-  it('distinguishes forbidden sockets from unauthenticated sockets', async () => {
+  it('does not claim a browser can distinguish backend authorization close codes', async () => {
     const { result, unmount } = renderHook(() => useJobProgress('job-2'))
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
 
-    act(() => FakeWebSocket.instances[0].onclose?.({ code: 4403 } as CloseEvent))
-    expect(result.current.connectionError).toBe('forbidden')
+    act(() => FakeWebSocket.instances[0].onclose?.({ code: 1006 } as CloseEvent))
+    expect(result.current.connectionError).toBe('network')
     unmount()
   })
 

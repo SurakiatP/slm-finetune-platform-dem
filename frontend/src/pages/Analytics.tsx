@@ -11,8 +11,6 @@ import {
   Cpu,
   Clock,
   CheckCircle2,
-  AlertTriangle,
-  FolderKanban,
   Activity,
   Layers,
 } from "lucide-react";
@@ -29,8 +27,7 @@ import {
   PieChart,
   Pie,
 } from "recharts";
-import { useUsageSummary, useTrainings, useProjects, useModels } from "@/hooks/queries";
-import { EngineEmptyState } from "@/components/engine/EngineEmptyState";
+import { useUsageSummary, useTrainings, useProjects } from "@/hooks/queries";
 import { formatNumber, formatUsd } from "@/lib/format";
 
 const STAGE_COLORS: Record<string, string> = {
@@ -52,16 +49,12 @@ const CHART_COLORS = [
 ];
 
 export default function Analytics() {
-  const { data: usage, isLoading: usageLoading } = useUsageSummary();
-  const { data: trainingsPage, isLoading: trainingsLoading } = useTrainings({ limit: 200 });
+  const { data: usage } = useUsageSummary();
+  const { data: trainingsPage } = useTrainings({ limit: 200 });
   const { data: projectsPage } = useProjects({ limit: 100 });
-  const { data: modelsPage } = useModels(undefined, { limit: 100 });
 
-  const loading = usageLoading || trainingsLoading;
-
-  const trainings = trainingsPage?.items ?? [];
+  const trainings = useMemo(() => trainingsPage?.items ?? [], [trainingsPage?.items]);
   const projects = projectsPage?.items ?? [];
-  const models = modelsPage?.items ?? [];
 
   // Training statistics
   const trainingStats = useMemo(() => {
@@ -96,9 +89,9 @@ export default function Analytics() {
         completionTokens: 0,
         totalTokens: 0,
       };
-      existing.promptTokens += item.promptTokens;
-      existing.completionTokens += item.completionTokens;
-      existing.totalTokens += item.promptTokens + item.completionTokens;
+      existing.promptTokens += item.prompt_tokens;
+      existing.completionTokens += item.completion_tokens;
+      existing.totalTokens += item.prompt_tokens + item.completion_tokens;
       map.set(item.model, existing);
     }
 
