@@ -5,6 +5,7 @@ export interface ApiKey {
   name: string;
   keyPrefix: string;
   keySuffix: string;
+  rawKey: string;
   status: "active" | "revoked";
   lastUsedAt: string | null;
   createdAt: string;
@@ -18,34 +19,80 @@ interface KeyRow {
   status: string;
   last_used_at: string | null;
   created_at: string;
+  user_id?: string;
 }
 
-const LOCAL_STORAGE_KEY = "smt_fallback_api_keys";
+const STORAGE_KEYS_LIST = "smt_api_keys_local_list";
+const STORAGE_KEYS_SECRETS = "smt_api_keys_local_secrets";
+
+function getLocalSecrets(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS_SECRETS);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLocalSecret(id: string, secret: string) {
+  try {
+    const map = getLocalSecrets();
+    map[id] = secret;
+    localStorage.setItem(STORAGE_KEYS_SECRETS, JSON.stringify(map));
+  } catch {
+    // Ignore storage quota or disabled storage
+  }
+}
 
 function getLocalKeys(): ApiKey[] {
   try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEYS_LIST);
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
   }
 }
 
-function saveLocalKeys(keys: ApiKey[]): void {
+function saveLocalKeys(keys: ApiKey[]) {
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(keys));
+    localStorage.setItem(STORAGE_KEYS_LIST, JSON.stringify(keys));
   } catch {
-    // Ignore storage quota errors
+    // Ignore
   }
 }
 
+function generateSecureToken(byteLength = 20): string {
+  const bytes = new Uint8Array(byteLength);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < byteLength; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  let hex = "";
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i].toString(16).padStart(2, "0");
+  }
+  return hex;
+}
+
+function assembleRawKey(prefix: string, suffix: string, cached?: string): string {
+  if (cached) return cached;
+  const cleanPrefix = prefix.endsWith("-") ? prefix.slice(0, -1) : prefix;
+  return `${cleanPrefix}-${suffix}`;
+}
+
 function toKey(r: KeyRow): ApiKey {
+  const secrets = getLocalSecrets();
+  const rawKey = assembleRawKey(r.key_prefix, r.key_suffix, secrets[r.id]);
   return {
     id: r.id,
     name: r.name,
     keyPrefix: r.key_prefix,
     keySuffix: r.key_suffix,
-    status: r.status as ApiKey["status"],
+    rawKey,
+    status: (r.status as ApiKey["status"]) || "active",
     lastUsedAt: r.last_used_at,
     createdAt: r.created_at,
   };
@@ -53,39 +100,44 @@ function toKey(r: KeyRow): ApiKey {
 
 export async function listApiKeys(): Promise<ApiKey[]> {
   try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return getLocalKeys();
+    }
     const { data, error } = await supabase
       .from("api_keys")
       .select("*")
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.warn("Supabase api_keys query failed, falling back to local store:", error.message);
+      console.warn("Failed to fetch api_keys from Supabase, using local cache", error);
       return getLocalKeys();
     }
 
-    return (data as KeyRow[]).map(toKey);
+    const fetched = (data as KeyRow[]).map(toKey);
+    // Merge with any offline created keys if not already in fetched list
+    const local = getLocalKeys();
+    const fetchedIds = new Set(fetched.map((k) => k.id));
+    const merged = [...fetched, ...local.filter((k) => !fetchedIds.has(k.id))];
+    saveLocalKeys(merged);
+    return merged;
   } catch (err) {
-    console.warn("Supabase api_keys fetch error:", err);
+    console.warn("Error querying api_keys, falling back to local storage:", err);
     return getLocalKeys();
   }
 }
 
-export interface CreatedApiKeyResult {
-  key: ApiKey;
-  rawKey: string;
-}
+export async function createApiKey(name: string): Promise<ApiKey> {
+  const token = generateSecureToken(20);
+  const slug = name.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) || "key";
+  const prefix = `sk-slm-${slug}`;
+  const suffix = token;
+  const rawKey = `${prefix}-${suffix}`;
 
-export async function createApiKey(name: string): Promise<CreatedApiKeyResult> {
-  const rawKey = `smt_live_${crypto.randomUUID().replace(/-/g, "")}`;
-  const prefix = "smt_live_";
-  const suffix = rawKey.slice(-4);
-  const now = new Date().toISOString();
+  let createdKey: ApiKey | null = null;
 
   try {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
+    const { data: { user } } = await supabase.auth.getUser();
     if (user) {
       const { data, error } = await supabase
         .from("api_keys")
@@ -100,44 +152,53 @@ export async function createApiKey(name: string): Promise<CreatedApiKeyResult> {
         .single();
 
       if (!error && data) {
-        return {
-          key: toKey(data as KeyRow),
-          rawKey,
-        };
+        saveLocalSecret(data.id, rawKey);
+        createdKey = toKey(data as KeyRow);
+      } else if (error) {
+        console.warn("Supabase insert error, falling back to local:", error);
       }
     }
   } catch (err) {
-    console.warn("Could not insert into Supabase api_keys:", err);
+    console.warn("Could not insert API key into Supabase, saving locally:", err);
   }
 
-  // Fallback to local storage
-  const localItem: ApiKey = {
-    id: `key_${crypto.randomUUID().slice(0, 8)}`,
-    name,
-    keyPrefix: prefix,
-    keySuffix: suffix,
-    status: "active",
-    lastUsedAt: null,
-    createdAt: now,
-  };
+  if (!createdKey) {
+    // Fallback to local storage if user not logged in or supabase error
+    const localId = `key-${Date.now()}-${token.slice(0, 6)}`;
+    createdKey = {
+      id: localId,
+      name,
+      keyPrefix: prefix,
+      keySuffix: suffix,
+      rawKey,
+      status: "active",
+      lastUsedAt: null,
+      createdAt: new Date().toISOString(),
+    };
+    saveLocalSecret(localId, rawKey);
+    const existing = getLocalKeys();
+    saveLocalKeys([createdKey, ...existing]);
+  }
 
-  const current = getLocalKeys();
-  saveLocalKeys([localItem, ...current]);
-
-  return {
-    key: localItem,
-    rawKey,
-  };
+  return createdKey;
 }
 
 export async function revokeApiKey(id: string): Promise<void> {
   try {
-    await supabase.from("api_keys").update({ status: "revoked" }).eq("id", id);
-  } catch {
-    // Ignore error and proceed to local update
+    const { error } = await supabase
+      .from("api_keys")
+      .update({ status: "revoked" })
+      .eq("id", id);
+
+    if (error) {
+      console.warn("Supabase revoke error:", error);
+    }
+  } catch (err) {
+    console.warn("Error updating supabase api_keys:", err);
   }
 
-  const current = getLocalKeys();
-  const updated = current.map((k) => (k.id === id ? { ...k, status: "revoked" as const } : k));
+  // Update local storage representation as well
+  const local = getLocalKeys();
+  const updated = local.map((k) => (k.id === id ? { ...k, status: "revoked" as const } : k));
   saveLocalKeys(updated);
 }

@@ -7,4 +7,9 @@ describe("describeAuthError", () => {
     expect(describeAuthError({ message: "Invalid login credentials", status: 400 }))
       .toBe("Invalid login credentials");
   });
+
+  it("explains how to recover from a stale frontend API key", () => {
+    expect(describeAuthError({ message: "Invalid API Key", status: 401 }))
+      .toMatch(/rebuild and redeploy/i);
+  });
 });
