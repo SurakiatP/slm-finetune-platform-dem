@@ -234,7 +234,7 @@ class TestRedisOutageDegradesToNoDedupe:
 # =============================================================================
 
 
-_SUBMIT_ROUTERS = ("datasets", "trainings", "evaluations")
+_SUBMIT_ROUTERS = ("datasets", "trainings", "evaluations", "models")
 
 
 @pytest.mark.parametrize("router", _SUBMIT_ROUTERS)
@@ -250,10 +250,12 @@ def test_submit_endpoint_is_dedupe_protected(router: str) -> None:
     assert "idempotency.remember(" in src, f"{router} never stores its response"
 
 
-def test_export_uses_the_in_flight_guard_instead() -> None:
-    """Export is deliberately NOT in the window: one artifact can only have
-    one export at a time, so a resource-state 409 is both stricter and more
-    informative than a replayed 202."""
+def test_export_keeps_the_in_flight_guard_behind_the_window() -> None:
+    """Export is dedupe-protected at the router (a retried request after a
+    network error replays the original 202, per the self-hosted frontend's
+    Idempotency-Key contract), but the service-level resource-state 409 still
+    backs it for any non-identical concurrent request: one artifact can only
+    have one export at a time. The window lives in the router only."""
     import pathlib
 
     import api.services.model_service as model_service

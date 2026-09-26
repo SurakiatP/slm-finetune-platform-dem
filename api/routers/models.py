@@ -9,8 +9,8 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.auth import CurrentUser, require_user
@@ -23,6 +23,7 @@ from api.schemas.artifacts import (
 from api.schemas.download_links import ModelDownloadUrlResponse
 from api.schemas.enums import ArtifactFormat
 from api.schemas.responses import Page
+from api.services import idempotency
 from api.services.download_links import mint_model_download_url
 from api.services.model_service import (
     cancel_export as _cancel_export,
@@ -94,10 +95,22 @@ async def delete_model(
 async def export_model(
     model_id: UUID,
     body: ModelExportRequest,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[CurrentUser | None, Depends(require_user)],
-) -> ModelExportResponse:
-    return await submit_export_job(db, model_id=model_id, request=body, user=user)
+) -> ModelExportResponse | JSONResponse:
+    # Same dedupe policy as SDG generate / training start / evaluation start
+    # (see `api.services.idempotency`). `request.url.path` is the concrete
+    # request path FastAPI already resolved `{model_id}` into (e.g.
+    # `/api/v1/models/<uuid>/export`), so it alone keeps two different
+    # models' exports from ever sharing a dedupe bucket even with an
+    # identical body — no need to fold `model_id` into the hashed body too.
+    body_json = body.model_dump(mode="json")
+    if (replayed := await idempotency.replay(request, user, body_json)) is not None:
+        return replayed
+    resp = await submit_export_job(db, model_id=model_id, request=body, user=user)
+    await idempotency.remember(request, user, body_json, resp.model_dump(mode="json"))
+    return resp
 
 
 @router.post(
