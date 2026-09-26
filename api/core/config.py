@@ -270,6 +270,29 @@ class Settings(BaseSettings):
     # unauthenticated requests.
     auth_required: bool = False
 
+    # ---- Auth (generic OIDC, see api/core/auth.py) -------------------------
+    # Set for the self-hosted frontend, which authenticates against Keycloak
+    # (or any other OIDC provider) instead of Supabase. When set, this takes
+    # priority over supabase_url unconditionally — a deployment runs against
+    # exactly one of the two, never both at once. Example:
+    # https://host/auth/realms/<realm>. This is also the exact expected
+    # `iss` claim: compared as given, with NO trailing-slash stripping (see
+    # api/core/auth.py's `_expected_issuer`) — Keycloak's own `iss` never
+    # carries a trailing slash, so this must match byte-for-byte.
+    oidc_issuer: str = ""
+    # Optional JWKS URL override. When empty and oidc_issuer is set, derived
+    # as f"{oidc_issuer.rstrip('/')}/protocol/openid-connect/certs"
+    # (Keycloak's layout). Set this explicitly when the container reaches
+    # Keycloak on an internal URL that differs from the public issuer (e.g.
+    # a Docker Compose hostname vs. a public domain behind a reverse proxy).
+    oidc_jwks_url: str = ""
+    # Expected `aud` claim. REQUIRED whenever oidc_issuer is set — see the
+    # model_validator below, which refuses to boot rather than silently skip
+    # the audience check. Keycloak only puts anything other than the default
+    # "account" into `aud` if the client has an "Audience" protocol mapper
+    # configured; without one, its access tokens carry aud="account".
+    oidc_audience: str = ""
+
     # ---- SDG semantic dedup (see ai_engine/data_gen/semantic_dedup.py) -----
     # OpenRouter embedding model id used for the post-MinHash semantic dedup
     # pass. Empty string disables the semantic layer entirely (MinHash-only).
@@ -341,6 +364,22 @@ class Settings(BaseSettings):
         `database_url` — so it is checked by parsing the DSN rather than by
         reading POSTGRES_PASSWORD, which this process never sees.
         """
+        # Unconditional, not gated on `environment`: an OIDC_ISSUER with no
+        # OIDC_AUDIENCE isn't a "legal but risky" production-only concern
+        # like the checks below — it's a bug that would silently skip the
+        # `aud` check (or reject every real token) in dev too, so it fails
+        # closed everywhere rather than waiting for a production boot to
+        # surface it.
+        if self.oidc_issuer and not self.oidc_audience:
+            raise ValueError(
+                "OIDC_ISSUER is set but OIDC_AUDIENCE is empty. OIDC_AUDIENCE "
+                "is required whenever OIDC_ISSUER is set — without it the "
+                "`aud` claim would go unchecked. Set OIDC_AUDIENCE to the "
+                "audience your provider issues (for Keycloak this requires "
+                "an \"Audience\" protocol mapper on the client, otherwise "
+                "its access tokens carry aud=\"account\")."
+            )
+
         if self.environment != "production":
             return self
 
@@ -364,19 +403,26 @@ class Settings(BaseSettings):
                 "scripts/backfill_project_owner.py, ship the frontend Authorization "
                 "header, then set AUTH_REQUIRED=true."
             )
-        if self.auth_required and not self.supabase_url and not self.supabase_jwt_secret:
-            # Neither the JWKS path (supabase_url) nor the HS256 fallback
-            # (supabase_jwt_secret) is configured, which means there is no
-            # material to verify a token against at all — a guaranteed 100%
-            # rejection rate for every authenticated request, not a
-            # degraded-but-working state. `SUPABASE_JWT_SECRET` ships blank
-            # in .env.example, so unlike the MinIO/DB credentials above
-            # there is no default *value* to compare against here — an
-            # empty string is simply "unset".
+        if (
+            self.auth_required
+            and not self.oidc_issuer
+            and not self.supabase_url
+            and not self.supabase_jwt_secret
+        ):
+            # None of the OIDC path (oidc_issuer), the Supabase JWKS path
+            # (supabase_url), nor the HS256 fallback (supabase_jwt_secret)
+            # is configured, which means there is no material to verify a
+            # token against at all — a guaranteed 100% rejection rate for
+            # every authenticated request, not a degraded-but-working
+            # state. `SUPABASE_JWT_SECRET` ships blank in .env.example, so
+            # unlike the MinIO/DB credentials above there is no default
+            # *value* to compare against here — an empty string is simply
+            # "unset".
             offenders.append(
-                "AUTH_REQUIRED=true with neither SUPABASE_URL nor SUPABASE_JWT_SECRET "
-                "set — there is no JWKS and no HS256 fallback to verify tokens "
-                "against, so every authenticated request would be rejected."
+                "AUTH_REQUIRED=true with none of OIDC_ISSUER, SUPABASE_URL, or "
+                "SUPABASE_JWT_SECRET set — there is no JWKS (OIDC or Supabase) "
+                "and no HS256 fallback to verify tokens against, so every "
+                "authenticated request would be rejected."
             )
 
         if offenders:
@@ -409,11 +455,21 @@ class Settings(BaseSettings):
         # fatal in `_reject_unsafe_production_config` above, so this code
         # path is unreachable in production and would be dead-code that
         # lies about being a warning.
-        if self.auth_required and not self.supabase_url and self.supabase_jwt_secret:
+        if (
+            self.auth_required
+            and not self.oidc_issuer
+            and not self.supabase_url
+            and self.supabase_jwt_secret
+        ):
             # This is still only a warning, not fatal: supabase_jwt_secret
             # being set means the HS256 fallback path has what it needs to
             # verify tokens even with no SUPABASE_URL. The fatal case (no
-            # url AND no secret) is handled above.
+            # url AND no secret AND no oidc_issuer) is handled above. Gated
+            # on `not oidc_issuer` too: when OIDC is configured it's the
+            # authoritative verifier (see auth.py's precedence order) and
+            # supabase_jwt_secret is simply unused dead weight, not a
+            # fallback actually in effect — warning about it here would be
+            # misleading.
             warnings.append(
                 "AUTH_REQUIRED=true with no SUPABASE_URL — falling back to the "
                 "HS256 SUPABASE_JWT_SECRET path. Fine for legacy Supabase "
