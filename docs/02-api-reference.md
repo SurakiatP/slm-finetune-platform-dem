@@ -12,7 +12,7 @@ changing a router.
 This is the human companion to [`openapi.json`](./openapi.json); regenerate
 that with `scripts/export_openapi.py` when the contract changes. All routes
 are mounted under `/api/v1` except `GET /health` (root-level). The spec
-currently has **44 paths / 53 operations**; this doc covers all of them.
+currently has **45 paths / 54 operations**; this doc covers all of them.
 (That count is asserted against `openapi.json` by
 `tests/unit/test_openapi_spec_is_current.py` — it had drifted twice, and this
 file previously stated two *different* stale numbers in two places.)
@@ -62,8 +62,9 @@ Two things worth knowing:
   header replaces the body hash — useful if you deliberately want to submit the
   same body twice, or to make a retry after a network timeout safe.
 
-`POST /models/{id}/export` is **not** in this window; it uses a stricter
-resource-state guard instead (see its `409` below).
+`POST /models/{id}/export` is in this window too (keyed per model, since the
+path is part of the key). Its resource-state guard still applies behind it: a
+*different* export request while one is in flight gets `409` (see below).
 
 Dedupe is best-effort: if Redis is unavailable the request proceeds normally
 rather than failing, since losing dedupe is strictly better than losing a
@@ -198,8 +199,9 @@ the most likely to be a false rejection.
 
 ## Authentication
 
-Every route below **except the `Metadata` section** requires a Supabase JWT once
-`AUTH_REQUIRED=true`. See [ADR-009](./adr/ADR-009-supabase-jwt-auth.md).
+Every route below **except the `Metadata` section** requires a JWT once
+`AUTH_REQUIRED=true` — from Supabase, or from a generic OIDC provider such as
+Keycloak when `OIDC_ISSUER` is set (see below). See [ADR-009](./adr/ADR-009-supabase-jwt-auth.md).
 
 ```
 Authorization: Bearer <supabase access token>
@@ -209,6 +211,14 @@ Get the token client-side from `supabase.auth.getSession()`. The backend verifie
 it against the project's JWKS (`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`),
 checking signature, `exp`, `aud` (`authenticated`) and `iss`. There is no separate
 API key and no backend login endpoint — Supabase is the only identity source.
+
+**Generic OIDC (Keycloak).** When `OIDC_ISSUER` is set it takes precedence over
+`SUPABASE_URL`. Tokens are verified against `OIDC_JWKS_URL` (default
+`{OIDC_ISSUER}/protocol/openid-connect/certs`), with `iss` equal to
+`OIDC_ISSUER` exactly, `aud` equal to `OIDC_AUDIENCE` (required whenever
+`OIDC_ISSUER` is set), an asymmetric algorithm (RS/ES/PS only), and `exp` and
+`sub` present. Keycloak access tokens only carry a custom `aud` if the client
+has an Audience protocol mapper.
 
 ### Two-phase rollout — what you get today
 
@@ -1573,6 +1583,35 @@ calendar month, grouped by `(model, stage)`. `api/routers/usage.py:18-49`.
 
 ---
 
+## Analytics
+
+### GET /api/v1/analytics
+
+Owner-scoped job and cost rollup for the analytics page.
+
+Query: `from`, `to` (ISO dates, inclusive, UTC; default = the last 30 days
+ending today) and optional `project_id`. Returns `422` when `from` is after
+`to` or `to - from` is more than 366 days. `project_id` is ownership-checked
+first (`403` for another user's project, `404` for an unknown one).
+
+Response (`AnalyticsResponse`):
+
+- `totals`: `jobs_total`, `by_status` (every job status, zero-filled),
+  `prompt_tokens`, `completion_tokens`, `cost_usd` (`null` when nothing in the
+  window is priced) and `has_unpriced_usage`.
+- `stages`: always `sdg`, `training`, `evaluation` in that order, each with
+  `total`, `by_status`, `avg_duration_seconds` and `avg_queue_wait_seconds`.
+  Both averages are `null` for `sdg`, because datasets carry no start/end
+  timestamps.
+- `series`: one point per UTC day, zero-filled, ascending. Each point has the
+  `sdg`/`training`/`evaluation` jobs created that day, how many of those are
+  `completed`/`failed`, and the day's `cost_usd`.
+
+SDG counts only generated datasets (`source = sdg`); seeds and uploads are
+excluded. An authenticated caller sees only their own jobs and spend. An
+anonymous caller (phase 1 only) gets unfiltered job counts but only the
+anonymous usage bucket for cost.
+
 ## Inference
 
 OpenAI-compatible passthrough to the local Ollama daemon, for playground /
@@ -1823,7 +1862,7 @@ slm_worker_up{queue="gpu"} 0.0
 
 ## Verification notes
 
-`openapi.json` currently enumerates 44 paths / 53 operations, and
+`openapi.json` currently enumerates 45 paths / 54 operations, and
 `tests/unit/test_openapi_spec_is_current.py` now asserts that the count stated
 at the top of this file matches it — regenerate with
 `python scripts/export_openapi.py` and update that one number when routes

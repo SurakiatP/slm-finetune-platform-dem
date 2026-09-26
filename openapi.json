@@ -3080,6 +3080,107 @@
         }
       }
     },
+    "/api/v1/analytics": {
+      "get": {
+        "tags": [
+          "analytics"
+        ],
+        "summary": "Owner-scoped job/usage analytics rollup for a date window",
+        "description": "Job counts/timings (SDG generation, training, evaluation) and\nOpenRouter token/cost usage for the caller's own resources over\n`[from, to]` -- both inclusive UTC calendar dates, defaulting to the\nlast 30 days ending today when omitted. 422 if `from` is after `to` or\nthe span exceeds 366 days.\n\n`project_id`, if given, narrows every query to that project and is\nitself ownership-checked first (`ownership.assert_project_access`) --\n403 for a project that exists but isn't the caller's, 404 if it\ndoesn't exist at all, same as every other project-scoped endpoint.\n\nAn authenticated caller only ever sees their own jobs and spend: job\ncounts go through `ownership.scope_*_to_owner` and usage/cost through\nthe actor-id convention `usage_service.summary_for_actor` established.\nAn anonymous caller (phase-1, `AUTH_REQUIRED=false` only -- production\nrefuses to boot that way) gets what those helpers give anonymous\ncallers everywhere else: unfiltered job counts, but only the\n`actor_id IS NULL` usage bucket for tokens/cost.",
+        "operationId": "get_analytics_api_v1_analytics_get",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/tasks": {
       "get": {
         "tags": [
@@ -3360,6 +3461,217 @@
   },
   "components": {
     "schemas": {
+      "AnalyticsResponse": {
+        "properties": {
+          "period_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Period From"
+          },
+          "period_to": {
+            "type": "string",
+            "format": "date",
+            "title": "Period To"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/AnalyticsTotals"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/AnalyticsStage"
+            },
+            "type": "array",
+            "title": "Stages"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/AnalyticsSeriesPoint"
+            },
+            "type": "array",
+            "title": "Series"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "period_from",
+          "period_to",
+          "project_id",
+          "totals",
+          "stages",
+          "series"
+        ],
+        "title": "AnalyticsResponse",
+        "description": "Response body for `GET /api/v1/analytics`."
+      },
+      "AnalyticsSeriesPoint": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "title": "Date"
+          },
+          "sdg": {
+            "type": "integer",
+            "title": "Sdg"
+          },
+          "training": {
+            "type": "integer",
+            "title": "Training"
+          },
+          "evaluation": {
+            "type": "integer",
+            "title": "Evaluation"
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed",
+            "description": "Of jobs created this day, how many are COMPLETED now."
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "description": "Of jobs created this day, how many are FAILED now."
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd",
+            "description": "UsageEvent cost for events created this day; null when none were priced."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "date",
+          "sdg",
+          "training",
+          "evaluation",
+          "completed",
+          "failed",
+          "cost_usd"
+        ],
+        "title": "AnalyticsSeriesPoint",
+        "description": "One UTC calendar day within `[period_from, period_to]`. `series`\nalways has one entry per day in the window, zero-filled, ascending --\nnever sparse."
+      },
+      "AnalyticsStage": {
+        "properties": {
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "by_status": {
+            "$ref": "#/components/schemas/StatusCounts"
+          },
+          "avg_duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Duration Seconds",
+            "description": "Mean (ended_at - started_at) over rows having both. Always null for `sdg` -- Dataset has no started_at/ended_at columns."
+          },
+          "avg_queue_wait_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Queue Wait Seconds",
+            "description": "Mean (started_at - created_at) over rows having started_at. Always null for `sdg`, same reason as avg_duration_seconds."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "stage",
+          "total",
+          "by_status",
+          "avg_duration_seconds",
+          "avg_queue_wait_seconds"
+        ],
+        "title": "AnalyticsStage",
+        "description": "One row of the `stages` array -- always exactly `sdg`, `training`,\n`evaluation`, in that order."
+      },
+      "AnalyticsTotals": {
+        "properties": {
+          "jobs_total": {
+            "type": "integer",
+            "title": "Jobs Total"
+          },
+          "by_status": {
+            "$ref": "#/components/schemas/StatusCounts"
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "title": "Prompt Tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "title": "Completion Tokens"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd",
+            "description": "Null only when there are no priced rows in the window."
+          },
+          "has_unpriced_usage": {
+            "type": "boolean",
+            "title": "Has Unpriced Usage",
+            "description": "True when at least one UsageEvent row in this window had cost_usd IS NULL, so a consumer knows cost_usd is a floor, not a total."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "jobs_total",
+          "by_status",
+          "prompt_tokens",
+          "completion_tokens",
+          "cost_usd",
+          "has_unpriced_usage"
+        ],
+        "title": "AnalyticsTotals",
+        "description": "Rollup across all three stages (sdg/training/evaluation) plus usage."
+      },
       "ArtifactFormat": {
         "type": "string",
         "enum": [
@@ -7682,6 +7994,39 @@
         ],
         "title": "SeedUploadResponse",
         "description": "Response for `POST /api/v1/datasets/upload-seed` (multipart upload).\n\nPhase 9: extended with `format_detection` (the audit trail of the\nschema-mapping pass) and `pdf_uri` (set only for QA + PDF uploads)."
+      },
+      "StatusCounts": {
+        "properties": {
+          "pending": {
+            "type": "integer",
+            "title": "Pending",
+            "default": 0
+          },
+          "running": {
+            "type": "integer",
+            "title": "Running",
+            "default": 0
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed",
+            "default": 0
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "default": 0
+          },
+          "cancelled": {
+            "type": "integer",
+            "title": "Cancelled",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "StatusCounts",
+        "description": "Job counts broken down by `JobStatus`, zero-filled for every status\nvalue even when a bucket has no rows -- so a chart consumer never has\nto guess whether a missing key means zero or means \"not computed\"."
       },
       "TaskType": {
         "type": "string",

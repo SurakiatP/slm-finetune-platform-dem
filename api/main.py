@@ -25,6 +25,7 @@ from api.core.exceptions import install_handlers
 from api.core.logging_config import configure_logging
 from api.services import idempotency, job_reconcile, metrics_export, readiness
 from api.routers import (
+    analytics,
     datasets,
     evaluations,
     inference,
@@ -281,6 +282,9 @@ app.include_router(
 )
 app.include_router(
     usage.router, prefix=f"{API_V1}/usage", tags=["usage"], dependencies=_AUTH
+)
+app.include_router(
+    analytics.router, prefix=f"{API_V1}/analytics", tags=["analytics"], dependencies=_AUTH
 )
 app.include_router(tasks_meta.tasks_router, prefix=f"{API_V1}/tasks", tags=["metadata"])
 app.include_router(tasks_meta.base_models_router, prefix=f"{API_V1}/base-models", tags=["metadata"])
