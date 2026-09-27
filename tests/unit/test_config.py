@@ -12,7 +12,6 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-
 # A non-empty database_url is required by Settings; supply one for every test.
 _DB_URL = "postgresql+asyncpg://u:p@h/db"
 
@@ -179,6 +178,37 @@ def test_sdg_embedding_dedup_threshold_out_of_range_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SDG_EMBEDDING_DEDUP_THRESHOLD", "1.5")
+    Settings = _import_settings()
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+# =============================================================================
+# T2 — Deployments + API keys quotas (see api/services/deployments_service.py,
+# api/services/api_keys_service.py). Guard the documented defaults in
+# .env.example.
+# =============================================================================
+
+
+def test_deployment_and_api_key_quota_defaults() -> None:
+    Settings = _import_settings()
+    s = Settings()
+    assert s.deployment_max_active_per_user == 1
+    assert s.deployment_max_active_global == 3
+    assert s.deployment_default_rate_limit_per_min == 60
+    assert s.deployment_max_rate_limit_per_min == 600
+    assert s.api_keys_max_per_user == 10
+
+
+def test_deployment_max_active_per_user_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEPLOYMENT_MAX_ACTIVE_PER_USER", "2")
+    Settings = _import_settings()
+    s = Settings()
+    assert s.deployment_max_active_per_user == 2
+
+
+def test_deployment_max_active_per_user_rejects_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEPLOYMENT_MAX_ACTIVE_PER_USER", "0")
     Settings = _import_settings()
     with pytest.raises(ValidationError):
         Settings()

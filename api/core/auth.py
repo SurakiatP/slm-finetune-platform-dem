@@ -350,10 +350,31 @@ async def require_user(
     return user
 
 
+async def require_authenticated_user(
+    user: Annotated[CurrentUser | None, Depends(current_user_optional)],
+) -> CurrentUser:
+    """Require a verified caller, regardless of `settings.auth_required`.
+
+    Unlike `require_user` (which only enforces once the phased rollout
+    flips `AUTH_REQUIRED=true`), deployments and API keys are ownership-
+    scoped resources from day one — there is no anonymous owner to bucket
+    them under — so these routes always 401 on a missing/invalid token,
+    even in phase 1. An invalid token still 401s inside
+    `current_user_optional` itself; this only adds the missing-token case.
+    """
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="authentication required",
+        )
+    return user
+
+
 __all__ = [
     "CurrentUser",
     "current_user_optional",
     "extract_bearer_token",
+    "require_authenticated_user",
     "require_user",
     "verify_supabase_jwt",
 ]

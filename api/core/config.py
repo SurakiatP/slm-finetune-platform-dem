@@ -324,6 +324,22 @@ class Settings(BaseSettings):
     # Seconds a quota-rejected request's `Retry-After` header advises waiting.
     quota_retry_after_seconds: int = Field(default=30, ge=1)
 
+    # ---- Deployments + API keys (see api/services/deployments_service.py,
+    # api/services/api_keys_service.py) --------------------------------------
+    # A Deployment is a logical resource on the shared Ollama instance (one
+    # GPU, no per-deployment isolation), so — same rationale as the GPU quota
+    # above — active deployments are capped both per-owner and globally.
+    deployment_max_active_per_user: int = Field(default=1, ge=1)
+    deployment_max_active_global: int = Field(default=3, ge=1)
+    # Requests/minute a deployment allows before `/inference/*` starts
+    # answering 429 (Redis fixed window, see inference_service._consume_rate_limit).
+    deployment_default_rate_limit_per_min: int = Field(default=60, ge=1)
+    # Upper bound `DeploymentUpdate.rate_limit_per_min` may set — a per-owner
+    # value above this is rejected with 422 rather than silently clamped.
+    deployment_max_rate_limit_per_min: int = Field(default=600, ge=1)
+    # Per-user cap on active (non-revoked) `sk-slm-...` API keys.
+    api_keys_max_per_user: int = Field(default=10, ge=1)
+
     # ---- OpenRouter circuit breaker (see api/services/circuit_breaker.py) --
     openrouter_breaker_failure_threshold: int = Field(default=5, ge=1)
     openrouter_breaker_open_seconds: int = Field(default=60, ge=1)
