@@ -30,10 +30,10 @@ frontend/integration team consuming its API.
 | File | What it covers | Read it when |
 |------|----------------|--------------|
 | [`01-architecture.md`](./01-architecture.md) | System overview, hexagonal layers (`api`/`ai_engine`/`workers`), GPU-vs-CPU split, the 11 compose services (10 by default — `cloudflared` is opt-in behind `--profile tunnel`; incl. the `edge` nginx and `cloudflared` tunnel that are now the only ingress), hard constraints/ADRs, the 5 core DB entities + status lifecycle, SDG pipeline internals | You're new to the codebase and want the mental model |
-| [`02-api-reference.md`](./02-api-reference.md) | Every REST endpoint (45 paths / 54 ops) grouped by domain — params, request/response shapes, status codes, gotchas — the human companion to `openapi.json` | You're wiring a frontend call or need endpoint detail |
+| [`02-api-reference.md`](./02-api-reference.md) | Every REST endpoint (50 paths / 63 ops) grouped by domain — params, request/response shapes, status codes, gotchas — the human companion to `openapi.json` | You're wiring a frontend call or need endpoint detail |
 | [`03-realtime-websocket.md`](./03-realtime-websocket.md) | The live job-progress channel (`/ws/jobs/{job_id}`) — Celery→Redis pub/sub→WebSocket, the `job_id`, snapshot-on-connect behaviour, frame payload models, per-job-type coverage. **Not in `openapi.json`** | You're building any live-progress dashboard |
 | [`04-frontend-integration-smart-model-tune.md`](./04-frontend-integration-smart-model-tune.md) | Maps each backend endpoint to the `smart-model-tune` screen/function that should call it; marks what's already correct vs mismatched; priority fix list; correct end-to-end call sequence | You're integrating (or fixing) `smart-model-tune` |
-| [`patches/`](./patches/smart-model-tune-HANDOFF.md) | Handoff material for the external `smart-model-tune` team. **`smart-model-tune-HANDOFF.md` is the cover document — send this one**: what was proven end-to-end on real hardware, how to connect, what to wire next, and an explicit list of what does *not* exist (Deployment / API Keys / per-endpoint Analytics have no Engine backend — an open product decision, not missing work). `smart-model-tune-unused-endpoints.md` — the detail: 27 of 40 paths their frontend does not call yet, grouped by the screen each unlocks, with exact shapes. `smart-model-tune-auth.md` — the `Authorization`/WS-subprotocol patch needed before `AUTH_REQUIRED` can flip. All route citations are guarded against drift by `tests/unit/test_frontend_handoff_docs.py` (one test per doc×route against `openapi.json`) | You're handing the platform to the frontend team, or telling them what to wire next |
+| [`patches/`](./patches/smart-model-tune-HANDOFF.md) | Handoff material for the external `smart-model-tune` team. **`smart-model-tune-HANDOFF.md` is the cover document — send this one**: what was proven end-to-end on real hardware, how to connect, what to wire next, and (as of these patch docs' own last edit) an explicit list of what does *not* exist. **Stale as of this feature: Deployments and API Keys now have an Engine backend** (`/api/v1/deployments`, `/api/v1/api-keys`, key-authenticated `/inference/*` — see `02-api-reference.md`'s `## Deployments`/`## API keys` sections); per-endpoint Analytics-as-a-product is the one item from that list still open. `smart-model-tune-unused-endpoints.md` — the detail: 27 of 40 paths their frontend does not call yet, grouped by the screen each unlocks, with exact shapes. `smart-model-tune-auth.md` — the `Authorization`/WS-subprotocol patch needed before `AUTH_REQUIRED` can flip. All route citations are guarded against drift by `tests/unit/test_frontend_handoff_docs.py` (one test per doc×route against `openapi.json`) | You're handing the platform to the frontend team, or telling them what to wire next |
 | [`adr/`](./adr/README.md) | Architecture Decision Records — one file per decision that's expensive to reverse (currently ADR-006 defer-auth **superseded by** ADR-009 Supabase JWT auth, ADR-008 WS progress snapshot, ADR-010 queue split/quotas/breaker/budget, ADR-011 nginx edge + Cloudflare Tunnel + presigned downloads; ADR-001–005 predate this directory and are recorded as the constraint table in `01-architecture.md` §5 instead — see `adr/README.md` for the authoritative index) | You need the "why" behind a constraint or a recent design change |
 | [`runbooks/`](./runbooks/gap001-gpu-verification.md) | Operational runbooks. `gap001-gpu-verification.md` lists exactly which checks need a GPU (or a real Postgres) and which are already covered by CPU unit tests | You're verifying a branch on the GPU box |
 | [`openapi.json`](./openapi.json) | Machine-readable OpenAPI 3.1 spec (local copy; canonical published copy is at the repo root) | Codegen a typed client / import to Postman |
@@ -127,8 +127,13 @@ Still real:
 - **`ModelDetail.tsx` offers an ONNX export** the backend doesn't support
   (`ArtifactFormat` is `lora|gguf|safetensors`); its Download buttons have no
   handlers.
-- **Deployment / API Keys / Analytics screens have no backend counterpart at
-  all** — Supabase-only, with numbers nothing writes. See `04-…md` and ADR-006.
+- ~~**Deployment / API Keys / Analytics screens have no backend counterpart at
+  all**~~ — **no longer true for Deployment / API Keys**: both now have an
+  Engine backend (`/api/v1/deployments`, `/api/v1/api-keys`, key-authenticated
+  `/inference/*` — see `02-api-reference.md`). `smart-model-tune`'s own
+  screens still talk to Supabase only and haven't been wired to call them.
+  Per-endpoint Analytics-as-a-product is still Supabase-only, with numbers
+  nothing writes. See `04-…md` and ADR-006.
 
 ---
 

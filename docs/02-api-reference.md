@@ -12,7 +12,7 @@ changing a router.
 This is the human companion to [`openapi.json`](./openapi.json); regenerate
 that with `scripts/export_openapi.py` when the contract changes. All routes
 are mounted under `/api/v1` except `GET /health` (root-level). The spec
-currently has **45 paths / 54 operations**; this doc covers all of them.
+currently has **50 paths / 63 operations**; this doc covers all of them.
 (That count is asserted against `openapi.json` by
 `tests/unit/test_openapi_spec_is_current.py` — it had drifted twice, and this
 file previously stated two *different* stale numbers in two places.)
@@ -236,6 +236,37 @@ The third row is the one to internalise: *absent* is tolerated in phase 1,
 **Marketplace exception:** `/api/v1/templates` operations and template-backed
 project creation always require a valid user, including when `AUTH_REQUIRED=false`.
 The compatibility behavior above is retained for ordinary project creation.
+
+**`/api/v1/deployments` and `/api/v1/api-keys` are the same kind of exception**
+— both always require a valid user (`require_authenticated_user`), in both
+phases, for the same reason: there is no anonymous owner to bucket a
+deployment or a key under.
+
+**`sk-slm-...` API keys — `/api/v1/inference/*` only.** Every inference route
+accepts either a Supabase/OIDC JWT (above) or an
+`Authorization: Bearer sk-slm-...` key minted via `POST /api/v1/api-keys`.
+A key is deliberately narrower than a JWT:
+
+- It only ever resolves the caller's own **`RUNNING`** deployments, by
+  deployment id or by model tag — a `PENDING`/`COMPLETED`/`FAILED`
+  deployment, another owner's deployment, an unknown identifier, and a raw
+  base-model tag (never deployed, so never reachable this way) all collapse
+  into the same `404` ("Model `{identifier}` not found or not deployed") —
+  same anti-oracle rule as the JWT path's tag resolution.
+  `GET /inference/models` mirrors this: a key-authenticated caller sees only
+  their own running deployments, read straight from the DB, never the
+  daemon's full catalogue.
+- Each call consumes that deployment's per-minute rate limit (Redis
+  fixed-window counter, default 60/min, raised per-deployment via
+  `PATCH /api/v1/deployments/{id}`, capped at 600) — exceeding it is `429`
+  with a `Retry-After` header. A broken Redis fails open (the call proceeds)
+  rather than blocking every key-authenticated request.
+- A key cannot manage keys or deployments — `/api/v1/api-keys` and
+  `/api/v1/deployments` both require a real JWT (`require_authenticated_user`
+  only ever resolves a Supabase/OIDC token, never an `sk-slm-` key).
+- The plaintext key is returned exactly once, in the `201` response to
+  `POST /api/v1/api-keys` — it is never stored and cannot be retrieved again,
+  only revoked.
 
 ### Public routes
 
@@ -1713,6 +1744,117 @@ accepted on those endpoints for callers that copied it out of `ollama list`.
 
 ---
 
+## Deployments
+
+Logical serving slots on the shared Ollama daemon (one GPU, no
+per-deployment isolation) — preload a model into VRAM and give it a stable
+id, a name and its own rate limit for key-authenticated inference. Source:
+`api/routers/deployments.py`, `api/schemas/deployments.py`,
+`api/services/deployments_service.py`, `workers/tasks/deployment.py`.
+**Always-auth**, like `Templates` above — every route requires a real user
+regardless of `AUTH_REQUIRED`.
+
+Status reuses the shared `job_status` enum: `pending` -> `running` (=
+**active**, the model is pinned with `keep_alive=-1`) -> `completed` (=
+**stopped**, cleanly unloaded with `keep_alive=0`) / `failed` / `cancelled`.
+"Completed" here never means "failed" — that's its own status.
+
+### POST /api/v1/deployments
+
+Reserve a deployment and enqueue its preload (Celery task
+`deployment.preload`, T4). Idempotency-Key-deduped like SDG generate /
+training start / model export.
+
+- **Body** (`DeploymentCreate`, `extra="forbid"`): `model_artifact_id`
+  (UUID), `name` (optional, 1–200 chars; defaults to the artifact's name).
+- **Success**: `202` `DeploymentResponse` — `id`, `name`, `model_artifact_id`,
+  `model_tag` (the artifact's `ollama_model_tag`), `status`,
+  `rate_limit_per_min` (defaults to 60), `job_id` (the Celery task id, also
+  usable with `GET /api/v1/jobs/{job_id}/progress` or the WS channel),
+  `error_message`, `created_at`, `updated_at`.
+- **Errors**:
+  - `403`/`404` — `model_artifact_id` belongs to another user / doesn't
+    exist (same split as every other ownership check, ADR-012).
+  - `409` — the artifact has no `ollama_model_tag` yet (export it with
+    `format=gguf` first).
+  - `409` — the artifact already has an **active** (`pending` or `running`)
+    deployment; stop it first. At most one active deployment per artifact.
+  - `429` with `Retry-After` — the global active-deployment cap (default 3
+    across all users) or the per-owner cap (default 1) is reached.
+  - `503` — the Celery broker was unreachable at enqueue time; the row is
+    left `failed` with a job id rather than vanishing.
+- **WS/job-progress frames**: only `completed` or `failed` are ever
+  published for this job — a single preload HTTP call has no meaningful
+  intermediate phase to report.
+
+### GET /api/v1/deployments
+
+List the caller's own deployments, newest first. Query: `status` (filter by
+`JobStatus`), `limit` (1–200, default 50), `offset`. `200` `Page[DeploymentResponse]`.
+
+### GET /api/v1/deployments/{deployment_id}
+
+Get one deployment. `403` if it belongs to another user, `404` if it doesn't exist.
+
+### PATCH /api/v1/deployments/{deployment_id}
+
+Rename it or change its rate limit. Body (`DeploymentUpdate`, both optional):
+`name` (1–200 chars), `rate_limit_per_min` (≥1). `422` if
+`rate_limit_per_min` exceeds the platform cap (default 600). Same
+403/404 ownership split as GET.
+
+### POST /api/v1/deployments/{deployment_id}/stop
+
+Unload the model (`running` -> `completed`) or cancel it before it starts
+(`pending` -> `cancelled`, revoking the queued Celery task).
+**Idempotent**: a deployment already in a terminal state (`completed`,
+`failed`, `cancelled`) is a no-op, not an error.
+
+### DELETE /api/v1/deployments/{deployment_id}
+
+Hard-delete the row, stopping it first if still active (one audit entry,
+not two). `204` on success, same 403/404 split as GET.
+
+**Auto-stop on model delete.** `DELETE /api/v1/models/{id}` stops every
+active deployment of that artifact before purging its Ollama tag
+(`stop_for_artifact`, audited with `metadata={"reason": "model_deleted"}`) —
+a model delete can never leave a deployment pointing at a tag Ollama no
+longer has.
+
+## API keys
+
+Per-user `sk-slm-...` credentials for calling `/inference/*` without a JWT
+(see the Authentication section above for how they behave there). Source:
+`api/routers/api_keys.py`, `api/schemas/api_keys.py`,
+`api/services/api_keys_service.py`. **Always-auth**, same as `Deployments`
+above.
+
+### POST /api/v1/api-keys
+
+Issue a new key. Body (`ApiKeyCreate`, `extra="forbid"`): `name` (1–200
+chars). **Success**: `201` `ApiKeyCreatedResponse` — everything
+`ApiKeyResponse` has (`id`, `name`, `prefix`, `last4`, `status`,
+`created_at`, `last_used_at`) plus `key`, the plaintext `sk-slm-...` value.
+**This is the only response that ever carries the plaintext — it is not
+stored and cannot be retrieved again, only revoked.** `409` once the
+caller's active-key cap is reached (default 10) — revoke one first.
+
+### GET /api/v1/api-keys
+
+List the caller's own keys, newest first, **including revoked ones** (so an
+owner can tell which key is which). Query: `limit` (1–200, default 50),
+`offset`. `200` `Page[ApiKeyResponse]` — never includes the plaintext.
+
+### DELETE /api/v1/api-keys/{key_id}
+
+Soft-revoke (`revoked_at` set, row kept). **Idempotent** — revoking an
+already-revoked key is a no-op, no duplicate audit row. `204` on success,
+`403` if it belongs to another user, `404` if it doesn't exist.
+
+**Authenticating with one.** An unknown or already-revoked key hash gets the
+same generic `401` ("invalid authentication token") as a malformed JWT — no
+oracle for "does this key exist" separate from "is it usable".
+
 ## Metadata
 
 Static/near-static endpoints that power dynamic frontend forms — no
@@ -1862,7 +2004,7 @@ slm_worker_up{queue="gpu"} 0.0
 
 ## Verification notes
 
-`openapi.json` currently enumerates 45 paths / 54 operations, and
+`openapi.json` currently enumerates 50 paths / 63 operations, and
 `tests/unit/test_openapi_spec_is_current.py` now asserts that the count stated
 at the top of this file matches it — regenerate with
 `python scripts/export_openapi.py` and update that one number when routes

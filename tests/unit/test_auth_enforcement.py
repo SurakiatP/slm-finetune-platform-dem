@@ -14,6 +14,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from api.core.config import get_settings
@@ -39,6 +40,12 @@ _PUBLIC_PREFIXES = (
 # worker_cpu liveness) is the same class of infrastructure signal `/ready`
 # already exposes anonymously, not user data.
 _PUBLIC_EXACT = {"/", "/health", "/ready", "/metrics", "/openapi.json", "/docs", "/redoc"}
+
+# Always-auth resources: every route on these carries `require_authenticated_
+# user` internally (not the phased `require_user`), so they reject an
+# anonymous caller even in phase 1 (`AUTH_REQUIRED=false`) — there is no
+# anonymous owner to bucket a template, a deployment, or an API key under.
+_ALWAYS_AUTH_PREFIXES = ("/api/v1/templates", "/api/v1/deployments", "/api/v1/api-keys")
 
 _DUMMY = str(uuid4())
 
@@ -156,8 +163,8 @@ class TestPhaseOneStaysOpen:
         # 401 would mean auth rejected it.
         with TestClient(app, raise_server_exceptions=False) as tolerant:
             resp = tolerant.request(method, _fill(path))
-        if path.startswith("/api/v1/templates"):
-            assert resp.status_code == 401, "Marketplace never accepts anonymous identities"
+        if path.startswith(_ALWAYS_AUTH_PREFIXES):
+            assert resp.status_code == 401, "Always-auth resources never accept anonymous identities"
             return
         assert resp.status_code != 401, (
             f"{method} {path} rejected an anonymous caller with AUTH_REQUIRED=false — "
@@ -168,10 +175,76 @@ class TestPhaseOneStaysOpen:
         response = client.put("/api/v1/templates/tpl-006/rating", json={"rating": 5})
         assert response.status_code == 401
 
+    @pytest.mark.parametrize(
+        "method,path",
+        [
+            ("POST", "/api/v1/api-keys"),
+            ("GET", "/api/v1/api-keys"),
+            ("POST", "/api/v1/deployments"),
+            ("GET", "/api/v1/deployments"),
+        ],
+    )
+    def test_deployments_and_api_keys_always_require_identity(
+        self, client: TestClient, method: str, path: str
+    ) -> None:
+        """Explicit, named regression guard for the two new always-auth
+        resources — on top of (not instead of) the derived `PROTECTED`
+        matrix above, which already covers every method/path pair including
+        these via `test_anonymous_is_not_rejected`."""
+        resp = client.request(method, path, json={})
+        assert resp.status_code == 401, f"{method} {path} should require identity with no token"
+
     def test_invalid_token_is_still_rejected(self, client: TestClient) -> None:
         """Phase 1 tolerates *absence*, never garbage — otherwise it would
         accept forged tokens for the whole compatibility window."""
         resp = client.get(
             f"/api/v1/projects/{_DUMMY}", headers={"Authorization": "Bearer forged.nonsense"}
+        )
+        assert resp.status_code == 401
+
+
+class TestInferenceApiKeyWiring:
+    """`/api/v1/inference/*` is mounted with `Depends(inference_caller)`, not
+    the legacy `_AUTH`, so it must still reject both credential shapes.
+
+    The no-token / forged-JWT cases are already exercised for every
+    `PROTECTED` route (inference included) by `TestPhaseTwoRejectsAnonymous`
+    above, entirely in-process (no DB touch: a missing token never reaches
+    the `sk-slm-` branch, and a forged JWT fails signature/claim checks
+    before anything is queried). An `sk-slm-`-shaped bearer is the one
+    credential shape that *is* wired to a DB lookup
+    (`api_keys_service.authenticate`'s hash lookup) — this suite has no
+    Postgres to query against, so this test monkeypatches `authenticate`
+    itself to reproduce the exact generic-401 it already raises for an
+    unknown/revoked hash (see `tests/unit/test_api_keys.py`), which is
+    enough to prove `inference_caller` really does route a key-shaped
+    bearer into that call rather than silently falling through to the JWT
+    path.
+    """
+
+    def test_garbage_api_key_401s_under_auth_required(
+        self, monkeypatch: pytest.MonkeyPatch, phase_two
+    ) -> None:
+        from api.routers import inference as inference_router
+
+        async def _always_invalid(*_args, **_kwargs):
+            raise HTTPException(status_code=401, detail="invalid authentication token")
+
+        monkeypatch.setattr(inference_router.api_keys_service, "authenticate", _always_invalid)
+
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/v1/inference/chat/completions",
+                json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+                headers={"Authorization": "Bearer sk-slm-garbage"},
+            )
+        assert resp.status_code == 401
+
+    def test_missing_token_still_401s_under_auth_required(
+        self, client: TestClient, phase_two
+    ) -> None:
+        resp = client.post(
+            "/api/v1/inference/chat/completions",
+            json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
         )
         assert resp.status_code == 401

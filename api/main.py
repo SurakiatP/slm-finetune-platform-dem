@@ -26,7 +26,9 @@ from api.core.logging_config import configure_logging
 from api.services import idempotency, job_reconcile, metrics_export, readiness
 from api.routers import (
     analytics,
+    api_keys,
     datasets,
+    deployments,
     evaluations,
     inference,
     jobs,
@@ -112,6 +114,14 @@ _OPENAPI_TAGS = [
     {"name": "trainings", "description": "Manual and HPO fine-tuning jobs."},
     {"name": "models", "description": "Trained model artifacts; export to GGUF / SafeTensors."},
     {"name": "inference", "description": "OpenAI-compatible inference (proxied to Ollama)."},
+    {
+        "name": "deployments",
+        "description": "Logical serving slots on the shared Ollama daemon (preload/unload).",
+    },
+    {
+        "name": "api-keys",
+        "description": "Per-user sk-slm-... credentials for key-authenticated /inference/*.",
+    },
     {"name": "evaluations", "description": "Per-task metrics and LLM-as-judge scoring."},
     {"name": "usage", "description": "OpenRouter usage/cost events and monthly rollups."},
     {"name": "jobs", "description": "Job progress snapshots (last WS frame per job, via Redis)."},
@@ -250,6 +260,16 @@ API_V1 = "/api/v1"
 
 app.include_router(templates.router, prefix=f"{API_V1}/templates", tags=["templates"])
 
+# Always-auth resources, mounted without `_AUTH` below: every route on these
+# two routers already depends on `require_authenticated_user` internally
+# (see their own module docstrings), same reasoning as `templates` above —
+# there is no anonymous owner to bucket a deployment or an API key under,
+# regardless of `settings.auth_required`.
+app.include_router(
+    deployments.router, prefix=f"{API_V1}/deployments", tags=["deployments"]
+)
+app.include_router(api_keys.router, prefix=f"{API_V1}/api-keys", tags=["api-keys"])
+
 _AUTH = [Depends(require_user)]
 
 # Router-level (not per-route) so a new route added to any of these seven
@@ -272,7 +292,23 @@ app.include_router(
     models.router, prefix=f"{API_V1}/models", tags=["models"], dependencies=_AUTH
 )
 app.include_router(
-    inference.router, prefix=f"{API_V1}/inference", tags=["inference"], dependencies=_AUTH
+    inference.router,
+    prefix=f"{API_V1}/inference",
+    tags=["inference"],
+    # `inference_caller` (not the legacy `_AUTH`) — it resolves either an
+    # `sk-slm-...` API key or a JWT (see `api/routers/inference.py`); `_AUTH`
+    # would 401 a key at the router level before the key path ever ran. Each
+    # route ALSO takes `Depends(inference_caller)` as a parameter (it needs
+    # the resolved `InferenceCaller`, not just the gate) — declaring it here
+    # too keeps the router itself protected by default for any route added
+    # without remembering the per-route `Depends`, same rationale as every
+    # other router-level `_AUTH` below. That is not a second auth check:
+    # FastAPI caches a dependency's result per request by callable identity
+    # (`use_cache=True`, the default), so this router-level `Depends
+    # (inference_caller)` and each route's own `Depends(inference_caller)`
+    # resolve to one shared call — one DB lookup, one `last_used_at` bump —
+    # not two.
+    dependencies=[Depends(inference.inference_caller)],
 )
 app.include_router(
     evaluations.router,
