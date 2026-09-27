@@ -4,8 +4,10 @@ Ollama exposes its own OpenAI-compatible router under `/v1/...`. Our endpoints
 forward the validated body, swap the `model` field if the caller passed a
 ModelArtifact UUID instead of an Ollama tag, and return Ollama's response.
 
-We deliberately do NOT support streaming (`stream=true`) in this PoC — adding
-SSE proxying is straightforward but out of scope per Phase 7 requirements.
+`stream=true` proxies Ollama's own SSE framing back to the caller (OpenAI
+shape: `data: {chunk}\n\n` ... `data: [DONE]\n\n`) via `StreamingResponse`,
+gated by `api/services/stream_slots.py`'s per-actor/global concurrency caps
+and an idle/total wall-clock timeout. See `_start_stream`/`_relay` below.
 
 **Ownership decision.** Everything here is scoped by whether an Ollama tag is
 *namespaced* — has a "/" before any ":" — which is exactly the set of shapes
@@ -53,12 +55,17 @@ what they could before auth existed.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import time
+from collections.abc import AsyncIterator, Callable
 from uuid import UUID
 
+import anyio
 import httpx
 from fastapi import HTTPException, status
+from fastapi.responses import StreamingResponse
 from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,12 +86,16 @@ from api.schemas.inference import (
     ModelDescriptor,
     ModelDescriptorList,
 )
-from api.services import audit_service, ownership
+from api.services import audit_service, ownership, stream_slots
 
 log = logging.getLogger(__name__)
 
 # Ollama's OpenAI-compat router lives under /v1; native API under /api.
 _OLLAMA_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=10.0)
+# The streaming path can't use a finite read timeout (a slow token is not a
+# dead connection) — idle/total wall-clock limits are enforced in `_relay`
+# instead, via `asyncio.wait_for` on each line read.
+_OLLAMA_STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=10.0, pool=10.0)
 
 # Historical single-prefix constant. `_compute_ollama_tag` now emits three
 # namespaced shapes (`{owner_id}/{name}`, `local/{name}`, `slm/{hash8}`), so
@@ -143,18 +154,35 @@ async def chat_completions(
     user: CurrentUser | None = None,
     *,
     api_key_id: str | None = None,
-) -> ChatCompletionResponse:
-    if body.stream:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="streaming is not supported on /api/v1/inference (set stream=false)",
-        )
+    actor: str | None = None,
+) -> ChatCompletionResponse | StreamingResponse:
     tag, deployment = await _resolve_caller_model(db, body.model, user, api_key_id)
     payload = body.model_dump(exclude_none=True)
     payload["model"] = tag
     system_prompt = await _saved_system_prompt(db, tag)
     if system_prompt is not None and not any(m.role == "system" for m in body.messages):
         payload["messages"].insert(0, {"role": "system", "content": system_prompt})
+
+    # Ollama's daemon-global pin: /v1/chat/completions honours a `keep_alive`
+    # field, unlike /v1/completions (see `_repin`/text_completions below).
+    # Not scoped to the caller — any owner's RUNNING deployment pins the tag.
+    running = deployment is not None or await _has_running_deployment(db, tag)
+    if running:
+        payload["keep_alive"] = -1
+
+    if body.stream:
+        return await _start_stream(
+            db,
+            action="inference.chat_completions",
+            url="/v1/chat/completions",
+            payload=payload,
+            tag=tag,
+            deployment=deployment,
+            api_key_id=api_key_id,
+            actor=_resolve_actor(actor, user),
+            translate=None,
+            repin=False,
+        )
 
     try:
         raw = await _post_json("/v1/chat/completions", payload)
@@ -188,22 +216,75 @@ async def text_completions(
     user: CurrentUser | None = None,
     *,
     api_key_id: str | None = None,
-) -> CompletionResponse:
-    if body.stream:
+    actor: str | None = None,
+) -> CompletionResponse | StreamingResponse:
+    if body.stream and isinstance(body.prompt, list) and len(body.prompt) != 1:
+        # Checked before any DB/rate-limit/slot work per resolved ambiguity —
+        # a caller sending a batch of prompts into an SSE response has no
+        # sane framing (which prompt does which chunk belong to?), so this is
+        # rejected up front rather than silently only answering the first one.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="streaming is not supported on /api/v1/inference (set stream=false)",
+            detail="stream=true supports a single prompt",
         )
+
     tag, deployment = await _resolve_caller_model(db, body.model, user, api_key_id)
     payload = body.model_dump(exclude_none=True, exclude={"system_prompt"})
     payload["model"] = tag
     system_prompt = body.system_prompt
     if system_prompt is None:
         system_prompt = await _saved_system_prompt(db, tag)
+    running = deployment is not None or await _has_running_deployment(db, tag)
+
+    if body.stream:
+        if system_prompt is not None:
+            # Same chat-translation as the non-stream branch below — the
+            # legacy completions API has no system role.
+            prompts = body.prompt if isinstance(body.prompt, list) else [body.prompt]
+            chat_payload = {k: v for k, v in payload.items() if k != "prompt"}
+            chat_payload["messages"] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompts[0]},
+            ]
+            if running:
+                chat_payload["keep_alive"] = -1
+            return await _start_stream(
+                db,
+                action="inference.completions",
+                url="/v1/chat/completions",
+                payload=chat_payload,
+                tag=tag,
+                deployment=deployment,
+                api_key_id=api_key_id,
+                actor=_resolve_actor(actor, user),
+                translate=_chat_chunk_to_completion,
+                repin=False,
+            )
+        if isinstance(payload["prompt"], list):
+            payload["prompt"] = payload["prompt"][0]
+        # /v1/completions ignores `keep_alive` entirely, so no field is sent
+        # here — `repin=True` re-pins through the native API once the stream
+        # ends instead (see `_repin`).
+        return await _start_stream(
+            db,
+            action="inference.completions",
+            url="/v1/completions",
+            payload=payload,
+            tag=tag,
+            deployment=deployment,
+            api_key_id=api_key_id,
+            actor=_resolve_actor(actor, user),
+            translate=None,
+            repin=running,
+        )
 
     try:
         if system_prompt is None:
             raw = await _post_json("/v1/completions", payload)
+            if running:
+                # Best-effort; /v1/completions ignores a `keep_alive` field so
+                # the pin is refreshed through Ollama's native API instead.
+                await _repin(tag)
         else:
             # The legacy completions API has no system role. Use chat's native
             # template, then translate the response back to the requested shape.
@@ -218,6 +299,8 @@ async def text_completions(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ]
+                if running:
+                    chat_payload["keep_alive"] = -1
                 response = await _post_json("/v1/chat/completions", chat_payload)
                 chat = ChatCompletionResponse.model_validate(response)
                 raw["created"] = chat.created
@@ -435,6 +518,40 @@ async def _consume_rate_limit(deployment: Deployment) -> None:
         )
 
 
+def _resolve_actor(actor: str | None, user: CurrentUser | None) -> str:
+    """Fall back to the caller's own id when the router didn't supply one —
+    e.g. these two service functions called directly, as the unit tests do.
+    Mirrors `api/services/idempotency.py::actor_for`'s anonymous bucket."""
+    if actor is not None:
+        return actor
+    return user.id if user is not None else "anon:unknown"
+
+
+async def _has_running_deployment(db: AsyncSession, tag: str) -> bool:
+    """Does *any* owner have a RUNNING Deployment pinning `tag`?
+
+    Ollama's `keep_alive` pin is daemon-global, so this is deliberately not
+    scoped to the calling user — someone else's running deployment of the
+    same tag still keeps it resident. The key-authenticated path already
+    knows its own deployment is RUNNING (`_resolve_for_key` filters on it),
+    so callers short-circuit on `deployment is not None` before ever calling
+    this. Base-model tags map to no `ModelArtifact` row and are never worth
+    the round-trip (decision 6 in the streaming plan).
+    """
+    if not is_platform_owned_tag(tag):
+        return False
+    stmt = (
+        select(Deployment.id)
+        .join(ModelArtifact, ModelArtifact.id == Deployment.model_artifact_id)
+        .where(
+            Deployment.status == JobStatus.RUNNING,
+            ModelArtifact.ollama_model_tag == canonical_our_tag(tag),
+        )
+        .limit(1)
+    )
+    return (await db.execute(stmt)).scalar_one_or_none() is not None
+
+
 async def _audit_call(
     db: AsyncSession,
     *,
@@ -578,16 +695,21 @@ async def _resolve_model_tag(
     return artifact.ollama_model_tag
 
 
-async def _post_json(path: str, payload: dict) -> dict:
-    base = str(get_settings().ollama_base_url).rstrip("/")
-    async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT) as client:
-        try:
-            resp = await client.post(f"{base}{path}", json=payload)
-        except httpx.HTTPError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"ollama unreachable: {exc}",
-            ) from exc
+def _ollama_client(timeout: httpx.Timeout = _OLLAMA_TIMEOUT) -> httpx.AsyncClient:
+    """Single seam for constructing the client that talks to Ollama.
+
+    `_post_json`, `_get_json`, `_repin` and the streaming path (`_start_stream`)
+    all go through this one function, so a test that patches it (to install
+    an `httpx.MockTransport`) covers every call shape at once.
+    """
+    return httpx.AsyncClient(timeout=timeout)
+
+
+def _raise_for_ollama_status(resp: httpx.Response) -> None:
+    """Map a fully-read Ollama response's status code to our HTTPException
+    shape. Shared by `_post_json` and the streaming path — the latter reads
+    the (small, error-shaped) body before checking status, since a 4xx/5xx
+    stream still has to be drained to report anything useful back."""
     if resp.status_code == 404:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -598,12 +720,25 @@ async def _post_json(path: str, payload: dict) -> dict:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"ollama returned {resp.status_code}: {resp.text[:300]}",
         )
+
+
+async def _post_json(path: str, payload: dict) -> dict:
+    base = str(get_settings().ollama_base_url).rstrip("/")
+    async with _ollama_client() as client:
+        try:
+            resp = await client.post(f"{base}{path}", json=payload)
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"ollama unreachable: {exc}",
+            ) from exc
+    _raise_for_ollama_status(resp)
     return resp.json()
 
 
 async def _get_json(path: str) -> dict:
     base = str(get_settings().ollama_base_url).rstrip("/")
-    async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT) as client:
+    async with _ollama_client() as client:
         try:
             resp = await client.get(f"{base}{path}")
         except httpx.HTTPError as exc:
@@ -617,6 +752,303 @@ async def _get_json(path: str) -> dict:
             detail=f"ollama returned {resp.status_code}: {resp.text[:300]}",
         )
     return resp.json()
+
+
+async def _repin(tag: str) -> None:
+    """Best-effort keep_alive refresh via Ollama's *native* API.
+
+    `/v1/completions` (OpenAI-compat) silently ignores a `keep_alive` field —
+    only `/v1/chat/completions` honours it — so a bare completions call on a
+    tag with a RUNNING deployment has to re-pin through `/api/generate`
+    instead, after the fact. Never raises: a failed re-pin only means the
+    daemon may evict the model on its normal idle schedule, which is not
+    worth turning an otherwise-successful inference call into a failure.
+    """
+    base = str(get_settings().ollama_base_url).rstrip("/")
+    try:
+        async with _ollama_client() as client:
+            await client.post(
+                f"{base}/api/generate",
+                json={"model": tag, "keep_alive": -1, "stream": False},
+            )
+    except Exception:
+        log.warning("inference: keep_alive re-pin failed for %s", tag, exc_info=True)
+
+
+def _sse(data: dict | str) -> bytes:
+    """One SSE event. `str` is used verbatim (the literal `[DONE]` sentinel);
+    anything else is JSON-encoded — this is the OpenAI/Ollama chunk framing."""
+    body = data if isinstance(data, str) else json.dumps(data, separators=(",", ":"))
+    return f"data: {body}\n\n".encode()
+
+
+def _sse_error(message: str, type_: str) -> bytes:
+    """A mid-stream error event. No `[DONE]` follows one of these — the
+    stream just ends (see `_relay`)."""
+    return _sse({"error": {"message": str(message)[:300], "type": type_}})
+
+
+def _chat_chunk_to_completion(chunk: dict) -> dict:
+    """Translate one `/v1/chat/completions` stream chunk into the
+    `text_completion` chunk shape a `/completions` caller expects — used when
+    a saved system prompt forces that call through the chat endpoint (see
+    `text_completions`). The usage-only final chunk has empty `choices`, so
+    the loop below is a no-op for it and the rest of the chunk passes through.
+    """
+    choices = [
+        {
+            "index": choice.get("index", 0),
+            "text": (choice.get("delta") or {}).get("content") or "",
+            "finish_reason": (
+                "stop"
+                if choice.get("finish_reason") == "tool_calls"
+                else choice.get("finish_reason")
+            ),
+        }
+        for choice in chunk.get("choices", [])
+    ]
+    return {**chunk, "object": "text_completion", "choices": choices}
+
+
+async def _start_stream(
+    db: AsyncSession,
+    *,
+    action: str,
+    url: str,
+    payload: dict,
+    tag: str,
+    deployment: Deployment | None,
+    api_key_id: str | None,
+    actor: str,
+    translate: Callable[[dict], dict] | None,
+    repin: bool,
+) -> StreamingResponse:
+    """Acquire a concurrency slot, open the upstream stream, map a pre-stream
+    failure to the same JSON error shape `_post_json` would raise, then hand
+    off to `_relay` for the SSE body.
+
+    A slot from `stream_slots.acquire` is either a real id (release it later)
+    or `None` (Redis-outage fail-open — `stream_slots.release` is a no-op for
+    `None` too, so the cleanup call below is unconditional either way).
+
+    Everything from here to the `return` is a single failure domain: once
+    the slot is held, *any* failure — Ollama refusing the connection, a
+    non-httpx exception or cancellation while it's opening, or the
+    pre-stream `db.commit()` itself failing — must still close the upstream
+    connection (if one was opened), close the client, and release the slot,
+    or a broken caller leaks all three forever. `except BaseException` (not
+    `Exception`) is deliberate: this can run under cancellation (uvicorn
+    tearing down the request task), and a `CancelledError` needs the same
+    cleanup as any other failure before it re-propagates.
+    """
+    slot_id = await stream_slots.acquire(actor)
+    payload = {**payload, "stream": True, "stream_options": {"include_usage": True}}
+    base = str(get_settings().ollama_base_url).rstrip("/")
+    client = _ollama_client(_OLLAMA_STREAM_TIMEOUT)
+    upstream: httpx.Response | None = None
+    try:
+        upstream = await client.send(
+            client.build_request("POST", f"{base}{url}", json=payload), stream=True
+        )
+        if upstream.status_code >= 400:
+            await upstream.aread()
+            _raise_for_ollama_status(upstream)
+        # Release the pooled DB connection before settling in for a
+        # potentially-long-lived stream (get_db's session stays open until
+        # after the response finishes) — same pattern as
+        # model_service.download_artifact. Inside the try: a commit failure
+        # here must get the same upstream/client/slot cleanup as any other
+        # setup failure, not leak them.
+        await db.commit()
+    except BaseException as exc:
+        # Shielded: every step below must run to completion even though the
+        # surrounding task may already be cancelled. Each close is in its
+        # own try/except so a failing `upstream.aclose()` can't skip
+        # `client.aclose()` or the slot release that follow it.
+        with anyio.CancelScope(shield=True):
+            if upstream is not None:
+                try:
+                    await upstream.aclose()
+                except Exception:
+                    log.warning(
+                        "inference stream: failed to close upstream during setup failure",
+                        exc_info=True,
+                    )
+            try:
+                await client.aclose()
+            except Exception:
+                log.warning(
+                    "inference stream: failed to close client during setup failure",
+                    exc_info=True,
+                )
+            await stream_slots.release(actor, slot_id)
+            try:
+                await _audit_call(
+                    db, action=action, tag=tag, outcome="error",
+                    detail={"stream": True, "error_type": type(exc).__name__},
+                    deployment=deployment, api_key_id=api_key_id,
+                )
+            except Exception:
+                log.warning("inference stream: audit write failed", exc_info=True)
+        if isinstance(exc, httpx.HTTPError):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"ollama unreachable: {exc}",
+            ) from exc
+        raise
+
+    return StreamingResponse(
+        _relay(
+            db,
+            client=client,
+            upstream=upstream,
+            action=action,
+            tag=tag,
+            deployment=deployment,
+            api_key_id=api_key_id,
+            actor=actor,
+            slot_id=slot_id,
+            repin=repin,
+            translate=translate,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _relay(
+    db: AsyncSession,
+    *,
+    client: httpx.AsyncClient,
+    upstream: httpx.Response,
+    action: str,
+    tag: str,
+    deployment: Deployment | None,
+    api_key_id: str | None,
+    actor: str,
+    slot_id: str | None,
+    repin: bool,
+    translate: Callable[[dict], dict] | None,
+) -> AsyncIterator[bytes]:
+    """Relay Ollama's SSE body to the caller, enforcing the idle/total
+    timeouts, translating chunks when this is `/completions` proxied through
+    the chat endpoint, and recording exactly one audit row no matter how the
+    stream ends.
+
+    `outcome` starts as "client_disconnected": that's what stays true if the
+    generator is torn down (cancelled/GC'd) without any of the explicit exits
+    below running — i.e. the client went away. Cleanup happens inside a
+    shielded scope because uvicorn cancels this task on disconnect, and slot
+    release / upstream close / the audit write must still complete.
+    """
+    settings = get_settings()
+    idle = settings.inference_stream_idle_timeout_seconds
+    deadline = time.monotonic() + settings.inference_stream_max_seconds
+    outcome = "client_disconnected"
+    usage: dict | None = None
+    error_type: str | None = None
+    lines = upstream.aiter_lines()
+
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            try:
+                line = await asyncio.wait_for(anext(lines), max(0.0, min(idle, remaining)))
+            except TimeoutError:
+                outcome = error_type = "timeout"
+                yield _sse_error("stream timed out", "timeout")
+                return
+            except StopAsyncIteration:
+                outcome, error_type = "error", "upstream_error"
+                yield _sse_error("upstream closed the stream unexpectedly", "upstream_error")
+                return
+            except httpx.HTTPError as exc:
+                outcome, error_type = "error", "upstream_error"
+                yield _sse_error(str(exc), "upstream_error")
+                return
+
+            line = line.strip()
+            if not line:
+                continue
+            if line == "data: [DONE]":
+                outcome = "completed"
+                yield _sse("[DONE]")
+                return
+
+            # Ollama's own mid-stream errors arrive as a bare JSON line with
+            # no `data:` prefix and no trailing [DONE] — handled the same as
+            # a normal `data:` line below once the prefix is stripped.
+            raw_json = line[len("data:"):].strip() if line.startswith("data:") else line
+            try:
+                chunk = json.loads(raw_json)
+            except ValueError:
+                outcome, error_type = "error", "upstream_error"
+                yield _sse_error("could not parse upstream chunk", "upstream_error")
+                return
+
+            if not isinstance(chunk, dict):
+                # A well-formed but non-object chunk (e.g. a bare `data: []`)
+                # has no `.get`/`choices` shape anything downstream can use —
+                # treat it the same as an unparseable one rather than let it
+                # escape the generator as an uncaught exception.
+                outcome, error_type = "error", "upstream_error"
+                yield _sse_error("upstream sent a non-object chunk", "upstream_error")
+                return
+
+            if "error" in chunk:
+                outcome, error_type = "error", "upstream_error"
+                message = chunk["error"]
+                if isinstance(message, dict):
+                    message = message.get("message", str(message))
+                yield _sse_error(str(message), "upstream_error")
+                return
+
+            chunk_usage = chunk.get("usage")
+            if chunk_usage:
+                usage = chunk_usage
+            try:
+                translated = translate(chunk) if translate is not None else chunk
+            except (AttributeError, TypeError):
+                # `translate` (`_chat_chunk_to_completion`) assumes the chat
+                # chunk shape it's documented to receive — a malformed
+                # upstream chunk that fails that assumption is an upstream
+                # problem, not a 500 in our generator.
+                outcome, error_type = "error", "upstream_error"
+                yield _sse_error("could not translate upstream chunk", "upstream_error")
+                return
+            yield _sse(translated)
+    finally:
+        with anyio.CancelScope(shield=True):
+            try:
+                await upstream.aclose()
+            except Exception:
+                log.warning("inference stream: failed to close upstream", exc_info=True)
+            try:
+                await client.aclose()
+            except Exception:
+                log.warning("inference stream: failed to close client", exc_info=True)
+            await stream_slots.release(actor, slot_id)
+            if repin:
+                await _repin(tag)
+            try:
+                detail: dict = {"stream": True}
+                if isinstance(usage, dict):
+                    # Only the three known-int token counts, never the raw
+                    # dict verbatim — a malformed upstream chunk could put
+                    # anything under "usage", and `_audit_call` writes this
+                    # straight into `AuditEvent.event_metadata`.
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                        value = usage.get(key)
+                        if isinstance(value, int):
+                            detail[key] = value
+                if error_type is not None:
+                    detail["error_type"] = error_type
+                await _audit_call(
+                    db, action=action, tag=tag, outcome=outcome, detail=detail,
+                    deployment=deployment, api_key_id=api_key_id,
+                )
+            except Exception:
+                log.warning("inference stream: audit write failed", exc_info=True)
 
 
 __all__ = [

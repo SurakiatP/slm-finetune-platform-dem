@@ -14,7 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.auth import CurrentUser, current_user_optional, extract_bearer_token, require_user
@@ -26,9 +27,29 @@ from api.schemas.inference import (
     CompletionResponse,
     ModelDescriptorList,
 )
-from api.services import api_keys_service, inference_service
+from api.services import api_keys_service, idempotency, inference_service
 
 router = APIRouter()
+
+# Documents the `stream=true` shape for both POST routes below — Ollama's SSE
+# framing terminated by `data: [DONE]` — alongside the existing JSON
+# `response_model` for `stream=false` (FastAPI passes a returned
+# `StreamingResponse` through untouched, so both shapes coexist on one route).
+_STREAM_RESPONSE = {
+    200: {
+        "content": {
+            "text/event-stream": {
+                "schema": {
+                    "type": "string",
+                    "description": (
+                        "OpenAI-style SSE: `data: {chunk}` lines, "
+                        "terminated by `data: [DONE]`"
+                    ),
+                }
+            }
+        }
+    }
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,14 +87,18 @@ async def inference_caller(
     "/chat/completions",
     response_model=ChatCompletionResponse,
     summary="OpenAI-compatible chat completions (proxied to Ollama)",
+    responses=_STREAM_RESPONSE,
 )
 async def chat_completions(
     body: ChatCompletionRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     caller: Annotated[InferenceCaller, Depends(inference_caller)],
-) -> ChatCompletionResponse:
+    request: Request,
+) -> ChatCompletionResponse | StreamingResponse:
     return await inference_service.chat_completions(
-        db, body, caller.user, api_key_id=caller.api_key_id
+        db, body, caller.user,
+        api_key_id=caller.api_key_id,
+        actor=idempotency.actor_for(request, caller.user),
     )
 
 
@@ -81,14 +106,18 @@ async def chat_completions(
     "/completions",
     response_model=CompletionResponse,
     summary="OpenAI-compatible legacy text completions",
+    responses=_STREAM_RESPONSE,
 )
 async def text_completions(
     body: CompletionRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     caller: Annotated[InferenceCaller, Depends(inference_caller)],
-) -> CompletionResponse:
+    request: Request,
+) -> CompletionResponse | StreamingResponse:
     return await inference_service.text_completions(
-        db, body, caller.user, api_key_id=caller.api_key_id
+        db, body, caller.user,
+        api_key_id=caller.api_key_id,
+        actor=idempotency.actor_for(request, caller.user),
     )
 
 
