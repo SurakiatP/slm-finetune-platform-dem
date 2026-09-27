@@ -54,18 +54,23 @@ what they could before auth existed.
 from __future__ import annotations
 
 import logging
+import time
 from uuid import UUID
 
 import httpx
 from fastapi import HTTPException, status
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core import request_context
 from api.core.auth import CurrentUser
 from api.core.config import get_settings
+from api.core.redis_client import get_redis_client
+from api.models.deployment import Deployment
 from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
+from api.schemas.enums import JobStatus
 from api.schemas.inference import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -136,13 +141,15 @@ async def chat_completions(
     db: AsyncSession,
     body: ChatCompletionRequest,
     user: CurrentUser | None = None,
+    *,
+    api_key_id: str | None = None,
 ) -> ChatCompletionResponse:
     if body.stream:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="streaming is not supported on /api/v1/inference (set stream=false)",
         )
-    tag = await _resolve_model_tag(db, body.model, user)
+    tag, deployment = await _resolve_caller_model(db, body.model, user, api_key_id)
     payload = body.model_dump(exclude_none=True)
     payload["model"] = tag
     system_prompt = await _saved_system_prompt(db, tag)
@@ -160,9 +167,18 @@ async def chat_completions(
             tag=tag,
             outcome="failure",
             detail={"error_type": type(exc).__name__},
+            deployment=deployment,
+            api_key_id=api_key_id,
         )
         raise
-    await _audit_call(db, action="inference.chat_completions", tag=tag, outcome="success")
+    await _audit_call(
+        db,
+        action="inference.chat_completions",
+        tag=tag,
+        outcome="success",
+        deployment=deployment,
+        api_key_id=api_key_id,
+    )
     return ChatCompletionResponse.model_validate(raw)
 
 
@@ -170,13 +186,15 @@ async def text_completions(
     db: AsyncSession,
     body: CompletionRequest,
     user: CurrentUser | None = None,
+    *,
+    api_key_id: str | None = None,
 ) -> CompletionResponse:
     if body.stream:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="streaming is not supported on /api/v1/inference (set stream=false)",
         )
-    tag = await _resolve_model_tag(db, body.model, user)
+    tag, deployment = await _resolve_caller_model(db, body.model, user, api_key_id)
     payload = body.model_dump(exclude_none=True, exclude={"system_prompt"})
     payload["model"] = tag
     system_prompt = body.system_prompt
@@ -219,14 +237,23 @@ async def text_completions(
             tag=tag,
             outcome="failure",
             detail={"error_type": type(exc).__name__},
+            deployment=deployment,
+            api_key_id=api_key_id,
         )
         raise
-    await _audit_call(db, action="inference.completions", tag=tag, outcome="success")
+    await _audit_call(
+        db,
+        action="inference.completions",
+        tag=tag,
+        outcome="success",
+        deployment=deployment,
+        api_key_id=api_key_id,
+    )
     return CompletionResponse.model_validate(raw)
 
 
 async def list_models(
-    db: AsyncSession, user: CurrentUser | None = None
+    db: AsyncSession, user: CurrentUser | None = None, *, api_key_id: str | None = None
 ) -> ModelDescriptorList:
     """List models known to the local Ollama daemon (OpenAI shape).
 
@@ -238,7 +265,17 @@ async def list_models(
 
     `user is None` returns the unfiltered list, identical to pre-auth
     behaviour (phase-1 rule, `api/services/ownership.py`).
+
+    `api_key_id is not None` (key-authenticated caller) takes a completely
+    different path: only the caller's own **RUNNING** deployments are
+    listed, built straight from the DB with no call to the daemon at all —
+    a key is scoped to deployments, not to the wider catalogue of exported-
+    but-undeployed artifacts and base models a JWT caller can see.
     """
+    if api_key_id is not None:
+        assert user is not None  # key path always resolves to an owner
+        return await _list_deployed_models(db, user.id)
+
     raw = await _get_json("/v1/models")
     entries = raw.get("data") or []
 
@@ -271,9 +308,142 @@ async def list_models(
     return ModelDescriptorList(data=items)
 
 
+async def _list_deployed_models(db: AsyncSession, owner_id: str) -> ModelDescriptorList:
+    """A key-authenticated caller's own RUNNING deployments, DB-only."""
+    stmt = (
+        select(Deployment, ModelArtifact.ollama_model_tag)
+        .join(ModelArtifact, ModelArtifact.id == Deployment.model_artifact_id)
+        .where(
+            Deployment.owner_id == owner_id,
+            Deployment.status == JobStatus.RUNNING,
+            ModelArtifact.ollama_model_tag.is_not(None),
+        )
+        .order_by(Deployment.created_at.desc())
+    )
+    rows = (await db.execute(stmt)).all()
+    items = [
+        ModelDescriptor(
+            id=tag,
+            created=int(deployment.created_at.timestamp()),
+            owned_by="slm-platform",
+            metadata=None,
+        )
+        for deployment, tag in rows
+    ]
+    return ModelDescriptorList(data=items)
+
+
+async def _resolve_for_key(
+    db: AsyncSession, identifier: str, owner_id: str
+) -> tuple[str, Deployment]:
+    """Resolve `identifier` (a Deployment id or a model tag) to
+    `(ollama_tag, Deployment)` for a key-authenticated caller.
+
+    Scoped to the caller's own **RUNNING** deployments only — a base-model
+    tag, another owner's deployment, or a PENDING/COMPLETED/FAILED one of
+    the caller's own all collapse into the same single 404, same anti-oracle
+    rule `_resolve_model_tag` already applies to the JWT path.
+    """
+    not_found = HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Model {identifier} not found or not deployed",
+    )
+    try:
+        deployment_id: UUID | None = UUID(identifier)
+    except (ValueError, TypeError):
+        deployment_id = None
+
+    if deployment_id is not None:
+        stmt = select(Deployment).where(
+            Deployment.id == deployment_id,
+            Deployment.owner_id == owner_id,
+            Deployment.status == JobStatus.RUNNING,
+        )
+    else:
+        stmt = (
+            select(Deployment)
+            .join(ModelArtifact, ModelArtifact.id == Deployment.model_artifact_id)
+            .where(
+                Deployment.owner_id == owner_id,
+                Deployment.status == JobStatus.RUNNING,
+                ModelArtifact.ollama_model_tag == canonical_our_tag(identifier),
+            )
+        )
+    deployment = (await db.execute(stmt)).scalar_one_or_none()
+    if deployment is None or deployment.model_artifact_id is None:
+        raise not_found
+
+    artifact = await db.get(ModelArtifact, deployment.model_artifact_id)
+    if artifact is None or not artifact.ollama_model_tag:
+        raise not_found
+    return artifact.ollama_model_tag, deployment
+
+
+async def _resolve_caller_model(
+    db: AsyncSession,
+    identifier: str,
+    user: CurrentUser | None,
+    api_key_id: str | None,
+) -> tuple[str, Deployment | None]:
+    """Dispatch to the key-scoped or JWT tag resolver, whichever applies.
+
+    The key path additionally consumes the deployment's per-minute rate
+    limit before returning — a request that fails the quota never reaches
+    Ollama.
+    """
+    if api_key_id is not None:
+        assert user is not None  # key path always resolves to an owner
+        tag, deployment = await _resolve_for_key(db, identifier, user.id)
+        await _consume_rate_limit(deployment)
+        return tag, deployment
+    return await _resolve_model_tag(db, identifier, user), None
+
+
+async def _consume_rate_limit(deployment: Deployment) -> None:
+    """Redis fixed-window counter, one window per calendar minute.
+
+    A `RedisError` degrades to fail-open (logged, request proceeds) — same
+    rationale as `circuit_breaker.py`: a broken Redis must not silently
+    refuse every future key-authenticated call.
+    """
+    now = time.time()
+    key = f"ratelimit:deployment:{deployment.id}:{int(now // 60)}"
+    redis = get_redis_client()
+    try:
+        count = await redis.incr(key)
+        if count == 1:
+            await redis.expire(key, 60)
+    except RedisError:
+        log.warning(
+            "inference rate limit check failed for deployment %s, failing open",
+            deployment.id,
+            exc_info=True,
+        )
+        return
+    finally:
+        await redis.aclose()
+
+    if count > deployment.rate_limit_per_min:
+        retry_after = 60 - int(now % 60)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Deployment rate limit reached "
+                f"({deployment.rate_limit_per_min} req/min). Try again shortly."
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
+
 
 async def _audit_call(
-    db: AsyncSession, *, action: str, tag: str, outcome: str, detail: dict | None = None
+    db: AsyncSession,
+    *,
+    action: str,
+    tag: str,
+    outcome: str,
+    detail: dict | None = None,
+    deployment: Deployment | None = None,
+    api_key_id: str | None = None,
 ) -> None:
     """Record one inference call.
 
@@ -300,6 +470,13 @@ async def _audit_call(
             artifact_id = str(artifact.id)
             training_job = await db.get(TrainingJob, artifact.training_job_id)
             project_id = training_job.project_id if training_job is not None else None
+    metadata = {"tag": tag, **(detail or {})}
+    if deployment is not None or api_key_id is not None:
+        metadata["auth"] = "api_key"
+        if deployment is not None:
+            metadata["deployment_id"] = str(deployment.id)
+        if api_key_id is not None:
+            metadata["api_key_id"] = api_key_id
     audit_service.record(
         db,
         action=action,
@@ -309,7 +486,7 @@ async def _audit_call(
         outcome=outcome,
         actor_id=request_context.current_user_id(),
         request_id=request_context.current_request_id(),
-        metadata={"tag": tag, **(detail or {})},
+        metadata=metadata,
     )
     await db.commit()
 
