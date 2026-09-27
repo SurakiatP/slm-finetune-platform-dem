@@ -1651,20 +1651,19 @@ A-B comparisons. Source: `api/routers/inference.py`,
 
 ### POST /api/v1/inference/chat/completions
 
-OpenAI-compatible chat completions. `api/routers/inference.py:23-32`.
+OpenAI-compatible chat completions. `api/routers/inference.py:86-102`.
 
 - **Body** (`ChatCompletionRequest`, `extra="forbid"`): `model` (string —
   either a `ModelArtifact` UUID **or** a literal Ollama tag, e.g.
   `llama3.2:3b`, for comparing against an un-fine-tuned base), `messages`
   (min 1, roles `system`/`user`/`assistant`/`tool`), `temperature` (0–2,
   default 0.7), `top_p` (0–1, default 1.0), `max_tokens` (1–8192,
-  optional), `stream` (default `false`), `stop`, `seed`.
+  optional), `stream` (default `false` — see "Streaming" below for
+  `stream=true`), `stop`, `seed`.
 - **Success**: `200` `ChatCompletionResponse` (OpenAI shape:
-  `id`/`object`/`created`/`model`/`choices`/`usage`).
+  `id`/`object`/`created`/`model`/`choices`/`usage`) when `stream=false`;
+  `200 text/event-stream` when `stream=true` — see "Streaming" below.
 - **Errors**:
-  - `400` **`stream=true` is rejected** — `"streaming is not supported on
-    /api/v1/inference (set stream=false)"` (`api/services/
-    inference_service.py:41-45`). This API is non-streaming only.
   - `404` `model` is a UUID but no matching `ModelArtifact` exists; or
     Ollama itself 404s the resolved tag.
   - `403` `model` is a UUID that names a real `ModelArtifact` belonging to
@@ -1678,6 +1677,15 @@ OpenAI-compatible chat completions. `api/routers/inference.py:23-32`.
   successful GGUF export (same registration requirement as evaluations
   with an LLM judge). Passing a raw Ollama tag bypasses that check
   entirely — useful for comparing against stock base models.
+- **Gotcha (`keep_alive` pinning)**: when any owner has a RUNNING
+  `Deployment` for the resolved tag, every `/chat/completions` call —
+  streaming or not — is sent to Ollama with `keep_alive: -1` in the body,
+  keeping the model resident in VRAM instead of letting it idle-evict on
+  Ollama's own schedule. `/completions` below can't do this the same way —
+  Ollama's `/v1/completions` ignores a `keep_alive` field entirely — so a
+  bare (no saved system prompt) completions call re-pins after the fact
+  instead, via a best-effort `POST /api/generate`. See "Streaming" below
+  for the streaming-specific version of this.
 - **The `slm/` literal-tag path does NOT get the `403` above, even after
   ADR-012.** When `model` is a literal tag in this platform's own
   namespace (`slm/<8hex>`, what `GET /inference/models` lists rather than a
@@ -1716,11 +1724,14 @@ OpenAI-compatible chat completions. `api/routers/inference.py:23-32`.
 
 ### POST /api/v1/inference/completions
 
-OpenAI-compatible legacy text completions. Same `model` resolution,
-`stream=true` rejection (`400`), and error modes as chat completions above.
-Body (`CompletionRequest`): `model`, `prompt` (string or list of strings),
-`temperature`, `top_p`, `max_tokens` (default 256, 1–8192), `stream`,
-`stop`, `seed`.
+OpenAI-compatible legacy text completions. Same `model` resolution and
+error modes as chat completions above, plus streaming — see "Streaming"
+below. Body (`CompletionRequest`): `model`, `prompt` (string or list of
+strings), `temperature`, `top_p`, `max_tokens` (default 256, 1–8192),
+`stream`, `stop`, `seed`. **`stream=true` with a `prompt` list of length
+!= 1 is rejected `400`** (`"stream=true supports a single prompt"`) before
+any DB/rate-limit/slot work — there's no sane framing for which stream
+chunk belongs to which prompt.
 
 ### GET /api/v1/inference/models
 
@@ -1741,6 +1752,86 @@ version on create that the DB never stores. The id in this response is
 exactly the string `model` accepts on `/chat/completions` and
 `/completions`, so a picker's value round-trips. The suffixed form is also
 accepted on those endpoints for callers that copied it out of `ollama list`.
+
+### Streaming (`stream=true` on both POST endpoints above)
+
+Both `/chat/completions` and `/completions` accept `stream: true` and, when
+set, respond `200 text/event-stream` instead of the JSON body described
+above — Ollama's own SSE framing, OpenAI-compatible: one `data: {chunk}\n\n`
+line per token batch, terminated by a literal `data: [DONE]\n\n`. Every
+stream is opened with `stream_options: {"include_usage": true}`, so the
+last chunk before `[DONE]` has empty `choices` and a populated `usage`
+(`prompt_tokens`/`completion_tokens`/`total_tokens`).
+
+```
+data: {"id":"...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"You"}}]}
+
+data: {"id":"...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" can"}}]}
+
+data: {"id":"...","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":2,"total_tokens":14}}
+
+data: [DONE]
+```
+
+- **`/completions` streaming** uses the same framing with `text_completion`
+  chunks (`choices[].text` instead of `.delta.content`). When the tag has a
+  saved training system prompt, the call is silently proxied through
+  `/v1/chat/completions` (same as the non-stream path) and its chunks are
+  translated back to this shape — the caller never sees the difference.
+  `stream=true` with a `prompt` list of length != 1 is rejected `400`
+  before any of this (see above).
+- **Mid-stream errors** end the stream with one more SSE event and no
+  `[DONE]` after it: `data: {"error":{"message":"...","type":"timeout"|"upstream_error"}}\n\n`
+  (`message` truncated to 300 characters). `"timeout"` = the idle or total
+  wall-clock limit below was hit; `"upstream_error"` = Ollama's connection
+  dropped, or it sent a malformed or error line mid-stream.
+- **Pre-stream failures are still ordinary JSON responses**, exactly like
+  the non-stream path — the status line is only ever `200` once the SSE
+  body has actually started: `400` (bad `model`/prompt-list, checked
+  before rate limiting and the concurrency caps below), `404`/`403`/`409`
+  (model resolution, same as the non-stream errors above — `404` also
+  covers Ollama itself 404ing the resolved tag when opening the upstream
+  stream, same mapping `_raise_for_ollama_status` gives the non-stream
+  path), `429` (deployment rate limit, or a concurrency cap below), `502`
+  (Ollama unreachable, or it returning any other `4xx`/`5xx` opening the
+  upstream stream).
+- **Concurrency caps**, checked after model resolution/rate-limiting and
+  before opening the upstream stream — `429` with
+  `Retry-After: <QUOTA_RETRY_AFTER_SECONDS>` (default 30s), naming whichever
+  cap tripped:
+  - `INFERENCE_STREAM_MAX_PER_ACTOR` (default 2) — per caller. "Caller" is
+    the same bucket `idempotency.actor_for` uses: `user.id` for a JWT or an
+    `sk-slm-...` key (an owner's JWT and all their keys share one bucket),
+    else `"anon:" + client IP`. Anonymous callers get a real, separate
+    per-IP bucket here, unlike the DB-backed job quotas elsewhere in this
+    doc.
+  - `INFERENCE_STREAM_MAX_GLOBAL` (default 8) — across every caller.
+  - A Redis outage fails **open** here (the stream proceeds uncapped, not a
+    `500`) — `api/services/stream_slots.py`.
+- **Timeouts**: `INFERENCE_STREAM_IDLE_TIMEOUT_SECONDS` (default 60s)
+  between chunks, `INFERENCE_STREAM_MAX_SECONDS` (default 300s) total
+  regardless of activity — whichever is hit first ends the stream with the
+  `timeout` error event above.
+- **Cancellation**: closing the connection (e.g. an aborted `fetch`) closes
+  the upstream Ollama request too, so Ollama stops generating instead of
+  continuing to burn GPU for a client that already left.
+- **Response headers**: `Cache-Control: no-cache`, `X-Accel-Buffering: no`
+  (so nginx or any buffering proxy in front forwards each chunk immediately
+  instead of waiting to fill a buffer).
+- **`keep_alive` pinning** works the same as the non-stream path (see the
+  Gotcha above): a chat-completions stream sends `keep_alive: -1` in the
+  body when any owner has a RUNNING deployment for the tag. A bare
+  `/completions` stream (no saved system prompt) can't — Ollama's
+  `/v1/completions` ignores that field — so a best-effort re-pin
+  (`POST /api/generate {"keep_alive": -1, "stream": false}`) runs once the
+  stream ends instead.
+- **One audit row per stream**, written when the stream ends (not per
+  chunk). `outcome` is `completed` (saw `[DONE]`), `error` (a mid-stream
+  error, or a failure opening the upstream before any bytes were sent),
+  `timeout`, or `client_disconnected` (the fallback outcome if none of the
+  above ran — i.e. the client went away). Same audit trail as every other
+  inference call, with `metadata.stream: true` plus token usage when
+  available.
 
 ---
 

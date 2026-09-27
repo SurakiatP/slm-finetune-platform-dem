@@ -3107,6 +3107,12 @@
                 "schema": {
                   "$ref": "#/components/schemas/ChatCompletionResponse"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "OpenAI-style SSE: `data: {chunk}` lines, terminated by `data: [DONE]`"
+                }
               }
             }
           },
@@ -3165,6 +3171,12 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CompletionResponse"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "OpenAI-style SSE: `data: {chunk}` lines, terminated by `data: [DONE]`"
                 }
               }
             }

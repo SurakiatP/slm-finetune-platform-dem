@@ -446,9 +446,11 @@ at each step:
   Frontend Change" §2 above, not a defect in this integration itself.)
 - **`POST /api/v1/inference/chat/completions` request envelope** — since
   Priority Fix #7, this now includes the `model` value itself too;
-  `messages`, `temperature`, `max_tokens`, and forcing `stream: false`
-  (`engineApi.ts:331`, matching the backend's non-streaming-only
-  contract) are all correct.
+  `messages`, `temperature`, `max_tokens`, and `stream: false`
+  (`engineApi.ts:331`) are all correct as sent today. The backend now also
+  accepts `stream: true` (SSE) on both inference endpoints — see "New
+  Backend Capability — SSE inference streaming" below; adopting it is
+  optional, not a fix for a bug in what's sent now.
 - **`apiFetch` error handling** (`engineApi.ts:149-159`) — correctly
   reads response body text on non-2xx before throwing, which is what
   makes 422s debuggable at all once you stop catching-and-hiding them
@@ -509,6 +511,72 @@ and it 404s once the 24h TTL lapses.
   `export_celery_task_id`. `null` `export_status` means no export was ever
   requested. `gguf_uri` / `export_error_message` are unchanged and remain the
   completion signal you read today.
+
+## New Backend Capability — SSE inference streaming (branch `feat/inference-streaming`)
+
+Both `POST /api/v1/inference/chat/completions` and
+`POST /api/v1/inference/completions` now accept `stream: true` and respond
+`200 text/event-stream` — full contract (framing, error events, limits,
+`keep_alive` behavior, audit outcomes) in `docs/02-api-reference.md`'s
+"Streaming" subsection. Nothing here is required — `engineChatCompletion`
+sending `stream: false` (see "What's Already Correct" above) keeps working
+byte-for-byte unchanged — but if the Playground wants token-by-token
+output instead of waiting for the full reply:
+
+- **Use `fetch` + a `ReadableStream` reader, not `EventSource`.**
+  `EventSource` can only issue `GET` requests with no custom body; this is
+  a `POST` with a JSON body (and, once auth ships, a bearer token), so it
+  has to go through `fetch`.
+
+```ts
+const controller = new AbortController();
+const res = await fetch(`${ENGINE_HOST}/api/v1/inference/chat/completions`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ model, messages, stream: true }),
+  signal: controller.signal,
+});
+if (!res.ok) {
+  // Pre-stream failure: an ordinary JSON error body, same as the
+  // non-stream call today (e.g. 429 with a Retry-After header if a
+  // concurrency cap tripped) — no SSE parsing involved yet.
+  throw new Error(await res.text());
+}
+
+const reader = res.body!.getReader();
+const decoder = new TextDecoder();
+let buf = "";
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  buf += decoder.decode(value, { stream: true });
+  let idx: number;
+  while ((idx = buf.indexOf("\n\n")) !== -1) {
+    const line = buf.slice(0, idx).trim();
+    buf = buf.slice(idx + 2);
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice("data:".length).trim();
+    if (data === "[DONE]") return; // normal end of stream
+    const chunk = JSON.parse(data);
+    if (chunk.error) throw new Error(chunk.error.message); // no [DONE] follows an error event
+    const delta = chunk.choices?.[0]?.delta?.content;
+    if (delta) appendToMessage(delta);
+  }
+}
+```
+
+- **Stop on `data: [DONE]` or a chunk with an `error` key — both are
+  terminal.** An `error` event is never followed by `[DONE]`; treat seeing
+  either as "the stream is over," not just the reader reporting `done`.
+- **Wire `controller.abort()` to unmount/navigation.** Cancelling the
+  `fetch` closes the connection, which the backend detects and uses to
+  close the upstream Ollama request too — no orphaned GPU generation for a
+  chat panel nobody is looking at anymore.
+- **`429` before any stream starts is the one pre-stream error worth
+  surfacing distinctly** — same shape as the deployment rate limit
+  already documented above (JSON body, `Retry-After` header in seconds) —
+  rather than folding it into the generic inference-failed message
+  Priority Fix #3 added.
 
 ## Known Gaps — Frontend Screens With No Backend Counterpart
 
