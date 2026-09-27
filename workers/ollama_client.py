@@ -130,6 +130,24 @@ class OllamaClient:
             resp = client.post(f"{self._base}/api/create", json=body)
         _raise_if_error(resp, "create")
 
+    def set_keep_alive(self, tag: str, keep_alive: int) -> None:
+        """Pin (`keep_alive=-1`) or unload (`keep_alive=0`) an already
+        registered model.
+
+        Drives the same `/api/generate` endpoint used for real inference,
+        but with no `prompt` — Ollama loads/unloads the model into VRAM per
+        `keep_alive` as a side effect of accepting the request, without
+        actually running generation. Used by the deployment preload/stop
+        flow (`workers/tasks/deployment.py`, `api/services/
+        deployments_service.py`) to pin/release a model for a Deployment.
+        """
+        with httpx.Client(timeout=self._timeout) as client:
+            resp = client.post(
+                f"{self._base}/api/generate",
+                json={"model": tag, "keep_alive": keep_alive, "stream": False},
+            )
+        _raise_if_error(resp, "set_keep_alive")
+
     def delete_model(self, tag: str) -> None:
         with httpx.Client(timeout=self._timeout) as client:
             resp = client.request(

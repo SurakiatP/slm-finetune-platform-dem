@@ -44,7 +44,7 @@ def revoke_celery_task(task_id: str | None, *, context: str) -> None:
     anyone connected on ``/ws/jobs/{id}`` — do not "fix" this by adding a
     publish call in this function.
 
-    **That guarantee only holds because all five cancellable task bodies
+    **That guarantee only holds because all six cancellable task bodies
     catch ``BaseException``, not ``Exception``.** ``SystemExit`` derives from
     ``BaseException``, so a task that narrows its handler silently stops
     emitting a terminal frame on cancel *and* leaves its row's status
@@ -64,7 +64,20 @@ def revoke_celery_task(task_id: str | None, *, context: str) -> None:
     keep it at ``BaseException`` and keep the ``!= JobStatus.CANCELLED`` guard
     — without the guard, widening turns every cancel into ``failed``. The
     parametrized guard in ``tests/unit/test_worker_progress_frames.py``
-    (``_CANCELLABLE_TASKS``) enforces both across all five files at once.
+    (``_CANCELLABLE_TASKS``) enforces both across those five files at once.
+
+    ``deployment.preload`` (``workers/tasks/deployment.py``) is the sixth
+    cancellable task body and also catches ``BaseException`` — added when a
+    deployment's `PENDING` preload could be revoked (``stop_deployment``)
+    mid-run. It isn't in ``_CANCELLABLE_TASKS`` (its own test module,
+    ``tests/unit/test_deployment_worker.py``, covers it directly) and its
+    "don't overwrite a status that moved on" guard is shaped differently: a
+    conditional ``status == JobStatus.PENDING`` UPDATE rather than the other
+    five's ``!= JobStatus.CANCELLED`` check, plus a pin/unload
+    (``keep_alive``) cleanup the other five have no equivalent of. Same
+    underlying rule, though: narrow that ``except`` back to ``Exception`` and
+    a SIGTERM-cancelled preload both drops its terminal frame and leaks a
+    pinned (``keep_alive=-1``) model no code will ever unload.
     """
     if not task_id:
         return

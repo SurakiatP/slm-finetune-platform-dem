@@ -35,6 +35,7 @@ celery_app = Celery(
         "workers.tasks.model_export",
         "workers.tasks.evaluation",
         "workers.tasks.auto_pipeline",
+        "workers.tasks.deployment",
     ],
 )
 
@@ -79,7 +80,15 @@ celery_app.conf.update(
     # rather than competing with the GPU tasks (train.*/model.export/
     # evaluation.run) for the single GPU worker's one slot
     # (`worker_max_tasks_per_child=1` below).
-    task_routes={"sdg.*": {"queue": "cpu"}, "pipeline.*": {"queue": "cpu"}},
+    # `deployment.*` (workers/tasks/deployment.py) is also CPU-only: preload
+    # is a single HTTP call to the (already CUDA-resident) Ollama daemon, not
+    # a model load in *this* process — it shares the cpu queue for the same
+    # reason `pipeline.*` does.
+    task_routes={
+        "sdg.*": {"queue": "cpu"},
+        "pipeline.*": {"queue": "cpu"},
+        "deployment.*": {"queue": "cpu"},
+    },
     timezone="UTC",
     enable_utc=True,
 )

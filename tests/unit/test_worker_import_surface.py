@@ -51,6 +51,7 @@ _WORKER_BOOT_MODULES = (
     "workers.tasks.evaluation",
     "workers.tasks.model_export",
     "workers.tasks.auto_pipeline",
+    "workers.tasks.deployment",
 )
 
 # Round-2 modules the task bodies import transitively (usage/budget

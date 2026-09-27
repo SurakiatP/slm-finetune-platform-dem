@@ -122,6 +122,15 @@ def test_sdg_routes_to_cpu_queue(task_name: str) -> None:
     assert _resolved_queue(task_name) == "cpu"
 
 
+@pytest.mark.parametrize("task_name", ["deployment.preload"])
+def test_deployment_routes_to_cpu_queue(task_name: str) -> None:
+    """`deployment.preload` is a single HTTP call to Ollama, not a GPU-bound
+    model load in the worker process itself — it belongs on the cpu queue
+    alongside `sdg.*`/`pipeline.*`, not competing with train.*/model.export/
+    evaluation.run for the single GPU worker's one slot."""
+    assert _resolved_queue(task_name) == "cpu"
+
+
 @pytest.mark.parametrize(
     "task_name",
     ["train.manual", "train.hpo", "model.export", "evaluation.run"],

@@ -32,7 +32,7 @@ from api.schemas.artifacts import (
 )
 from api.schemas.enums import ArtifactFormat, JobStatus
 from api.schemas.responses import Page
-from api.services import audit_service, ownership, quota, queue_position
+from api.services import audit_service, deployments_service, ownership, quota, queue_position
 from api.services.quota import Bucket
 from api.services.job_control import TERMINAL_JOB_STATUSES, revoke_celery_task
 from workers.ollama_client import OllamaClient
@@ -262,8 +262,12 @@ async def purge_artifact(
     CALLER's responsibility; this helper performs no access check of its own.
 
     Order: MinIO objects (gguf/safetensors/lora, each a key *prefix* — see
-    `download_artifact`'s multi-file-directory handling above) -> Ollama tag
-    -> dependent-row cleanup -> ORM delete. The two external-system steps are
+    `download_artifact`'s multi-file-directory handling above) -> stop any
+    ACTIVE deployment of this artifact -> Ollama tag -> dependent-row cleanup
+    -> ORM delete. Deployments are stopped before the tag is deleted (not
+    after) so `deployments_service.stop_for_artifact`'s unload call still has
+    a real tag to unload — deleting the tag first would leave a RUNNING
+    deployment row with no way to release its Ollama VRAM. The two external-system steps are
     log-and-continue best-effort (mirrors `datasets_service.delete_dataset`'s
     MinIO cleanup and `revoke_celery_task`'s "broker hiccup must not block
     the DB update" reasoning) so a storage or Ollama daemon hiccup never
@@ -300,6 +304,14 @@ async def purge_artifact(
             remove_prefix(minio, bucket, prefix)
         except Exception:  # noqa: BLE001 — best-effort, never block the DB delete
             log.warning("failed to remove storage for %s (%s)", log_ctx, uri, exc_info=True)
+
+    # Stop any ACTIVE deployment of this artifact before the tag disappears —
+    # `stop_for_artifact` needs `artifact.ollama_model_tag` to still resolve
+    # to unload it. This is NOT wrapped in the same best-effort try/except as
+    # the two calls below: it does its own per-deployment swallow-and-warn
+    # internally (see `deployments_service._unload`) and must not commit
+    # (same contract this whole function is under).
+    await deployments_service.stop_for_artifact(db, artifact)
 
     if artifact.ollama_model_tag:
         try:

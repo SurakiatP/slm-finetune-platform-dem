@@ -13,6 +13,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.models.dataset import Dataset
+from api.models.deployment import Deployment
 from api.models.evaluation_run import EvaluationRun
 from api.models.model_artifact import ModelArtifact
 from api.models.training_job import TrainingJob
@@ -64,6 +65,13 @@ async def resolve_job_owner(db: AsyncSession, job_id: str) -> JobOwnerResult:
         .where(ModelArtifact.export_celery_task_id == job_id)
         .limit(1)
     )
+    row = (await db.execute(stmt)).first()
+    if row is not None:
+        return JobOwnerResult(found=True, owner_id=row[0])
+
+    # Deployment.owner_id is direct (no project/training hop to walk) —
+    # unlike the four resources above, a deployment carries its own owner.
+    stmt = select(Deployment.owner_id).where(Deployment.celery_task_id == job_id).limit(1)
     row = (await db.execute(stmt)).first()
     if row is not None:
         return JobOwnerResult(found=True, owner_id=row[0])
