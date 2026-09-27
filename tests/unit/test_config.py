@@ -212,3 +212,39 @@ def test_deployment_max_active_per_user_rejects_zero(monkeypatch: pytest.MonkeyP
     Settings = _import_settings()
     with pytest.raises(ValidationError):
         Settings()
+
+
+# =============================================================================
+# T1 — concurrent SSE-stream limiter (see api/services/stream_slots.py).
+# Guards the documented defaults in .env.example.
+# =============================================================================
+
+
+def test_inference_stream_defaults() -> None:
+    Settings = _import_settings()
+    s = Settings()
+    assert s.inference_stream_max_per_actor == 2
+    assert s.inference_stream_max_global == 8
+    assert s.inference_stream_idle_timeout_seconds == 60.0
+    assert s.inference_stream_max_seconds == 300.0
+
+
+def test_inference_stream_max_per_actor_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INFERENCE_STREAM_MAX_PER_ACTOR", "5")
+    Settings = _import_settings()
+    s = Settings()
+    assert s.inference_stream_max_per_actor == 5
+
+
+def test_inference_stream_max_per_actor_rejects_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INFERENCE_STREAM_MAX_PER_ACTOR", "0")
+    Settings = _import_settings()
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_inference_stream_idle_timeout_rejects_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INFERENCE_STREAM_IDLE_TIMEOUT_SECONDS", "0")
+    Settings = _import_settings()
+    with pytest.raises(ValidationError):
+        Settings()

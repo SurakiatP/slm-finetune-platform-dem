@@ -324,6 +324,19 @@ class Settings(BaseSettings):
     # Seconds a quota-rejected request's `Retry-After` header advises waiting.
     quota_retry_after_seconds: int = Field(default=30, ge=1)
 
+    # Concurrent SSE inference streams (see api/services/stream_slots.py).
+    # Unlike the job quotas above, this isn't backed by a DB row to count —
+    # a stream is a live HTTP response, not a persisted entity — so it's
+    # capped via a Redis ZSET slot instead. Anonymous callers DO get a real
+    # per-actor bucket here (keyed by `idempotency.actor_for`'s "anon:"+IP
+    # shape), unlike the DB-backed quotas above.
+    inference_stream_max_per_actor: int = Field(default=2, ge=1)
+    inference_stream_max_global: int = Field(default=8, ge=1)
+    # Seconds of silence on the upstream stream before it's cut as timed out.
+    inference_stream_idle_timeout_seconds: float = Field(default=60.0, gt=0)
+    # Hard ceiling on one stream's total lifetime, regardless of activity.
+    inference_stream_max_seconds: float = Field(default=300.0, gt=0)
+
     # ---- Deployments + API keys (see api/services/deployments_service.py,
     # api/services/api_keys_service.py) --------------------------------------
     # A Deployment is a logical resource on the shared Ollama instance (one
