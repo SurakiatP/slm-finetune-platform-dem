@@ -24,6 +24,9 @@ vi.mock('@/api/client', () => ({
 }))
 
 import * as datasets from '@/api/endpoints/datasets'
+import * as analytics from '@/api/endpoints/analytics'
+import * as deployments from '@/api/endpoints/deployments'
+import * as apiKeys from '@/api/endpoints/apiKeys'
 import * as evaluations from '@/api/endpoints/evaluations'
 import * as inference from '@/api/endpoints/inference'
 import * as jobs from '@/api/endpoints/jobs'
@@ -37,6 +40,23 @@ import * as usage from '@/api/endpoints/usage'
 
 describe('OpenAPI endpoint wrappers', () => {
   beforeEach(() => vi.clearAllMocks())
+
+  it('uses the backend analytics, deployment, and API key resources', () => {
+    analytics.getAnalytics({ project_id: 'p1' })
+    deployments.listDeployments({ limit: 20 })
+    deployments.createDeployment('m1', 'deploy-key')
+    deployments.stopDeployment('d1')
+    apiKeys.listApiKeys({ limit: 20 })
+    apiKeys.createApiKey('Local test')
+    apiKeys.revokeApiKey('k1')
+    expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/analytics?project_id=p1')
+    expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/deployments?limit=20')
+    expect(mocks.api.post).toHaveBeenCalledWith('/api/v1/deployments', { model_artifact_id: 'm1' }, { idempotencyKey: 'deploy-key' })
+    expect(mocks.api.post).toHaveBeenCalledWith('/api/v1/deployments/d1/stop')
+    expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/api-keys?limit=20')
+    expect(mocks.api.post).toHaveBeenCalledWith('/api/v1/api-keys', { name: 'Local test' })
+    expect(mocks.api.delete).toHaveBeenCalledWith('/api/v1/api-keys/k1')
+  })
 
   it('covers project CRUD, legacy lookup, activity, and usage', () => {
     projects.listProjects({ external_project_id: 'legacy', limit: 1 })
@@ -90,7 +110,7 @@ describe('OpenAPI endpoint wrappers', () => {
     trainings.getLossHistory('t1')
     models.listModels({ project_id: 'p1' })
     models.getModel('m1')
-    models.exportModel('m1', { format: 'gguf', quantization: 'q4_k_m' })
+    models.exportModel('m1', { format: 'gguf', quantization: 'q4_k_m' }, 'export-key')
     models.cancelModelExport('m1')
     models.getModelDownloadUrl('m1', 'lora')
 
@@ -99,7 +119,7 @@ describe('OpenAPI endpoint wrappers', () => {
     expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/trainings/t1/mlflow-url')
     expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/trainings/t1/metrics')
     expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/trainings/t1/loss-history')
-    expect(mocks.api.post).toHaveBeenCalledWith('/api/v1/models/m1/export', { format: 'gguf', quantization: 'q4_k_m' })
+    expect(mocks.api.post).toHaveBeenCalledWith('/api/v1/models/m1/export', { format: 'gguf', quantization: 'q4_k_m' }, { idempotencyKey: 'export-key' })
     expect(mocks.api.post).toHaveBeenCalledWith('/api/v1/models/m1/export/cancel')
     expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/models/m1/download-url?format=lora')
     expect(models.modelDownloadUrl('m1')).toBe('/api/v1/models/m1/download?format=gguf')

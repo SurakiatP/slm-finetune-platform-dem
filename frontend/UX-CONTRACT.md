@@ -44,10 +44,17 @@
 | Hard-delete project/dataset | ConfirmDialog | dialog busy | owning list + toast | dialog/error path | OpenAPI delete endpoints |
 | Template search | Marketplace search | retain prior cards with “Updating” | same route | inline retry | OpenAPI `/templates` |
 | Use template | Available marketplace template | navigation action | project wizard with backend values | unavailable templates cannot start | TemplateResponse `available` |
+| Create API key | Named key form | Create button disabled | Secret displayed once in a dialog | Engine error shown; input retained | OpenAPI `/api/v1/api-keys` |
+| Revoke API key | Confirmation dialog | Confirm button disabled | Masked list refreshed | Dialog stays open with Engine error | OpenAPI `/api/v1/api-keys/{id}` |
+| Deploy model | Exported model action | Action disabled | Pending status polled to terminal state | Engine error shown without assuming a slot started | OpenAPI `/api/v1/deployments` |
+| Stop deployment | Confirmation dialog | Confirm button disabled | Deployment list refreshed | Dialog stays open with Engine error | OpenAPI `/api/v1/deployments/{id}/stop` |
 
 ## Async and resilience
 
 - Mutations are pessimistic; create endpoints accept idempotency keys where supported.
+- Analytics aggregates come from the Engine for an inclusive UTC date range. Date entry uses native browser date inputs to preserve platform keyboard and calendar behavior; project selection uses the shared Radix Select.
+- API key secrets come only from the one-time creation response and are never persisted. Legacy browser key storage is removed when the app starts.
+- Inference uses POST streaming with an abortable request. Nginx disables buffering for inference routes.
 - Job progress first reads the REST snapshot, then opens same-origin WebSocket with a fresh Supabase JWT as `['bearer', token]`.
 - Browsers expose rejected pre-accept WebSocket handshakes as a generic failure, so the client retries boundedly rather than claiming it can distinguish 4401 from 4403.
 - Server-filtered marketplace search is 300ms debounced, IME-safe, retains prior results during refresh, and has a clear action.

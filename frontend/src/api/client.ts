@@ -100,6 +100,18 @@ export const api = {
     })
   },
 
+  async postStream(path: string, body: unknown, signal: AbortSignal): Promise<Response> {
+    const headers = new Headers({ 'Content-Type': 'application/json' })
+    if (!isMockMode) {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) throw new ApiError(401, { detail: 'Please sign in before using the fine-tuning engine.', code: 'missing_session' })
+      headers.set('Authorization', `Bearer ${session.access_token}`)
+    }
+    const response = await doFetch(path, { method: 'POST', headers, body: JSON.stringify(body), signal })
+    if (!response.ok) throw await parseError(response)
+    return response
+  },
+
   patch<T>(path: string, body: unknown): Promise<T> {
     return request<T>(path, {
       method: 'PATCH',
