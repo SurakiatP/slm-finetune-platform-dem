@@ -82,6 +82,13 @@ const tCallRe = /\bt\(\s*["'`]([a-zA-Z0-9_.\-]+)["'`]\s*\)/g;
 const referenced = new Set();
 let rm;
 while ((rm = tCallRe.exec(haystack))) referenced.add(rm[1]);
+// Dynamic template keys cannot be inferred from the regular expression above.
+// Keep their finite values explicit so a missing translation fails the build.
+for (const role of ['seed', 'training', 'hold-out']) referenced.add(`datasetsPage.role.${role}`);
+for (const step of ['welcome', 'sidebar', 'newProject', 'models', 'playground', 'evalUsage', 'done']) {
+  referenced.add(`onboarding.${step}.title`);
+  referenced.add(`onboarding.${step}.desc`);
+}
 
 const unused = [...allKeys].filter((k) => !isUsed(k)).sort();
 const missing = [...referenced].filter((k) => !allKeys.has(k)).sort();

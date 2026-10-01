@@ -1,6 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import * as datasets from '@/api/endpoints/datasets'
+import * as analytics from '@/api/endpoints/analytics'
+import * as deployments from '@/api/endpoints/deployments'
+import * as apiKeys from '@/api/endpoints/apiKeys'
 import * as evaluations from '@/api/endpoints/evaluations'
 import * as inference from '@/api/endpoints/inference'
 import * as meta from '@/api/endpoints/meta'
@@ -11,8 +14,12 @@ import * as trainings from '@/api/endpoints/trainings'
 import * as usage from '@/api/endpoints/usage'
 import type {
   ArtifactFormat,
+  AnalyticsResponse,
+  ApiKey,
+  ApiKeyCreated,
   AuditEvent,
   Dataset,
+  Deployment,
   DatasetInsights,
   Evaluation,
   EvaluationCompareRequest,
@@ -71,6 +78,9 @@ export const queryKeys = {
   projectUsage: (id: string) => ['projects', id, 'usage'] as const,
   trainingMetrics: (id: string) => ['trainings', 'metrics', id] as const,
   templates: (params: Record<string, unknown>) => ['templates', params] as const,
+  analytics: (params: Record<string, unknown>) => ['analytics', params] as const,
+  deployments: ['deployments'] as const,
+  apiKeys: ['api-keys'] as const,
 }
 
 // --- Projects: queries -------------------------------------------------------
@@ -191,7 +201,7 @@ export function useUploadSeedDataset() {
 export function useGenerateDataset() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (body: SDGRequest) => datasets.generateDataset(body),
+    mutationFn: (body: SDGRequest) => datasets.generateDataset(body, crypto.randomUUID()),
     onSuccess: (_data, variables) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.datasets(variables.project_id) })
     },
@@ -285,7 +295,7 @@ export function useTrainingMetrics(id: string, enabled = true) {
 export function useStartTraining() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (body: TrainingRequest) => trainings.startTraining(body),
+    mutationFn: (body: TrainingRequest) => trainings.startTraining(body, crypto.randomUUID()),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['trainings'] })
     },
@@ -325,7 +335,7 @@ export function useModel(id: string, opts: { refetchInterval?: RefetchInterval<M
 export function useExportModel() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, body }: { id: string; body: ModelExportRequest }) => models.exportModel(id, body),
+    mutationFn: ({ id, body }: { id: string; body: ModelExportRequest }) => models.exportModel(id, body, crypto.randomUUID()),
     onSuccess: (_data, { id }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.model(id) })
       void queryClient.invalidateQueries({ queryKey: ['models'] })
@@ -381,10 +391,65 @@ export function useEvaluations(
 export function useStartEvaluation() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (body: EvaluationCreate) => evaluations.startEvaluation(body),
+    mutationFn: (body: EvaluationCreate) => evaluations.startEvaluation(body, crypto.randomUUID()),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.evaluations })
     },
+  })
+}
+
+export function useAnalytics(params: { from?: string; to?: string; project_id?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.analytics(params),
+    queryFn: (): Promise<AnalyticsResponse> => analytics.getAnalytics(params),
+    enabled,
+  })
+}
+
+export function useDeployments() {
+  return useQuery({
+    queryKey: queryKeys.deployments,
+    queryFn: (): Promise<Page<Deployment>> => deployments.listDeployments({ limit: 100 }),
+    refetchInterval: (query) => query.state.data?.items.some(item => item.status === 'pending') ? 3000 : false,
+  })
+}
+
+export function useCreateDeployment() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (modelId: string) => deployments.createDeployment(modelId, crypto.randomUUID()),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.deployments }),
+  })
+}
+
+export function useStopDeployment() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => deployments.stopDeployment(id),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.deployments }),
+  })
+}
+
+export function useApiKeys() {
+  return useQuery({
+    queryKey: queryKeys.apiKeys,
+    queryFn: (): Promise<Page<ApiKey>> => apiKeys.listApiKeys({ limit: 100 }),
+  })
+}
+
+export function useCreateApiKey() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string): Promise<ApiKeyCreated> => apiKeys.createApiKey(name),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys }),
+  })
+}
+
+export function useRevokeApiKey() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => apiKeys.revokeApiKey(id),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys }),
   })
 }
 

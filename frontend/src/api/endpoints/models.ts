@@ -21,8 +21,8 @@ export function getModel(id: string): Promise<ModelArtifact> {
   return api.get(`${BASE}/${id}`)
 }
 
-export function exportModel(id: string, body: ModelExportRequest): Promise<ModelExportAccepted> {
-  return api.post(`${BASE}/${id}/export`, body)
+export function exportModel(id: string, body: ModelExportRequest, idempotencyKey?: string): Promise<ModelExportAccepted> {
+  return api.post(`${BASE}/${id}/export`, body, { idempotencyKey })
 }
 
 /** Plain href for streaming download — use in an <a> tag, not fetch. */

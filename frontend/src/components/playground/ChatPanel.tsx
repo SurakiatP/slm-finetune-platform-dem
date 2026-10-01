@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Send, Bot, User, Loader2 } from "lucide-react";
-import { chatCompletions } from "@/api/endpoints/inference";
+import { Send, Bot, User, Loader2, Square } from "lucide-react";
+import { chatCompletions, streamChatCompletions } from "@/api/endpoints/inference";
 import type { ChatMessage } from "@/api/types";
 
 interface DisplayMessage extends ChatMessage {
@@ -24,6 +24,9 @@ export function ChatPanel({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const controllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => controllerRef.current?.abort(), []);
 
   useEffect(() => {
     scrollRef.current?.scrollTo?.({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -35,34 +38,39 @@ export function ChatPanel({
 
     const userMsg: DisplayMessage = { role: "user", content: text };
     const history = [...messages, userMsg];
-    setMessages(history);
+    const assistantIndex = history.length;
+    setMessages([...history, { role: "assistant", content: "" }]);
     setInput("");
     setIsLoading(true);
     setError(null);
 
     const start = Date.now();
+    const controller = new AbortController();
+    controllerRef.current = controller;
     try {
-      // Backend rejects stream=true — collect the full completion at once.
-      const response = await chatCompletions({
+      const request = {
         model: modelId,
         messages: history.map(({ role, content }) => ({ role, content })),
         temperature: 0.7,
         max_tokens: 512,
-        stream: false,
-      });
-      const content = response.choices[0]?.message?.content ?? "";
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content,
-          latencyMs: Date.now() - start,
-          tokens: response.usage?.completion_tokens,
-        },
-      ]);
+      };
+      const updateAssistant = (content: string, tokens?: number) => setMessages((prev) => prev.map((message, index) => index === assistantIndex ? { ...message, content, latencyMs: Date.now() - start, tokens } : message));
+      if (import.meta.env.VITE_MOCK === '1') {
+        const response = await chatCompletions({ ...request, stream: false });
+        updateAssistant(response.choices[0]?.message?.content ?? '', response.usage?.completion_tokens);
+      } else {
+        let content = '';
+        const usage = await streamChatCompletions(request, (delta) => {
+          content += delta;
+          updateAssistant(content);
+        }, controller.signal);
+        updateAssistant(content, usage?.completion_tokens);
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Inference request failed");
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Inference request failed");
+      setMessages((prev) => prev.filter((message, index) => index !== assistantIndex || Boolean(message.content)));
     } finally {
+      controllerRef.current = null;
       setIsLoading(false);
     }
   };
@@ -79,7 +87,7 @@ export function ChatPanel({
           variant="ghost"
           size="sm"
           className="text-xs h-7 text-muted-foreground"
-          onClick={() => { setMessages([]); setError(null); }}
+          onClick={() => { controllerRef.current?.abort(); setMessages([]); setError(null); }}
         >
           Clear
         </Button>
@@ -93,7 +101,7 @@ export function ChatPanel({
             <p className="text-sm text-muted-foreground">Send a message to test the model</p>
           </div>
         )}
-        {messages.map((msg, i) => (
+        {messages.map((msg, i) => isLoading && msg.role === 'assistant' && !msg.content ? null : (
           <div key={i} className={`flex gap-2.5 ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
             {msg.role === "assistant" && (
               <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
@@ -124,7 +132,7 @@ export function ChatPanel({
             )}
           </div>
         ))}
-        {isLoading && (
+        {isLoading && messages[messages.length - 1]?.content === '' && (
           <div className="flex gap-2.5">
             <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
               <Loader2 className="h-3.5 w-3.5 text-primary animate-spin" />
@@ -151,13 +159,14 @@ export function ChatPanel({
           placeholder="Type a message..."
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && void handleSend()}
+          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && void handleSend()}
           className="border-0 shadow-none focus-visible:ring-0 bg-transparent"
           disabled={isLoading}
         />
         <Button aria-label="Send message" size="icon" onClick={() => void handleSend()} disabled={!input.trim() || isLoading} className="shrink-0">
           <Send className="h-4 w-4" />
         </Button>
+        {isLoading && <Button type="button" variant="outline" onClick={() => controllerRef.current?.abort()}><Square className="mr-1 h-4 w-4" />Stop</Button>}
       </div>
     </div>
   );

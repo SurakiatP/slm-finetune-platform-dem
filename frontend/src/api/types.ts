@@ -36,6 +36,69 @@ export interface Page<T> {
   offset: number
 }
 
+export interface StatusCounts {
+  pending: number
+  running: number
+  completed: number
+  failed: number
+  cancelled: number
+}
+
+export interface AnalyticsResponse {
+  period_from: string
+  period_to: string
+  project_id: string | null
+  totals: {
+    jobs_total: number
+    by_status: StatusCounts
+    prompt_tokens: number
+    completion_tokens: number
+    cost_usd: string | null
+    has_unpriced_usage: boolean
+  }
+  stages: Array<{
+    stage: string
+    total: number
+    by_status: StatusCounts
+    avg_duration_seconds: number | null
+    avg_queue_wait_seconds: number | null
+  }>
+  series: Array<{
+    date: string
+    sdg: number
+    training: number
+    evaluation: number
+    completed: number
+    failed: number
+    cost_usd: string | null
+  }>
+}
+
+export interface Deployment {
+  id: string
+  name: string
+  model_artifact_id: string | null
+  model_tag: string | null
+  status: JobStatus
+  rate_limit_per_min: number
+  job_id: string | null
+  error_message: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ApiKey {
+  id: string
+  name: string
+  prefix: string
+  last4: string
+  status: 'active' | 'revoked'
+  created_at: string
+  last_used_at: string | null
+}
+
+export interface ApiKeyCreated extends ApiKey { key: string }
+
 export interface ErrorBody {
   detail: string
   code?: string | null
