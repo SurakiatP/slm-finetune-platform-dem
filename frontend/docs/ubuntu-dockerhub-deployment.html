@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ติดตั้ง TuneLab บน Ubuntu ด้วย Docker และ ngrok</title>
+  <title>Build และ Deploy TuneLab Frontend ด้วย Docker</title>
   <style>
     body { max-width: 980px; margin: 40px auto; padding: 0 20px; font: 16px/1.65 system-ui, sans-serif; color: #1f2937; }
     h1, h2 { color: #111827; } code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
@@ -14,6 +14,129 @@
   </style>
 </head>
 <body>
+  <section id="dockerhub-keycloak-deploy">
+    <h1>คู่มือปัจจุบัน: Build frontend Docker image และ Push ขึ้น server</h1>
+    <div class="note">หัวข้อนี้ใช้กับ <code>smart-model-tune-main</code> รุ่นที่ login ผ่าน Keycloak และเก็บบัญชีใน PostgreSQL</div>
+    <div class="warning"><strong>ห้ามใส่</strong> <code>AUTH_DB_PASSWORD</code> หรือ <code>KEYCLOAK_ADMIN_PASSWORD</code> ใน Docker build args, image หรือ Git ให้เก็บเฉพาะไฟล์ environment บน server</div>
+    <div class="warning"><strong>สถานะ 2 ต.ค. 2026:</strong> push <code>sady567/slm-frontend:2026-10-02-postgres-1</code> สำเร็จและ pull ลง Ubuntu แล้ว รัน image รุ่นนี้แยกที่ <code>127.0.0.1:8083</code> เพื่อทดสอบ; เว็บจริงที่ <code>127.0.0.1:8082</code> ยังใช้ image รุ่นเดิม เพราะ Engine production ยืนยันตัวตนด้วย Supabase JWT และบัญชีทดสอบยังอยู่ที่ Supabase การสลับ production ต้องเตรียม Keycloak, ย้ายบัญชี/ความเป็นเจ้าของข้อมูล และรองรับ token ทั้งสองระบบหรือแยก backend ก่อน</div>
+
+    <h2>ผลทดสอบบน Ubuntu และจุดตรวจรับก่อนสลับ production</h2>
+    <p>image รุ่นใหม่ตอบหน้าแรกและ <code>/health</code> ที่พอร์ตทดสอบด้วย HTTP 200; <code>/api/v1/projects</code> ที่ไม่มี token ตอบ 401 ตามคาด ส่วน <code>/auth/realms/tunelab/.well-known/openid-configuration</code> ยังไม่ได้เป็น JSON ของ Keycloak จึงยังใช้การ login รุ่นใหม่ไม่ได้ ขณะเดียวกันเว็บจริงล็อกอินด้วยบัญชีทดสอบเดิมและโหลด projects, models, trainings, tasks ผ่าน Engine ได้ HTTP 200</p>
+    <pre>docker image inspect sady567/slm-frontend:2026-10-02-postgres-1 --format '{{.Id}}'
+docker ps --filter name=slm-frontend --format '{{.Names}} {{.Image}} {{.Ports}}'
+curl -I http://127.0.0.1:8083/
+curl -i http://127.0.0.1:8083/health
+curl -i http://127.0.0.1:8083/auth/realms/tunelab/.well-known/openid-configuration</pre>
+    <p>ก่อนสลับ ngrok มาที่ image ใหม่ ต้องได้ JSON จาก OIDC discovery, login ด้วยบัญชีที่ย้ายแล้วสำเร็จ และ API ของบัญชีนั้นตอบ 200 พร้อมข้อมูลเดิม; อย่าใช้ผล <code>/health</code> อย่างเดียวตัดสิน</p>
+
+    <h2>ขั้นที่ 1 — Build และ Push image จากเครื่องที่มี source</h2>
+    <p>เปิด Terminal ในโฟลเดอร์ frontend แล้วแทน <code>&lt;DOCKERHUB_USER&gt;</code> ด้วยชื่อ Docker Hub ของคุณ:</p>
+    <pre>cd smart-model-tune-main
+
+# ตรวจว่า source build ได้ก่อน
+npm ci
+npm run build
+
+# ตั้งชื่อ release ที่ย้อนกลับไปใช้ได้
+export VERSION=20261002.1
+export DOCKERHUB_USER=your-dockerhub-username
+export IMAGE="$DOCKERHUB_USER/tunelab-frontend"
+
+# Login Docker Hub (ใช้ personal access token ได้)
+docker login
+
+# VITE_* ด้านล่างเป็นค่า public OIDC เท่านั้น ไม่มีรหัสผ่านฐานข้อมูล
+docker build --pull \
+  --build-arg VITE_ENGINE_HOST= \
+  --build-arg VITE_AUTH_URL=/auth \
+  --build-arg VITE_AUTH_REALM=tunelab \
+  --build-arg VITE_AUTH_CLIENT_ID=tunelab-web \
+  -t "$IMAGE:$VERSION" \
+  -t "$IMAGE:latest" \
+  .
+
+# ตรวจ image และ push ทั้ง tag release กับ latest
+docker image inspect "$IMAGE:$VERSION" --format '{{.Id}} {{.Size}}'
+docker push "$IMAGE:$VERSION"
+docker push "$IMAGE:latest"</pre>
+    <p>Deploy ด้วย tag แบบ version เสมอ เช่น <code>20261002.1</code>; <code>latest</code> ใช้เพียงบอกว่า release ล่าสุดคืออะไร</p>
+
+    <h2>ขั้นที่ 2 — เตรียม server ครั้งแรก</h2>
+    <p>SSH เข้า server แล้วนำ <code>docker-compose.production.yml</code> และ <code>docker/keycloak/tunelab-realm.json</code> จาก source ไปวางใน <code>~/tunelab-main</code> ผ่าน Git, SCP หรือวิธีส่งไฟล์ที่ใช้อยู่:</p>
+    <pre>mkdir -p ~/tunelab-main/docker/keycloak
+cd ~/tunelab-main
+
+# ต้องมีครบก่อนเริ่ม service
+ls docker-compose.production.yml docker/keycloak/tunelab-realm.json
+
+# ต้องเห็น backend network ที่ stack นี้จะเชื่อมต่อ
+docker network ls --filter name=slm-platform_slm-net</pre>
+    <p>สร้าง <code>.env.production</code> บน server:</p>
+    <pre>FRONTEND_PORT=5175
+FRONTEND_ORIGIN=https://app.example.com
+AUTH_PUBLIC_URL=https://app.example.com/auth
+AUTH_DB_NAME=tunelab_auth
+AUTH_DB_USER=tunelab
+AUTH_DB_PASSWORD=&lt;รหัสผ่าน PostgreSQL ที่สุ่มใหม่และยาว&gt;
+KEYCLOAK_ADMIN=admin
+KEYCLOAK_ADMIN_PASSWORD=&lt;รหัสผ่าน Keycloak admin ที่สุ่มใหม่และยาว&gt;
+
+# upstream ของ Engine ที่ frontend proxy จะเรียก
+ENGINE_UPSTREAM=slm-edge:80
+ENGINE_UPSTREAM_HOST=edge
+ENGINE_DOCKER_NETWORK=slm-platform_slm-net
+
+# image ที่เพิ่ง push ในขั้นที่ 1
+FRONTEND_IMAGE=your-dockerhub-username/tunelab-frontend:20261002.1</pre>
+    <pre>chmod 600 .env.production</pre>
+
+    <h2>ขั้นที่ 3 — Pull image และเปิด service บน server</h2>
+    <p>ไฟล์ <code>docker-compose.production.yml</code> ใช้ <code>FRONTEND_IMAGE</code> จาก environment และเชื่อม frontend เข้ากับทั้ง network ของ Keycloak และของ Engine จากนั้นรัน:</p>
+    <pre>cd ~/tunelab-main
+
+# ใช้เมื่อ Docker Hub repository เป็น private
+docker login
+
+docker compose -f docker-compose.production.yml --env-file .env.production config --quiet
+docker compose -f docker-compose.production.yml --env-file .env.production pull
+docker compose -f docker-compose.production.yml --env-file .env.production up -d
+docker compose -f docker-compose.production.yml --env-file .env.production ps
+
+# ตรวจ Keycloak และ frontend
+curl -fsS http://127.0.0.1:5175/auth/realms/tunelab/.well-known/openid-configuration
+docker compose -f docker-compose.production.yml --env-file .env.production logs --tail 100 frontend keycloak postgres</pre>
+    <div class="note">PostgreSQL ไม่ต้องเปิด port ออกสู่ server network ภายนอก เพราะ Keycloak เชื่อมต่อผ่าน Docker network ภายใน</div>
+
+    <h2>ขั้นที่ 4 — Update และ rollback</h2>
+    <p>หลัง push image version ใหม่ ให้แก้ <code>FRONTEND_IMAGE</code> ใน <code>.env.production</code> เป็น tag ใหม่ แล้วรัน:</p>
+    <pre>docker compose -f docker-compose.production.yml --env-file .env.production pull frontend
+docker compose -f docker-compose.production.yml --env-file .env.production up -d --no-deps frontend</pre>
+    <p>หาก release มีปัญหา ให้เปลี่ยน <code>FRONTEND_IMAGE</code> กลับเป็น tag เดิม แล้วรันสองคำสั่งเดิมเพื่อ rollback</p>
+
+    <h2>ขั้นที่ 5 — ตั้ง backend ให้ยอมรับ Keycloak token</h2>
+    <p>ก่อนใช้งาน Engine จริง backend ต้องใช้ issuer, JWKS และ audience เดียวกัน:</p>
+    <pre>OIDC_ISSUER=https://app.example.com/auth/realms/tunelab
+OIDC_JWKS_URL=https://app.example.com/auth/realms/tunelab/protocol/openid-connect/certs
+OIDC_AUDIENCE=tunelab-api
+AUTH_REQUIRED=true</pre>
+    <div class="warning">ถ้า backend เดียวกันยังรับ Supabase token จาก frontend อื่นอยู่ ห้ามสลับเป็น OIDC ทันที เพราะ backend ปัจจุบันเลือกตรวจได้เพียง provider เดียว ต้องแยก backend หรือทำ dual-provider authentication ก่อน การตอบ <code>/health</code> สำเร็จไม่ได้ยืนยันว่า API ที่ต้อง login ใช้งานได้</div>
+
+    <h2>ตรวจปัญหาที่พบบ่อย</h2>
+    <ul>
+      <li><code>pull access denied</code>: login Docker Hub บน server หรือแก้ <code>FRONTEND_IMAGE</code> และสิทธิ์ repository</li>
+      <li><code>502 Bad Gateway</code>: ตรวจ <code>ENGINE_UPSTREAM</code>, Docker network และสถานะ Engine</li>
+      <li>login redirect ผิด domain: <code>FRONTEND_ORIGIN</code> และ <code>AUTH_PUBLIC_URL</code> ต้องเป็น HTTPS domain จริง และต้องอัปเดต redirect URI/web origin ใน Keycloak realm ที่สร้างแล้ว</li>
+      <li>ข้อมูลบัญชีหาย: ห้ามใช้ <code>docker compose down -v</code>; volume <code>auth-postgres</code> เก็บบัญชี Keycloak</li>
+    </ul>
+  </section>
+
+  <section id="backend-keycloak-migration">
+    <h1>คู่มือแก้ backend สำหรับ Keycloak/PostgreSQL</h1>
+    <p>ขั้นตอนแก้ JWT verifier, ผูกบัญชีกับข้อมูลเดิม, ทดสอบ และ rollback แยกอยู่ใน <a href="../../Docs/backend/backend-keycloak-migration.md">คู่มือ backend (Markdown)</a></p>
+  </section>
+
+  <hr>
+  <div class="warning"><strong>เอกสารเก่าด้านล่างใช้ Supabase และ ngrok:</strong> เก็บไว้เป็นประวัติเท่านั้น ห้ามใช้กับ frontend รุ่นปัจจุบัน</div>
   <h1>ติดตั้ง TuneLab Frontend–Backend บน Ubuntu</h1>
   <div class="warning"><strong>ห้ามใช้ image เดิมจนกว่าจะ rebuild:</strong> image ปัจจุบันฝัง Supabase project ที่ไม่สามารถ resolve DNS ได้ จึง login และ signup ไม่ได้</div>
 

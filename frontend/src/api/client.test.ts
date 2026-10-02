@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  getSession: vi.fn(),
+  getAccessToken: vi.fn(),
   fetch: vi.fn(),
 }))
 
-vi.mock('@/integrations/supabase/client', () => ({
-  supabase: { auth: { getSession: mocks.getSession } },
+vi.mock('@/auth/keycloak', () => ({
+  getAccessToken: mocks.getAccessToken,
 }))
 
 import { api, ApiError } from '@/api/client'
@@ -14,11 +14,11 @@ import { api, ApiError } from '@/api/client'
 describe('Engine API client', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.getSession.mockResolvedValue({ data: { session: { access_token: 'jwt-token' } } })
+    mocks.getAccessToken.mockResolvedValue('jwt-token')
     vi.stubGlobal('fetch', mocks.fetch)
   })
 
-  it('attaches the Supabase JWT and parses JSON', async () => {
+  it('attaches the OIDC access token and parses JSON', async () => {
     mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ status: 'ok' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -30,12 +30,12 @@ describe('Engine API client', () => {
   })
 
   it('calls public probes without requiring a session', async () => {
-    mocks.getSession.mockResolvedValue({ data: { session: null } })
+    mocks.getAccessToken.mockResolvedValue(null)
     mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ status: 'ok' }), { status: 200 }))
 
     await expect(api.get<{ status: string }>('/health')).resolves.toEqual({ status: 'ok' })
     const [, init] = mocks.fetch.mock.calls[0] as [string, RequestInit]
-    expect(mocks.getSession).not.toHaveBeenCalled()
+    expect(mocks.getAccessToken).not.toHaveBeenCalled()
     expect(new Headers(init.headers).get('Authorization')).toBeNull()
   })
 
@@ -61,7 +61,7 @@ describe('Engine API client', () => {
   })
 
   it('fails locally when no authenticated session exists', async () => {
-    mocks.getSession.mockResolvedValue({ data: { session: null } })
+    mocks.getAccessToken.mockResolvedValue(null)
     const error = await api.get('/api/v1/projects').catch((value: unknown) => value)
     expect(error).toMatchObject({ status: 401, code: 'missing_session' })
     expect(mocks.fetch).not.toHaveBeenCalled()
@@ -109,4 +109,19 @@ describe('Engine API client', () => {
     const [, init] = mocks.fetch.mock.calls[0] as [string, RequestInit]
     expect(new Headers(init.headers).get('Idempotency-Key')).toBe('idem-1')
   })
+  it('authenticates streaming requests with the refreshed OIDC token', async () => {
+    mocks.fetch.mockResolvedValue(new Response('stream', { status: 200 }))
+    const signal = new AbortController().signal
+    await api.postStream('/api/v1/inference/chat', { prompt: 'hello' }, signal)
+    const [, init] = mocks.fetch.mock.calls[0] as [string, RequestInit]
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer jwt-token')
+    expect(init.signal).toBe(signal)
+  })
+
+  it('does not send streaming requests after session expiry', async () => {
+    mocks.getAccessToken.mockResolvedValue(null)
+    await expect(api.postStream('/api/v1/inference/chat', {}, new AbortController().signal)).rejects.toMatchObject({ status: 401 })
+    expect(mocks.fetch).not.toHaveBeenCalled()
+  })
+
 })

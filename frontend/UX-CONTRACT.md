@@ -55,7 +55,7 @@
 - Analytics aggregates come from the Engine for an inclusive UTC date range. Date entry uses native browser date inputs to preserve platform keyboard and calendar behavior; project selection uses the shared Radix Select.
 - API key secrets come only from the one-time creation response and are never persisted. Legacy browser key storage is removed when the app starts.
 - Inference uses POST streaming with an abortable request. Nginx disables buffering for inference routes.
-- Job progress first reads the REST snapshot, then opens same-origin WebSocket with a fresh Supabase JWT as `['bearer', token]`.
+- Job progress first reads the REST snapshot, then opens same-origin WebSocket with a fresh OIDC access token as `['bearer', token]`.
 - Browsers expose rejected pre-accept WebSocket handshakes as a generic failure, so the client retries boundedly rather than claiming it can distinguish 4401 from 4403.
 - Server-filtered marketplace search is 300ms debounced, IME-safe, retains prior results during refresh, and has a clear action.
 - A 401 is handled through the existing protected/auth flow. 429 retains `Retry-After` for an actionable cooldown; 402 and 503 remain server errors until product copy is localized.
@@ -64,3 +64,12 @@
 
 - Static: endpoint wrapper tests, API client tests, job-progress hook tests, lint, typecheck/build, i18n check, premium project audit.
 - Browser: inspect loading, unavailable template, no results, error/retry, keyboard search/clear, authored select popup, narrow viewport, dark theme, and a real Engine-authenticated job connection.
+
+## Account provider migration (2026-10-02)
+
+- Canonical session owner: `src/auth/keycloak.ts`; account storage: Keycloak's PostgreSQL database.
+- Canonical auth entry: `src/components/auth/AuthEntry.tsx`, using existing Card/Button and LanguageContext. Login, signup, recovery and legacy MFA routes reuse it.
+- AuthProvider initializes before the router and clears query data on identity change. Initialization failure shows a localized reload action; protected content is never shown while loading.
+- Credential, MFA, profile and deletion forms are provider-owned. Keycloak reauthenticates/validates/asks for deletion confirmation; frontend does not claim account deletion removes Engine data.
+- Auth redirect failures remain inline and retryable. Busy buttons reject duplicate submissions. Return routes preserve path/query/hash and reject external origins.
+- Password reset needs configured SMTP; Google sign-in needs a configured provider. Existing Supabase accounts require reviewed migration, not automatic email linking.

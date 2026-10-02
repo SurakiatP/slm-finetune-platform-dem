@@ -1,0 +1,15 @@
+# Merge with the BACKEND Compose file, only for a dedicated backend instance.
+# Switching OIDC_ISSUER replaces its Supabase verifier. See docs/postgresql-auth.md.
+services:
+  api:
+    environment:
+      OIDC_ISSUER: ${TUNELAB_OIDC_ISSUER:-http://localhost:5175/auth/realms/tunelab}
+      OIDC_JWKS_URL: http://tunelab-main-keycloak:8080/auth/realms/tunelab/protocol/openid-connect/certs
+      OIDC_AUDIENCE: tunelab-api
+      AUTH_REQUIRED: "true"
+    networks: [slm-net, tunelab-main-auth]
+
+networks:
+  tunelab-main-auth:
+    external: true
+    name: tunelab-main-auth

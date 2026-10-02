@@ -2,12 +2,12 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  getSession: vi.fn(),
+  getAccessToken: vi.fn(),
   getJobProgress: vi.fn(),
 }))
 
-vi.mock('@/integrations/supabase/client', () => ({
-  supabase: { auth: { getSession: mocks.getSession } },
+vi.mock('@/auth/keycloak', () => ({
+  getAccessToken: mocks.getAccessToken,
 }))
 vi.mock('@/api/endpoints/jobs', () => ({ getJobProgress: mocks.getJobProgress }))
 
@@ -35,7 +35,7 @@ describe('useJobProgress', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     FakeWebSocket.instances = []
-    mocks.getSession.mockResolvedValue({ data: { session: { access_token: 'jwt-token' } } })
+    mocks.getAccessToken.mockResolvedValue('jwt-token')
     mocks.getJobProgress.mockRejectedValue(new Error('no snapshot'))
     vi.stubGlobal('WebSocket', FakeWebSocket as unknown as typeof WebSocket)
   })
@@ -111,4 +111,11 @@ describe('useJobProgress', () => {
     unmount()
     vi.useRealTimers()
   })
+  it('does not open a socket without a valid token', async () => {
+    mocks.getAccessToken.mockResolvedValue(null)
+    const { result } = renderHook(() => useJobProgress('job-unauthenticated'))
+    await waitFor(() => expect(result.current.connectionError).toBe('unauthorized'))
+    expect(FakeWebSocket.instances).toHaveLength(0)
+  })
+
 })
