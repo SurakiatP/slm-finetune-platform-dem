@@ -210,10 +210,11 @@ Authorization: Bearer <supabase access token>
 Get the token client-side from `supabase.auth.getSession()`. The backend verifies
 it against the project's JWKS (`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`),
 checking signature, `exp`, `aud` (`authenticated`) and `iss`. There is no separate
-API key and no backend login endpoint — Supabase is the only identity source.
+API key and no backend login endpoint.
 
-**Generic OIDC (Keycloak).** When `OIDC_ISSUER` is set it takes precedence over
-`SUPABASE_URL`. Tokens are verified against `OIDC_JWKS_URL` (default
+**Generic OIDC (Keycloak).** `OIDC_ISSUER` may be set together with
+`SUPABASE_URL`; both are then trusted and each token is routed by its `iss` to
+exactly one of them (an unknown `iss` is `401`). OIDC tokens are verified against `OIDC_JWKS_URL` (default
 `{OIDC_ISSUER}/protocol/openid-connect/certs`), with `iss` equal to
 `OIDC_ISSUER` exactly, `aud` equal to `OIDC_AUDIENCE` (required whenever
 `OIDC_ISSUER` is set), an asymmetric algorithm (RS/ES/PS only), and `exp` and

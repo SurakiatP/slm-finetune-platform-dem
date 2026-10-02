@@ -272,12 +272,12 @@ class Settings(BaseSettings):
 
     # ---- Auth (generic OIDC, see api/core/auth.py) -------------------------
     # Set for the self-hosted frontend, which authenticates against Keycloak
-    # (or any other OIDC provider) instead of Supabase. When set, this takes
-    # priority over supabase_url unconditionally — a deployment runs against
-    # exactly one of the two, never both at once. Example:
+    # (or any other OIDC provider). May be set alongside supabase_url: both
+    # are then trusted, and each token is routed by its `iss` to exactly one
+    # of them (the Supabase -> Keycloak migration window). Example:
     # https://host/auth/realms/<realm>. This is also the exact expected
     # `iss` claim: compared as given, with NO trailing-slash stripping (see
-    # api/core/auth.py's `_expected_issuer`) — Keycloak's own `iss` never
+    # api/core/auth.py's `_trusted_providers`) — Keycloak's own `iss` never
     # carries a trailing slash, so this must match byte-for-byte.
     oidc_issuer: str = ""
     # Optional JWKS URL override. When empty and oidc_issuer is set, derived

@@ -274,7 +274,7 @@ def stub_jwks(monkeypatch: pytest.MonkeyPatch, rsa_keypair):
         def get_signing_key_from_jwt(_token: str):
             return _Key()
 
-    monkeypatch.setattr(auth_mod, "_get_jwks_client", lambda: _Client())
+    monkeypatch.setattr(auth_mod, "_get_jwks_client", lambda _url: _Client())
 
 
 class TestJwksPath:
@@ -313,15 +313,14 @@ class TestJwksPath:
 
     def test_jwks_client_is_built_once_and_reused(self, jwks_settings) -> None:
         """A per-request client would mean a per-request cold cache."""
-        first = auth_mod._get_jwks_client()
-        assert auth_mod._get_jwks_client() is first
+        url = "https://proj.supabase.co/auth/v1/.well-known/jwks.json"
+        first = auth_mod._get_jwks_client(url)
+        assert auth_mod._get_jwks_client(url) is first
 
     def test_jwks_cache_ttl_is_pinned_not_inherited(self) -> None:
         """PyJWT's own default is 300s; ADR-009 pins ours explicitly."""
         assert auth_mod._JWKS_CACHE_TTL_SECONDS == 600
 
     def test_jwks_url_matches_supabase_layout(self, jwks_settings) -> None:
-        assert (
-            auth_mod._get_jwks_client().uri
-            == "https://proj.supabase.co/auth/v1/.well-known/jwks.json"
-        )
+        [provider] = auth_mod._trusted_providers(get_settings())
+        assert provider.jwks_url == "https://proj.supabase.co/auth/v1/.well-known/jwks.json"

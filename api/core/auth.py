@@ -5,14 +5,14 @@
 with **asymmetric** JWTs signed by a per-project key that rotates via a
 JWKS endpoint at ``{supabase_url}/auth/v1/.well-known/jwks.json``. That is
 the path `verify_supabase_jwt` uses whenever `settings.supabase_url` is
-set (and `settings.oidc_issuer` is not — see precedence below).
+set.
 
 **OIDC path** (`settings.oidc_issuer`): the self-hosted frontend
 authenticates against a generic OIDC provider instead — in practice
-Keycloak. When `oidc_issuer` is set it takes priority over `supabase_url`
-unconditionally, so a deployment picks exactly one of the two verifiers,
-never a blend. See the settings' docstrings in `api/core/config.py` for
-the JWKS-URL derivation and the mandatory `oidc_audience` requirement.
+Keycloak. Both may be configured at once (the Supabase -> Keycloak
+migration window): each token is routed by its `iss` to exactly one
+provider, never tried against both. See the settings' docstrings in
+`api/core/config.py` for the JWKS-URL derivation and the mandatory `oidc_audience` requirement.
 
 A legacy **HS256 fallback** (`settings.supabase_jwt_secret`) exists only
 for Supabase projects still on the old shared-secret signing key. It is
@@ -107,32 +107,73 @@ def extract_bearer_token(value: str | None) -> str | None:
     return token or None
 
 
-# Process-wide JWKS client. Created lazily (settings must be loaded first)
-# and reused across requests — constructing a fresh `PyJWKClient` per
-# request would also mean a fresh, cold cache per request, defeating the
-# point of caching.
-_jwks_client: PyJWKClient | None = None
+@dataclass(frozen=True, slots=True)
+class _Provider:
+    """One trusted JWKS-backed token issuer.
 
-
-def _resolve_jwks_url(settings: Settings) -> str:
-    """The JWKS URL for whichever verifier is active, OIDC > Supabase.
-
-    `oidc_jwks_url` overrides the derived Keycloak layout
-    (``{issuer}/protocol/openid-connect/certs``) when the container
-    reaches the provider on a URL different from the public-facing issuer
-    (e.g. an internal Docker Compose hostname vs. a public domain fronted
-    by a reverse proxy) — that mismatch is exactly why the JWKS URL is a
-    separate, optional setting instead of always being derived.
+    `algorithms=None` means "the single algorithm the matched JWK itself
+    declares" (`signing_key.algorithm_name`) — the Supabase behaviour this
+    module had before it grew OIDC support. The OIDC provider pins
+    `_OIDC_ASYMMETRIC_ALGORITHMS` instead of trusting the JWKS response.
     """
+
+    issuer: str
+    audience: str
+    jwks_url: str
+    algorithms: list[str] | None
+
+
+def _trusted_providers(settings: Settings) -> list[_Provider]:
+    """Every JWKS-backed provider this deployment trusts, OIDC first.
+
+    Both may be configured at once — that is the Supabase -> Keycloak
+    migration window, where the old and new frontends share one API. A
+    token is routed to exactly one of these by its `iss` (see
+    `verify_supabase_jwt`), so the two never share a key set or a claim
+    policy.
+
+    `oidc_issuer` is kept **exactly as given** as the `iss` to match — no
+    trailing-slash normalization. Keycloak's own `iss` claim never carries
+    a trailing slash, so silently stripping one here would let a config
+    that kept a stray slash start matching tokens it shouldn't. The JWKS
+    URL, by contrast, does `rstrip('/')` because it's building a URL path,
+    not comparing a claim. `oidc_jwks_url` overrides the derived Keycloak
+    layout when the container reaches the provider on a URL different from
+    the public-facing issuer (e.g. an internal Docker Compose hostname).
+    """
+    providers: list[_Provider] = []
     if settings.oidc_issuer:
-        return settings.oidc_jwks_url or (
-            f"{settings.oidc_issuer.rstrip('/')}/protocol/openid-connect/certs"
+        providers.append(
+            _Provider(
+                issuer=settings.oidc_issuer,
+                audience=settings.oidc_audience,
+                jwks_url=settings.oidc_jwks_url
+                or f"{settings.oidc_issuer.rstrip('/')}/protocol/openid-connect/certs",
+                algorithms=_OIDC_ASYMMETRIC_ALGORITHMS,
+            )
         )
-    return f"{settings.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+    if settings.supabase_url:
+        base = f"{settings.supabase_url.rstrip('/')}/auth/v1"
+        providers.append(
+            _Provider(
+                issuer=base,
+                audience=settings.supabase_jwt_audience,
+                jwks_url=f"{base}/.well-known/jwks.json",
+                algorithms=None,
+            )
+        )
+    return providers
 
 
-def _get_jwks_client() -> PyJWKClient:
-    """Return the process-wide JWKS client, creating it on first use.
+# Process-wide JWKS clients, one per JWKS URL so two providers' `kid`s
+# never mix in one cache. Created lazily and reused across requests —
+# constructing a fresh `PyJWKClient` per request would also mean a fresh,
+# cold cache per request, defeating the point of caching.
+_jwks_clients: dict[str, PyJWKClient] = {}
+
+
+def _get_jwks_client(jwks_url: str) -> PyJWKClient:
+    """Return the process-wide JWKS client for `jwks_url`, creating it once.
 
     `PyJWKClient` caches the fetched JWK set in-process (`cache_jwk_set`)
     for `lifespan` seconds, and — per its own implementation — refetches
@@ -141,74 +182,39 @@ def _get_jwks_client() -> PyJWKClient:
     What this function must guarantee is that the *same* client (and
     therefore the same cache) is reused across requests.
     """
-    global _jwks_client
-    if _jwks_client is None:
-        settings = get_settings()
-        _jwks_client = PyJWKClient(
-            _resolve_jwks_url(settings),
+    client = _jwks_clients.get(jwks_url)
+    if client is None:
+        client = _jwks_clients[jwks_url] = PyJWKClient(
+            jwks_url,
             cache_jwk_set=True,
             lifespan=_JWKS_CACHE_TTL_SECONDS,
         )
-    return _jwks_client
+    return client
 
 
 def _reset_jwks_client_cache() -> None:
-    """Drop the cached client so a changed `supabase_url` takes effect.
+    """Drop the cached clients so changed settings take effect.
 
-    Not used by request-handling code — production never changes
-    `supabase_url` mid-process. Exists as a test seam.
+    Not used by request-handling code — production never changes its
+    providers mid-process. Exists as a test seam.
     """
-    global _jwks_client
-    _jwks_client = None
+    _jwks_clients.clear()
 
 
-def _expected_issuer(settings: Settings) -> str | None:
-    """The `iss` claim value to require, same OIDC > Supabase precedence
-    as `_resolve_jwks_url`. Returns `None` only when neither JWKS path is
-    configured (the HS256/misconfigured branches never call this).
+def _decode_via_jwks(token: str, provider: _Provider) -> dict[str, object]:
+    """Verify `token` against `provider`'s own JWKS and claim policy.
 
-    `oidc_issuer` is compared **exactly as given** — no trailing-slash
-    normalization. Keycloak's own `iss` claim never carries a trailing
-    slash, so silently stripping one here would let a config that kept a
-    stray slash start matching tokens it shouldn't; that's a deliberate
-    contrast with `_resolve_jwks_url`, which does `rstrip('/')` because
-    it's building a URL path, not comparing a claim.
+    `exp` and `sub` are required outright on every provider, not merely
+    checked when present.
     """
-    if settings.oidc_issuer:
-        return settings.oidc_issuer
-    if not settings.supabase_url:
-        return None
-    return f"{settings.supabase_url.rstrip('/')}/auth/v1"
-
-
-def _decode_via_jwks(
-    token: str,
-    *,
-    issuer: str,
-    audience: str,
-    algorithms: list[str] | None = None,
-    require: list[str] | None = None,
-) -> dict[str, object]:
-    """Verify `token` against the process-wide JWKS client.
-
-    `algorithms`/`require` default to `None`, which is the Supabase
-    behaviour this function had before it grew OIDC support: the single
-    algorithm the matched JWK itself declares
-    (`signing_key.algorithm_name`) and no `require` beyond PyJWT's own
-    opportunistic `exp`/`iat`/`nbf` handling. The OIDC path (see
-    `verify_supabase_jwt`) is the only caller that passes both explicitly,
-    to pin the algorithm allowlist and require `exp`/`sub` outright rather
-    than trust the JWKS response alone.
-    """
-    client = _get_jwks_client()
-    signing_key = client.get_signing_key_from_jwt(token)
+    signing_key = _get_jwks_client(provider.jwks_url).get_signing_key_from_jwt(token)
     return jwt.decode(
         token,
         signing_key.key,
-        algorithms=algorithms if algorithms is not None else [signing_key.algorithm_name],
-        audience=audience,
-        issuer=issuer,
-        options={"require": require} if require else None,
+        algorithms=provider.algorithms or [signing_key.algorithm_name],
+        audience=provider.audience,
+        issuer=provider.issuer,
+        options={"require": ["exp", "sub"]},
     )
 
 
@@ -229,40 +235,39 @@ def verify_supabase_jwt(token: str) -> CurrentUser:
 
     Kept under its original name (it's imported by the WebSocket router and
     by tests) even though it now verifies more than just Supabase tokens.
-    Picks exactly one verifier, in this precedence order:
+    Picks exactly one verifier:
 
-      1. `oidc_issuer` set -> generic OIDC/JWKS (e.g. Keycloak): JWKS at
-         `_resolve_jwks_url`, `iss` must equal `oidc_issuer` exactly,
-         `aud` must equal `oidc_audience`, algorithm must be one of
-         `_OIDC_ASYMMETRIC_ALGORITHMS`, and `exp`/`sub` are required to be
-         present outright (not just checked when present).
-      2. else `supabase_url` set -> Supabase JWKS: `iss` must equal
-         `{supabase_url}/auth/v1`, `aud` must equal `supabase_jwt_audience`.
-      3. else `supabase_jwt_secret` set -> legacy Supabase HS256 fallback.
-      4. else -> misconfigured; fails closed with 401 rather than admit.
+      1. any JWKS provider configured (`_trusted_providers`: OIDC via
+         `oidc_issuer`, Supabase via `supabase_url`, or both during the
+         Keycloak migration) -> the one whose issuer equals the token's
+         `iss` exactly. Unknown `iss` -> 401. The chosen provider checks
+         signature, `iss`, `aud`, `exp`, `sub` (and `nbf` when present);
+         OIDC also pins `_OIDC_ASYMMETRIC_ALGORITHMS`.
+      2. else `supabase_jwt_secret` set -> legacy Supabase HS256 fallback.
+      3. else -> misconfigured; fails closed with 401 rather than admit.
 
     Raises `HTTPException(401)` with a generic detail on any failure —
     nothing about *why* it failed, and the token itself, ever reaches the
     client or a log line.
     """
     settings = get_settings()
-    issuer = _expected_issuer(settings)
+    providers = _trusted_providers(settings)
 
     try:
-        if settings.oidc_issuer:
-            claims = _decode_via_jwks(
-                token,
-                issuer=issuer,  # type: ignore[arg-type]
-                audience=settings.oidc_audience,
-                algorithms=_OIDC_ASYMMETRIC_ALGORITHMS,
-                require=["exp", "sub"],
-            )
-        elif settings.supabase_url:
-            claims = _decode_via_jwks(
-                token,
-                issuer=issuer,  # type: ignore[arg-type]
-                audience=settings.supabase_jwt_audience,
-            )
+        if providers:
+            # The unverified `iss` only *selects* among the configured
+            # providers — it is never trusted as identity and never used to
+            # build a URL. No match -> 401; a match that then fails
+            # verification is also 401, never retried against another one.
+            iss = jwt.decode(token, options={"verify_signature": False}).get("iss")
+            provider = next((p for p in providers if p.issuer == iss), None)
+            if provider is None:
+                log.info("rejected token (untrusted issuer)")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=_INVALID_TOKEN_DETAIL,
+                )
+            claims = _decode_via_jwks(token, provider)
         elif settings.supabase_jwt_secret:
             claims = _decode_via_hs256(token, settings)
         else:

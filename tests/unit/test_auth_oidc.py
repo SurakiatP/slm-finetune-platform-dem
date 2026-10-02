@@ -36,8 +36,8 @@ def rsa_keypair():
 
 @pytest.fixture
 def oidc_settings(monkeypatch: pytest.MonkeyPatch):
-    """Configure the OIDC path. `SUPABASE_URL` is set too, on purpose, to
-    prove precedence — the whole point of several tests below."""
+    """Configure the OIDC path. `SUPABASE_URL` is set too, on purpose: both
+    providers are trusted at once (the Keycloak migration window)."""
     monkeypatch.setenv("OIDC_ISSUER", _ISSUER)
     monkeypatch.setenv("OIDC_AUDIENCE", _AUD)
     monkeypatch.setenv("OIDC_JWKS_URL", "")
@@ -68,7 +68,7 @@ def stub_oidc_jwks(monkeypatch: pytest.MonkeyPatch, rsa_keypair):
         def get_signing_key_from_jwt(_token: str):
             return _Key()
 
-    monkeypatch.setattr(auth_mod, "_get_jwks_client", lambda: _Client())
+    monkeypatch.setattr(auth_mod, "_get_jwks_client", lambda _url: _Client())
 
 
 def _rs256(private_key, **overrides) -> str:
@@ -166,18 +166,92 @@ class TestOidcClaims:
 # =============================================================================
 
 
-class TestOidcPrecedenceAndJwksUrl:
-    def test_oidc_takes_precedence_over_supabase_url(
-        self, oidc_settings, stub_oidc_jwks, rsa_keypair
-    ) -> None:
-        """`oidc_settings` sets *both* OIDC_ISSUER and SUPABASE_URL — a
-        Supabase-shaped `iss` must NOT verify, proving the OIDC branch (and
-        its own `iss` check) is the one actually in effect."""
-        private_key, _ = rsa_keypair
-        token = _rs256(private_key, iss="https://proj.supabase.co/auth/v1")
+class TestDualProviderAndJwksUrl:
+    @pytest.fixture
+    def two_keys(self, monkeypatch: pytest.MonkeyPatch):
+        """A distinct RSA key per JWKS URL, so a token signed for one
+        provider can only verify against that provider's key set."""
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        keys = {
+            f"{_ISSUER}/protocol/openid-connect/certs": rsa.generate_private_key(
+                public_exponent=65537, key_size=2048
+            ),
+            "https://proj.supabase.co/auth/v1/.well-known/jwks.json": rsa.generate_private_key(
+                public_exponent=65537, key_size=2048
+            ),
+        }
+
+        class _Client:
+            def __init__(self, url: str) -> None:
+                self.url = url
+
+            def get_signing_key_from_jwt(self, _token: str):
+                class _Key:
+                    key = keys[self.url].public_key()
+                    algorithm_name = "RS256"
+
+                return _Key()
+
+        monkeypatch.setattr(auth_mod, "_get_jwks_client", _Client)
+        return (
+            keys[f"{_ISSUER}/protocol/openid-connect/certs"],
+            keys["https://proj.supabase.co/auth/v1/.well-known/jwks.json"],
+        )
+
+    def test_both_issuers_are_accepted_at_once(self, oidc_settings, two_keys) -> None:
+        keycloak_key, supabase_key = two_keys
+        assert verify_supabase_jwt(_rs256(keycloak_key)).id == _SUB
+        supabase_token = _rs256(
+            supabase_key, iss="https://proj.supabase.co/auth/v1", aud="authenticated"
+        )
+        assert verify_supabase_jwt(supabase_token).id == _SUB
+
+    def test_unknown_issuer_is_rejected(self, oidc_settings, two_keys) -> None:
+        keycloak_key, _ = two_keys
+        token = _rs256(keycloak_key, iss="https://evil.example.com/auth/realms/x")
         with pytest.raises(HTTPException) as exc:
             verify_supabase_jwt(token)
         assert exc.value.status_code == 401
+
+    def test_token_signed_by_the_other_provider_is_rejected(
+        self, oidc_settings, two_keys
+    ) -> None:
+        """Keycloak `iss`, Supabase key: routed to Keycloak's key set only,
+        fails there, and is never retried against Supabase's."""
+        _, supabase_key = two_keys
+        with pytest.raises(HTTPException) as exc:
+            verify_supabase_jwt(_rs256(supabase_key))
+        assert exc.value.status_code == 401
+
+    def test_each_provider_keeps_its_own_audience(self, oidc_settings, two_keys) -> None:
+        """A Supabase-`iss` token carrying the Keycloak audience fails: the
+        Supabase provider only accepts `authenticated`."""
+        _, supabase_key = two_keys
+        token = _rs256(supabase_key, iss="https://proj.supabase.co/auth/v1")
+        with pytest.raises(HTTPException) as exc:
+            verify_supabase_jwt(token)
+        assert exc.value.status_code == 401
+
+    def test_not_before_in_the_future_is_rejected(self, oidc_settings, two_keys) -> None:
+        keycloak_key, _ = two_keys
+        token = _rs256(keycloak_key, nbf=int(time.time()) + 3600)
+        with pytest.raises(HTTPException) as exc:
+            verify_supabase_jwt(token)
+        assert exc.value.status_code == 401
+
+    def test_each_jwks_url_gets_its_own_cached_client(self) -> None:
+        auth_mod._reset_jwks_client_cache()
+        try:
+            a = auth_mod._get_jwks_client("https://a.example/certs")
+            b = auth_mod._get_jwks_client("https://b.example/certs")
+            assert a is not b
+            assert auth_mod._get_jwks_client("https://a.example/certs") is a
+        finally:
+            auth_mod._reset_jwks_client_cache()
+
+    def _oidc(self, settings: Settings) -> auth_mod._Provider:
+        return auth_mod._trusted_providers(settings)[0]
 
     def test_derived_jwks_url_is_keycloak_certs_endpoint(self) -> None:
         settings = Settings(
@@ -185,10 +259,7 @@ class TestOidcPrecedenceAndJwksUrl:
             oidc_issuer=_ISSUER,
             oidc_audience=_AUD,
         )
-        assert (
-            auth_mod._resolve_jwks_url(settings)
-            == f"{_ISSUER}/protocol/openid-connect/certs"
-        )
+        assert self._oidc(settings).jwks_url == f"{_ISSUER}/protocol/openid-connect/certs"
 
     def test_explicit_jwks_url_overrides_the_derived_one(self) -> None:
         settings = Settings(
@@ -198,7 +269,7 @@ class TestOidcPrecedenceAndJwksUrl:
             oidc_jwks_url="http://keycloak:8080/realms/slm-platform/protocol/openid-connect/certs",
         )
         assert (
-            auth_mod._resolve_jwks_url(settings)
+            self._oidc(settings).jwks_url
             == "http://keycloak:8080/realms/slm-platform/protocol/openid-connect/certs"
         )
 
@@ -208,16 +279,10 @@ class TestOidcPrecedenceAndJwksUrl:
             oidc_issuer=_ISSUER + "/",
             oidc_audience=_AUD,
         )
-        assert (
-            auth_mod._resolve_jwks_url(settings)
-            == f"{_ISSUER}/protocol/openid-connect/certs"
-        )
+        provider = self._oidc(settings)
+        assert provider.jwks_url == f"{_ISSUER}/protocol/openid-connect/certs"
         # ... but the `iss` claim comparison is exact, trailing slash and all.
-        assert auth_mod._expected_issuer(settings) == _ISSUER + "/"
-
-    def test_get_jwks_client_built_from_oidc_settings(self, oidc_settings) -> None:
-        client = auth_mod._get_jwks_client()
-        assert client.uri == f"{_ISSUER}/protocol/openid-connect/certs"
+        assert provider.issuer == _ISSUER + "/"
 
 
 # =============================================================================
@@ -248,7 +313,7 @@ class TestSupabaseUnchangedWhenOidcEmpty:
                 def get_signing_key_from_jwt(_token: str):
                     return _Key()
 
-            monkeypatch.setattr(auth_mod, "_get_jwks_client", lambda: _Client())
+            monkeypatch.setattr(auth_mod, "_get_jwks_client", lambda _url: _Client())
 
             token = jwt.encode(
                 {
