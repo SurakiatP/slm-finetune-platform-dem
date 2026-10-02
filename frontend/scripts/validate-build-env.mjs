@@ -1,35 +1,14 @@
-import { loadEnv } from "vite";
-
-const env = { ...loadEnv("production", process.cwd(), ""), ...process.env };
-const required = [
-  "VITE_SUPABASE_PROJECT_ID",
-  "VITE_SUPABASE_PUBLISHABLE_KEY",
-  "VITE_SUPABASE_URL",
-];
-
-const missing = required.filter((name) => !env[name]?.trim());
-if (missing.length > 0) {
-  throw new Error(`Missing required frontend build variables: ${missing.join(", ")}`);
+import { loadEnv } from 'vite';
+const env = { ...loadEnv('production', process.cwd(), ''), ...process.env };
+const authUrl = env.VITE_AUTH_URL || '/auth';
+if (!authUrl.startsWith('/') || authUrl.startsWith('//')) {
+  const url = new URL(authUrl);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) {
+    throw new Error('VITE_AUTH_URL must be a same-origin path, HTTPS URL, or local development HTTP URL');
+  }
+  if (url.username || url.password || url.search || url.hash) throw new Error('VITE_AUTH_URL cannot contain credentials, query or fragment');
 }
-
-const projectRef = env.VITE_SUPABASE_PROJECT_ID.trim();
-const publishableKey = env.VITE_SUPABASE_PUBLISHABLE_KEY.trim();
-const supabaseUrl = new URL(env.VITE_SUPABASE_URL.trim());
-
-if (!/^[a-z0-9]{20}$/.test(projectRef)) {
-  throw new Error("VITE_SUPABASE_PROJECT_ID must be a 20-character Supabase project ref");
+for (const key of ['VITE_AUTH_REALM', 'VITE_AUTH_CLIENT_ID']) {
+  if (env[key] && !/^[a-zA-Z0-9._-]+$/.test(env[key])) throw new Error(`${key} contains invalid characters`);
 }
-
-if (supabaseUrl.protocol !== "https:" || supabaseUrl.hostname !== `${projectRef}.supabase.co`) {
-  throw new Error("VITE_SUPABASE_URL must be https://<VITE_SUPABASE_PROJECT_ID>.supabase.co");
-}
-
-if (projectRef.startsWith("replace-") || publishableKey.startsWith("replace-")) {
-  throw new Error("Replace the example Supabase project ref and publishable key before building");
-}
-
-if (!(publishableKey.startsWith("sb_publishable_") || publishableKey.startsWith("eyJ"))) {
-  throw new Error("VITE_SUPABASE_PUBLISHABLE_KEY must be a Supabase publishable key or legacy anon JWT");
-}
-
-console.log(`Frontend auth target validated: ${supabaseUrl.hostname}`);
+console.log('OIDC frontend configuration validated (PostgreSQL credentials are server-side only).');

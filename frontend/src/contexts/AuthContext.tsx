@@ -1,153 +1,50 @@
-import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from "react";
-import { Session, User } from "@supabase/supabase-js";
-import { supabase } from "@/integrations/supabase/client";
-import {
-  getMfaAssuranceLevel,
-  listMfaFactors,
-  type MfaFactor,
-} from "@/lib/accountSecurity";
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { Loader2 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { useLanguage } from '@/i18n/LanguageContext'
+import { getAuthState, initAuth, signOut, subscribeAuth, type AuthState } from '@/auth/keycloak'
 
-interface Profile {
-  id: string;
-  user_id: string;
-  display_name: string | null;
-  avatar_url: string | null;
-}
-
-interface AuthContextValue {
-  session: Session | null;
-  user: User | null;
-  profile: Profile | null;
-  loading: boolean;
-  mfaLoading: boolean;
-  mfaError: string | null;
-  mfaFactors: MfaFactor[];
-  currentAal: string | null;
-  nextAal: string | null;
-  mfaRequired: boolean;
-  signOut: () => Promise<void>;
-  refreshProfile: () => Promise<void>;
-  refreshMfa: () => Promise<void>;
-}
-
-const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+type AuthContextValue = AuthState & { loading: boolean; signOut: () => Promise<void> }
+const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [mfaLoading, setMfaLoading] = useState(true);
-  const [mfaError, setMfaError] = useState<string | null>(null);
-  const [mfaFactors, setMfaFactors] = useState<MfaFactor[]>([]);
-  const [currentAal, setCurrentAal] = useState<string | null>(null);
-  const [nextAal, setNextAal] = useState<string | null>(null);
-
-  const loadProfile = useCallback(async (userId: string) => {
-    const { data } = await supabase
-      .from("profiles")
-      .select("id, user_id, display_name, avatar_url")
-      .eq("user_id", userId)
-      .maybeSingle();
-    setProfile(data ?? null);
-  }, []);
-
-  const refreshMfa = useCallback(async () => {
-    setMfaLoading(true);
-    setMfaError(null);
-    try {
-      const [factors, assurance] = await Promise.all([
-        listMfaFactors(),
-        getMfaAssuranceLevel(),
-      ]);
-      setMfaFactors(factors);
-      setCurrentAal(assurance.currentLevel);
-      setNextAal(assurance.nextLevel);
-    } catch (error) {
-      setMfaError(error instanceof Error ? error.message : "Unable to verify two-factor authentication status.");
-      throw error;
-    } finally {
-      setMfaLoading(false);
-    }
-  }, []);
-
-  const resetMfa = useCallback(() => {
-    setMfaFactors([]);
-    setCurrentAal(null);
-    setNextAal(null);
-    setMfaError(null);
-    setMfaLoading(false);
-  }, []);
+  const [state, setState] = useState<AuthState>(getAuthState)
+  const [loading, setLoading] = useState(true)
+  const [failed, setFailed] = useState(false)
+  const queryClient = useQueryClient()
+  const { t } = useLanguage()
 
   useEffect(() => {
-    // 1) Subscribe FIRST
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession);
-      setUser(newSession?.user ?? null);
-      if (newSession?.user) {
-        // Defer DB call to avoid recursive lock with auth state
-        setMfaLoading(true);
-        setTimeout(() => {
-          void Promise.all([loadProfile(newSession.user.id), refreshMfa()]).catch(() => undefined);
-        }, 0);
-      } else {
-        setProfile(null);
-        resetMfa();
-      }
-    });
+    let active = true
+    let previousUser = getAuthState().user?.id
+    const apply = (next: AuthState) => {
+      if (!active) return
+      if (previousUser !== next.user?.id) queryClient.clear()
+      previousUser = next.user?.id
+      setState(next)
+    }
+    const unsubscribe = subscribeAuth(apply)
+    void initAuth().then(() => apply(getAuthState())).catch(() => {
+      if (active) setFailed(true)
+    }).finally(() => { if (active) setLoading(false) })
+    return () => { active = false; unsubscribe() }
+  }, [queryClient])
 
-    // 2) Then check existing session
-    void supabase.auth.getSession().then(async ({ data: { session: existing } }) => {
-      setSession(existing);
-      setUser(existing?.user ?? null);
-      if (existing?.user) {
-        await Promise.all([loadProfile(existing.user.id), refreshMfa()]).catch(() => undefined);
-      } else {
-        resetMfa();
-      }
-    }).catch(() => {
-      resetMfa();
-    }).finally(() => {
-      setLoading(false);
-    });
-
-    return () => subscription.unsubscribe();
-  }, [loadProfile, refreshMfa, resetMfa]);
-
-  const signOut = async () => {
-    await supabase.auth.signOut();
-    setProfile(null);
-  };
-
-  const refreshProfile = async () => {
-    if (user) await loadProfile(user.id);
-  };
-
-  const mfaRequired = nextAal === "aal2" && currentAal !== "aal2";
-
-  return (
-    <AuthContext.Provider value={{
-      session,
-      user,
-      profile,
-      loading,
-      mfaLoading,
-      mfaError,
-      mfaFactors,
-      currentAal,
-      nextAal,
-      mfaRequired,
-      signOut,
-      refreshProfile,
-      refreshMfa,
-    }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  // Mount the router only after the adapter has consumed the OIDC callback.
+  if (loading || failed) return (
+    <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-4 text-center">
+      {failed ? <>
+        <p role="alert">{t('oidc.unavailable')}</p>
+        <Button onClick={() => window.location.reload()}>{t('security.retry')}</Button>
+      </> : <div role="status"><Loader2 aria-hidden="true" className="h-6 w-6 animate-spin" /><span className="sr-only">{t('oidc.loading')}</span></div>}
+    </div>
+  )
+  return <AuthContext.Provider value={{ ...state, loading, signOut }}>{children}</AuthContext.Provider>
 }
 
 export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
-  return ctx;
+  const value = useContext(AuthContext)
+  if (!value) throw new Error('useAuth must be used within AuthProvider')
+  return value
 }

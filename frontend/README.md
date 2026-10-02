@@ -1,73 +1,46 @@
-# Welcome to your Lovable project
+# TuneLab frontend
 
-## Project info
+The main frontend uses **Keycloak + PostgreSQL** for accounts, profiles, passwords,
+MFA and sessions. React connects to a public OIDC client; it never receives a
+PostgreSQL connection string or password. Business data still uses the Engine API.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## Run locally
 
-## How can I edit this code?
+1. Install Docker and Node.js, then run `npm ci`.
+2. For a new setup, copy `.env.example` to **`.env.auth.local`** and set unique
+   `AUTH_DB_PASSWORD` and `KEYCLOAK_ADMIN_PASSWORD` values. Preserve an existing file.
+   This ignored file contains server secrets; do not add them to `VITE_*` or to the
+   repository's historically tracked `.env` file.
+3. Run `docker compose --env-file .env.auth.local up -d --build`.
+4. Open **http://localhost:5175**. Choose Create account or Sign in.
+5. For Vite hot reload, run `npm run dev` and open http://localhost:5173.
+   Vite forwards `/auth` to the Compose frontend on port 5175. Both origins are
+   registered in the realm. The self-host frontend is a separate project.
 
-There are several ways of editing your application.
+The PostgreSQL service has no published host port. Its data persists in the
+`auth-postgres` volume. Keycloak creates and migrates its own tables.
 
-**Use Lovable**
+**Engine integration requires OIDC configuration.** An existing Supabase-only
+backend will reject these tokens until its verifier is configured. Changing the
+shared backend to OIDC also stops accepting the self-host frontend's Supabase
+tokens. Use a dedicated backend or implement dual-provider identity handling
+before cutting over a shared deployment. No remote backend has been changed.
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+See [PostgreSQL authentication and migration](docs/postgresql-auth.md) for backend
+configuration, account migration, SMTP, MFA, account deletion and rollout checks.
 
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
+## Verification
 
 ```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
+npm test
+npx tsc --noEmit -p tsconfig.app.json
+npm run lint
+npm run build
 ```
 
-**Edit a file directly in GitHub**
+See the [validation report](docs/postgresql-auth-validation.md) for local browser checks and remaining integration limits.
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
-
-**Use GitHub Codespaces**
-
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with:
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+The application uses React, TypeScript, Vite, Tailwind and shared shadcn/ui
+components. Login and account-security forms are hosted by Keycloak. Old
+`supabase/` migrations remain only as historical migration input; no Supabase
+SDK is imported by the active frontend.

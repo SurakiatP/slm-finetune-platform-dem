@@ -1,0 +1,75 @@
+name: tunelab-main
+
+services:
+  frontend:
+    build:
+      context: .
+      args:
+        VITE_ENGINE_HOST: ""
+        VITE_AUTH_URL: /auth
+        VITE_AUTH_REALM: tunelab
+        VITE_AUTH_CLIENT_ID: tunelab-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5175}:8080"
+    environment:
+      ENGINE_UPSTREAM: ${ENGINE_UPSTREAM:-host.docker.internal:8088}
+      ENGINE_UPSTREAM_HOST: ${ENGINE_UPSTREAM_HOST:-localhost}
+      AUTH_UPSTREAM: keycloak:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      keycloak:
+        condition: service_started
+    networks: [auth]
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${AUTH_DB_NAME:-tunelab_auth}
+      POSTGRES_USER: ${AUTH_DB_USER:-tunelab}
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:?Set AUTH_DB_PASSWORD in .env}
+    volumes:
+      - auth-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [auth]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.2.4
+    command: [start, --import-realm]
+    restart: unless-stopped
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres
+      KC_DB_URL_PORT: 5432
+      KC_DB_URL_DATABASE: ${AUTH_DB_NAME:-tunelab_auth}
+      KC_DB_USERNAME: ${AUTH_DB_USER:-tunelab}
+      KC_DB_PASSWORD: ${AUTH_DB_PASSWORD:?Set AUTH_DB_PASSWORD in .env}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in .env}
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_HOSTNAME: ${AUTH_PUBLIC_URL:-http://localhost:5175/auth}
+      KC_PROXY_HEADERS: xforwarded
+      TUNELAB_WEB_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5175}
+      TUNELAB_DEV_ORIGIN: ${DEV_ORIGIN:-http://localhost:5173}
+    volumes:
+      - ./docker/keycloak/tunelab-realm.json:/opt/keycloak/data/import/tunelab-realm.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      auth:
+        aliases: [tunelab-main-keycloak]
+
+volumes:
+  auth-postgres:
+
+networks:
+  auth:
+    name: tunelab-main-auth

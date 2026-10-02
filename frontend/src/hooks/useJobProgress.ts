@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef } from 'react'
-import { supabase } from '@/integrations/supabase/client'
+import { getAccessToken } from '@/auth/keycloak'
 
 import type {
   EvaluationProgressMsg,
@@ -143,7 +143,7 @@ const isMockMode = import.meta.env.VITE_MOCK === '1'
  * Subscribe to /ws/jobs/{jobId} and accumulate progress for charts.
  *
  * The REST snapshot is hydrated on mount and remains the authoritative
- * fallback. The current Supabase JWT is offered through the backend's
+ * fallback. The current OIDC access token is offered through the backend's
  * `Sec-WebSocket-Protocol: bearer, <jwt>` contract.
  */
 export function useJobProgress(jobId: string | null, options: UseJobProgressOptions = {}): JobProgressState {
@@ -173,9 +173,8 @@ export function useJobProgress(jobId: string | null, options: UseJobProgressOpti
     let handshakeFailures = 0
 
     const connect = async () => {
-      const { data: { session } } = await supabase.auth.getSession()
+      const token = await getAccessToken()
       if (stopped) return
-      const token = session?.access_token
       if (!token) {
         dispatch({ type: 'connection-error', error: 'unauthorized' })
         return

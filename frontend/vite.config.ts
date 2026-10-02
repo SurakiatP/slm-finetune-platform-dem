@@ -16,6 +16,10 @@ export default defineConfig(({ mode }) => {
       overlay: false,
     },
     proxy: {
+      "/auth": {
+        target: env.AUTH_PROXY_TARGET || "http://localhost:5175",
+        changeOrigin: true,
+      },
       // Forward API calls and WebSocket to the Engine backend
       "/api/v1": {
         target: engineProxyTarget,
