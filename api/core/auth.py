@@ -20,10 +20,10 @@ used only when both `oidc_issuer` and `supabase_url` are empty (i.e. no
 JWKS path is configured) — new projects should not rely on it.
 
 This module answers exactly one question — "who is this?" (signature,
-`exp`, `aud`, `iss`, and the token's `sub`/`email` claims). It does not
-import anything DB-related and knows nothing about per-resource
-ownership; "may they touch this row?" is a separate concern layered on
-top elsewhere.
+`exp`, `aud`, `iss`, and the token's `sub`/`email` claims). The only DB
+touch is `authenticate` mapping an OIDC `(iss, sub)` to its Engine actor
+id via `identity_links`; it knows nothing about per-resource ownership —
+"may they touch this row?" is a separate concern layered on top elsewhere.
 
 **Two-phase rollout** (`settings.auth_required`, defaults to `False`):
   - Phase 1 — compatibility mode: a token is verified when present, but a
@@ -49,9 +49,12 @@ import jwt
 from fastapi import Depends, Header, HTTPException, status
 from jwt import PyJWKClient
 from jwt.exceptions import InvalidTokenError, PyJWKClientError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core import request_context
 from api.core.config import Settings, get_settings
+from api.core.database import get_db
+from api.services.identity_links import resolve_actor
 
 log = logging.getLogger("api.auth")
 
@@ -121,6 +124,10 @@ class _Provider:
     audience: str
     jwks_url: str
     algorithms: list[str] | None
+    # True -> `sub` is mapped to an actor id via `identity_links` (see
+    # `authenticate`). False (Supabase) -> `sub` IS the actor id, which is
+    # what every pre-Keycloak row's owner_id already holds.
+    linked: bool
 
 
 def _trusted_providers(settings: Settings) -> list[_Provider]:
@@ -150,6 +157,7 @@ def _trusted_providers(settings: Settings) -> list[_Provider]:
                 jwks_url=settings.oidc_jwks_url
                 or f"{settings.oidc_issuer.rstrip('/')}/protocol/openid-connect/certs",
                 algorithms=_OIDC_ASYMMETRIC_ALGORITHMS,
+                linked=True,
             )
         )
     if settings.supabase_url:
@@ -160,6 +168,7 @@ def _trusted_providers(settings: Settings) -> list[_Provider]:
                 audience=settings.supabase_jwt_audience,
                 jwks_url=f"{base}/.well-known/jwks.json",
                 algorithms=None,
+                linked=False,
             )
         )
     return providers
@@ -231,10 +240,19 @@ def _decode_via_hs256(token: str, settings: Settings) -> dict[str, object]:
 
 
 def verify_supabase_jwt(token: str) -> CurrentUser:
-    """Validate `token` and return the caller it identifies.
+    """Validate `token` and return the identity it carries (`id` = raw `sub`).
 
-    Kept under its original name (it's imported by the WebSocket router and
-    by tests) even though it now verifies more than just Supabase tokens.
+    Request handling goes through `authenticate`, which additionally maps an
+    OIDC `sub` to its Engine actor id; this stays as the pure, DB-free
+    verifier (and test seam). Kept under its original name even though it
+    verifies more than just Supabase tokens.
+    """
+    return _verify(token)[0]
+
+
+def _verify(token: str) -> tuple[CurrentUser, _Provider | None]:
+    """Validate `token`; return the identity and the provider that issued it
+    (`None` on the HS256 fallback path).
     Picks exactly one verifier:
 
       1. any JWKS provider configured (`_trusted_providers`: OIDC via
@@ -252,6 +270,7 @@ def verify_supabase_jwt(token: str) -> CurrentUser:
     """
     settings = get_settings()
     providers = _trusted_providers(settings)
+    provider: _Provider | None = None
 
     try:
         if providers:
@@ -301,11 +320,31 @@ def verify_supabase_jwt(token: str) -> CurrentUser:
             detail=_INVALID_TOKEN_DETAIL,
         )
     email = claims.get("email")
-    return CurrentUser(id=sub, email=email if isinstance(email, str) else None)
+    return CurrentUser(id=sub, email=email if isinstance(email, str) else None), provider
+
+
+async def authenticate(token: str, db: AsyncSession) -> CurrentUser:
+    """Verify `token` and resolve it to the Engine actor every ownership
+    check compares against. Shared by REST (`current_user_optional`) and the
+    WebSocket handshake so the two can never disagree on who a caller is.
+    """
+    # Offloaded to a worker thread: verification is synchronous and, on the
+    # JWKS path, can perform a blocking HTTPS fetch — `PyJWKClient` uses
+    # `urllib.request.urlopen`, which has no async variant. That happens
+    # whenever the JWKS cache is cold or a rotated `kid` forces a refetch, and
+    # calling it inline would stall the whole event loop for a network
+    # round-trip. Same convention `ai_engine/data_gen/openrouter_client.py`
+    # documents for its sync client.
+    user, provider = await asyncio.to_thread(_verify, token)
+    if provider is None or not provider.linked:
+        return user
+    actor_id = await resolve_actor(db, provider.issuer, user.id)
+    return CurrentUser(id=actor_id, email=user.email)
 
 
 async def current_user_optional(
     authorization: Annotated[str | None, Header()] = None,
+    db: AsyncSession = Depends(get_db),
 ) -> CurrentUser | None:
     """Resolve the caller from `Authorization: Bearer <token>`, if present.
 
@@ -318,14 +357,7 @@ async def current_user_optional(
     token = extract_bearer_token(authorization)
     if token is None:
         return None
-    # Offloaded to a worker thread: `verify_supabase_jwt` is synchronous and,
-    # on the JWKS path, can perform a blocking HTTPS fetch — `PyJWKClient`
-    # uses `urllib.request.urlopen`, which has no async variant. That happens
-    # whenever the JWKS cache is cold or a rotated `kid` forces a refetch, and
-    # calling it inline would stall the whole event loop for a network
-    # round-trip. Same convention `ai_engine/data_gen/openrouter_client.py`
-    # documents for its sync client.
-    user = await asyncio.to_thread(verify_supabase_jwt, token)
+    user = await authenticate(token, db)
     # Bind the identified caller onto the request-scoped context so every
     # subsequent log line (including ones emitted by the request-context
     # middleware and downstream services) carries `user_id`. Anonymous
@@ -377,6 +409,7 @@ async def require_authenticated_user(
 
 __all__ = [
     "CurrentUser",
+    "authenticate",
     "current_user_optional",
     "extract_bearer_token",
     "require_authenticated_user",

@@ -27,6 +27,8 @@ COPY ai_engine ./ai_engine
 COPY workers ./workers
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
+# Operator scripts (owner backfill, identity linking) run via `docker exec`.
+COPY scripts ./scripts
 
 EXPOSE 8000
 

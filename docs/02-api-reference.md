@@ -221,6 +221,13 @@ exactly one of them (an unknown `iss` is `401`). OIDC tokens are verified agains
 `sub` present. Keycloak access tokens only carry a custom `aud` if the client
 has an Audience protocol mapper.
 
+**Who owns what.** A Supabase token's `sub` is the caller's owner id. A
+Keycloak token is mapped through `identity_links(issuer, subject)` instead: a
+linked identity (set by an operator with `scripts/link_identity.py`) acts as
+its linked owner id, e.g. a migrated user's old Supabase `sub`; an unseen one
+is issued a fresh, empty owner id on first request. Nothing is linked by
+email. See [`runbooks/keycloak_migration.md`](./runbooks/keycloak_migration.md).
+
 ### Two-phase rollout — what you get today
 
 `AUTH_REQUIRED` defaults to **`false`**, and until it is flipped:

@@ -78,7 +78,7 @@ from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketState
 
-from api.core.auth import CurrentUser, verify_supabase_jwt
+from api.core.auth import CurrentUser, authenticate
 from api.core.config import get_settings
 from api.core.database import get_db
 from api.core.redis_client import get_redis_client, job_channel, job_snapshot_key
@@ -131,9 +131,8 @@ async def _authorize(ws: WebSocket, job_id: str, db: AsyncSession) -> tuple[bool
     user: CurrentUser | None = None
     if token is not None:
         try:
-            # Synchronous and, on a cold JWKS cache or rotated `kid`, blocks
-            # on network IO — offload exactly like `current_user_optional`.
-            user = await asyncio.to_thread(verify_supabase_jwt, token)
+            # Same verifier + actor resolution as REST `current_user_optional`.
+            user = await authenticate(token, db)
         except HTTPException:
             await ws.close(code=_CLOSE_UNAUTHENTICATED, reason="invalid authentication token")
             return False, None
