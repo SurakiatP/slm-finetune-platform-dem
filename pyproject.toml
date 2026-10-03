@@ -27,7 +27,10 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
-    "sqlalchemy>=2.0.36",
+    # [asyncio] pulls greenlet, which every AsyncSession needs at import.
+    # SQLAlchemy 2.1 stopped installing it implicitly (a 2026-10-03 image
+    # build crash-looped on that); <2.1 keeps us on the tested series.
+    "sqlalchemy[asyncio]>=2.0.36,<2.1",
     "alembic>=1.14.0",
     # Postgres drivers: psycopg2-binary (sync, used by alembic) +
     # asyncpg (async, used by SQLAlchemy 2.0 async sessions).
