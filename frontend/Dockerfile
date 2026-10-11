@@ -1,4 +1,4 @@
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -19,7 +19,7 @@ ENV VITE_ENGINE_HOST=$VITE_ENGINE_HOST \
 
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.30.5-alpine3.24
 
 ENV ENGINE_UPSTREAM=slm-edge:80 \
     ENGINE_UPSTREAM_HOST=edge \

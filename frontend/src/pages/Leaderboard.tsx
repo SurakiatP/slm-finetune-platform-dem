@@ -26,7 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { PageTransition, FadeIn } from "@/components/motion";
 import { EngineEmptyState } from "@/components/engine/EngineEmptyState";
 import { TaskTypeBadge } from "@/components/engine/TaskTypeBadge";
-import { useModels, useTrainings, useProjects, useEvaluations } from "@/hooks/queries";
+import { useLeaderboardResources } from "@/hooks/queries";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useTaskTypeLabel, useBaseModelLabel } from "@/lib/labels";
 import { buildTrainingNameMap, modelDisplayName } from "@/components/model/modelNaming";
@@ -141,12 +141,13 @@ export default function Leaderboard() {
   const [sortBy, setSortBy] = useState<SortKey>("primaryScore");
   const [sortAsc, setSortAsc] = useState(false);
 
-  const { data: modelsPage, isLoading: modelsLoading, error: modelsError } = useModels(undefined, { limit: 200 });
-  const { data: trainingsPage, isLoading: trainingsLoading } = useTrainings({ limit: 200 });
-  const { data: projectsPage, isLoading: projectsLoading } = useProjects({ limit: 200 });
-  const { data: evaluationsPage, isLoading: evaluationsLoading } = useEvaluations({ limit: 200 });
-
-  const isLoading = modelsLoading || trainingsLoading || projectsLoading || evaluationsLoading;
+  const leaderboard = useLeaderboardResources();
+  const modelsPage = leaderboard.data?.modelsPage;
+  const trainingsPage = leaderboard.data?.trainingsPage;
+  const projectsPage = leaderboard.data?.projectsPage;
+  const evaluationsPage = leaderboard.data?.evaluationsPage;
+  const modelsError = leaderboard.error;
+  const isLoading = leaderboard.isLoading;
 
   const trainingMap = useMemo(() => {
     const map = new Map<string, (typeof trainingsPage.items)[0]>();

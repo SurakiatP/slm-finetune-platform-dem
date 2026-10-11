@@ -173,8 +173,9 @@ export default function TrainingMonitor() {
       : mergeLossHistory(storedLoss?.train_loss ?? [], storedLoss?.eval_loss ?? []);
 
   const liveTraining = progress.hpo?.inner_progress ?? progress.training ?? null;
-  const currentTrainLoss = liveTraining?.train_loss ?? lossData.at(-1)?.trainLoss ?? null;
-  const currentValLoss = liveTraining?.eval_loss ?? lossData.at(-1)?.valLoss ?? null;
+  const latestLoss = lossData[lossData.length - 1];
+  const currentTrainLoss = liveTraining?.train_loss ?? latestLoss?.trainLoss ?? null;
+  const currentValLoss = liveTraining?.eval_loss ?? latestLoss?.valLoss ?? null;
 
   const cancelMutation = useCancelTraining();
 

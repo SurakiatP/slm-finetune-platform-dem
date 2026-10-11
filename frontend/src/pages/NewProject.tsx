@@ -47,7 +47,7 @@ export function toErrorDetail(err: unknown): { detail: string; code?: string | n
 
 export default function NewProject() {
   const location = useLocation();
-  const templateState = (location.state as { template?: { name: string; taskType: TaskType; prompt: string; baseModel?: string } } | undefined)?.template;
+  const templateState = (location.state as { template?: { id: string; version: string; name: string; taskType: TaskType; prompt: string; baseModel?: string; epochs?: number; learningRate?: number } } | undefined)?.template;
 
   const [currentStep, setCurrentStep] = useState(0);
   const [formData, setFormData] = useState<ProjectFormData>(() => {
@@ -128,6 +128,14 @@ export default function NewProject() {
           name: formData.projectName.trim() || formData.taskPrompt.slice(0, 60) || "Untitled Project",
           description: formData.taskPrompt,
           task_type: formData.taskType!,
+          template_id: templateState?.id,
+          template_version: templateState?.version,
+          template_overrides: templateState ? {
+            base_model: formData.baseModel,
+            system_prompt: formData.taskPrompt,
+            epochs: templateState.epochs,
+            learning_rate: templateState.learningRate,
+          } : undefined,
         });
         setEngineProject(created);
       } catch (e) {

@@ -1,4 +1,14 @@
-# Supabase account security deployment
+# Archived: Supabase account security deployment
+
+> Historical instructions only. The active frontend uses Keycloak and stores
+> account data in PostgreSQL. Do not run the Supabase CLI, database migration,
+> or Edge Function commands below for the current frontend.
+>
+> For current setup and rollout steps, see
+> [PostgreSQL authentication and migration](postgresql-auth.md) and the
+> [validation report](postgresql-auth-validation.md). Supabase-related files
+> below remain as historical migration input; they are not part of the active
+> account flow.
 
 The frontend implements password changes, TOTP MFA, MFA login challenges, and account deletion. Password and MFA calls use the signed-in user's Supabase session directly. Permanent account deletion additionally requires the included database migration and Edge Function.
 

@@ -17,7 +17,7 @@ export function MetricsTable({ metrics }: { metrics: Record<string, MetricPoint[
 
   const rows: MetricRow[] = Object.entries(metrics)
     .map(([key, points]) => {
-      const latest = points.at(-1);
+      const latest = points[points.length - 1];
       return {
         key,
         count: points.length,

@@ -6,10 +6,7 @@ import Leaderboard from "./Leaderboard";
 import * as queries from "@/hooks/queries";
 
 vi.mock("@/hooks/queries", () => ({
-  useModels: vi.fn(),
-  useTrainings: vi.fn(),
-  useProjects: vi.fn(),
-  useEvaluations: vi.fn(),
+  useLeaderboardResources: vi.fn(),
   useTaskTypes: vi.fn().mockReturnValue({ data: [] }),
   useBaseModels: vi.fn().mockReturnValue({ data: [] }),
 }));
@@ -26,23 +23,17 @@ describe("Leaderboard", () => {
   });
 
   it("renders empty state when there are no models", () => {
-    vi.mocked(queries.useModels).mockReturnValue({
-      data: { items: [], total: 0, limit: 200, offset: 0 },
+    const emptyPage = { items: [], total: 0, limit: 200, offset: 0 };
+    vi.mocked(queries.useLeaderboardResources).mockReturnValue({
+      data: {
+        modelsPage: emptyPage,
+        trainingsPage: emptyPage,
+        projectsPage: emptyPage,
+        evaluationsPage: emptyPage,
+      },
       isLoading: false,
       error: null,
-    } as unknown as ReturnType<typeof queries.useModels>);
-    vi.mocked(queries.useTrainings).mockReturnValue({
-      data: { items: [], total: 0, limit: 200, offset: 0 },
-      isLoading: false,
-    } as unknown as ReturnType<typeof queries.useTrainings>);
-    vi.mocked(queries.useProjects).mockReturnValue({
-      data: { items: [], total: 0, limit: 200, offset: 0 },
-      isLoading: false,
-    } as unknown as ReturnType<typeof queries.useProjects>);
-    vi.mocked(queries.useEvaluations).mockReturnValue({
-      data: { items: [], total: 0, limit: 200, offset: 0 },
-      isLoading: false,
-    } as unknown as ReturnType<typeof queries.useEvaluations>);
+    } as unknown as ReturnType<typeof queries.useLeaderboardResources>);
 
     render(
       <MemoryRouter>
@@ -125,23 +116,16 @@ describe("Leaderboard", () => {
       },
     ];
 
-    vi.mocked(queries.useModels).mockReturnValue({
-      data: { items: mockModels, total: 2, limit: 200, offset: 0 },
+    vi.mocked(queries.useLeaderboardResources).mockReturnValue({
+      data: {
+        modelsPage: { items: mockModels, total: 2, limit: 200, offset: 0 },
+        trainingsPage: { items: mockTrainings, total: 2, limit: 200, offset: 0 },
+        projectsPage: { items: mockProjects, total: 2, limit: 200, offset: 0 },
+        evaluationsPage: { items: mockEvaluations, total: 2, limit: 200, offset: 0 },
+      },
       isLoading: false,
       error: null,
-    } as unknown as ReturnType<typeof queries.useModels>);
-    vi.mocked(queries.useTrainings).mockReturnValue({
-      data: { items: mockTrainings, total: 2, limit: 200, offset: 0 },
-      isLoading: false,
-    } as unknown as ReturnType<typeof queries.useTrainings>);
-    vi.mocked(queries.useProjects).mockReturnValue({
-      data: { items: mockProjects, total: 2, limit: 200, offset: 0 },
-      isLoading: false,
-    } as unknown as ReturnType<typeof queries.useProjects>);
-    vi.mocked(queries.useEvaluations).mockReturnValue({
-      data: { items: mockEvaluations, total: 2, limit: 200, offset: 0 },
-      isLoading: false,
-    } as unknown as ReturnType<typeof queries.useEvaluations>);
+    } as unknown as ReturnType<typeof queries.useLeaderboardResources>);
 
     render(
       <MemoryRouter>
