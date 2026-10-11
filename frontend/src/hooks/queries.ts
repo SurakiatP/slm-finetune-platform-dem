@@ -398,6 +398,39 @@ export function useStartEvaluation() {
   })
 }
 
+async function fetchAllPages<T>(fetchPage: (page: { limit: number; offset: number }) => Promise<Page<T>>): Promise<Page<T>> {
+  const limit = 200
+  const items: T[] = []
+  let offset = 0
+  let first: Page<T> | undefined
+  let hasMore = true
+  while (hasMore) {
+    const page = await fetchPage({ limit, offset })
+    first ??= page
+    items.push(...page.items)
+    offset += page.items.length
+    hasMore = page.items.length > 0 && offset < page.total
+  }
+  return { items, total: first?.total ?? 0, limit, offset: 0 }
+}
+
+/** All owner-scoped records needed for a complete leaderboard. The server caps
+ * individual pages at 200, so a single page would silently drop older rows. */
+export function useLeaderboardResources() {
+  return useQuery({
+    queryKey: ['leaderboard', 'resources'],
+    queryFn: async () => {
+      const [modelsPage, trainingsPage, projectsPage, evaluationsPage] = await Promise.all([
+        fetchAllPages((page) => models.listModels(page)),
+        fetchAllPages((page) => trainings.listTrainings(page)),
+        fetchAllPages((page) => projects.listProjects(page)),
+        fetchAllPages((page) => evaluations.listEvaluations(page)),
+      ])
+      return { modelsPage, trainingsPage, projectsPage, evaluationsPage }
+    },
+  })
+}
+
 export function useAnalytics(params: { from?: string; to?: string; project_id?: string } = {}, enabled = true) {
   return useQuery({
     queryKey: queryKeys.analytics(params),

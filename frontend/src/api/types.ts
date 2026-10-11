@@ -111,6 +111,16 @@ export interface ProjectCreate {
   name: string
   description?: string | null
   task_type: TaskType
+  template_id?: string | null
+  template_version?: string | null
+  template_overrides?: {
+    base_model?: string | null
+    system_prompt?: string | null
+    epochs?: number | null
+    learning_rate?: number | null
+    train_sample_count?: number | null
+    sampling_seed?: number | null
+  } | null
   external_project_id?: string | null
 }
 
@@ -129,6 +139,7 @@ export interface Project {
    *  embedded frontend (it has no external system to map) — present so a
    *  project created via the API with a non-null value still round-trips. */
   external_project_id: string | null
+  /** Engine actor ID, not Keycloak sub; never compare with frontend user.id. */
   owner_id?: string | null
   queue_state: QueueState | null
   queue_position: number | null
@@ -144,7 +155,8 @@ export interface Dataset {
   /** Null when the owning project was deleted — the dataset survives as an
    *  orphan row rather than being cascade-deleted. */
   project_id: string | null
-  /** Owner copied from the project at creation time; survives project deletion. */
+  /** Engine actor ID copied from the project; survives project deletion.
+   * Not Keycloak sub; never compare with frontend user.id. */
   owner_id?: string | null
   name: string
   task_type: TaskType

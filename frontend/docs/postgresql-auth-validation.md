@@ -31,8 +31,9 @@ Supabase account. The disposable account was deleted after testing. No remote us
 ## Remaining limits
 
 - Engine authenticated REST/WebSocket integration has **not** been verified.
-  The existing shared backend still needs a deliberate OIDC/dual-provider rollout;
-  public health, a signed JWT and successful login do not prove Engine access.
+  Update from the 2026-10-03 handoff: backend `a3739f3` now supports both providers;
+  enabling OIDC still awaits the permanent Keycloak issuer and verified identity
+  linking. Public health, a signed JWT and successful login do not prove Engine access.
 - Existing Supabase users and ownership records have not been migrated.
 - SMTP password recovery/email verification and Google federation need operator
   configuration. They were not tested with external services.
@@ -46,3 +47,20 @@ Supabase account. The disposable account was deleted after testing. No remote us
 Local stack is available at http://localhost:5175. Use the private ignored
 `.env.auth.local` for restart commands and administrator credentials. See
 [configuration and migration guide](postgresql-auth.md).
+
+## Handoff alignment — 2026-10-04 (Asia/Bangkok)
+
+Repository documentation/configuration and ownership comments now follow the
+2026-10-03 backend handoff. No runtime UI/auth logic or remote services changed.
+
+- `npm run build`: passed, including strict EN/TH i18n checks (440 keys each).
+- `npm run lint`: passed.
+- `npx vitest run`: 56 tests passed across 17 files.
+- `npx tsc --noEmit -p tsconfig.app.json`: passed.
+- Git whitespace check: passed with `core.whitespace=cr-at-eol`.
+- Premium static audit: 43 findings in unchanged UI files; this documentation
+  update does not resolve the existing whole-project UI audit failures.
+- No new browser or slmpc checks were performed. Permanent HTTPS hostname,
+  Keycloak deployment, backend activation/linking, and joint REST/WS acceptance
+  remain pending. The local browser results above belong to the October 2 run.
+- PR creation is pending: the configured GitHub CLI account failed authentication.

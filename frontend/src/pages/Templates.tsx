@@ -71,9 +71,13 @@ export default function Templates() {
     navigate("/projects/new", {
       state: { template: {
         name: template.name,
+        id: template.id,
+        version: template.version,
         taskType: template.task_type,
         prompt: template.prompt,
         baseModel: template.base_model,
+        epochs: template.epochs,
+        learningRate: template.learning_rate,
       } },
     });
   };

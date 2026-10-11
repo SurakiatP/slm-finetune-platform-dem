@@ -20,14 +20,16 @@ PostgreSQL connection string or password. Business data still uses the Engine AP
 The PostgreSQL service has no published host port. Its data persists in the
 `auth-postgres` volume. Keycloak creates and migrates its own tables.
 
-**Engine integration requires OIDC configuration.** An existing Supabase-only
-backend will reject these tokens until its verifier is configured. Changing the
-shared backend to OIDC also stops accepting the self-host frontend's Supabase
-tokens. Use a dedicated backend or implement dual-provider identity handling
-before cutting over a shared deployment. No remote backend has been changed.
+**Engine integration supports both Supabase and Keycloak.** Backend `a3739f3`
+selects the verifier by token issuer and preserves existing Supabase access.
+The backend team enables Keycloak after receiving its permanent issuer and
+links verified identities through `identity_links`; email does not link accounts.
+Keycloak tokens require audience `tunelab-api`. Engine `owner_id` is an actor ID,
+not the Keycloak `sub` or frontend `user.id`.
 
-See [PostgreSQL authentication and migration](docs/postgresql-auth.md) for backend
-configuration, account migration, SMTP, MFA, account deletion and rollout checks.
+See [PostgreSQL authentication and migration](docs/postgresql-auth.md) for
+slmpc deployment, permanent-hostname prerequisites, backend handoff, account
+linking, SMTP, MFA, and joint rollout/rollback checks.
 
 ## Verification
 

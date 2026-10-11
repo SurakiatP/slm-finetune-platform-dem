@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, Database, CheckCircle2, AlertTriangle, Tag, Activity, FileText, Loader2, Sparkles } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from "recharts";
 import { DatasetList } from "@/components/dataset/DatasetList";
+import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useDatasetInsights, useDatasets, useProject } from "@/hooks/queries";
 import type { Dataset } from "@/api/types";
@@ -29,9 +30,9 @@ export default function DatasetInsights() {
   const { data: project, isLoading } = useProject(id ?? "");
   const { t } = useLanguage();
   const [selectedDataset, setSelectedDataset] = useState<string>();
-  const { data: datasetsPage, isLoading: datasetsLoading } = useDatasets(project?.id, { limit: 100 });
+  const { data: datasetsPage, isLoading: datasetsLoading, isError: datasetsError, error: datasetsErrorDetail } = useDatasets(project?.id, { limit: 100 });
   const datasets = datasetsPage?.items ?? EMPTY_DATASETS;
-  const { data: report, isLoading: insightsLoading } = useDatasetInsights(selectedDataset);
+  const { data: report, isLoading: insightsLoading, isError: insightsError, error: insightsErrorDetail, refetch: refetchInsights } = useDatasetInsights(selectedDataset);
 
   useEffect(() => {
     if (!selectedDataset || !datasets.some((dataset) => dataset.id === selectedDataset)) {
@@ -110,8 +111,12 @@ export default function DatasetInsights() {
           <TabsContent value="quality" className="mt-4 space-y-6">
             {datasetsLoading ? (
               <div className="flex justify-center py-12"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
+            ) : datasetsError ? (
+              <ErrorDetail error={{ detail: datasetsErrorDetail instanceof Error ? datasetsErrorDetail.message : 'Datasets could not be loaded.' }} />
             ) : datasets.length === 0 ? (
               <p className="py-12 text-center text-sm text-muted-foreground">Upload or generate a dataset to view its quality insights.</p>
+            ) : insightsError ? (
+              <div className="space-y-3"><ErrorDetail error={{ detail: insightsErrorDetail instanceof Error ? insightsErrorDetail.message : 'Quality insights could not be loaded.' }} /><Button variant="outline" onClick={() => void refetchInsights()}>Try again</Button></div>
             ) : insightsLoading || !report || !band || !BandIcon ? (
               <div className="flex justify-center py-12"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
             ) : (

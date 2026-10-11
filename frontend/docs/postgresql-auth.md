@@ -40,60 +40,141 @@ such updates using the admin console, then restart/rebuild as necessary.
 
 ## Engine integration
 
-Existing `api/core/auth.py` supports generic OIDC, including issuer, JWKS,
-audience and asymmetric signature verification. It chooses OIDC **instead of**
-Supabase when `OIDC_ISSUER` is set. This migration does not change that policy.
+Backend `a3739f3` supports Supabase and Keycloak concurrently. It selects exactly
+one verifier by the token's `iss`; an unknown issuer or failed verification
+returns 401 without falling back to the other provider. The existing Supabase
+frontend remains supported. Per the 2026-10-03 backend handoff, this support is
+deployed on slmpc, but `OIDC_*` configuration awaits the permanent Keycloak issuer.
+The backend team owns that configuration and network attachment; do not apply a
+frontend Compose override to the shared Engine or change its authentication mode.
 
-For a **dedicated local Engine** on the same Docker host, merge
-`docker-compose.backend-oidc.yml` from this frontend into the backend Compose
-project (use the absolute path to the override):
-
-```sh
-# Run in slm-finetune-platform-dem; main auth Compose stack must already exist.
-docker compose -f docker-compose.yml \
-  -f ../smart-model-tune-main/docker-compose.backend-oidc.yml up -d api
-```
-
-The override adds the `tunelab-main-auth` network and configures:
-
-```dotenv
-OIDC_ISSUER=http://localhost:5175/auth/realms/tunelab
-OIDC_JWKS_URL=http://tunelab-main-keycloak:8080/auth/realms/tunelab/protocol/openid-connect/certs
-OIDC_AUDIENCE=tunelab-api
-AUTH_REQUIRED=true
-```
-
-For a remote Engine, do not use the Docker hostname or localhost issuer above.
-Set `AUTH_PUBLIC_URL` to the reachable HTTPS Keycloak base URL ending `/auth`,
-configure the exact frontend origins in the realm, and set `OIDC_ISSUER` to
-`<AUTH_PUBLIC_URL>/realms/tunelab`. Set JWKS to a backend-reachable endpoint
-`<issuer>/protocol/openid-connect/certs`. Keep audience `tunelab-api` and
-`AUTH_REQUIRED=true`. Never disable auth to work around 401 responses.
-
-Do not apply this override to a shared Engine while any frontend still sends
-Supabase tokens. Use separate Engine deployments/databases, or implement and test
-dual-provider identity mapping first. Merely changing frontend URL or creating
-another account does not resolve an issuer mismatch.
+Keycloak access tokens must have an exact issuer match, an audience containing
+`tunelab-api` (the realm's `tunelab-api-audience` mapper), an RS/ES/PS signature,
+and both `exp` and `sub`. Send the fresh access token through the existing REST
+adapter and WebSocket subprotocols `['bearer', token]`. API keys prefixed
+`sk-slm-` are unaffected. Never disable authentication to work around a 401.
 
 ## User migration and ownership
 
-No live accounts, passwords, MFA secrets or Engine rows were copied or deleted.
-New Keycloak registrations have new subject IDs. A matching email does **not**
-grant access to an old Supabase user's projects, datasets or models.
+`owner_id` is the Engine actor ID, not the Keycloak subject. Never compare it to
+frontend `user.id`. Supabase users retain their existing `sub` as their actor ID.
+A linked Keycloak identity uses that same actor ID and sees the original data;
+an unlinked identity receives a new random actor ID and starts with no data.
 
-Before production cutover:
+Only the backend administrator links verified identities through
+`scripts/link_identity.py` and `identity_links`. Matching email addresses do not
+link accounts. Do not rewrite ownership rows from the frontend. Verify that the
+old and new accounts belong to the same person before requesting a link.
+The handoff identifies one existing owner requiring linkage:
+`02fda8bd-d111-4e1d-af2e-121ce36d8559`; do not infer that person's identity.
 
-1. Back up Supabase account/profile data and the Engine database.
-2. Inventory subjects and every owner reference (projects, datasets, usage,
-   API keys, deployments and audit records), and account for retention rules.
-3. Import verified accounts/profiles with a reviewed old-to-new identity map.
-   Transfer ownership transactionally under that map; do not link by an
-   unverified email or by username alone.
-4. Arrange password resets and MFA re-enrollment unless a separately validated
-   credential migration is available. Old Supabase reset links do not work here.
-5. Test that owner A can still access mapped records and owner B cannot, for
-   REST and authenticated WebSocket. Preserve rollback backups and the identity
-   map before switching frontend traffic.
+## Deploy the frontend auth stack on slmpc
+
+Run as `slmuser` using rootless Docker, from the deployed frontend checkout.
+Keep `docker-compose.production.yml` and `docker/keycloak/tunelab-realm.json`
+together. Do not edit the backend repository, `~/drive/slm-platform`, the
+`slm-platform` Compose project, or backend containers. Preserve the production
+`slm-frontend` on port 8082 and its ngrok tunnel throughout this rollout.
+
+1. **Before the first Keycloak boot, obtain an approved permanent HTTPS hostname.**
+   Use a named tunnel or reserved domain. If none is available, stop and ask the
+   operator; do not invent one or use `*.trycloudflare.com` or another rotating URL.
+   Set `FRONTEND_ORIGIN=https://<host>` and `AUTH_PUBLIC_URL=https://<host>/auth`.
+   Realm import happens once. A later hostname change requires explicit realm
+   redirect updates and backend review of issuer configuration and identity links.
+2. Build/publish a versioned frontend image from the reviewed main revision, then
+   create `~/tunelab/.env.production` privately on the server with mode `600`.
+   Preserve any existing file and credentials. Start from the checked-in
+   [production environment template](../.env.production.example), replace every
+   placeholder, and generate new secrets on the server. Never reuse credentials
+   from `Data.txt`:
+
+   ```dotenv
+   FRONTEND_IMAGE=sady567/slm-frontend:<reviewed-main-tag>
+   FRONTEND_ORIGIN=https://<host>
+   AUTH_PUBLIC_URL=https://<host>/auth
+   AUTH_DB_PASSWORD=<new-random-secret>
+   KEYCLOAK_ADMIN_PASSWORD=<new-random-secret>
+   ```
+
+   Keep secrets out of terminal output, shell history, logs and commits. Do not
+   print the env file or expanded Compose configuration. Defaults are
+   `ENGINE_UPSTREAM=slm-edge:80`, `ENGINE_UPSTREAM_HOST=edge`, and
+   `ENGINE_DOCKER_NETWORK=slm-platform_slm-net`. Leave `AUTH_UPSTREAM` owned by
+   Compose as `keycloak:8080`; pointing `/auth/` at the Engine returns HTML.
+3. Start the frontend-owned Compose stack (do not start its services manually):
+
+   ```sh
+   chmod 600 ~/tunelab/.env.production
+   docker compose -p tunelab-main -f docker-compose.production.yml --env-file ~/tunelab/.env.production up -d
+   docker compose -p tunelab-main -f docker-compose.production.yml --env-file ~/tunelab/.env.production ps
+   docker network ls --filter name=tunelab-main-auth
+   ```
+
+4. Route the approved hostname to `127.0.0.1:5175`, or the explicitly configured
+   `FRONTEND_PORT`. Use a separate route without changing the old production tunnel.
+5. Verify the new stack below. Only after it works may the frontend-owned
+   `slm-frontend-postgres-candidate` on port 8083 be stopped. Do not stop or change
+   `slm-frontend` on port 8082. Never run `docker compose down -v` or delete the
+   `auth-postgres` volume.
+
+### Discovery and handoff
+
+Replace `<host>` with the approved hostname. These commands read public metadata:
+
+```sh
+curl -fsS -D /tmp/tunelab-discovery.headers 'https://<host>/auth/realms/tunelab/.well-known/openid-configuration' -o /tmp/tunelab-discovery.json
+grep -i '^content-type:' /tmp/tunelab-discovery.headers
+python3 -c "import json; d=json.load(open('/tmp/tunelab-discovery.json')); print(d['issuer']); print(d['jwks_uri'])"
+docker run --rm --network tunelab-main-auth curlimages/curl -fsS -o /dev/null -w '%{http_code}\n' \
+  http://tunelab-main-keycloak:8080/auth/realms/tunelab/protocol/openid-connect/certs
+```
+
+Discovery must return `application/json`, the exact public issuer
+`https://<host>/auth/realms/tunelab`, and a reachable JWKS URL. The internal JWKS
+probe must return 200. `tunelab-main-keycloak` is the Compose network alias;
+report the actual container name from `compose ps` as well as that alias.
+
+Register one test account through the new frontend. Inspect its access-token
+payload locally and record only `iss`, `aud`, and `sub`; never paste the token
+into a website, terminal output, logs or a message. Check `aud` contains
+`tunelab-api`. If an administrator creates an account, require `UPDATE_PASSWORD`
+and a password of at least 12 characters; reset email remains disabled without SMTP.
+
+Prepare this handoff for the backend team without guessing missing values:
+
+```text
+1. issuer: <exact discovery issuer>
+2. keycloak container / network: <actual container; alias tunelab-main-keycloak> / tunelab-main-auth
+3. decoded claims only: iss=<...> aud=<...> sub=<...>
+4. Supabase 02fda8bd-d111-4e1d-af2e-121ce36d8559 belongs to: <verified owner>
+5. Keycloak sub for the same owner: <Users → ID>; same-person verification: <method/result>
+6. Production cutover date and URL: <agreed date and URL>
+7. Frontend PR: <link>
+```
+
+The backend team sets `OIDC_ISSUER`, `OIDC_JWKS_URL`, and
+`OIDC_AUDIENCE=tunelab-api`, attaches the auth network, and links the verified
+identities. Frontend operators must not perform those backend changes.
+
+### Joint acceptance and rollback
+
+Before switching traffic, validate against the real stack together:
+
+| Case | Expected result |
+| --- | --- |
+| Existing Supabase token → `GET /api/v1/projects` | 200, original projects |
+| Linked Keycloak token → same endpoint | 200, same projects |
+| Missing or invalid token | 401 |
+| Unlinked Keycloak account opens the test owner's project | 403 |
+| WebSocket for own / another owner's job | Connects / rejected with 4403 by the server |
+| New Keycloak account creates a project | Visible only to that owner |
+
+Browsers may expose a rejected pre-accept WebSocket handshake as a generic
+failure; use server-side evidence for the 4403 check. Login or public health
+alone does not prove Engine access. Agree on the production URL and cutover time
+only after these checks. Roll back traffic to the old frontend first; retain
+Keycloak and PostgreSQL volumes and identity mappings.
 
 ## Account features
 
@@ -119,7 +200,7 @@ Build, typecheck, lint and component/unit tests must pass. In a running stack,
 check discovery and JWKS, registration/login/logout, profile persistence across
 restart, OTP challenge after enrollment, password change/recovery, and account
 console deletion. Never treat public Engine `/health` as proof of an authenticated
-API or WebSocket connection. Test both with a dedicated compatible Engine.
+API or WebSocket connection. Complete the joint dual-provider checks above.
 
 A whole-project premium UI audit also reports pre-existing issues on unrelated
 screens. Keep its report as evidence; do not claim full UI compliance from build
