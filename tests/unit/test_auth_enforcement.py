@@ -45,7 +45,12 @@ _PUBLIC_EXACT = {"/", "/health", "/ready", "/metrics", "/openapi.json", "/docs",
 # user` internally (not the phased `require_user`), so they reject an
 # anonymous caller even in phase 1 (`AUTH_REQUIRED=false`) — there is no
 # anonymous owner to bucket a template, a deployment, or an API key under.
-_ALWAYS_AUTH_PREFIXES = ("/api/v1/templates", "/api/v1/deployments", "/api/v1/api-keys")
+_ALWAYS_AUTH_PREFIXES = (
+    "/api/v1/templates",
+    "/api/v1/deployments",
+    "/api/v1/api-keys",
+    "/api/v1/notifications",
+)
 
 _DUMMY = str(uuid4())
 
@@ -164,7 +169,9 @@ class TestPhaseOneStaysOpen:
         with TestClient(app, raise_server_exceptions=False) as tolerant:
             resp = tolerant.request(method, _fill(path))
         if path.startswith(_ALWAYS_AUTH_PREFIXES):
-            assert resp.status_code == 401, "Always-auth resources never accept anonymous identities"
+            assert resp.status_code == 401, (
+                "Always-auth resources never accept anonymous identities"
+            )
             return
         assert resp.status_code != 401, (
             f"{method} {path} rejected an anonymous caller with AUTH_REQUIRED=false — "
@@ -182,6 +189,8 @@ class TestPhaseOneStaysOpen:
             ("GET", "/api/v1/api-keys"),
             ("POST", "/api/v1/deployments"),
             ("GET", "/api/v1/deployments"),
+            ("GET", "/api/v1/notifications"),
+            ("POST", "/api/v1/notifications/read-all"),
         ],
     )
     def test_deployments_and_api_keys_always_require_identity(

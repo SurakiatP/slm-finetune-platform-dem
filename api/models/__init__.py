@@ -14,6 +14,7 @@ from api.models.deployment import Deployment
 from api.models.evaluation_run import EvaluationRun
 from api.models.identity_link import IdentityLink
 from api.models.model_artifact import ModelArtifact
+from api.models.notification import Notification
 from api.models.project import Project
 from api.models.template import TemplateDatasetVersion, TemplateRating, TemplateUse
 from api.models.training_job import TrainingJob
@@ -28,6 +29,7 @@ __all__ = [
     "EvaluationRun",
     "IdentityLink",
     "ModelArtifact",
+    "Notification",
     "Project",
     "TemplateDatasetVersion",
     "TemplateRating",

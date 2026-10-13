@@ -85,6 +85,7 @@ from api.models.training_job import TrainingJob
 from api.schemas.enums import JobStatus
 from api.schemas.progress import JobFailed
 from api.services import audit_service
+from workers.notifications import notification_insert
 
 log = logging.getLogger(__name__)
 
@@ -289,6 +290,32 @@ async def _resolve_project_id(db: AsyncSession, target: _Target, row: Any):
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def _resolve_owner_id(db: AsyncSession, target: _Target, row: Any):
+    """Walk to the job's owner — same hop depths as `_resolve_project_id`."""
+    if target.model in (Dataset, TrainingJob):
+        return row.owner_id
+    if target.model is EvaluationRun:
+        stmt = (
+            select(TrainingJob.owner_id)
+            .select_from(ModelArtifact)
+            .join(TrainingJob, TrainingJob.id == ModelArtifact.training_job_id)
+            .where(ModelArtifact.id == row.model_artifact_id)
+            .limit(1)
+        )
+    else:  # ModelArtifact
+        stmt = select(TrainingJob.owner_id).where(TrainingJob.id == row.training_job_id).limit(1)
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+# resource_type -> (notification event, notification resource type)
+_NOTIFY = {
+    "dataset": ("dataset.failed", "dataset"),
+    "training": ("training.failed", "training"),
+    "evaluation": ("evaluation.failed", "evaluation"),
+    "model_export": ("export.failed", "model"),
+}
+
+
 async def _publish_orphan_frame(redis: Any, task_id: str, error: str) -> None:
     """Snapshot then publish, in that order — same as `workers/progress.py`.
 
@@ -397,12 +424,13 @@ async def reconcile_once(
                 if target.has_ended_at:
                     fresh.ended_at = now
 
+                project_id = await _resolve_project_id(db, target, fresh)
                 audit_service.record(
                     db,
                     action="job.orphan_reconciled",
                     resource_type=target.resource_type,
                     resource_id=str(fresh.id),
-                    project_id=await _resolve_project_id(db, target, fresh),
+                    project_id=project_id,
                     outcome="failure",
                     metadata={
                         "job_id": task_id,
@@ -411,6 +439,32 @@ async def reconcile_once(
                         "grace_minutes": settings.job_orphan_grace_minutes,
                     },
                 )
+
+                # Best-effort: a notification failure must never block the
+                # reconcile commit, hence the savepoint.
+                owner_id = await _resolve_owner_id(db, target, fresh)
+                if owner_id is not None:
+                    event_type, notif_resource = _NOTIFY[target.resource_type]
+                    await db.flush()
+                    try:
+                        async with db.begin_nested():
+                            await db.execute(
+                                notification_insert(
+                                    db.get_bind().dialect.name,
+                                    owner_id=owner_id,
+                                    event_type=event_type,
+                                    resource_type=notif_resource,
+                                    resource_id=fresh.id,
+                                    payload={
+                                        "project_id": project_id,
+                                        "name": getattr(fresh, "name", None)
+                                        or getattr(fresh, "training_name", None),
+                                        "message": "Job stopped responding (worker lost).",
+                                    },
+                                )
+                            )
+                    except Exception:
+                        log.warning("failed to record orphan notification", exc_info=True)
                 await db.commit()
 
                 await _publish_orphan_frame(redis, task_id, error)

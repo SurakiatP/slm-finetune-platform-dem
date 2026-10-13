@@ -56,6 +56,7 @@ from workers.storage import (
     remove_prefix,
     s3_uri,
 )
+from workers.notifications import record_notification
 from workers.sync_db import session_scope
 from workers.tasks.training import _load_template_context, _prepare_training_rows
 from workers.vram import friendly_oom_message, preflight_gpu_vram
@@ -377,6 +378,14 @@ def train_hpo(
                             "best_metric_value": best_value,
                         },
                     )
+                    record_notification(
+                        session,
+                        owner_id=row.owner_id,
+                        event_type="training.completed",
+                        resource_type="training",
+                        resource_id=row.id,
+                        payload={"project_id": row.project_id, "name": training_name},
+                    )
 
             if discarded:
                 # No ModelArtifact row was ever created, so nothing durable
@@ -500,6 +509,19 @@ def train_hpo(
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )
+                        if row.status == JobStatus.FAILED:
+                            record_notification(
+                                session,
+                                owner_id=row.owner_id,
+                                event_type="training.failed",
+                                resource_type="training",
+                                resource_id=row.id,
+                                payload={
+                                    "project_id": row.project_id,
+                                    "name": row.training_name,
+                                    "message": row.error_message,
+                                },
+                            )
 
             except Exception:  # noqa: BLE001
                 log.warning("could not persist FAILED for %s", training_id, exc_info=True)

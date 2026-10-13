@@ -40,6 +40,7 @@ from api.schemas.sdg import (
     SDGRequestWithSeed,
 )
 from workers.celery_app import celery_app
+from workers.notifications import record_notification
 from workers.progress import publish_ws_message, sync_redis_scope
 from workers.storage import (
     get_jsonl,
@@ -451,6 +452,16 @@ def generate_synthetic_data(
                         )
                         session.add(child)
 
+                    # Parent only — the holdout child is an implementation detail.
+                    record_notification(
+                        session,
+                        owner_id=parent.owner_id,
+                        event_type="dataset.completed",
+                        resource_type="dataset",
+                        resource_id=parent.id,
+                        payload={"project_id": parent.project_id, "name": parent.name},
+                    )
+
             if discarded_as_cancelled:
                 # The commit above never durably referenced `uploaded_keys`
                 # (the DB row stayed CANCELLED, not COMPLETED), so they are
@@ -601,6 +612,19 @@ def generate_synthetic_data(
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )
+                        if ds.status == JobStatus.FAILED:
+                            record_notification(
+                                session,
+                                owner_id=ds.owner_id,
+                                event_type="dataset.failed",
+                                resource_type="dataset",
+                                resource_id=ds.id,
+                                payload={
+                                    "project_id": ds.project_id,
+                                    "name": ds.name,
+                                    "message": ds.error_message,
+                                },
+                            )
                     # Usage must be written on every terminal outcome —
                     # completed, failed AND cancelled — because the tokens were
                     # burned either way. A run cancelled after 1800 calls is

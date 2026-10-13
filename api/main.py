@@ -33,6 +33,7 @@ from api.routers import (
     inference,
     jobs,
     models,
+    notifications,
     projects,
     tasks_meta,
     templates,
@@ -269,6 +270,9 @@ app.include_router(
     deployments.router, prefix=f"{API_V1}/deployments", tags=["deployments"]
 )
 app.include_router(api_keys.router, prefix=f"{API_V1}/api-keys", tags=["api-keys"])
+app.include_router(
+    notifications.router, prefix=f"{API_V1}/notifications", tags=["notifications"]
+)
 
 _AUTH = [Depends(require_user)]
 

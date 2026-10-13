@@ -45,6 +45,7 @@ from api.services.base_model_catalog import (
     pull_ollama_base_blocking,
 )
 from workers.celery_app import celery_app
+from workers.notifications import record_notification
 from workers.ollama_client import OllamaClient
 from workers.progress import publish_ws_message, sync_redis_scope
 from workers.storage import (
@@ -73,6 +74,12 @@ def _project_id_for_artifact(session, artifact):
     """
     training_job = session.get(TrainingJob, artifact.training_job_id)
     return training_job.project_id if training_job is not None else None
+
+
+def _owner_id_for_artifact(session, artifact):
+    """ModelArtifact -> TrainingJob.owner_id, None if unresolved."""
+    training_job = session.get(TrainingJob, artifact.training_job_id)
+    return training_job.owner_id if training_job is not None else None
 
 
 def _training_id_for_artifact(artifact_uuid: UUID) -> str | None:
@@ -569,6 +576,19 @@ def export_model(
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )
+                        if row.export_status == JobStatus.FAILED:
+                            record_notification(
+                                fail_session,
+                                owner_id=_owner_id_for_artifact(fail_session, row),
+                                event_type="export.failed",
+                                resource_type="model",
+                                resource_id=row.id,
+                                payload={
+                                    "project_id": _project_id_for_artifact(fail_session, row),
+                                    "name": row.name,
+                                    "message": row.export_error_message,
+                                },
+                            )
             except Exception:  # noqa: BLE001 — never mask the original failure
                 log.warning(
                     "could not persist export_error_message for %s",
@@ -934,6 +954,14 @@ def _persist_export_uris(
             actor_id=request_context.current_user_id(),
             request_id=request_context.current_request_id(),
             metadata={"gguf_uri": gguf_uri, "ollama_model_tag": ollama_tag},
+        )
+        record_notification(
+            session,
+            owner_id=_owner_id_for_artifact(session, art),
+            event_type="export.completed",
+            resource_type="model",
+            resource_id=art.id,
+            payload={"project_id": _project_id_for_artifact(session, art), "name": art.name},
         )
         return True
 

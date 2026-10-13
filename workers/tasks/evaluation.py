@@ -49,6 +49,7 @@ from api.schemas.enums import JobStatus, TaskType
 from api.schemas.progress import EvaluationProgress, JobCompleted, JobFailed
 from api.services import audit_service, model_pricing, usage_service
 from workers.celery_app import celery_app
+from workers.notifications import record_notification
 from workers.progress import publish_ws_message, sync_redis_scope
 from workers.storage import get_jsonl, get_minio_client, parse_s3_uri
 from workers.sync_db import session_scope
@@ -80,6 +81,15 @@ def _project_id_for_run(session, row):
         return None
     training_job = session.get(TrainingJob, artifact.training_job_id)
     return training_job.project_id if training_job is not None else None
+
+
+def _owner_and_name_for_run(session, row):
+    """(TrainingJob.owner_id, ModelArtifact.name) for a run; (None, None) if unresolved."""
+    artifact = session.get(ModelArtifact, row.model_artifact_id)
+    if artifact is None:
+        return None, None
+    training_job = session.get(TrainingJob, artifact.training_job_id)
+    return (training_job.owner_id if training_job is not None else None), artifact.name
 
 
 @celery_app.task(bind=True, name="evaluation.run", max_retries=0)
@@ -361,6 +371,15 @@ def run_evaluation(
                         request_id=request_context.current_request_id(),
                         metadata={"job_id": job_id, "llm_judge_score": judge_score},
                     )
+                    owner_id, art_name = _owner_and_name_for_run(session, row)
+                    record_notification(
+                        session,
+                        owner_id=owner_id,
+                        event_type="evaluation.completed",
+                        resource_type="evaluation",
+                        resource_id=row.id,
+                        payload={"project_id": eval_project_id, "name": art_name},
+                    )
 
             # The run is durably terminal (COMPLETED, or discarded in favor
             # of the CANCELLED the cancel endpoint already wrote). From here
@@ -441,6 +460,20 @@ def run_evaluation(
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )
+                        if row.status == JobStatus.FAILED:
+                            owner_id, art_name = _owner_and_name_for_run(session, row)
+                            record_notification(
+                                session,
+                                owner_id=owner_id,
+                                event_type="evaluation.failed",
+                                resource_type="evaluation",
+                                resource_id=row.id,
+                                payload={
+                                    "project_id": _project_id_for_run(session, row),
+                                    "name": art_name,
+                                    "message": row.error_message,
+                                },
+                            )
                     # Bill on EVERY terminal outcome, not just success — a run
                     # cancelled after 400 judged rows is precisely what a
                     # budget has to count. Gated on `usage_recorded` so a

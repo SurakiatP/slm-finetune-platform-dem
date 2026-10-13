@@ -58,6 +58,7 @@ from api.schemas.enums import JobStatus
 from api.schemas.progress import JobCompleted, JobFailed
 from api.services import audit_service
 from workers.celery_app import celery_app
+from workers.notifications import record_notification
 from workers.ollama_client import OllamaClient
 from workers.progress import publish_ws_message, sync_redis_scope
 from workers.sync_db import session_scope
@@ -87,6 +88,7 @@ def preload_deployment(self, deployment_id: str) -> dict[str, Any]:
                     # no terminal frame for a job that never really started.
                     return {"skipped": True}
                 owner_id = deployment.owner_id
+                deployment_name = deployment.name
                 model_artifact_id = deployment.model_artifact_id
                 artifact = (
                     session.get(ModelArtifact, model_artifact_id)
@@ -143,6 +145,14 @@ def preload_deployment(self, deployment_id: str) -> dict[str, Any]:
                     request_id=request_context.current_request_id(),
                     metadata={"model_tag": tag},
                 )
+                record_notification(
+                    session,
+                    owner_id=owner_id,
+                    event_type="deployment.ready",
+                    resource_type="deployment",
+                    resource_id=deployment_id,
+                    payload={"project_id": None, "name": deployment_name},
+                )
 
             publish(
                 JobCompleted(
@@ -187,6 +197,20 @@ def preload_deployment(self, deployment_id: str) -> dict[str, Any]:
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )
+                        dep = fail_session.get(Deployment, deployment_uuid)
+                        if dep is not None:
+                            record_notification(
+                                fail_session,
+                                owner_id=dep.owner_id,
+                                event_type="deployment.failed",
+                                resource_type="deployment",
+                                resource_id=deployment_id,
+                                payload={
+                                    "project_id": None,
+                                    "name": dep.name,
+                                    "message": str(exc) or repr(exc),
+                                },
+                            )
             except Exception:
                 log.warning(
                     "could not persist FAILED status for deployment %s",

@@ -55,6 +55,7 @@ from workers.storage import (
     remove_prefix,
     s3_uri,
 )
+from workers.notifications import record_notification
 from workers.sync_db import session_scope
 from workers.vram import friendly_oom_message, preflight_gpu_vram
 
@@ -388,6 +389,19 @@ def train_manual(
                             request_id=request_context.current_request_id(),
                             metadata={"job_id": job_id, "error_type": type(exc).__name__},
                         )
+                        if job_row.status == JobStatus.FAILED:
+                            record_notification(
+                                session,
+                                owner_id=job_row.owner_id,
+                                event_type="training.failed",
+                                resource_type="training",
+                                resource_id=job_row.id,
+                                payload={
+                                    "project_id": job_row.project_id,
+                                    "name": job_row.training_name,
+                                    "message": job_row.error_message,
+                                },
+                            )
 
             except Exception:  # noqa: BLE001 — never mask the original failure
                 log.warning("could not persist FAILED status for %s", training_id, exc_info=True)
@@ -650,6 +664,14 @@ def _persist_artifact(
                 "job_id": job_row.celery_task_id,
                 "model_artifact_id": str(artifact_id),
             },
+        )
+        record_notification(
+            session,
+            owner_id=job_row.owner_id,
+            event_type="training.completed",
+            resource_type="training",
+            resource_id=job_row.id,
+            payload={"project_id": job_row.project_id, "name": training_name},
         )
     return artifact_id
 

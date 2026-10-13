@@ -12,7 +12,7 @@ changing a router.
 This is the human companion to [`openapi.json`](./openapi.json); regenerate
 that with `scripts/export_openapi.py` when the contract changes. All routes
 are mounted under `/api/v1` except `GET /health` (root-level). The spec
-currently has **50 paths / 63 operations**; this doc covers all of them.
+currently has **53 paths / 66 operations**; this doc covers all of them.
 (That count is asserted against `openapi.json` by
 `tests/unit/test_openapi_spec_is_current.py` — it had drifted twice, and this
 file previously stated two *different* stale numbers in two places.)
@@ -245,10 +245,10 @@ The third row is the one to internalise: *absent* is tolerated in phase 1,
 project creation always require a valid user, including when `AUTH_REQUIRED=false`.
 The compatibility behavior above is retained for ordinary project creation.
 
-**`/api/v1/deployments` and `/api/v1/api-keys` are the same kind of exception**
-— both always require a valid user (`require_authenticated_user`), in both
-phases, for the same reason: there is no anonymous owner to bucket a
-deployment or a key under.
+**`/api/v1/deployments`, `/api/v1/api-keys` and `/api/v1/notifications` are
+the same kind of exception** — all always require a valid user
+(`require_authenticated_user`), in both phases, for the same reason: there is
+no anonymous owner to bucket a deployment, a key or a notification under.
 
 **`sk-slm-...` API keys — `/api/v1/inference/*` only.** Every inference route
 accepts either a Supabase/OIDC JWT (above) or an
@@ -1954,6 +1954,50 @@ already-revoked key is a no-op, no duplicate audit row. `204` on success,
 same generic `401` ("invalid authentication token") as a malformed JWT — no
 oracle for "does this key exist" separate from "is it usable".
 
+## Notifications
+
+Per-user inbox of terminal job outcomes; the frontend polls it. Source:
+`api/routers/notifications.py`, `api/schemas/notifications.py`,
+`workers/notifications.py`. **Always-auth**, same as `Deployments` above:
+`401` without a valid identity, even when `AUTH_REQUIRED=false`.
+
+### GET /api/v1/notifications
+
+Caller's own notifications, **newest first**. Query: `limit` (1–100, default
+20), `cursor` (opaque — pass back the previous `next_cursor`). `200`
+`{items, next_cursor, unread_count}`; `next_cursor` is `null` on the last
+page. `422` for a malformed cursor or an out-of-range limit.
+
+Item shape: `id`, `event_type`, `resource_type`, `resource_id`, `payload`,
+`created_at`, `read_at` (`null` while unread).
+
+| `event_type` | `resource_type` | `resource_id` |
+|---|---|---|
+| `dataset.completed` / `dataset.failed` | `dataset` | dataset id |
+| `training.completed` / `training.failed` (manual and HPO) | `training` | training job id |
+| `evaluation.completed` / `evaluation.failed` | `evaluation` | evaluation run id |
+| `export.completed` / `export.failed` | `model` | model artifact id |
+| `deployment.ready` / `deployment.failed` | `deployment` | deployment id |
+
+`payload` keys: `project_id` (`null` for deployments), `name`, and `message`
+(failures only, at most 300 chars).
+
+**Semantics.** One row per `(owner, event_type, resource)` — a repeated
+terminal event never produces a second row. Cancelled jobs are not notified.
+Orphaned jobs (worker lost, see the reconcile sweep) produce the matching
+`*.failed`. Recording is best-effort and never fails the job itself.
+
+### PATCH /api/v1/notifications/{id}/read
+
+Mark one notification read. **Idempotent** — an already-read row keeps its
+original `read_at`. `200` the item; `404` if it doesn't exist **or isn't
+yours** (no distinction, no oracle).
+
+### POST /api/v1/notifications/read-all
+
+Mark every unread notification of the caller read. `200`
+`{"marked_count": n}`.
+
 ## Metadata
 
 Static/near-static endpoints that power dynamic frontend forms — no
@@ -2103,7 +2147,7 @@ slm_worker_up{queue="gpu"} 0.0
 
 ## Verification notes
 
-`openapi.json` currently enumerates 50 paths / 63 operations, and
+`openapi.json` currently enumerates 53 paths / 66 operations, and
 `tests/unit/test_openapi_spec_is_current.py` now asserts that the count stated
 at the top of this file matches it — regenerate with
 `python scripts/export_openapi.py` and update that one number when routes
