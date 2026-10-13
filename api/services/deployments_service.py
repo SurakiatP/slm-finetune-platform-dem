@@ -42,6 +42,9 @@ log = logging.getLogger(__name__)
 # `api/services/quota.py`'s `_IN_FLIGHT` for the same reason: terminal states
 # are done consuming the shared GPU/Ollama slot.
 ACTIVE = (JobStatus.PENDING, JobStatus.RUNNING)
+# Serializes the create-time checks below (one-active-per-artifact, global
+# cap, per-owner cap) so two concurrent creates can't both pass them.
+QUOTA_LOCK = 810625926
 
 # Timeout for the unload call driven from the request path (stop / delete /
 # model-delete hook) — short on purpose: this is a best-effort cleanup call,
@@ -78,6 +81,12 @@ async def create_deployment(
             ),
         )
 
+    # Transaction-scoped: released by the commit below, or by the rollback
+    # when a 409/429 ends the request. Creates are rare, so one global lock
+    # costs nothing. sqlite (unit tests) has no advisory locks.
+    if db.bind.dialect.name == "postgresql":
+        await db.execute(select(func.pg_advisory_xact_lock(QUOTA_LOCK)))
+
     existing = (
         await db.execute(
             select(Deployment.id)
@@ -96,13 +105,6 @@ async def create_deployment(
 
     settings = get_settings()
 
-    # ponytail: count-then-insert race — two concurrent creates can both pass
-    # both cap checks below before either commits its row, so the caps are
-    # "best effort, usually exact" rather than airtight. Acceptable given how
-    # small these caps are by design (default 1/user, 3 global) and how low
-    # deployment-create volume is; upgrade to a `SELECT ... FOR UPDATE`-style
-    # serializing lock (or a Postgres advisory lock, like
-    # `templates_service.CLEANUP_LOCK`) if that ever stops being true.
     global_count = int(
         (
             await db.execute(
