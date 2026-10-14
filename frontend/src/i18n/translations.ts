@@ -2,6 +2,15 @@ export type Language = "en" | "th";
 
 export const translations: Record<Language, Record<string, string>> = {
   en: {
+    "insights.loadDatasetsError": "Datasets could not be loaded.",
+    "insights.loadError": "Quality insights could not be loaded. Select another dataset or try again.",
+    "insights.emptyData": "Upload or generate a dataset to view its quality insights.",
+    "insights.retry": "Try again",
+    "insights.chooseDataset": "Select dataset",
+    "insights.source": "Quality analysis is calculated from the selected dataset in the Engine.",
+    "insights.sampled": "Sampled {n} rows.",
+    "insights.rows": "{n} rows",
+
     "oidc.login": "Sign in",
     "oidc.signup": "Create account",
     "oidc.continue": "Continue to sign in",
@@ -460,6 +469,15 @@ export const translations: Record<Language, Record<string, string>> = {
     "usage.totalCost": "Total Cost",
   },
   th: {
+    "insights.loadDatasetsError": "โหลดรายการชุดข้อมูลไม่สำเร็จ",
+    "insights.loadError": "โหลดผลวิเคราะห์ไม่สำเร็จ กรุณาเลือกชุดข้อมูลอื่นหรือลองอีกครั้ง",
+    "insights.emptyData": "อัปโหลดหรือสร้างชุดข้อมูลเพื่อดูผลวิเคราะห์คุณภาพ",
+    "insights.retry": "ลองอีกครั้ง",
+    "insights.chooseDataset": "เลือกชุดข้อมูล",
+    "insights.source": "ผลวิเคราะห์คุณภาพคำนวณจากชุดข้อมูลที่เลือกใน Engine",
+    "insights.sampled": "สุ่มตรวจ {n} แถว",
+    "insights.rows": "{n} แถว",
+
     "oidc.login": "เข้าสู่ระบบ",
     "oidc.signup": "สร้างบัญชี",
     "oidc.continue": "ดำเนินการเข้าสู่ระบบ",

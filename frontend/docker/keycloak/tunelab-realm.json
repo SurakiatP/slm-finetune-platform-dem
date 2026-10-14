@@ -20,15 +20,17 @@
       "directAccessGrantsEnabled": false,
       "redirectUris": [
         "${TUNELAB_WEB_ORIGIN}/*",
-        "${TUNELAB_DEV_ORIGIN}/*"
+        "${TUNELAB_DEV_ORIGIN}/*",
+        "${TUNELAB_SELFHOSTED_ORIGIN}/*"
       ],
       "webOrigins": [
         "${TUNELAB_WEB_ORIGIN}",
-        "${TUNELAB_DEV_ORIGIN}"
+        "${TUNELAB_DEV_ORIGIN}",
+        "${TUNELAB_SELFHOSTED_ORIGIN}"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "${TUNELAB_WEB_ORIGIN}/*##${TUNELAB_DEV_ORIGIN}/*"
+        "post.logout.redirect.uris": "${TUNELAB_WEB_ORIGIN}/*##${TUNELAB_DEV_ORIGIN}/*##${TUNELAB_SELFHOSTED_ORIGIN}/*"
       },
       "defaultClientScopes": [
         "basic",
