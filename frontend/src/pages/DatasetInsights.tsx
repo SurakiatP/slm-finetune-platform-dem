@@ -30,7 +30,7 @@ export default function DatasetInsights() {
   const { data: project, isLoading } = useProject(id ?? "");
   const { t } = useLanguage();
   const [selectedDataset, setSelectedDataset] = useState<string>();
-  const { data: datasetsPage, isLoading: datasetsLoading, isError: datasetsError, error: datasetsErrorDetail } = useDatasets(project?.id, { limit: 100 });
+  const { data: datasetsPage, isLoading: datasetsLoading, isError: datasetsError, error: datasetsErrorDetail, refetch: refetchDatasets } = useDatasets(project?.id, { limit: 100 });
   const datasets = datasetsPage?.items ?? EMPTY_DATASETS;
   const { data: report, isLoading: insightsLoading, isError: insightsError, error: insightsErrorDetail, refetch: refetchInsights } = useDatasetInsights(selectedDataset);
 
@@ -95,7 +95,7 @@ export default function DatasetInsights() {
           <TabsList>
             <TabsTrigger value="datasets">
               <Database className="h-3.5 w-3.5 mr-1.5" />
-              Datasets
+              {t('project.datasetsTab')}
             </TabsTrigger>
             <TabsTrigger value="quality">
               <Sparkles className="h-3.5 w-3.5 mr-1.5" />
@@ -109,14 +109,15 @@ export default function DatasetInsights() {
           </TabsContent>
 
           <TabsContent value="quality" className="mt-4 space-y-6">
+        {datasets.length > 0 && <Select value={selectedDataset} onValueChange={setSelectedDataset}><SelectTrigger aria-label={t('insights.chooseDataset')} className="w-full sm:w-64"><SelectValue /></SelectTrigger><SelectContent>{datasets.map((dataset) => <SelectItem key={dataset.id} value={dataset.id}>{dataset.name}</SelectItem>)}</SelectContent></Select>}
             {datasetsLoading ? (
               <div className="flex justify-center py-12"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
             ) : datasetsError ? (
-              <ErrorDetail error={{ detail: datasetsErrorDetail instanceof Error ? datasetsErrorDetail.message : 'Datasets could not be loaded.' }} />
+              <div className="space-y-3"><ErrorDetail error={{ detail: datasetsErrorDetail instanceof Error ? datasetsErrorDetail.message : t('insights.loadDatasetsError') }} /><Button variant="outline" onClick={() => void refetchDatasets()}>{t('insights.retry')}</Button></div>
             ) : datasets.length === 0 ? (
-              <p className="py-12 text-center text-sm text-muted-foreground">Upload or generate a dataset to view its quality insights.</p>
+              <p className="py-12 text-center text-sm text-muted-foreground">{t('insights.emptyData')}</p>
             ) : insightsError ? (
-              <div className="space-y-3"><ErrorDetail error={{ detail: insightsErrorDetail instanceof Error ? insightsErrorDetail.message : 'Quality insights could not be loaded.' }} /><Button variant="outline" onClick={() => void refetchInsights()}>Try again</Button></div>
+              <div className="space-y-3"><ErrorDetail error={{ detail: insightsErrorDetail instanceof Error ? insightsErrorDetail.message : t('insights.loadError') }} /><Button variant="outline" onClick={() => void refetchInsights()}>{t('insights.retry')}</Button></div>
             ) : insightsLoading || !report || !band || !BandIcon ? (
               <div className="flex justify-center py-12"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
             ) : (
@@ -124,17 +125,10 @@ export default function DatasetInsights() {
                 <FadeIn>
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-xs text-muted-foreground">
-                      Quality analysis is calculated from the selected dataset in the Engine.
-                      {report.scan_truncated ? ` Sampled ${report.scanned_rows.toLocaleString()} rows.` : ""}
+                      {t('insights.source')}
+                      {report.scan_truncated ? ' ' + t('insights.sampled').replace('{n}', report.scanned_rows.toLocaleString()) : ""}
                     </p>
-                    <Select value={selectedDataset} onValueChange={setSelectedDataset}>
-                      <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {datasets.map((dataset) => (
-                          <SelectItem key={dataset.id} value={dataset.id}>{dataset.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+
                   </div>
                 </FadeIn>
 
@@ -301,7 +295,7 @@ export default function DatasetInsights() {
             <FadeIn delay={0.3}>
               <div className="flex justify-between items-center pt-2">
                 <p className="text-xs text-muted-foreground">
-                  {datasetMeta?.name} · {datasetMeta?.num_samples.toLocaleString()} rows
+                  {datasetMeta?.name} · {t('insights.rows').replace('{n}', datasetMeta?.num_samples.toLocaleString() ?? '0')}
                 </p>
                 <Button asChild>
                   <Link to={`/projects/${id}/training`}>{t("insights.startTraining")} →</Link>

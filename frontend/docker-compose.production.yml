@@ -50,6 +50,7 @@ services:
       KC_PROXY_HEADERS: xforwarded
       TUNELAB_WEB_ORIGIN: ${FRONTEND_ORIGIN:?Set the public HTTPS frontend origin}
       TUNELAB_DEV_ORIGIN: ${FRONTEND_ORIGIN:?Set the public HTTPS frontend origin}
+      TUNELAB_SELFHOSTED_ORIGIN: ${SELFHOSTED_ORIGIN:?Set the public HTTPS self-hosted frontend origin}
     volumes:
       - ./docker/keycloak/tunelab-realm.json:/opt/keycloak/data/import/tunelab-realm.json:ro
     depends_on:
