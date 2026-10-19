@@ -231,6 +231,10 @@ class Settings(BaseSettings):
     # can disable the gate without a code change while the real issue is
     # investigated, rather than being stuck unable to launch any GPU job.
     gpu_preflight_enforce: bool = True
+    # Free disk (GiB) the export task needs under its temp dir before it
+    # starts: merged 16-bit + f16 GGUF + quantized GGUF of a 3B model is
+    # ~15 GiB. 0 disables. See workers/tasks/model_export.py::_preflight_disk.
+    export_min_free_disk_gb: float = Field(default=20.0, ge=0)
 
     # ---- Ollama ------------------------------------------------------------
     ollama_base_url: AnyUrl = Field(default=AnyUrl("http://ollama:11434"))

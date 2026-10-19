@@ -704,6 +704,12 @@ on `sdg_mode`. `api/routers/datasets.py:59-70`, `api/schemas/sdg.py`.
   - `tool_calling_config.tool_definitions: list[ToolDefinition]` —
     **required when `task_type=tool_calling`**; min 1, unique `name`s.
   - `qa` needs neither config block.
+  - **Sentinel class (both modes):** classification always adds the label
+    `unknown` and tool_calling always adds the tool `no_tool_needed`, each
+    on ~10% of rows (`SENTINEL_RATIO`), filled with off-topic inputs. This
+    is deliberate — it teaches the fine-tuned model to refuse out-of-scope
+    input — so training, holdout and evaluation all contain it. Clients
+    should show it as a known label, not as a schema violation.
   - Sending a config block that doesn't match `task_type` (e.g.
     `classification_config` with `task_type=qa`) is a `422` from the
     model validator, not silently ignored.
@@ -861,7 +867,8 @@ works. Source: `api/services/download_links.py::mint_dataset_download_url`.
 - **Errors**:
   - **`503`** when `MINIO_PUBLIC_URL` is not configured on this
     deployment — presigned downloads are simply unavailable, not broken.
-    Checked before touching the DB.
+    Checked before touching the DB. Clients should fall back to the
+    authenticated streaming `GET /{dataset_id}/download` above.
   - **`404` if the dataset doesn't exist; `403` if it exists and belongs to
     another user** — same ownership contract as every other resource
     endpoint (see
@@ -1195,6 +1202,10 @@ Enqueue a GGUF or SafeTensors export. `api/routers/models.py:66-77`.
   ignored for `safetensors`).
 - **Success**: `202` `ModelExportResponse` — `artifact_id`, `format`,
   `job_id`, `status=pending`, `websocket_url`.
+- **Disk preflight**: before downloading the adapter, the worker checks its
+  temp dir has `EXPORT_MIN_FREE_DISK_GB` (default 20) free; if not, the
+  export ends `failed` with `export_error_message` starting
+  `Disk preflight check failed for export` (an operator must free space).
 - **Errors**: `404` model not found; `403` if it exists and belongs to
   another user (ADR-012); `409` artifact has no
   `lora_adapter_uri` on file (training likely never completed —
@@ -1537,6 +1548,10 @@ Return the last-published progress frame for a job, validated against the
   [Authentication](#authentication) above), this endpoint now
   distinguishes them. Anonymous callers (`AUTH_REQUIRED=false`, no token)
   skip this check entirely and can only ever see `404`, same as before.
+- **Polling clients**: a `404` is normal before a job's first frame (e.g.
+  while a training is still loading its model) and after a finished job's
+  snapshot expires. Stop polling once the resource's own `status` is
+  `completed` / `failed` / `cancelled`.
 - **Gotcha**: the snapshot is a UX accelerator, not a source of truth —
   it lives in Redis with a 24h TTL and is lost on a Redis flush.
   Authoritative job state remains each resource's own `status` column

@@ -45,6 +45,9 @@ os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+asyncpg://test:test@localhost:5432/test_unused",
 )
+# Export tests run with fake models; the dev box's free disk must not decide
+# whether they pass. Disk-preflight tests patch disk_usage/settings directly.
+os.environ.setdefault("EXPORT_MIN_FREE_DISK_GB", "0")
 
 import pytest
 

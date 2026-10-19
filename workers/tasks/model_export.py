@@ -216,6 +216,7 @@ def export_model(
             # FAILED with this message — no separate status assignment
             # needed here.
             preflight_gpu_vram(job_kind="export")
+            _preflight_disk()
 
             # ---- 2. Pull adapter dir from MinIO ------------------------------
             publish_stage("downloading")
@@ -689,6 +690,27 @@ def export_model(
 
 
 # ---- helpers ---------------------------------------------------------------
+
+
+def _preflight_disk() -> None:
+    """Fail fast when the export workdir's filesystem can't hold a merge.
+
+    The merged 16-bit model, the f16 GGUF and the quantized GGUF all land
+    under `tempfile.gettempdir()` before upload — otherwise a full disk
+    surfaces minutes in as llama.cpp's "no disk space left" (frontend QA
+    report, 2026-10-18). `export_min_free_disk_gb=0` disables the check.
+    """
+    need_gb = get_settings().export_min_free_disk_gb
+    if need_gb <= 0:
+        return
+    tmp = tempfile.gettempdir()
+    free_gb = shutil.disk_usage(tmp).free / 1024**3
+    if free_gb < need_gb:
+        raise RuntimeError(
+            f"Disk preflight check failed for export: only {free_gb:.1f} GiB free "
+            f"on {tmp}, below the required {need_gb:.1f} GiB. Ask an operator to "
+            "free disk space on the worker host, then retry the export."
+        )
 
 
 def _download_prefix(minio: Any, bucket: str, prefix: str, local_dir: str) -> None:

@@ -722,3 +722,55 @@ class TestCompletedGuardDiscardsWithoutException:
         snap = json.loads(snapshot)
         assert snap["type"] == "failed"
         assert snap["error_type"] == "Cancelled"
+
+
+# =============================================================================
+# Disk preflight — a full temp disk fails the export before any download
+# =============================================================================
+
+
+class TestDiskPreflight:
+    def test_low_disk_fails_export_before_download(
+        self, monkeypatch: pytest.MonkeyPatch, sync_sessionmaker, fake_minio, fake_redis_pubsub
+    ) -> None:
+        export_module = _install_worker_patches(
+            monkeypatch, sync_sessionmaker, fake_minio, fake_redis_pubsub, {}
+        )
+        project_id, training_id, artifact_id = uuid4(), uuid4(), uuid4()
+        _seed_project_job_artifact(
+            sync_sessionmaker, project_id=project_id, training_id=training_id, artifact_id=artifact_id
+        )
+        _seed_adapter_files(fake_minio, training_id=training_id)
+        monkeypatch.setattr(export_module.get_settings(), "export_min_free_disk_gb", 20.0)
+        monkeypatch.setattr(
+            export_module.shutil, "disk_usage", lambda _p: types.SimpleNamespace(free=1024**3)
+        )
+
+        def _no_download(*_a, **_kw):
+            raise AssertionError("adapter must not be downloaded when the disk is full")
+
+        monkeypatch.setattr(export_module, "_download_prefix", _no_download)
+
+        result = export_module.export_model.apply(
+            kwargs={"artifact_id": str(artifact_id), "format": "gguf"}
+        )
+        assert not result.successful()
+
+        session = sync_sessionmaker()
+        try:
+            artifact = session.get(ModelArtifact, artifact_id)
+            assert artifact.export_status == JobStatus.FAILED
+            assert "Disk preflight check failed" in artifact.export_error_message
+        finally:
+            session.close()
+
+    def test_zero_threshold_disables_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import workers.tasks.model_export as export_module
+
+        monkeypatch.setattr(
+            export_module, "get_settings", lambda: types.SimpleNamespace(export_min_free_disk_gb=0)
+        )
+        monkeypatch.setattr(
+            export_module.shutil, "disk_usage", lambda _p: types.SimpleNamespace(free=0)
+        )
+        export_module._preflight_disk()  # must not raise
