@@ -373,7 +373,7 @@ _EXPECTED_LOCATION_ZONES = [
     # `uploads` — the SPA polls the list, and the uploads zone's burst=5
     # would 429 it. See the comment above that location in the conf.
     ("= /api/v1/datasets", ["api_read", "api_write"]),
-    ("/api/v1/datasets/", ["uploads"]),
+    ("/api/v1/datasets/", ["api_read", "api_write", "uploads"]),
     ("/api/v1/inference/", ["inference"]),
     ("/api/", ["api_read", "api_write"]),
 ]
@@ -385,6 +385,17 @@ def test_location_carries_expected_limit_req_zones(selector: str, zones: list[st
     found = set(re.findall(r"limit_req\s+zone=(\w+)", block))
     missing = set(zones) - found
     assert not missing, f"location {selector!r} is missing limit_req zone(s) {sorted(missing)}"
+
+
+def test_uploads_zone_only_limits_post() -> None:
+    """GET /api/v1/datasets/{id} is polled by the SPA; keying `uploads` by
+    address for every verb 429'd that polling at 12r/m (QA report 2026-10-18)."""
+    zone = re.search(r"limit_req_zone\s+\$(\w+)\s+zone=uploads:", _CONF_CODE)
+    assert zone and zone.group(1) == "upload_key"
+    key_map = re.search(r"map\s+\$request_method\s+\$upload_key\s*\{([^}]*)\}", _CONF_CODE)
+    assert key_map, "no $upload_key map"
+    entries = dict(re.findall(r"(\S+)\s+(\S+);", key_map.group(1)))
+    assert entries == {"default": '""', "POST": "$binary_remote_addr"}
 
 
 def test_datasets_collection_has_exact_match_location() -> None:
