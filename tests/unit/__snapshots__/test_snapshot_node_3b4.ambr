@@ -53,8 +53,8 @@
 # ---
 # name: test_sdg_classification_with_seed_full
   dict({
-    'api_calls': 24,
-    'duplicate_count': 13,
+    'api_calls': 8,
+    'duplicate_count': 10,
     'failed_attempts': list([
     ]),
     'judge_parse_failures': 0,
@@ -67,7 +67,7 @@
       }),
       dict({
         'label': 'คำถามทั่วไป',
-        'text': 'ตัวอย่างคำถามผู้ใช้ที่ 09',
+        'text': 'ตัวอย่างคำถามผู้ใช้ที่ 05',
       }),
       dict({
         'label': 'ปัญหาเทคนิค',
@@ -79,11 +79,11 @@
       }),
       dict({
         'label': 'ปัญหาการเงิน',
-        'text': 'ตัวอย่างคำถามผู้ใช้ที่ 17',
+        'text': 'ตัวอย่างคำถามผู้ใช้ที่ 15',
       }),
       dict({
         'label': 'ปัญหาการเงิน',
-        'text': 'ตัวอย่างคำถามผู้ใช้ที่ 18',
+        'text': 'ตัวอย่างคำถามผู้ใช้ที่ 16',
       }),
     ]),
     'valid_row_count': 6,
@@ -107,7 +107,7 @@
 # ---
 # name: test_sdg_qa_description_only_full
   dict({
-    'api_calls': 12,
+    'api_calls': 3,
     'duplicate_count': 0,
     'failed_attempts': list([
     ]),
@@ -161,8 +161,8 @@
 # ---
 # name: test_sdg_tool_calling_with_seed_full
   dict({
-    'api_calls': 24,
-    'duplicate_count': 12,
+    'api_calls': 8,
+    'duplicate_count': 10,
     'failed_attempts': list([
     ]),
     'judge_parse_failures': 0,
@@ -186,12 +186,12 @@
         'question': 'คำสั่ง play_music ลำดับ #00',
       }),
       dict({
-        'answer': '{"name": "set_volume", "parameters": {"level": 20}}',
-        'question': 'คำสั่ง set_volume ลำดับ #10',
+        'answer': '{"name": "play_music", "parameters": {"level": 11}}',
+        'question': 'คำสั่ง play_music ลำดับ #01',
       }),
       dict({
-        'answer': '{"name": "set_volume", "parameters": {"level": 21}}',
-        'question': 'คำสั่ง set_volume ลำดับ #11',
+        'answer': '{"name": "set_volume", "parameters": {"level": 20}}',
+        'question': 'คำสั่ง set_volume ลำดับ #10',
       }),
     ]),
     'valid_row_count': 6,
@@ -202,7 +202,7 @@
     'holdout_count': 2,
     'holdout_tools_sorted': list([
       'light_on',
-      'set_volume',
+      'play_music',
     ]),
     'train_count': 4,
     'train_tools_sorted': list([

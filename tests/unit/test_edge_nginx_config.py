@@ -494,6 +494,12 @@ def test_nginx_config_is_syntactically_valid() -> None:
             "--rm",
             "-v",
             f"{_CONF_PATH}:/etc/nginx/conf.d/default.conf:ro",
+            # `nginx -t` resolves every proxy_pass host; outside compose
+            # `api`/`minio` don't exist, so stub them.
+            "--add-host",
+            "api:127.0.0.1",
+            "--add-host",
+            "minio:127.0.0.1",
             "nginx:1.27-alpine",
             "nginx",
             "-t",

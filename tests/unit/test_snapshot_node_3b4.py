@@ -534,10 +534,12 @@ def _extract_target_tool(user_prompt: str) -> str | None:
 class _SDGResponder:
     """Stateful responder for the inline-mock Tier 2 tests.
 
-    Dispatches by ``model`` kwarg:
-      • DIVERSITY_RULES model → meta-prompt response
-      • JUDGE model → judge response
-      • GENERATOR model → generator response (per-task pool)
+    Dispatches by the system message, not the ``model`` kwarg — since
+    b9dd0b1 all three stages share one model id, so model-based dispatch
+    sent every call down the meta-prompt branch:
+      • meta system prompt → meta-prompt response
+      • judge system prompt → judge response
+      • anything else → generator response (per-task pool)
     """
 
     def __init__(self, *, task_type: TaskType, include_unknown: bool) -> None:
@@ -546,15 +548,19 @@ class _SDGResponder:
         self._gen_idx = 0
 
     async def __call__(self, kwargs: dict[str, Any], call_index: int) -> Any:
-        from ai_engine.data_gen import models as _models
+        from ai_engine.data_gen import prompts as _prompts
 
         model = kwargs.get("model", "")
-        if model == _models.DIVERSITY_RULES:
+        system = next(
+            (m.get("content", "") for m in kwargs.get("messages") or [] if m.get("role") == "system"),
+            "",
+        )
+        if system == _prompts._META_SYSTEM:
             return _build_chat_response(
                 _meta_response_json(include_unknown=self._include_unknown),
                 model=model,
             )
-        if model == _models.JUDGE:
+        if system == _prompts._JUDGE_SYSTEM:
             num_rows = _count_judge_rows(kwargs)
             return _build_chat_response(_judge_response_json(num_rows), model=model)
         # Generator path — return 5 samples per call. We use a sliding window
