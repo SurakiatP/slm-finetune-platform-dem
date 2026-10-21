@@ -195,14 +195,21 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
 
   const holdoutRequired = (Number(holdoutSize) || 0) > 0;
 
-  const canGenerateNoSeed = (): boolean => {
-    if (!projectId || !taskType) return false;
-    if (!datasetName.trim()) return false;
-    if (holdoutRequired && !holdoutName.trim()) return false;
-    if (taskType === "classification") return parseLabels().length >= 2;
-    if (taskType === "tool_calling") return parseTools() !== null;
-    return true; // qa needs only the task description already gathered in step 1.
+  // Translation keys for every requirement still unmet; empty means the
+  // generate button is enabled. Shown under the button so a disabled state
+  // is never unexplained.
+  const missingNoSeed = (): string[] => {
+    const missing: string[] = [];
+    if (!projectId || !taskType) missing.push("sdgNoSeed.missingProject");
+    if (!datasetName.trim()) missing.push("sdgNoSeed.missingDatasetName");
+    if (holdoutRequired && !holdoutName.trim()) missing.push("sdgNoSeed.missingHoldoutName");
+    if (taskType === "classification" && parseLabels().length < 2) missing.push("sdgNoSeed.missingLabels");
+    if (taskType === "tool_calling" && parseTools() === null) missing.push("sdgNoSeed.missingTools");
+    // qa needs only the task description already gathered in step 1.
+    return missing;
   };
+
+  const canGenerateNoSeed = (): boolean => missingNoSeed().length === 0;
 
   const handleGenerateNoSeed = () => {
     if (!projectId || !taskType || !canGenerateNoSeed()) return;
@@ -541,6 +548,17 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
             {generateDataset.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
             {t("sdgNoSeed.generateButton")}
           </Button>
+
+          {!canGenerateNoSeed() && (
+            <div role="status" className="rounded-md border border-border bg-secondary/30 p-3 text-xs text-muted-foreground">
+              <p className="font-medium text-foreground">{t("sdgNoSeed.missingTitle")}</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {missingNoSeed().map((key) => (
+                  <li key={key}>{t(key)}</li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {generateDataset.isError && <ErrorDetail error={toErrorDetail(generateDataset.error)} />}
         </div>
