@@ -1,3 +1,4 @@
+import { useUrlState } from "@/hooks/useUrlState";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Clock, Eye, GitFork, Layers, Loader2, Rocket, Search, Sparkles, Star, X, Zap } from "lucide-react";
@@ -20,11 +21,11 @@ type CategoryFilter = "all" | "featured" | string;
  * template may remain visible when its training corpus is unavailable, but
  * the backend's `available` flag must prevent it from starting a project. */
 export default function Templates() {
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useUrlState<string>("q", "");
+  const [searchInput, setSearchInput] = useState(search);
   const [isComposing, setIsComposing] = useState(false);
-  const [category, setCategory] = useState<CategoryFilter>("all");
-  const [sort, setSort] = useState<TemplateSort>("popular");
+  const [category, setCategory] = useUrlState<CategoryFilter>("category", "all");
+  const [sort, setSort] = useUrlState<TemplateSort>("sort", "popular");
   const [preview, setPreview] = useState<Template | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();

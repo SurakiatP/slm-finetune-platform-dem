@@ -1,3 +1,4 @@
+import { useUrlState } from "@/hooks/useUrlState";
 import { useState } from "react";
 import { Search } from "lucide-react";
 
@@ -12,8 +13,8 @@ import { useLanguage } from "@/i18n/LanguageContext";
 import type { TaskType } from "@/api/types";
 
 export default function Projects() {
-  const [search, setSearch] = useState("");
-  const [filterTask, setFilterTask] = useState<TaskType | "all">("all");
+  const [search, setSearch] = useUrlState<string>("q", "");
+  const [filterTask, setFilterTask] = useUrlState<TaskType | "all">("task", "all");
   const { t } = useLanguage();
   const { data, isLoading, isError, error } = useProjects({ limit: 100 });
   const { data: taskTypes } = useTaskTypes();

@@ -30,6 +30,7 @@ import Datasets from "./pages/Datasets";
 import Evaluations from "./pages/Evaluations";
 import Usage from "./pages/Usage";
 import Settings from "./pages/Settings";
+import ApiKeysPage from "./pages/ApiKeys";
 import Analytics from "./pages/Analytics";
 import Deployment from "./pages/Deployment";
 import Leaderboard from "./pages/Leaderboard";
@@ -74,7 +75,7 @@ const App = () => (
                   <Route path="/leaderboard" element={<Leaderboard />} />
                   <Route path="/templates" element={<Templates />} />
                   <Route path="/settings" element={<Settings />} />
-                  <Route path="/api-keys" element={<Settings />} />
+                  <Route path="/api-keys" element={<ApiKeysPage />} />
                 </Route>
                 <Route path="*" element={<NotFound />} />
               </Routes>

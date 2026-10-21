@@ -135,6 +135,26 @@ export const api = {
   postForm<T>(path: string, form: FormData): Promise<T> {
     return request<T>(path, { method: 'POST', body: form })
   },
+
+  /** Authenticated binary GET — for streamed downloads that cannot use a plain
+   *  `<a href>` because the Bearer token has to ride in the Authorization header. */
+  async getBlob(path: string): Promise<{ blob: Blob; filename: string | null }> {
+    const headers = new Headers()
+    if (!isMockMode) {
+      const token = await getAccessToken()
+      if (!token) {
+        throw new ApiError(401, {
+          detail: 'Please sign in before using the fine-tuning engine.',
+          code: 'missing_session',
+        })
+      }
+      headers.set('Authorization', `Bearer ${token}`)
+    }
+    const res = await doFetch(path, { headers })
+    if (!res.ok) throw await parseError(res)
+    const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(res.headers.get('Content-Disposition') ?? '')
+    return { blob: await res.blob(), filename: match ? decodeURIComponent(match[1]) : null }
+  },
 }
 
 export function pageQuery(params: Record<string, string | number | boolean | undefined | null>): string {

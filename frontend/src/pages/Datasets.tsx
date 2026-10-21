@@ -1,3 +1,4 @@
+import { useUrlState } from "@/hooks/useUrlState";
 import { Fragment, useMemo, useState } from "react";
 import { Database, Download, Eye, Loader2, Search, Trash2 } from "lucide-react";
 
@@ -12,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DatasetPreviewTable } from "@/components/dataset/DatasetPreviewTable";
-import { useDatasetDownloadUrl, useDatasets, useDeleteDataset, useProjects, useTrainings } from "@/hooks/queries";
+import { useDatasetDownload, useDatasets, useDeleteDataset, useProjects, useTrainings } from "@/hooks/queries";
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { formatBytes, formatDateTime } from "@/lib/format";
@@ -41,7 +42,7 @@ function errorMessage(err: unknown): string {
 export default function Datasets() {
   const { t } = useLanguage();
   const { toast } = useToast();
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useUrlState<string>("q", "");
   const [deleteTarget, setDeleteTarget] = useState<Dataset | null>(null);
   const [blockedReasons, setBlockedReasons] = useState<Record<string, string>>({});
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -50,15 +51,12 @@ export default function Datasets() {
   const { data: projectsPage } = useProjects({ limit: 200 });
   const { data: trainingsPage } = useTrainings({ limit: 200 });
   const deleteMutation = useDeleteDataset();
-  const downloadMutation = useDatasetDownloadUrl();
+  const downloadMutation = useDatasetDownload();
 
   const toggleExpanded = (id: string) => setExpandedId((cur) => (cur === id ? null : id));
 
   const handleDownload = (id: string) => {
     downloadMutation.mutate(id, {
-      onSuccess: (res) => {
-        window.open(res.url, "_blank", "noopener,noreferrer");
-      },
       onError: (err: unknown) => {
         toast({ variant: "destructive", description: errorMessage(err) });
       },

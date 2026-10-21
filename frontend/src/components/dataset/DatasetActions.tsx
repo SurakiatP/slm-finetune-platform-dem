@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/engine/ConfirmDialog";
 import {
   useCancelDatasetGeneration,
-  useDatasetDownloadUrl,
+  useDatasetDownload,
   useDeleteDataset,
 } from "@/hooks/queries";
 import { useLanguage } from "@/i18n/LanguageContext";
@@ -31,7 +31,7 @@ export function DatasetActions({ dataset, previewOpen, onTogglePreview, onDelete
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
 
-  const downloadMutation = useDatasetDownloadUrl();
+  const downloadMutation = useDatasetDownload();
   const deleteMutation = useDeleteDataset();
   const cancelMutation = useCancelDatasetGeneration();
 
@@ -39,9 +39,6 @@ export function DatasetActions({ dataset, previewOpen, onTogglePreview, onDelete
 
   const handleDownload = () => {
     downloadMutation.mutate(dataset.id, {
-      onSuccess: (res) => {
-        window.open(res.url, "_blank", "noopener,noreferrer");
-      },
       onError: (err: unknown) => {
         toast({ variant: "destructive", description: err instanceof Error ? err.message : String(err) });
       },

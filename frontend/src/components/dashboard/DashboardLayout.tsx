@@ -7,6 +7,7 @@ import { NotificationCenter } from "@/components/NotificationCenter";
 import { CommandPalette } from "@/components/CommandPalette";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { OnboardingTour } from "@/components/OnboardingTour";
+import { useRouteTitle } from "@/hooks/useRouteTitle";
 import { BackendStatus } from "@/components/engine/BackendStatus";
 
 function AnimatedOutlet() {
@@ -29,6 +30,7 @@ function AnimatedOutlet() {
 }
 
 export default function DashboardLayout() {
+  useRouteTitle();
   return (
     <SidebarProvider>
       <OnboardingTour />

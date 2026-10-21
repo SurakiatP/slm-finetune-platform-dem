@@ -15,7 +15,9 @@ const levelPrefix: Record<string, string> = {
   success: " OK ",
 };
 
-export function TrainingLog({ logs }: { logs: TrainingLogEntry[] }) {
+/** `active` is false once the run is terminal — the trailing "waiting" indicator
+ *  is then dropped, since no further events will arrive for this job. */
+export function TrainingLog({ logs, active = true }: { logs: TrainingLogEntry[]; active?: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -34,10 +36,12 @@ export function TrainingLog({ logs }: { logs: TrainingLogEntry[] }) {
           <span className={levelStyle[log.level]}>{log.message}</span>
         </div>
       ))}
-      <div className="flex items-center gap-1 pt-1">
-        <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-        <span className="text-muted-foreground">Waiting for next event...</span>
-      </div>
+      {active && (
+        <div className="flex items-center gap-1 pt-1">
+          <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+          <span className="text-muted-foreground">Waiting for next event...</span>
+        </div>
+      )}
     </div>
   );
 }

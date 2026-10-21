@@ -8,9 +8,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useAnalytics, useProjects } from '@/hooks/queries'
+import { formatUsd } from '@/lib/format'
 
 const seconds = (value: number | null) => value === null ? '—' : value < 60 ? `${Math.round(value)}s` : `${(value / 60).toFixed(1)} min`
-const cost = (value: string | null) => value === null ? 'Not priced' : `$${Number(value).toFixed(4)}`
+const cost = (value: string | null) => value === null ? 'Not priced' : formatUsd(value)
 
 export default function Analytics() {
   const [from, setFrom] = useState('')

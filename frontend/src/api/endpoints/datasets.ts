@@ -1,4 +1,4 @@
-import { api, pageQuery } from '@/api/client'
+import { ApiError, api, pageQuery } from '@/api/client'
 import type {
   Dataset,
   DatasetDownloadUrl,
@@ -35,6 +35,24 @@ export function deleteDataset(id: string): Promise<void> {
 /** Plain href for streaming download — use in an <a> tag, not fetch. */
 export function datasetDownloadUrl(id: string): string {
   return `${BASE}/${id}/download`
+}
+
+/**
+ * Stream the dataset JSONL through the API (same-origin, Bearer-authenticated)
+ * and hand it to the browser as a file save. Used when presigned URLs are
+ * unavailable (`download-url` -> 503: no public storage host configured).
+ * PDF-seeded datasets have nothing to stream and answer 409.
+ */
+export async function downloadDatasetViaApi(id: string): Promise<void> {
+  const { blob, filename } = await api.getBlob(`${BASE}/${id}/download`)
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = filename ?? `dataset-${id}.jsonl`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000)
 }
 
 /**
@@ -88,3 +106,20 @@ export function getDatasetInsights(id: string): Promise<DatasetInsights> {
   return api.get(`${BASE}/${id}/insights`)
 }
 
+
+/**
+ * Download a dataset: prefer the presigned URL, and fall back to the
+ * API-streamed download when the backend reports presigning is unavailable (503).
+ */
+export async function downloadDataset(id: string): Promise<void> {
+  try {
+    const { url } = await getDatasetDownloadUrl(id)
+    window.open(url, '_blank', 'noopener,noreferrer')
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 503) {
+      await downloadDatasetViaApi(id)
+      return
+    }
+    throw err
+  }
+}

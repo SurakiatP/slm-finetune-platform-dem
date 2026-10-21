@@ -1,3 +1,4 @@
+import { useUrlState } from "@/hooks/useUrlState";
 import { useMemo, useState } from "react";
 import { ClipboardList, Search } from "lucide-react";
 
@@ -25,7 +26,7 @@ function errorMessage(err: unknown): string {
  */
 export default function Evaluations() {
   const { t } = useLanguage();
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useUrlState<string>("q", "");
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const { data: evaluationsPage, isLoading, error } = useEvaluations(
