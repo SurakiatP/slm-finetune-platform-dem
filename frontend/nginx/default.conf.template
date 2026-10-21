@@ -69,7 +69,10 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
+    # index.html must be revalidated on every load, otherwise browsers keep
+    # serving the previous release's bundle after a deploy.
     location / {
         try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache";
     }
 }
