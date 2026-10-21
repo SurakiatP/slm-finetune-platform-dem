@@ -1,4 +1,4 @@
-FROM node:22-alpine AS builder
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -8,22 +8,21 @@ RUN npm ci
 COPY . .
 
 ARG VITE_ENGINE_HOST=""
-ARG VITE_AUTH_URL=/auth
-ARG VITE_AUTH_REALM=tunelab
-ARG VITE_AUTH_CLIENT_ID=tunelab-web
+ARG VITE_SUPABASE_PROJECT_ID
+ARG VITE_SUPABASE_PUBLISHABLE_KEY
+ARG VITE_SUPABASE_URL
 
 ENV VITE_ENGINE_HOST=$VITE_ENGINE_HOST \
-    VITE_AUTH_URL=$VITE_AUTH_URL \
-    VITE_AUTH_REALM=$VITE_AUTH_REALM \
-    VITE_AUTH_CLIENT_ID=$VITE_AUTH_CLIENT_ID
+    VITE_SUPABASE_PROJECT_ID=$VITE_SUPABASE_PROJECT_ID \
+    VITE_SUPABASE_PUBLISHABLE_KEY=$VITE_SUPABASE_PUBLISHABLE_KEY \
+    VITE_SUPABASE_URL=$VITE_SUPABASE_URL
 
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.30.5-alpine3.24
+FROM nginxinc/nginx-unprivileged:1.27-alpine
 
 ENV ENGINE_UPSTREAM=slm-edge:80 \
-    ENGINE_UPSTREAM_HOST=edge \
-    AUTH_UPSTREAM=keycloak:8080
+    ENGINE_UPSTREAM_HOST=edge
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template

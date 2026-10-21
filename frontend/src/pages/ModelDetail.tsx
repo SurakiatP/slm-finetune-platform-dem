@@ -28,7 +28,7 @@ const codeExamples = {
 url = "${API_PUBLIC_ORIGIN}${INFERENCE_URL}"
 headers = {
     "Content-Type": "application/json",
-    "Authorization": "Bearer OIDC_ACCESS_TOKEN"
+    "Authorization": "Bearer SUPABASE_ACCESS_TOKEN"
 }
 payload = {
     "model": "MODEL_NAME",
@@ -43,7 +43,7 @@ response = requests.post(url, json=payload, headers=headers)
 print(response.json())`,
   curl: `curl -X POST ${API_PUBLIC_ORIGIN}${INFERENCE_URL} \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer OIDC_ACCESS_TOKEN" \\
+  -H "Authorization: Bearer SUPABASE_ACCESS_TOKEN" \\
   -d '{
     "model": "MODEL_NAME",
     "messages": [
@@ -56,7 +56,7 @@ print(response.json())`,
   method: "POST",
   headers: {
     "Content-Type": "application/json",
-    "Authorization": "Bearer OIDC_ACCESS_TOKEN",
+    "Authorization": "Bearer SUPABASE_ACCESS_TOKEN",
   },
   body: JSON.stringify({
     model: "MODEL_NAME",
