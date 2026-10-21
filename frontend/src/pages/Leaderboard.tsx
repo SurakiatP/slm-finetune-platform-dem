@@ -1,3 +1,4 @@
+import { useUrlState } from "@/hooks/useUrlState";
 import { useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -135,9 +136,9 @@ export default function Leaderboard() {
   const getTaskTypeLabel = useTaskTypeLabel();
   const getBaseModelLabel = useBaseModelLabel();
 
-  const [search, setSearch] = useState("");
-  const [taskFilter, setTaskFilter] = useState("all");
-  const [evalFilter, setEvalFilter] = useState<"all" | "evaluated">("all");
+  const [search, setSearch] = useUrlState<string>("q", "");
+  const [taskFilter, setTaskFilter] = useUrlState<string>("task", "all");
+  const [evalFilter, setEvalFilter] = useUrlState<"all" | "evaluated">("eval", "all");
   const [sortBy, setSortBy] = useState<SortKey>("primaryScore");
   const [sortAsc, setSortAsc] = useState(false);
 
@@ -192,7 +193,17 @@ export default function Leaderboard() {
       let bestSecondaryName: string | null = null;
       let bestJudge: number | null = null;
 
+      // Re-running an evaluation on the same benchmark dataset must not count
+      // twice (or let an older run win): score only the newest run per dataset.
+      const latestPerDataset = new Map<string, (typeof modelEvals)[number]>();
       for (const ev of modelEvals) {
+        const prev = latestPerDataset.get(ev.dataset_id);
+        if (!prev || new Date(ev.created_at).getTime() > new Date(prev.created_at).getTime()) {
+          latestPerDataset.set(ev.dataset_id, ev);
+        }
+      }
+
+      for (const ev of latestPerDataset.values()) {
         const { primaryName, primaryVal, secondaryName, secondaryVal } = extractEvaluationMetrics(
           ev.metrics_json,
           project?.task_type
@@ -488,7 +499,7 @@ export default function Leaderboard() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="primaryScore">{t("leaderboard.primaryScore")}</SelectItem>
-                  <SelectItem value="secondaryMetric">{t("leaderboard.secondaryMetric")}</SelectItem>
+                  <SelectItem value="secondaryScore">{t("leaderboard.secondaryMetric")}</SelectItem>
                   <SelectItem value="judge">{t("leaderboard.judge")}</SelectItem>
                   <SelectItem value="size">{t("leaderboard.size")}</SelectItem>
                   <SelectItem value="name">{t("leaderboard.model")}</SelectItem>

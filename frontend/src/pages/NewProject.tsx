@@ -223,6 +223,15 @@ export default function NewProject() {
         </CardContent>
       </Card>
 
+      {engineProject && currentStep >= 2 && (
+        <p role="status" className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
+          {t("newProject.draftNotice").replace("{name}", engineProject.name)}{" "}
+          <Link className="font-medium text-primary underline" to={`/projects/${engineProject.id}`}>
+            {t("newProject.draftResume")}
+          </Link>
+        </p>
+      )}
+
       {currentStep === 1 && projectError && <ErrorDetail error={projectError} />}
       {isLastStep && launchError && <ErrorDetail error={launchError} />}
 

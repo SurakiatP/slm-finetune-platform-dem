@@ -15,7 +15,7 @@ interface CompareTableProps {
 
 /** Per-metric comparison across the evaluations picked in ModelComparison.
  *  With exactly two evaluations selected, the columns are framed as
- *  Baseline vs Fine-tuned with an explicit delta column (the common case:
+ *  Run A vs Run B with an explicit delta column (the common case:
  *  comparing a model's eval run against an earlier/base one); with more than
  *  two, every column is shown side by side and the best value per metric
  *  (ratio/judge-score metrics only — "higher is better") is starred instead,
@@ -47,7 +47,7 @@ export function CompareTable({ result, labels }: CompareTableProps) {
               <TableHead key={id} className="text-right">
                 {twoWay && (
                   <div className="text-[10px] font-normal uppercase tracking-wide text-muted-foreground">
-                    {i === 0 ? t("eval.baseline") : t("eval.finetuned")}
+                    {i === 0 ? t("eval.runA") : t("eval.runB")}
                   </div>
                 )}
                 <div className="font-mono text-xs" title={id}>

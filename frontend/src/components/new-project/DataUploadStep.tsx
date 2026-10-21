@@ -442,6 +442,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
                 placeholder="billing, technical, general"
               />
               <p className="text-[10px] text-muted-foreground mt-1">{t("sdgNoSeed.labelsHint")}</p>
+              <p className="text-[10px] text-muted-foreground mt-1">{t("sentinel.wizardHint")}</p>
             </div>
           )}
 
@@ -455,7 +456,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
                 className="min-h-36 font-mono text-xs"
               />
               <div className="flex items-center justify-between gap-2">
-                <p className="text-[10px] text-muted-foreground">{t("sdgNoSeed.toolsHint")}</p>
+                <p className="text-[10px] text-muted-foreground">{t("sdgNoSeed.toolsHint")} {t("sentinel.wizardHint")}</p>
                 <Button
                   type="button"
                   variant="outline"

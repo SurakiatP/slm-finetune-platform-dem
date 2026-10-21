@@ -75,3 +75,10 @@ export function datasetRoleTag(ds: Dataset): 'seed' | 'training' | 'hold-out' {
   if (ds.source === 'seed') return 'seed'
   return 'training'
 }
+
+/** Sentinel classes the SDG appends to every dataset (~10%): classification
+ *  gets label `unknown`, tool_calling gets tool `no_tool_needed`. */
+const SENTINEL_LABELS = new Set(['unknown', 'no_tool_needed'])
+export function isSentinelLabel(label: string): boolean {
+  return SENTINEL_LABELS.has(label)
+}

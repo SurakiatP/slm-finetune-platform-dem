@@ -10,6 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, Database, CheckCircle2, AlertTriangle, Tag, Activity, FileText, Loader2, Sparkles } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from "recharts";
+import { SentinelBadge } from "@/components/dataset/SentinelBadge";
+import { isSentinelLabel } from "@/lib/labels";
 import { DatasetList } from "@/components/dataset/DatasetList";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
 import { useLanguage } from "@/i18n/LanguageContext";
@@ -201,6 +203,7 @@ export default function DatasetInsights() {
                                   <AlertTriangle className="h-3 w-3 text-yellow-500" />
                                 )}
                                 {c.label}
+                                {isSentinelLabel(c.label) && <SentinelBadge />}
                               </span>
                               <span className="text-muted-foreground">
                                 {c.count} ({c.percent}%)

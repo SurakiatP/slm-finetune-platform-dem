@@ -242,6 +242,13 @@ export function useDatasetDownloadUrl() {
   })
 }
 
+/** Save a dataset locally — presigned URL when available, API-streamed fallback otherwise. */
+export function useDatasetDownload() {
+  return useMutation({
+    mutationFn: (id: string): Promise<void> => datasets.downloadDataset(id),
+  })
+}
+
 // --- Trainings: queries ---------------------------------------------------------
 
 export function useTrainings(

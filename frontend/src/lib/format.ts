@@ -65,5 +65,8 @@ export function formatUsd(value: string | null | undefined, digits = 4): string 
   if (value === null || value === undefined) return '—'
   const n = Number(value)
   if (Number.isNaN(n)) return '—'
+  // Sub-cent embedding/token costs would otherwise round to a misleading "$0.0000".
+  const floor = 10 ** -digits
+  if (n > 0 && n < floor) return `< $${floor.toFixed(digits)}`
   return `$${n.toFixed(digits)}`
 }

@@ -177,6 +177,20 @@ export default function TrainingMonitor() {
   const currentTrainLoss = liveTraining?.train_loss ?? latestLoss?.trainLoss ?? null;
   const currentValLoss = liveTraining?.eval_loss ?? latestLoss?.valLoss ?? null;
 
+  // After a run ends there is no live frame (`/jobs/{id}/progress` 404s once
+  // the snapshot is gone) — fall back to the stored metrics' last epoch value.
+  const storedEpoch = (() => {
+    const points = trainingMetrics?.metrics?.epoch;
+    return points && points.length > 0 ? points[points.length - 1].value : null;
+  })();
+  const epochProgressLabel = liveTraining
+    ? `${liveTraining.epoch.toFixed(1)} / ${liveTraining.epochs_total}`
+    : storedEpoch !== null
+      ? storedEpoch.toFixed(1)
+      : selected?.status === "completed"
+        ? t("training.completed")
+        : "—";
+
   const cancelMutation = useCancelTraining();
 
   if (projectLoading || trainingsLoading) return <TrainingMonitorSkeleton />;
@@ -316,7 +330,7 @@ export default function TrainingMonitor() {
               { label: t("training.taskType"), value: taskTypeLabel(project.task_type), icon: Database },
               {
                 label: t("training.epochProgress"),
-                value: liveTraining ? `${liveTraining.epoch.toFixed(1)} / ${liveTraining.epochs_total}` : "—",
+                value: epochProgressLabel,
                 icon: Gauge,
               },
               { label: t("training.elapsedTime"), value: formatDuration(selected.started_at, selected.ended_at), icon: Clock },
@@ -467,6 +481,7 @@ export default function TrainingMonitor() {
                 </CardHeader>
                 <CardContent>
                   <TrainingLog
+                    active={!selectedTerminal}
                     logs={buildTrainingLog(
                       selected,
                       liveTraining,

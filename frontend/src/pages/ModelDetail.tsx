@@ -19,11 +19,13 @@ import { metricMeta, scalarMetrics } from "@/lib/metrics";
 import { StartEvaluationDialog } from "@/components/evaluation/StartEvaluationDialog";
 
 const INFERENCE_URL = "/api/v1/inference/chat/completions";
+// Same-origin deployments proxy /api, so the page origin is the public engine host.
+const API_PUBLIC_ORIGIN = typeof window === "undefined" ? "" : window.location.origin;
 
 const codeExamples = {
   python: `import requests
 
-url = "https://YOUR_ENGINE_HOST${INFERENCE_URL}"
+url = "${API_PUBLIC_ORIGIN}${INFERENCE_URL}"
 headers = {
     "Content-Type": "application/json",
     "Authorization": "Bearer OIDC_ACCESS_TOKEN"
@@ -39,7 +41,7 @@ payload = {
 
 response = requests.post(url, json=payload, headers=headers)
 print(response.json())`,
-  curl: `curl -X POST https://YOUR_ENGINE_HOST${INFERENCE_URL} \\
+  curl: `curl -X POST ${API_PUBLIC_ORIGIN}${INFERENCE_URL} \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer OIDC_ACCESS_TOKEN" \\
   -d '{
@@ -50,7 +52,7 @@ print(response.json())`,
     "max_tokens": 512,
     "temperature": 0.7
   }'`,
-  javascript: `const response = await fetch("https://YOUR_ENGINE_HOST${INFERENCE_URL}", {
+  javascript: `const response = await fetch("${API_PUBLIC_ORIGIN}${INFERENCE_URL}", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",

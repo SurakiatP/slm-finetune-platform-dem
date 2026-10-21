@@ -94,11 +94,14 @@ export function DatasetPreviewTable({ datasetId, numSamples, limit = 20 }: Datas
     );
   }
 
+  const hasSentinelRows = /"(unknown|no_tool_needed)"/.test(JSON.stringify(data.samples));
+
   return (
     <div className="space-y-1.5">
       <p className="text-xs text-muted-foreground">
         {t("dataset.preview")} · {data.samples.length}/{data.total}
       </p>
+      {hasSentinelRows && <p className="text-xs text-muted-foreground">{t("sentinel.hint")}</p>}
       <JsonlPreview rows={data.samples} />
     </div>
   );
