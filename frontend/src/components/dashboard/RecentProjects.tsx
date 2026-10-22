@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useProjects, useTrainings } from "@/hooks/queries";
 import { useTaskTypeLabel } from "@/lib/labels";
+import { useLanguage } from "@/i18n/LanguageContext";
 import type { JobStatus } from "@/api/types";
 
 // The Engine has no project-level status column; the closest equivalent is the
@@ -17,18 +18,19 @@ const statusVariant: Record<JobStatus, "default" | "secondary" | "destructive" |
   failed: "destructive",
 };
 
-const statusLabel: Record<JobStatus, string> = {
-  completed: "Completed",
-  running: "Training",
-  pending: "Queued",
-  cancelled: "Cancelled",
-  failed: "Failed",
+const statusLabelKey: Record<JobStatus, string> = {
+  completed: "dashboardPage.status.completed",
+  running: "dashboardPage.status.running",
+  pending: "dashboardPage.status.pending",
+  cancelled: "dashboardPage.status.cancelled",
+  failed: "dashboardPage.status.failed",
 };
 
 export function RecentProjects() {
   const { data } = useProjects({ limit: 100 });
   const { data: trainingsPage } = useTrainings({ limit: 100 });
   const taskTypeLabel = useTaskTypeLabel();
+  const { t } = useLanguage();
 
   const projects = data?.items ?? [];
   const recent = [...projects]
@@ -46,23 +48,23 @@ export function RecentProjects() {
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base">Recent Projects</CardTitle>
-          <Link to="/projects" className="text-xs text-primary hover:underline">View all</Link>
+          <CardTitle className="text-base">{t("dashboardPage.recentProjects")}</CardTitle>
+          <Link to="/projects" className="text-xs text-primary hover:underline">{t("dashboardPage.viewAll")}</Link>
         </div>
       </CardHeader>
       <CardContent className="p-0">
         {recent.length === 0 ? (
           <div className="p-6 text-center text-sm text-muted-foreground">
-            No projects yet. <Link to="/projects/new" className="text-primary hover:underline">Create your first project</Link>
+            {t("dashboardPage.noProjects")} <Link to="/projects/new" className="text-primary hover:underline">{t("dashboardPage.createFirst")}</Link>
           </div>
         ) : (
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Task</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Created</TableHead>
+                <TableHead>{t("dashboardPage.colName")}</TableHead>
+                <TableHead>{t("dashboardPage.colTask")}</TableHead>
+                <TableHead>{t("dashboardPage.colStatus")}</TableHead>
+                <TableHead className="text-right">{t("dashboardPage.colCreated")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -78,7 +80,7 @@ export function RecentProjects() {
                     <TableCell className="text-muted-foreground text-xs">{taskTypeLabel(p.task_type)}</TableCell>
                     <TableCell>
                       {status ? (
-                        <Badge variant={statusVariant[status]}>{statusLabel[status]}</Badge>
+                        <Badge variant={statusVariant[status]}>{t(statusLabelKey[status])}</Badge>
                       ) : (
                         <span className="text-muted-foreground text-xs">—</span>
                       )}

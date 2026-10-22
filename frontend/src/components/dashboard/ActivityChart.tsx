@@ -2,8 +2,10 @@ import { useMemo } from "react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useModels, useTrainings } from "@/hooks/queries";
+import { useLanguage } from "@/i18n/LanguageContext";
 
 export function ActivityChart() {
+  const { t } = useLanguage();
   const { data: trainingsPage } = useTrainings({ limit: 100 });
   const { data: modelsPage } = useModels(undefined, { limit: 100 });
 
@@ -30,7 +32,7 @@ export function ActivityChart() {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">Training Activity (7 days)</CardTitle>
+        <CardTitle className="text-base">{t("dashboardPage.trainingActivity")}</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="h-[220px]">
@@ -53,8 +55,8 @@ export function ActivityChart() {
                   fontSize: 12,
                 }}
               />
-              <Area type="monotone" dataKey="trainings" stroke="hsl(var(--primary))" fill="url(#colorTrainings)" strokeWidth={2} />
-              <Area type="monotone" dataKey="models" stroke="hsl(142,71%,45%)" fill="transparent" strokeWidth={2} strokeDasharray="4 4" />
+              <Area type="monotone" dataKey="trainings" name={t("dashboardPage.seriesTrainings")} stroke="hsl(var(--primary))" fill="url(#colorTrainings)" strokeWidth={2} />
+              <Area type="monotone" dataKey="models" name={t("dashboardPage.seriesModels")} stroke="hsl(142,71%,45%)" fill="transparent" strokeWidth={2} strokeDasharray="4 4" />
             </AreaChart>
           </ResponsiveContainer>
         </div>

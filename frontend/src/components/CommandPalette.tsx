@@ -9,19 +9,12 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
-import {
-  FolderKanban,
-  Box,
-  LayoutDashboard,
-  MessageSquare,
-  Database,
-  Wallet,
-  Plus,
-  Search,
-} from "lucide-react";
+import { FolderKanban, Box, Plus, Search } from "lucide-react";
+import { navItems } from "@/components/dashboard/navItems";
 import { useProjects, useModels } from "@/hooks/queries";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/i18n/LanguageContext";
+import { translations } from "@/i18n/translations";
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
@@ -78,30 +71,19 @@ export function CommandPalette() {
           <CommandSeparator />
 
           <CommandGroup heading={t("command.pages")}>
-            <CommandItem onSelect={() => runCommand("/dashboard")}>
-              <LayoutDashboard className="mr-2 h-4 w-4" />
-              {t("nav.dashboard")}
-            </CommandItem>
-            <CommandItem onSelect={() => runCommand("/projects")}>
-              <FolderKanban className="mr-2 h-4 w-4" />
-              {t("nav.projects")}
-            </CommandItem>
-            <CommandItem onSelect={() => runCommand("/models")}>
-              <Box className="mr-2 h-4 w-4" />
-              {t("nav.models")}
-            </CommandItem>
-            <CommandItem onSelect={() => runCommand("/datasets")}>
-              <Database className="mr-2 h-4 w-4" />
-              {t("datasetsPage.navLabel")}
-            </CommandItem>
-            <CommandItem onSelect={() => runCommand("/playground")}>
-              <MessageSquare className="mr-2 h-4 w-4" />
-              {t("nav.playground")}
-            </CommandItem>
-            <CommandItem onSelect={() => runCommand("/usage")}>
-              <Wallet className="mr-2 h-4 w-4" />
-              {t("nav.usage")}
-            </CommandItem>
+            {navItems.map((item) => (
+              <CommandItem
+                key={item.url}
+                value={item.url}
+                // Match the label in both languages, so typing an English page
+                // name still finds it while the UI is in Thai (and vice versa).
+                keywords={[t(item.titleKey), translations.en[item.titleKey], translations.th[item.titleKey]].filter(Boolean)}
+                onSelect={() => runCommand(item.url)}
+              >
+                <item.icon className="mr-2 h-4 w-4" />
+                {t(item.titleKey)}
+              </CommandItem>
+            ))}
           </CommandGroup>
 
           <CommandSeparator />

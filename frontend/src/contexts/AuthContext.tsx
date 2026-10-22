@@ -146,6 +146,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/** Like useAuth, but returns null outside an AuthProvider (e.g. isolated component tests). */
+export function useOptionalAuth() {
+  return useContext(AuthContext) ?? null;
+}
+
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used within AuthProvider");

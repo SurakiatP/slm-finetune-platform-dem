@@ -3,6 +3,7 @@ import { Navigate, Outlet, useLocation, useParams } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 
 import { getProject, listProjects } from '@/api/endpoints/projects'
+import { useLanguage } from '@/i18n/LanguageContext'
 
 const LEGACY_STORAGE_KEY = 'slm_engine_meta'
 
@@ -21,6 +22,7 @@ function mappedEngineId(legacyId: string): string | null {
 export function LegacyProjectRoute() {
   const { id } = useParams<{ id: string }>()
   const location = useLocation()
+  const { t } = useLanguage()
   const [canonicalId, setCanonicalId] = useState<string | null>(null)
   const [state, setState] = useState<'checking' | 'ready' | 'missing'>('checking')
 
@@ -65,7 +67,7 @@ export function LegacyProjectRoute() {
 
   if (state === 'checking') {
     return (
-      <div className="flex min-h-48 items-center justify-center" aria-label="Resolving project">
+      <div className="flex min-h-48 items-center justify-center" aria-label={t("legacyProject.resolving")}>
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
     )
@@ -74,10 +76,9 @@ export function LegacyProjectRoute() {
   if (state === 'missing') {
     return (
       <div className="mx-auto max-w-xl py-16 text-center">
-        <h1 className="text-xl font-semibold">Project is not available in the Engine</h1>
+        <h1 className="text-xl font-semibold">{t("legacyProject.missingTitle")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          This may be a legacy Supabase-only project that has no Engine mapping and cannot be
-          migrated automatically.
+          {t("legacyProject.missingHint")}
         </p>
       </div>
     )

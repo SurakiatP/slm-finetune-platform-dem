@@ -333,9 +333,10 @@ export default function ModelDetail() {
                 {
                   version: "v1.0",
                   date: model.created_at,
-                  metric: metricEntries[0],
+                  // `n` is the sample count, not a quality score — headline the first real metric.
+                  metric: metricEntries.find(([name]) => name !== "n" && name !== "llm_judge_score"),
                   status: "current",
-                  note: "Initial release",
+                  note: t("modelDetail.initialRelease"),
                 },
               ].map((v) => (
                 <div key={v.version} className="flex items-center justify-between p-3 rounded-lg border border-border">
@@ -343,7 +344,7 @@ export default function ModelDetail() {
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold font-mono text-foreground">{v.version}</span>
-                        {v.status === "current" && <Badge className="text-[9px]">Current</Badge>}
+                        {v.status === "current" && <Badge className="text-[9px]">{t("modelDetail.currentVersion")}</Badge>}
                       </div>
                       <p className="text-[10px] text-muted-foreground mt-0.5">
                         {new Date(v.date).toLocaleDateString()} · {v.note}
@@ -354,7 +355,7 @@ export default function ModelDetail() {
                     <p className="text-sm font-bold text-foreground">
                       {v.metric ? formatNumber(v.metric[1]) : "—"}
                     </p>
-                    <p className="text-[10px] text-muted-foreground">{v.metric ? v.metric[0] : "no metrics"}</p>
+                    <p className="text-[10px] text-muted-foreground">{v.metric ? v.metric[0] : t("modelDetail.noMetrics")}</p>
                   </div>
                 </div>
               ))}

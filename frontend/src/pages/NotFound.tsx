@@ -30,6 +30,12 @@ const NotFound = () => {
     }
   }, [location.pathname, redirectTarget]);
 
+  // Rendered outside DashboardLayout, so useRouteTitle does not run here —
+  // without this the tab keeps the previous page's title.
+  useEffect(() => {
+    if (!redirectTarget) document.title = `${t("notFound.title")} · TuneLab`;
+  }, [redirectTarget, t]);
+
   if (redirectTarget) {
     return <Navigate to={redirectTarget} replace />;
   }

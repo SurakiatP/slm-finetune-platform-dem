@@ -8,6 +8,11 @@ vi.mock('@/api/endpoints/projects', () => ({
   listProjects: mocks.listProjects,
 }))
 
+vi.mock('@/i18n/LanguageContext', async () => {
+  const { translations } = await import('@/i18n/translations')
+  return { useLanguage: () => ({ language: 'en', t: (key: string) => translations.en[key] ?? key }) }
+})
+
 import { LegacyProjectRoute } from '@/components/project/LegacyProjectRoute'
 
 describe('LegacyProjectRoute', () => {

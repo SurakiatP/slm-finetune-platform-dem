@@ -12,11 +12,20 @@ import { ChatPanel } from "@/components/playground/ChatPanel";
 import { buildTrainingNameMap } from "@/components/model/modelNaming";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useInferenceModels, useModels, useTrainings } from "@/hooks/queries";
+import { displayModelTag } from "@/lib/format";
+
+/** Ollama's stock models report `owned_by: "library"`; everything else is a
+ *  user's fine-tuned export (owned_by carries the owner namespace). */
+const isBaseModel = (ownedBy: string) => ownedBy === "library";
 
 export default function Playground() {
   const [searchParams] = useSearchParams();
   const { data, isLoading: loadingModels, error: modelsErrorObj } = useInferenceModels();
-  const models = useMemo(() => data?.data ?? [], [data]);
+  // Fine-tuned models first, so the default selection is one of the user's own.
+  const models = useMemo(
+    () => [...(data?.data ?? [])].sort((a, b) => Number(isBaseModel(a.owned_by)) - Number(isBaseModel(b.owned_by))),
+    [data],
+  );
   const [modelA, setModelA] = useState<string>(searchParams.get("model") ?? "");
   const [modelB, setModelB] = useState<string>("");
   const [abMode, setAbMode] = useState(false);
@@ -46,7 +55,23 @@ export default function Playground() {
     return map;
   }, [artifactsPage, trainingNames]);
 
-  const getModelName = (id: string) => tagToTrainingName[id] ?? models.find((model) => model.id === id)?.id ?? id;
+  const getModelName = (id: string) => tagToTrainingName[id] ?? displayModelTag(id);
+
+  const renderOption = (m: (typeof models)[number]) => (
+    <SelectItem key={m.id} value={m.id}>
+      <div className="flex items-center gap-2">
+        <span className="flex flex-col">
+          <span className="text-sm">{getModelName(m.id)}</span>
+          {tagToTrainingName[m.id] && (
+            <span className="font-mono text-[10px] text-muted-foreground">{displayModelTag(m.id)}</span>
+          )}
+        </span>
+        <Badge variant="outline" className="text-[9px]">
+          {isBaseModel(m.owned_by) ? t("playground.baseModelBadge") : t("playground.fineTunedBadge")}
+        </Badge>
+      </div>
+    </SelectItem>
+  );
 
   return (
     <PageTransition>
@@ -72,53 +97,25 @@ export default function Playground() {
         <CardContent className="p-4">
           {modelsError && <p role="alert" className="mb-4 text-sm text-destructive">{modelsError}</p>}
           {!loadingModels && models.length === 0 && !modelsError && (
-            <p className="mb-4 text-sm text-muted-foreground">No inference models are registered in the Engine.</p>
+            <p className="mb-4 text-sm text-muted-foreground">{t("playground.noModels")}</p>
           )}
           <div className={`grid gap-4 ${abMode ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
             <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">{abMode ? "Model A" : t("playground.model")}</Label>
+              <Label className="text-xs text-muted-foreground">{abMode ? t("playground.modelA") : t("playground.model")}</Label>
               <Select value={modelA} onValueChange={setModelA}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {models.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
-                      <div className="flex items-center gap-2">
-                        {tagToTrainingName[m.id] ? (
-                          <span className="flex flex-col">
-                            <span className="text-sm">{tagToTrainingName[m.id]}</span>
-                            <span className="font-mono text-[10px] text-muted-foreground">{m.id}</span>
-                          </span>
-                        ) : (
-                          <span className="font-mono text-sm">{m.id}</span>
-                        )}
-                        <Badge variant="outline" className="text-[9px]">{m.owned_by}</Badge>
-                      </div>
-                    </SelectItem>
-                  ))}
+                  {models.map(renderOption)}
                 </SelectContent>
               </Select>
             </div>
             {abMode && (
               <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Model B</Label>
+                <Label className="text-xs text-muted-foreground">{t("playground.modelB")}</Label>
                 <Select value={modelB} onValueChange={setModelB}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {models.map((m) => (
-                      <SelectItem key={m.id} value={m.id}>
-                        <div className="flex items-center gap-2">
-                          {tagToTrainingName[m.id] ? (
-                            <span className="flex flex-col">
-                              <span className="text-sm">{tagToTrainingName[m.id]}</span>
-                              <span className="font-mono text-[10px] text-muted-foreground">{m.id}</span>
-                            </span>
-                          ) : (
-                            <span className="font-mono text-sm">{m.id}</span>
-                          )}
-                          <Badge variant="outline" className="text-[9px]">{m.owned_by}</Badge>
-                        </div>
-                      </SelectItem>
-                    ))}
+                    {models.map(renderOption)}
                   </SelectContent>
                 </Select>
               </div>

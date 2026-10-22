@@ -3,8 +3,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { StaggerContainer, StaggerItem } from "@/components/motion";
 import { motion } from "framer-motion";
 import { useModels, useProjects, useTrainings } from "@/hooks/queries";
+import { useLanguage } from "@/i18n/LanguageContext";
 
 export function StatsCards() {
+  const { t } = useLanguage();
   const { data: projectsPage } = useProjects({ limit: 100 });
   const { data: modelsPage } = useModels(undefined, { limit: 100 });
   const { data: trainingsPage } = useTrainings({ limit: 100 });
@@ -23,9 +25,9 @@ export function StatsCards() {
     .toFixed(1);
 
   const stats = [
-    { label: "Total Projects", value: totalProjects, icon: FolderKanban, color: "text-primary" },
-    { label: "Models Trained", value: modelsTrained, icon: Box, color: "text-success" },
-    { label: "Training Hours", value: `${trainingHours}h`, icon: Clock, color: "text-warning" },
+    { label: t("dashboardPage.totalProjects"), value: totalProjects, icon: FolderKanban, color: "text-primary" },
+    { label: t("dashboardPage.modelsTrained"), value: modelsTrained, icon: Box, color: "text-success" },
+    { label: t("dashboardPage.trainingHours"), value: `${trainingHours}h`, icon: Clock, color: "text-warning" },
   ];
 
   return (

@@ -157,7 +157,7 @@ export default function ProjectDetail() {
                       )}
                     </div>
                   ) : (
-                    <p className="text-muted-foreground">No GPU job in flight for this project.</p>
+                    <p className="text-muted-foreground">{t("projectPage.noGpuJob")}</p>
                   )}
                 </CardContent>
               </Card>
@@ -168,7 +168,7 @@ export default function ProjectDetail() {
                 <CardContent className="p-4 flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-foreground">{t("project.datasetsTab")}</p>
-                    <p className="text-xs text-muted-foreground">Seed, SDG, and merged datasets</p>
+                    <p className="text-xs text-muted-foreground">{t("projectPage.datasetsDesc")}</p>
                   </div>
                   <Button variant="outline" size="sm" asChild>
                     <Link to={`/projects/${project.id}/insights`}>
@@ -181,7 +181,7 @@ export default function ProjectDetail() {
                 <CardContent className="p-4 flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-foreground">{t("projectDetail.training")}</p>
-                    <p className="text-xs text-muted-foreground">Manual and HPO training runs</p>
+                    <p className="text-xs text-muted-foreground">{t("projectPage.trainingsDesc")}</p>
                   </div>
                   <Button variant="outline" size="sm" asChild>
                     <Link to={`/projects/${project.id}/training`}>
@@ -234,6 +234,7 @@ export default function ProjectDetail() {
 }
 
 function DatasetsPreview({ projectId }: { projectId: string }) {
+  const { t } = useLanguage();
   const { data, isLoading, isError, error } = useDatasets(projectId, { limit: 5 });
   const items = data?.items ?? [];
 
@@ -253,11 +254,11 @@ function DatasetsPreview({ projectId }: { projectId: string }) {
     return (
       <EngineEmptyState
         icon={Database}
-        title="No datasets yet"
-        hint="Upload a seed dataset or run SDG generation to get started."
+        title={t("projectPage.noDatasets")}
+        hint={t("projectPage.noDatasetsHint")}
         action={
           <Button variant="outline" size="sm" asChild>
-            <Link to={`/projects/${projectId}/insights`}>Open Datasets</Link>
+            <Link to={`/projects/${projectId}/insights`}>{t("projectPage.openDatasets")}</Link>
           </Button>
         }
       />
@@ -281,7 +282,7 @@ function DatasetsPreview({ projectId }: { projectId: string }) {
       </div>
       <div className="text-right">
         <Button variant="link" size="sm" asChild>
-          <Link to={`/projects/${projectId}/insights`}>View all datasets →</Link>
+          <Link to={`/projects/${projectId}/insights`}>{t("projectPage.viewAllDatasets")} →</Link>
         </Button>
       </div>
     </div>
@@ -292,6 +293,7 @@ function DatasetsPreview({ projectId }: { projectId: string }) {
  *  stage: evaluations are keyed by model artifact, so scope them to this
  *  project by way of its model artifacts. */
 function ProjectEvaluations({ projectId }: { projectId: string }) {
+  const { t } = useLanguage();
   const navigate = useNavigate();
   const { data: modelsPage, isLoading: modelsLoading } = useModels(projectId, { limit: 100 });
   const { data: evalsPage, isLoading: evalsLoading } = useEvaluations({ limit: 100 });
@@ -313,11 +315,11 @@ function ProjectEvaluations({ projectId }: { projectId: string }) {
     return (
       <EngineEmptyState
         icon={ClipboardList}
-        title="No evaluations yet"
-        hint="Export a model, then evaluation runs automatically and results appear on that model's detail page."
+        title={t("projectPage.noEvaluations")}
+        hint={t("projectPage.noEvaluationsHint")}
         action={
           <Button variant="outline" size="sm" asChild>
-            <Link to="/models">Open Models</Link>
+            <Link to="/models">{t("projectPage.openModels")}</Link>
           </Button>
         }
       />
@@ -334,6 +336,7 @@ function ProjectEvaluations({ projectId }: { projectId: string }) {
 }
 
 function TrainingsPreview({ projectId }: { projectId: string }) {
+  const { t } = useLanguage();
   const { data, isLoading, isError, error } = useTrainings({ project_id: projectId, limit: 5 });
   const items = data?.items ?? [];
 
@@ -353,11 +356,11 @@ function TrainingsPreview({ projectId }: { projectId: string }) {
     return (
       <EngineEmptyState
         icon={PlayCircle}
-        title="No training runs yet"
-        hint="Start a training run once you have a dataset ready."
+        title={t("projectPage.noTrainings")}
+        hint={t("projectPage.noTrainingsHint")}
         action={
           <Button variant="outline" size="sm" asChild>
-            <Link to={`/projects/${projectId}/training`}>Open Trainings</Link>
+            <Link to={`/projects/${projectId}/training`}>{t("projectPage.openTrainings")}</Link>
           </Button>
         }
       />
@@ -377,7 +380,7 @@ function TrainingsPreview({ projectId }: { projectId: string }) {
                 <StatusBadge status={tr.status} />
               </div>
               <p className="text-xs text-muted-foreground">
-                {tr.mode === "hpo" ? "HPO" : "Manual"} · {tr.base_model}
+                {tr.mode === "hpo" ? "HPO" : t("projectPage.manual")} · {tr.base_model}
               </p>
             </CardContent>
           </Card>
@@ -385,7 +388,7 @@ function TrainingsPreview({ projectId }: { projectId: string }) {
       </div>
       <div className="text-right">
         <Button variant="link" size="sm" asChild>
-          <Link to={`/projects/${projectId}/training`}>View training monitor →</Link>
+          <Link to={`/projects/${projectId}/training`}>{t("projectPage.viewTrainingMonitor")} →</Link>
         </Button>
       </div>
     </div>

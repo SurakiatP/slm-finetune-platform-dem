@@ -46,7 +46,7 @@ export function UsageSummaryPanel() {
       <EngineEmptyState
         icon={Coins}
         title={t("common.error")}
-        hint="Could not load the usage summary. Try refreshing the page."
+        hint={t("usagePage.summaryLoadError")}
       />
     );
   }
@@ -58,7 +58,7 @@ export function UsageSummaryPanel() {
       <div className="grid gap-4 sm:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Prompt tokens</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">{t("usagePage.promptTokens")}</CardTitle>
             <ArrowUpDown className="h-4 w-4 text-muted-foreground" aria-hidden />
           </CardHeader>
           <CardContent>
@@ -68,7 +68,7 @@ export function UsageSummaryPanel() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Completion tokens</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">{t("usagePage.completionTokens")}</CardTitle>
             <MessageSquareText className="h-4 w-4 text-muted-foreground" aria-hidden />
           </CardHeader>
           <CardContent>
@@ -88,7 +88,7 @@ export function UsageSummaryPanel() {
                 variant="outline"
                 className="mt-2 border-amber-500/40 text-amber-600 dark:text-amber-400"
               >
-                Includes unpriced rows
+                {t("usagePage.includesUnpriced")}
               </Badge>
             )}
           </CardContent>
@@ -97,7 +97,7 @@ export function UsageSummaryPanel() {
 
       {data.has_unpriced_usage && (
         <p className="text-xs text-muted-foreground">
-          Some rows had no configured price for their model, so the cost total above is a floor, not the true total.
+          {t("usagePage.unpricedNote")}
         </p>
       )}
 
@@ -105,7 +105,7 @@ export function UsageSummaryPanel() {
         <CardHeader>
           <CardTitle className="text-base font-semibold">{t("usage.summary")}</CardTitle>
           <p className="text-xs text-muted-foreground">
-            {periodLabel} · OpenRouter usage broken down by model and pipeline stage.
+            {periodLabel} · {t("usagePage.breakdown")}
           </p>
         </CardHeader>
         <CardContent className={hasRows ? undefined : "pt-0"}>
@@ -113,10 +113,10 @@ export function UsageSummaryPanel() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Model</TableHead>
-                  <TableHead>Stage</TableHead>
-                  <TableHead className="text-right">Prompt tokens</TableHead>
-                  <TableHead className="text-right">Completion tokens</TableHead>
+                  <TableHead>{t("usagePage.colModel")}</TableHead>
+                  <TableHead>{t("usagePage.colStage")}</TableHead>
+                  <TableHead className="text-right">{t("usagePage.promptTokens")}</TableHead>
+                  <TableHead className="text-right">{t("usagePage.completionTokens")}</TableHead>
                   <TableHead className="text-right">{t("usage.cost")}</TableHead>
                 </TableRow>
               </TableHeader>
@@ -143,7 +143,7 @@ export function UsageSummaryPanel() {
                         <span className="inline-flex items-center justify-end gap-1.5">
                           <span className="text-muted-foreground">—</span>
                           <Badge variant="outline" className="text-[10px]">
-                            Unpriced
+                            {t("usagePage.unpriced")}
                           </Badge>
                         </span>
                       ) : (
@@ -158,7 +158,7 @@ export function UsageSummaryPanel() {
             <EngineEmptyState
               icon={Coins}
               title={t("usage.empty")}
-              hint="Rows appear here once SDG generation or evaluation runs make calls to OpenRouter."
+              hint={t("usagePage.emptyHint")}
             />
           )}
         </CardContent>

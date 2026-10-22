@@ -10,6 +10,11 @@ vi.mock('@/hooks/queries', () => ({
   useRevokeApiKey: () => ({ mutate: mocks.revoke, isPending: false, error: null }),
 }))
 
+vi.mock('@/i18n/LanguageContext', async () => {
+  const { translations } = await import('@/i18n/translations')
+  return { useLanguage: () => ({ language: 'en', t: (key: string) => translations.en[key] ?? key }) }
+})
+
 describe('ApiKeyManager', () => {
   beforeEach(() => vi.clearAllMocks())
 

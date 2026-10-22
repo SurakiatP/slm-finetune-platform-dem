@@ -118,6 +118,15 @@ export default function NewProject() {
 
   const isLastStep = currentStep === steps.length - 1;
 
+  // Explains a disabled Next/Launch button instead of leaving it silently greyed out.
+  const blockedHintKeys = [
+    "newProject.blocked.prompt",
+    "newProject.blocked.taskType",
+    "newProject.blocked.dataset",
+    "newProject.blocked.baseModel",
+  ];
+  const blockedHint = canProceed() ? null : blockedHintKeys[currentStep] ?? null;
+
   const handleNext = async () => {
     // Leaving the task-selection step is what actually creates the Engine
     // project — it's the first point we have every field ProjectCreate needs.
@@ -234,6 +243,10 @@ export default function NewProject() {
 
       {currentStep === 1 && projectError && <ErrorDetail error={projectError} />}
       {isLastStep && launchError && <ErrorDetail error={launchError} />}
+
+      {blockedHint && (
+        <p role="status" className="text-right text-xs text-muted-foreground">{t(blockedHint)}</p>
+      )}
 
       <div className="flex justify-between">
         <Button

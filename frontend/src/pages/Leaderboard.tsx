@@ -1,5 +1,5 @@
 import { useUrlState } from "@/hooks/useUrlState";
-import { useState, useMemo } from "react";
+import { useState, useMemo, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
 import {
   Trophy,
@@ -344,6 +344,20 @@ export default function Leaderboard() {
     }
   };
 
+  // Sortable headers are <th> cells, so make them focusable and operable with
+  // Enter/Space, and expose the current direction to assistive tech.
+  const sortHeaderProps = (key: SortKey) => ({
+    tabIndex: 0,
+    "aria-sort": (sortBy === key ? (sortAsc ? "ascending" : "descending") : "none") as "ascending" | "descending" | "none",
+    onClick: () => handleSort(key),
+    onKeyDown: (event: KeyboardEvent) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        handleSort(key);
+      }
+    },
+  });
+
   const handleClearFilters = () => {
     setSearch("");
     setTaskFilter("all");
@@ -577,8 +591,8 @@ export default function Leaderboard() {
                       <tr className="border-b border-border bg-muted/30 text-xs text-muted-foreground">
                         <th className="py-3 px-4 text-left font-medium w-16">{t("leaderboard.rank")}</th>
                         <th
-                          className="py-3 px-4 text-left font-medium cursor-pointer hover:text-foreground"
-                          onClick={() => handleSort("name")}
+                          className="py-3 px-4 text-left font-medium cursor-pointer hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          {...sortHeaderProps("name")}
                         >
                           <div className="inline-flex items-center gap-1">
                             {t("leaderboard.model")}
@@ -589,8 +603,8 @@ export default function Leaderboard() {
                         <th className="py-3 px-4 text-left font-medium">{t("leaderboard.base")}</th>
                         <th className="py-3 px-4 text-left font-medium">{t("leaderboard.task")}</th>
                         <th
-                          className="py-3 px-4 text-right font-medium cursor-pointer hover:text-foreground"
-                          onClick={() => handleSort("primaryScore")}
+                          className="py-3 px-4 text-right font-medium cursor-pointer hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          {...sortHeaderProps("primaryScore")}
                         >
                           <div className="inline-flex items-center gap-1 justify-end">
                             {t("leaderboard.primaryScore")}
@@ -598,8 +612,8 @@ export default function Leaderboard() {
                           </div>
                         </th>
                         <th
-                          className="py-3 px-4 text-right font-medium cursor-pointer hover:text-foreground"
-                          onClick={() => handleSort("secondaryScore")}
+                          className="py-3 px-4 text-right font-medium cursor-pointer hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          {...sortHeaderProps("secondaryScore")}
                         >
                           <div className="inline-flex items-center gap-1 justify-end">
                             {t("leaderboard.secondaryMetric")}
@@ -607,8 +621,8 @@ export default function Leaderboard() {
                           </div>
                         </th>
                         <th
-                          className="py-3 px-4 text-right font-medium cursor-pointer hover:text-foreground"
-                          onClick={() => handleSort("judge")}
+                          className="py-3 px-4 text-right font-medium cursor-pointer hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          {...sortHeaderProps("judge")}
                         >
                           <div className="inline-flex items-center gap-1 justify-end">
                             {t("leaderboard.judge")}
@@ -616,8 +630,8 @@ export default function Leaderboard() {
                           </div>
                         </th>
                         <th
-                          className="py-3 px-4 text-right font-medium cursor-pointer hover:text-foreground"
-                          onClick={() => handleSort("size")}
+                          className="py-3 px-4 text-right font-medium cursor-pointer hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          {...sortHeaderProps("size")}
                         >
                           <div className="inline-flex items-center gap-1 justify-end">
                             {t("leaderboard.size")}

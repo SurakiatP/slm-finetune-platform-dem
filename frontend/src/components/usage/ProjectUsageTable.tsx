@@ -35,7 +35,7 @@ export function ProjectUsageTable({ projectId }: { projectId: string }) {
       <EngineEmptyState
         icon={Coins}
         title={t("common.error")}
-        hint="Could not load usage for this project. Try refreshing the page."
+        hint={t("usagePage.projectLoadError")}
       />
     );
   }
@@ -51,10 +51,10 @@ export function ProjectUsageTable({ projectId }: { projectId: string }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Model</TableHead>
-                <TableHead>Stage</TableHead>
-                <TableHead className="text-right">Prompt tokens</TableHead>
-                <TableHead className="text-right">Completion tokens</TableHead>
+                <TableHead>{t("usagePage.colModel")}</TableHead>
+                <TableHead>{t("usagePage.colStage")}</TableHead>
+                <TableHead className="text-right">{t("usagePage.promptTokens")}</TableHead>
+                <TableHead className="text-right">{t("usagePage.completionTokens")}</TableHead>
                 <TableHead className="text-right">{t("usage.cost")}</TableHead>
                 <TableHead>{t("activity.when")}</TableHead>
               </TableRow>
@@ -79,7 +79,7 @@ export function ProjectUsageTable({ projectId }: { projectId: string }) {
                       <span className="inline-flex items-center justify-end gap-1.5">
                         <span className="text-muted-foreground">—</span>
                         <Badge variant="outline" className="text-[10px]">
-                          Unpriced
+                          {t("usagePage.unpriced")}
                         </Badge>
                       </span>
                     ) : (
@@ -98,7 +98,7 @@ export function ProjectUsageTable({ projectId }: { projectId: string }) {
             <EngineEmptyState
               icon={Coins}
               title={t("usage.empty")}
-              hint="Rows appear here once SDG generation or evaluation runs make calls to OpenRouter for this project."
+              hint={t("usagePage.projectEmptyHint")}
             />
           </div>
         )}

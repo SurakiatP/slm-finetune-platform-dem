@@ -30,17 +30,24 @@ export function formatDateTime(iso: string | null | undefined): string {
   })
 }
 
+/** UI locale, following the `<html lang>` that LanguageProvider maintains. */
+function uiLocale(): string {
+  const lang = typeof document === 'undefined' ? '' : document.documentElement.lang
+  return lang === 'th' ? 'th-TH' : 'en'
+}
+
 export function formatRelativeTime(iso: string | null | undefined): string {
   if (!iso) return '—'
   const diffMs = Date.now() - new Date(iso).getTime()
   const sec = Math.round(diffMs / 1000)
-  if (sec < 60) return 'just now'
+  const rtf = new Intl.RelativeTimeFormat(uiLocale(), { numeric: 'auto', style: 'short' })
+  if (sec < 60) return rtf.format(0, 'second')
   const min = Math.round(sec / 60)
-  if (min < 60) return `${min}m ago`
+  if (min < 60) return rtf.format(-min, 'minute')
   const hr = Math.round(min / 60)
-  if (hr < 24) return `${hr}h ago`
+  if (hr < 24) return rtf.format(-hr, 'hour')
   const day = Math.round(hr / 24)
-  if (day < 30) return `${day}d ago`
+  if (day < 30) return rtf.format(-day, 'day')
   return formatDateTime(iso)
 }
 
@@ -69,4 +76,12 @@ export function formatUsd(value: string | null | undefined, digits = 4): string 
   const floor = 10 ** -digits
   if (n > 0 && n < floor) return `< $${floor.toFixed(digits)}`
   return `$${n.toFixed(digits)}`
+}
+
+/** Ollama tags are namespaced by owner (`<owner-uuid>/<name>` or `slm/<id>`);
+ *  drop the namespace for display. The full tag is still what the API needs. */
+export function displayModelTag(tag: string | null | undefined): string {
+  if (!tag) return '—'
+  const slash = tag.lastIndexOf('/')
+  return slash >= 0 ? tag.slice(slash + 1) : tag
 }

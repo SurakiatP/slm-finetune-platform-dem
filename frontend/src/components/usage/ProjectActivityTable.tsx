@@ -8,16 +8,55 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useProjectActivity } from "@/hooks/queries";
+import { useOptionalAuth } from "@/contexts/AuthContext";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { formatDateTime, shortId } from "@/lib/format";
 
 const PAGE_SIZE = 25;
 
+const RESOURCE_KEYS: Record<string, string> = {
+  project: "activity.resource.project",
+  dataset: "activity.resource.dataset",
+  training: "activity.resource.training",
+  model: "activity.resource.model",
+  export: "activity.resource.export",
+  evaluation: "activity.resource.evaluation",
+  deployment: "activity.resource.deployment",
+};
+
+const VERB_KEYS: Record<string, string> = {
+  create: "activity.verb.create",
+  created: "activity.verb.create",
+  submit: "activity.verb.submit",
+  start: "activity.verb.submit",
+  update: "activity.verb.update",
+  delete: "activity.verb.delete",
+  cancel: "activity.verb.cancel",
+  completed: "activity.verb.completed",
+  failed: "activity.verb.failed",
+  upload: "activity.verb.upload",
+  generate: "activity.verb.generate",
+};
+
 /** Audit trail for one project — actor, action, target — newest first,
  *  paginated via the `limit`/`offset` the `useProjectActivity` hook supports. */
 export function ProjectActivityTable({ projectId }: { projectId: string }) {
   const { t } = useLanguage();
+  const auth = useOptionalAuth();
   const [offset, setOffset] = useState(0);
+  // Audit codes look like `export.failed`; render them as words, keeping the
+  // raw code available as a tooltip for support.
+  const describeAction = (action: string) => {
+    const [resource, ...rest] = action.split(".");
+    const verb = rest.join(".");
+    const resourceLabel = RESOURCE_KEYS[resource] ? t(RESOURCE_KEYS[resource]) : resource.replace(/_/g, " ");
+    const verbLabel = VERB_KEYS[verb] ? t(VERB_KEYS[verb]) : verb.replace(/[._]/g, " ");
+    return verb ? `${resourceLabel} · ${verbLabel}` : resourceLabel;
+  };
+  const describeActor = (actorId: string | null) => {
+    if (!actorId) return t("activity.anonymous");
+    return auth?.user?.id === actorId ? t("activity.you") : shortId(actorId);
+  };
   const { data, isLoading, isError } = useProjectActivity(projectId, { limit: PAGE_SIZE, offset });
 
   if (isLoading && !data) {
@@ -35,7 +74,7 @@ export function ProjectActivityTable({ projectId }: { projectId: string }) {
       <EngineEmptyState
         icon={History}
         title={t("common.error")}
-        hint="Could not load activity for this project. Try refreshing the page."
+        hint={t("activity.loadError")}
       />
     );
   }
@@ -54,7 +93,7 @@ export function ProjectActivityTable({ projectId }: { projectId: string }) {
                 <TableHead>{t("activity.actor")}</TableHead>
                 <TableHead>{t("activity.action")}</TableHead>
                 <TableHead>{t("activity.target")}</TableHead>
-                <TableHead>Outcome</TableHead>
+                <TableHead>{t("activity.outcome")}</TableHead>
                 <TableHead>{t("activity.when")}</TableHead>
               </TableRow>
             </TableHeader>
@@ -62,14 +101,14 @@ export function ProjectActivityTable({ projectId }: { projectId: string }) {
               {items.map((event) => (
                 <TableRow key={event.id}>
                   <TableCell className="font-mono text-xs text-muted-foreground">
-                    {event.actor_id ? shortId(event.actor_id) : "anonymous"}
+                    {describeActor(event.actor_id)}
                   </TableCell>
-                  <TableCell className="font-mono text-xs text-foreground">{event.action}</TableCell>
+                  <TableCell className="text-xs text-foreground" title={event.action}>{describeAction(event.action)}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {event.resource_type} <span className="font-mono">{shortId(event.resource_id)}</span>
+                    {RESOURCE_KEYS[event.resource_type] ? t(RESOURCE_KEYS[event.resource_type]) : event.resource_type} <span className="font-mono">{shortId(event.resource_id)}</span>
                   </TableCell>
                   <TableCell>
-                    <Badge variant={event.outcome === "success" ? "default" : "destructive"}>{event.outcome}</Badge>
+                    <Badge variant={event.outcome === "success" ? "default" : "destructive"}>{event.outcome === "success" ? t("activity.success") : event.outcome === "failure" ? t("activity.failure") : event.outcome}</Badge>
                   </TableCell>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                     {formatDateTime(event.created_at)}
@@ -83,7 +122,7 @@ export function ProjectActivityTable({ projectId }: { projectId: string }) {
             <EngineEmptyState
               icon={History}
               title={t("activity.empty")}
-              hint="Actions taken on this project — datasets, trainings, exports, evaluations — will appear here."
+              hint={t("activity.emptyHint")}
             />
           </div>
         )}
@@ -92,7 +131,7 @@ export function ProjectActivityTable({ projectId }: { projectId: string }) {
       {hasMultiplePages && data && (
         <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-3">
           <p className="text-xs text-muted-foreground">
-            {data.offset + 1}–{Math.min(data.offset + data.limit, data.total)} of {data.total}
+            {t("activity.range").replace("{from}", String(data.offset + 1)).replace("{to}", String(Math.min(data.offset + data.limit, data.total))).replace("{total}", String(data.total))}
           </p>
           <div className="flex gap-2">
             <Button

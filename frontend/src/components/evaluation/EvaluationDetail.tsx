@@ -97,7 +97,7 @@ export function EvaluationDetail({ evaluationId, modelName, datasetName }: Evalu
             )}
           </div>
           <div className="text-sm text-foreground">
-            <span className="text-muted-foreground">Model:</span> {modelName ?? shortId(evaluation.model_artifact_id)}
+            <span className="text-muted-foreground">{t("evalDetail.model")}:</span> {modelName ?? shortId(evaluation.model_artifact_id)}
             <span className="mx-2 text-muted-foreground">·</span>
             <span className="text-muted-foreground">{t("eval.dataset")}:</span>{" "}
             {datasetName ?? shortId(evaluation.dataset_id)}
@@ -152,7 +152,7 @@ export function EvaluationDetail({ evaluationId, modelName, datasetName }: Evalu
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">
-            {terminal ? "No scalar metrics reported." : "Metrics appear once the evaluation completes."}
+            {terminal ? t("evalDetail.noMetrics") : t("evalDetail.metricsPending")}
           </p>
         )}
       </div>
@@ -199,24 +199,24 @@ export function EvaluationDetail({ evaluationId, modelName, datasetName }: Evalu
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Timing
+            {t("evalDetail.timing")}
           </CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-2 gap-3 pt-0 text-xs sm:grid-cols-4">
           <div>
-            <p className="text-muted-foreground">Created</p>
+            <p className="text-muted-foreground">{t("evalDetail.created")}</p>
             <p className="text-foreground">{formatDateTime(evaluation.created_at)}</p>
           </div>
           <div>
-            <p className="text-muted-foreground">Started</p>
+            <p className="text-muted-foreground">{t("evalDetail.started")}</p>
             <p className="text-foreground">{formatDateTime(evaluation.started_at)}</p>
           </div>
           <div>
-            <p className="text-muted-foreground">Ended</p>
+            <p className="text-muted-foreground">{t("evalDetail.ended")}</p>
             <p className="text-foreground">{formatDateTime(evaluation.ended_at)}</p>
           </div>
           <div>
-            <p className="text-muted-foreground">Duration</p>
+            <p className="text-muted-foreground">{t("evalDetail.duration")}</p>
             <p className="text-foreground">{formatDuration(evaluation.started_at, evaluation.ended_at)}</p>
           </div>
         </CardContent>

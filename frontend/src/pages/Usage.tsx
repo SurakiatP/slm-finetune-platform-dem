@@ -14,7 +14,7 @@ export default function Usage() {
           <div>
             <h1 className="text-2xl font-bold text-foreground">{t("usage.title")}</h1>
             <p className="text-sm text-muted-foreground">
-              OpenRouter token usage and cost for the current UTC calendar month.
+              {t("usagePage.subtitle")}
             </p>
           </div>
         </FadeIn>
