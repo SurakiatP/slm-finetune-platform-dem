@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install \
         "mlflow==2.19.0" \
         "psycopg2-binary==2.9.10" \
-        "boto3>=1.35.0"
+        "boto3>=1.35.0" \
+        # mlflow 2.19 imports FallbackAsyncAdaptedQueuePool, gone in SQLAlchemy 2.1.
+        "sqlalchemy<2.1"
 
 EXPOSE 5000
