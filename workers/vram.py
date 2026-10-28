@@ -51,11 +51,33 @@ def _cuda_free_total_gb() -> tuple[float, float] | None:
         if not torch.cuda.is_available():
             return None
         free_bytes, total_bytes = torch.cuda.mem_get_info()
+        integrated = bool(torch.cuda.get_device_properties(0).is_integrated)
     except Exception:  # noqa: BLE001 — torch missing, driver hiccup, etc.
         return None
 
     gib = 1024**3
+    if integrated:
+        # Unified memory (GB10 / DGX Spark): cudaMemGetInfo omits reclaimable
+        # page cache, so it reads near zero on a busy host. MemAvailable is
+        # what the GPU can actually get.
+        available = _mem_available_bytes()
+        if available is not None:
+            free_bytes = available
     return free_bytes / gib, total_bytes / gib
+
+
+_MEMINFO_PATH = "/proc/meminfo"
+
+
+def _mem_available_bytes() -> int | None:
+    try:
+        with open(_MEMINFO_PATH) as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return None
 
 
 def preflight_gpu_vram(*, job_kind: str) -> None:

@@ -89,6 +89,41 @@ class TestPreflightDecisionTable:
         vram_module.preflight_gpu_vram(job_kind="training")  # must not raise
 
 
+class TestUnifiedMemoryFreeReading:
+    """GB10 / DGX Spark share RAM with the CPU. cudaMemGetInfo there leaves
+    out reclaimable page cache (gx10 showed 0.9 GiB "free" with 20 GiB
+    MemAvailable), so integrated GPUs must read MemAvailable instead."""
+
+    @staticmethod
+    def _fake_torch(*, integrated: bool) -> SimpleNamespace:
+        gib = 1024**3
+        return SimpleNamespace(
+            cuda=SimpleNamespace(
+                is_available=lambda: True,
+                mem_get_info=lambda: (1 * gib, 120 * gib),
+                get_device_properties=lambda _i: SimpleNamespace(is_integrated=integrated),
+            )
+        )
+
+    def test_integrated_gpu_uses_memavailable(self, monkeypatch, tmp_path) -> None:
+        meminfo = tmp_path / "meminfo"
+        meminfo.write_text("MemTotal: 125507892 kB\nMemAvailable: 20971520 kB\n")
+        monkeypatch.setitem(__import__("sys").modules, "torch", self._fake_torch(integrated=True))
+        monkeypatch.setattr(vram_module, "_MEMINFO_PATH", str(meminfo))
+
+        free_gb, total_gb = vram_module._cuda_free_total_gb()
+
+        assert free_gb == pytest.approx(20.0)
+        assert total_gb == pytest.approx(120.0)
+
+    def test_discrete_gpu_keeps_mem_get_info(self, monkeypatch) -> None:
+        monkeypatch.setitem(__import__("sys").modules, "torch", self._fake_torch(integrated=False))
+
+        free_gb, _ = vram_module._cuda_free_total_gb()
+
+        assert free_gb == pytest.approx(1.0)
+
+
 # =============================================================================
 # (b) message contract: both message sources classify as "oom"
 # =============================================================================
