@@ -31,9 +31,18 @@ RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /app/llama.cpp
     && cp build/bin/llama-quantize /app/llama.cpp/llama-quantize \
     && rm -rf build
 
-RUN pip install --upgrade pip \
-    && pip install gguf transformers accelerate peft hf_transfer "datasets==4.3.0" "trl==0.26.1" \
-    && pip install --no-deps unsloth unsloth_zoo bitsandbytes
+# Pinned as a set: unpinned latest (transformers 5.x / huggingface_hub 1.x /
+# unsloth 2026.10) fails at import ("cannot import name ResolvedRevision").
+# This combo was verified on gx10 (GB10 capability 12.1) on 2026-10-28.
+# Appended to NGC's own PIP_CONSTRAINT file so the later `.[eval]` install
+# can't upgrade them either.
+RUN printf '%s\n' "transformers==4.57.1" "huggingface_hub<1.0" "peft==0.18.0" \
+        "trl==0.24.0" "datasets==4.3.0" >> "$PIP_CONSTRAINT" \
+    && pip install --upgrade pip \
+    && pip install gguf accelerate hf_transfer sentencepiece msgspec \
+        transformers huggingface_hub peft trl datasets \
+    && pip install --no-deps "unsloth==2025.11.1" "unsloth_zoo==2025.11.1" \
+        bitsandbytes cut_cross_entropy
 
 # App deps without the `training` extra: torch>=2.5.1 there would let pip
 # swap NGC's CUDA torch for the CPU wheel. NGC's PIP_CONSTRAINT pins torch too.
