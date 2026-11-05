@@ -286,7 +286,7 @@ class TestInferenceCallerDispatch:
             lambda *_a, **_kw: calls.append("called"),
         )
 
-        async def _fake_current_user_optional(_authorization):
+        async def _fake_current_user_optional(_authorization, _db):
             return None
 
         monkeypatch.setattr(

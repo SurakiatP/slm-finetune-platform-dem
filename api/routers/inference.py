@@ -79,7 +79,7 @@ async def inference_caller(
         return InferenceCaller(
             user=CurrentUser(id=key.owner_id, email=None), api_key_id=str(key.id)
         )
-    user = await require_user(await current_user_optional(authorization))
+    user = await require_user(await current_user_optional(authorization, db))
     return InferenceCaller(user=user)
 
 
