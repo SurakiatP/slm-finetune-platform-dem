@@ -1,5 +1,5 @@
 import type { ErrorBody } from '@/api/types'
-import { supabase } from '@/integrations/supabase/client'
+import { getAccessToken } from '@/auth/keycloak'
 
 /** Base URL for the API; empty in same-origin deployments so the proxy handles /api. */
 const API_BASE: string = (
@@ -69,8 +69,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   const isPublicProbe = path === '/health' || path === '/ready'
   if (!isMockMode && !isPublicProbe) {
-    const { data: { session } } = await supabase.auth.getSession()
-    const token = session?.access_token
+    const token = await getAccessToken()
     if (!token) {
       throw new ApiError(401, {
         detail: 'Please sign in before using the fine-tuning engine.',
@@ -104,8 +103,7 @@ export const api = {
   async postStream(path: string, body: unknown, signal: AbortSignal): Promise<Response> {
     const headers = new Headers({ 'Content-Type': 'application/json' })
     if (!isMockMode) {
-      const { data: { session } } = await supabase.auth.getSession()
-      const token = session?.access_token
+      const token = await getAccessToken()
       if (!token) throw new ApiError(401, { detail: 'Please sign in before using the fine-tuning engine.', code: 'missing_session' })
       headers.set('Authorization', `Bearer ${token}`)
     }
@@ -143,8 +141,7 @@ export const api = {
   async getBlob(path: string): Promise<{ blob: Blob; filename: string | null }> {
     const headers = new Headers()
     if (!isMockMode) {
-      const { data: { session } } = await supabase.auth.getSession()
-      const token = session?.access_token
+      const token = await getAccessToken()
       if (!token) {
         throw new ApiError(401, {
           detail: 'Please sign in before using the fine-tuning engine.',
