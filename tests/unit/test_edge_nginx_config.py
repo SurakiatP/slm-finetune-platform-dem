@@ -624,7 +624,7 @@ def test_the_storage_vhost_has_its_own_dedicated_hostname() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/ready", "/metrics"])
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/metrics"])
 def test_the_api_docs_and_ready_are_not_proxied(path: str) -> None:
     """`api/main.py` serves these without auth. Under a public-internet
     threat model the spec is a map of every endpoint including the ones just
@@ -645,3 +645,10 @@ def test_the_api_docs_and_ready_are_not_proxied(path: str) -> None:
             "off the public surface; if that changed, update ADR-011 and "
             "this test together."
         )
+
+
+def test_ready_is_proxied_with_its_own_tight_rate_limit() -> None:
+    """/ready was opened 2026-11-06 (frontend "Engine offline" badge). It probes
+    four services per call, so it must keep the dedicated `ready` zone."""
+    blocks = dict(_app_proxy_locations())
+    assert "limit_req zone=ready" in blocks["= /ready"]

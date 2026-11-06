@@ -253,6 +253,11 @@ frontend changes land and the flag can flip for real.
 
 ### The interactive API docs are not exposed at the edge
 
+> **Update 2026-11-06:** `/ready` is now proxied (`location = /ready`, own `ready` zone at
+> 2r/s) so the frontend's "Engine offline" badge reflects real readiness. The amplification
+> concern below still applies and is bounded by that rate limit only. `/docs`, `/redoc`,
+> `/openapi.json` and `/metrics` stay off the edge.
+
 `/docs`, `/redoc`, `/openapi.json` and `/ready` are served by `api/main.py`
 without authentication, and none of them get a `location` block in
 `docker/edge.nginx.conf`. They fall through to the SPA route and are simply
