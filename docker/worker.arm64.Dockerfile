@@ -53,4 +53,10 @@ COPY api ./api
 COPY ai_engine ./ai_engine
 COPY workers ./workers
 
+# unsloth_zoo sets HF_HUB_ENABLE_HF_TRANSFER=1 on import unless it is already
+# set, and hf_transfer then dies with "no permits available" while merging
+# the LoRA (export failed 2026-11-05). Kept last so the verified pip layers
+# above stay cached.
+ENV HF_HUB_ENABLE_HF_TRANSFER=0
+
 CMD ["celery", "-A", "workers.celery_app", "worker", "--loglevel=INFO", "--concurrency=1"]
