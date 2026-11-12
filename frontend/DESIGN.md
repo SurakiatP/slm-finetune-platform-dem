@@ -3,27 +3,32 @@ version: alpha
 name: "TuneLab"
 description: "A calm, high-density workspace for turning a training idea into a reliable small-model pipeline."
 colors:
-  background: "#FFFFFF"
-  foreground: "#1B1C22"
-  primary: "#5D4FE5"
-  secondary: "#F3F4F6"
-  muted: "#F3F4F6"
-  mutedForeground: "#6C6F7A"
-  accent: "#F0EFFF"
-  danger: "#F43F3F"
-  success: "#21B45B"
-  warning: "#F59E0B"
-  border: "#E6E7EB"
+  background: "#F3F5F7"
+  card: "#FFFFFF"
+  foreground: "#16202A"
+  primary: "#2563A8"
+  secondary: "#EAEEF2"
+  muted: "#EDF0F3"
+  mutedForeground: "#5F6B78"
+  accent: "#EAF1F9"
+  danger: "#CD2727"
+  success: "#158049"
+  warning: "#C2650A"
+  border: "#E5E9EE"
+  darkBackground: "#0F141A"
+  darkCard: "#171E26"
+  darkPrimary: "#5B9BE0"
 typography:
   sans:
-    fontFamily: "Inter, system-ui, sans-serif"
+    fontFamily: "Inter, IBM Plex Sans Thai, system-ui, sans-serif"
   mono:
     fontFamily: "JetBrains Mono, monospace"
 rounded:
-  DEFAULT: "0.625rem"
-  sm: "0.375rem"
-  md: "0.5rem"
-  lg: "0.625rem"
+  DEFAULT: "0.75rem"
+  sm: "0.5rem"
+  md: "0.625rem"
+  lg: "0.75rem"
+  xl: "1rem"
 spacing:
   page-max: "80rem"
   section-gap: "1.5rem"
@@ -42,7 +47,7 @@ components:
 
 ### Creative North Star
 
-TuneLab should feel like a well-organized model-training notebook: technical details are close at hand, while the next safe action stays unmistakable. The purple signal is reserved for the active stage and primary commit, like a highlighted run in a lab log.
+TuneLab should feel calm and clean: a light grey desk with white cards laid on it. Technical details are close at hand and the next safe action stays unmistakable. One calm blue is the only accent; it marks the primary action, focus and the current menu item. Everything else is grey or near-black, and other colors appear only for status. ("Soft" style, chosen 2026-11-12.)
 
 ### Product context and register
 
@@ -51,30 +56,30 @@ TuneLab should feel like a well-organized model-training notebook: technical det
 - **Locale(s) and language policy:** interface strings follow `LanguageContext`; technical IDs and model names stay verbatim. System font fallback renders Thai where Inter has no glyph.
 - **Usage scene:** desktop-first operational work with occasional narrow-screen review; tasks may take minutes or hours.
 - **Register:** product.
-- **Memorable signature:** restrained violet is the consistent marker of the active pipeline stage, focus, and primary action.
-- **Restraint:** cards, tables, and charts remain quiet, mostly tonal and bordered instead of decorative.
+- **Memorable signature:** borderless white cards with a faint shadow on a grey canvas; one calm blue for action and focus.
+- **Restraint:** no gradients, glows or gradient text; cards, tables, and charts stay quiet and tonal.
 - **Anti-references:** avoid a promotional AI landing-page feel inside the authenticated workspace; avoid treating a fictional metric, unavailable dataset, or local mock as production data.
 - **Token ownership/runtime mapping:** existing runtime CSS variables in `src/index.css` remain canonical (Model B). Tailwind aliases in `tailwind.config.ts` and shared UI components consume them. This file mirrors accepted values; it does not generate CSS.
 
 ## Colors
 
-`primary` maps to `--primary`, `danger` to `--destructive`, and the remaining semantic roles map to their like-named variables in `src/index.css`. Dark mode remaps those variables without changing roles. Violet identifies action and focus; green, amber, and red communicate job outcome with text and icons as well as color. Scrollbars inherit the muted/background and primary roles globally.
+`primary` maps to `--primary`, `danger` to `--destructive`, and the remaining semantic roles map to their like-named variables in `src/index.css`. Dark mode remaps those variables without changing roles. Blue identifies action and focus. The page canvas is `--background` (grey); surfaces are `--card` (white in light mode); green, amber, and red communicate job outcome with text and icons as well as color. Scrollbars inherit the muted/background and primary roles globally.
 
 ## Typography
 
-Inter is the reading and control face. JetBrains Mono is reserved for API paths, model tags, identifiers, and prompt examples. Body text is compact but never smaller than the shared component defaults for editable fields. Thai text uses browser system fallback rather than being forced into a Latin-only face; dense technical strings may wrap rather than silently clip.
+Inter is the reading and control face, with IBM Plex Sans Thai as the Thai fallback (Inter has no Thai glyphs). Thai text (`:lang(th)`) gets a taller 1.65 line height. JetBrains Mono is reserved for API paths, model tags, identifiers, and prompt examples. Card titles are 16px semibold, page titles 30px bold; dense technical strings may wrap rather than silently clip.
 
 ## Layout
 
-Routes use a maximum `80rem` working width and `1.5rem` section rhythm. Cards form responsive grids; detailed model IDs, prompts, and errors wrap. Scroll ownership belongs to the local data surface or dialog body, never a shared route shell. The global scrollbar baseline lives in `src/index.css`.
+The sidebar shares the page canvas (no divider line) and groups links under quiet headings: the build links first, then "Ship" and "Account". The top bar has no border. Routes sit in a centered `80rem` (`max-w-7xl`) column with `1.5rem` section rhythm. Cards form responsive grids; detailed model IDs, prompts, and errors wrap. Scroll ownership belongs to the local data surface or dialog body, never a shared route shell. The global scrollbar baseline lives in `src/index.css`.
 
 ## Elevation & Depth
 
-Borders and subtly differentiated surfaces establish hierarchy. Dialogs and authored select popups use the shared component shadow; ordinary cards do not rely on elevation. Dark mode keeps borders visible rather than adding heavy shadows.
+In light mode, cards have no border and sit on the grey canvas with `shadow-card` (a faint two-layer shadow). Dialogs, menus, popovers and toasts use `shadow-pop`. In dark mode `--shadow-card` is `none` and cards get a 1px `--border` instead. Never use `shadow-lg/xl/2xl` directly.
 
 ## Shapes
 
-Controls and cards share the `0.625rem` radius family through `--radius`; small chips use smaller corners or pills only for compact categorical metadata. Borders are thin and muted.
+Cards and dialogs use `rounded-xl` (16px); buttons, inputs and menus use `rounded-lg` (12px) from `--radius`. Small chips use pills only for compact status or categorical metadata. Borders are thin and muted.
 
 ## Components
 
@@ -111,4 +116,9 @@ Use plain verbs and backend truth: “Run evaluation,” “Cancel generation,�
 - **Do:** show Engine status, availability, and long-running progress as the backend reports it.
 - **Do:** reuse shared UI primitives and semantic token aliases for all product controls.
 - **Don't:** place fictional model results, unsupported models, or invented availability in an Engine-backed route.
-- **Don't:** use violet decoration where it could compete with an active job or primary action.
+- **Don't:** use blue decoration where it could compete with an active job or primary action.
+- **Don't:** add gradients, glow, gradient text, or a second accent color.
+
+## Keycloak login theme
+
+The `tunelab` login theme (`docker/keycloak/themes/tunelab/login`) extends Keycloak's `keycloak.v2` pages and restyles them with the same palette, copied as plain values into `resources/css/tunelab.css`. Keep the two in sync when the palette changes. Dark mode follows the app's saved choice (`localStorage.theme`, readable because Keycloak is served on the same origin under `/auth`), falling back to the OS setting. The realm offers English and Thai.

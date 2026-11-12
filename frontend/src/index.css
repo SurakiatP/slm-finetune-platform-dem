@@ -1,98 +1,106 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
+  /* Soft theme: grey canvas, white cards, one calm blue accent.
+   * Colour outside the accent is reserved for status. */
   :root {
-    --background: 0 0% 100%;
-    --foreground: 228 12% 12%;
+    --background: 210 20% 96%;
+    --foreground: 210 31% 13%;
 
     --card: 0 0% 100%;
-    --card-foreground: 228 12% 12%;
+    --card-foreground: 210 31% 13%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 228 12% 12%;
+    --popover-foreground: 210 31% 13%;
 
-    --primary: 243 75% 59%;
+    --primary: 212 64% 40%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 220 14% 96%;
-    --secondary-foreground: 228 12% 12%;
+    --secondary: 210 18% 93%;
+    --secondary-foreground: 210 31% 13%;
 
-    --muted: 220 14% 96%;
-    --muted-foreground: 220 9% 46%;
+    --muted: 210 18% 94%;
+    --muted-foreground: 211 12% 41%;
 
-    --accent: 243 75% 97%;
-    --accent-foreground: 243 75% 59%;
+    --accent: 212 62% 95%;
+    --accent-foreground: 212 64% 36%;
 
-    --destructive: 0 84% 60%;
+    --destructive: 0 68% 48%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 220 13% 91%;
-    --input: 220 13% 91%;
-    --ring: 243 75% 59%;
+    --border: 210 20% 91%;
+    --input: 210 18% 88%;
+    --ring: 212 64% 40%;
 
-    --radius: 0.625rem;
+    --radius: 0.75rem;
 
-    --success: 142 71% 45%;
+    --success: 149 71% 29%;
     --success-foreground: 0 0% 100%;
-    --warning: 38 92% 50%;
+    --warning: 32 90% 40%;
     --warning-foreground: 0 0% 100%;
 
-    --sidebar-background: 0 0% 99%;
-    --sidebar-foreground: 228 12% 12%;
-    --sidebar-primary: 243 75% 59%;
+    --shadow-card: 0 1px 2px hsl(210 31% 13% / 0.04), 0 4px 16px hsl(210 31% 13% / 0.05);
+    --shadow-pop: 0 2px 6px hsl(210 31% 13% / 0.06), 0 12px 32px hsl(210 31% 13% / 0.10);
+
+    --sidebar-background: 210 20% 96%;
+    --sidebar-foreground: 210 31% 13%;
+    --sidebar-primary: 212 64% 40%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 243 75% 97%;
-    --sidebar-accent-foreground: 243 75% 59%;
-    --sidebar-border: 220 13% 91%;
-    --sidebar-ring: 243 75% 59%;
+    --sidebar-accent: 0 0% 100%;
+    --sidebar-accent-foreground: 210 31% 13%;
+    --sidebar-border: 210 20% 91%;
+    --sidebar-ring: 212 64% 40%;
   }
 
   .dark {
-    --background: 228 12% 8%;
-    --foreground: 220 14% 96%;
+    --background: 213 27% 8%;
+    --foreground: 210 24% 92%;
 
-    --card: 228 12% 11%;
-    --card-foreground: 220 14% 96%;
+    --card: 212 25% 12%;
+    --card-foreground: 210 24% 92%;
 
-    --popover: 228 12% 11%;
-    --popover-foreground: 220 14% 96%;
+    --popover: 212 25% 13%;
+    --popover-foreground: 210 24% 92%;
 
-    --primary: 243 75% 65%;
-    --primary-foreground: 0 0% 100%;
+    --primary: 211 68% 62%;
+    --primary-foreground: 210 39% 7%;
 
-    --secondary: 228 12% 16%;
-    --secondary-foreground: 220 14% 96%;
+    --secondary: 212 22% 17%;
+    --secondary-foreground: 210 24% 92%;
 
-    --muted: 228 12% 16%;
-    --muted-foreground: 220 9% 56%;
+    --muted: 212 22% 16%;
+    --muted-foreground: 210 13% 63%;
 
-    --accent: 243 75% 15%;
-    --accent-foreground: 243 75% 75%;
+    --accent: 212 37% 18%;
+    --accent-foreground: 211 70% 74%;
 
-    --destructive: 0 62% 30%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive: 0 70% 62%;
+    --destructive-foreground: 210 39% 7%;
 
-    --border: 228 12% 18%;
-    --input: 228 12% 18%;
-    --ring: 243 75% 65%;
+    --border: 212 21% 18%;
+    --input: 212 21% 22%;
+    --ring: 211 68% 62%;
 
-    --success: 142 71% 35%;
-    --success-foreground: 0 0% 100%;
-    --warning: 38 92% 40%;
-    --warning-foreground: 0 0% 100%;
+    --success: 151 50% 53%;
+    --success-foreground: 210 39% 7%;
+    --warning: 38 85% 58%;
+    --warning-foreground: 210 39% 7%;
 
-    --sidebar-background: 228 12% 6%;
-    --sidebar-foreground: 220 14% 96%;
-    --sidebar-primary: 243 75% 65%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 243 75% 15%;
-    --sidebar-accent-foreground: 243 75% 75%;
-    --sidebar-border: 228 12% 18%;
-    --sidebar-ring: 243 75% 65%;
+    --shadow-card: none;
+    --shadow-pop: 0 12px 32px hsl(0 0% 0% / 0.45);
+
+    --sidebar-background: 213 27% 8%;
+    --sidebar-foreground: 210 24% 92%;
+    --sidebar-primary: 211 68% 62%;
+    --sidebar-primary-foreground: 210 39% 7%;
+    --sidebar-accent: 212 37% 18%;
+    --sidebar-accent-foreground: 210 24% 92%;
+    --sidebar-border: 212 21% 18%;
+    --sidebar-ring: 211 68% 62%;
   }
 }
 
@@ -107,6 +115,10 @@
   }
   body {
     @apply bg-background text-foreground font-sans antialiased;
+  }
+  /* Thai script needs taller lines than Latin to keep vowel marks clear. */
+  :lang(th) body {
+    line-height: 1.65;
   }
 }
 
@@ -135,8 +147,9 @@
 }
 
 @layer utilities {
+  /* Kept for existing call sites; the soft theme uses plain accent text. */
   .text-gradient {
-    @apply bg-clip-text text-transparent bg-gradient-to-r from-primary to-[hsl(280,75%,59%)];
+    @apply text-primary;
   }
   .glass {
     @apply bg-background/80 backdrop-blur-xl border border-border/50;

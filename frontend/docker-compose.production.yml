@@ -53,6 +53,7 @@ services:
       TUNELAB_SELFHOSTED_ORIGIN: ${SELFHOSTED_ORIGIN:?Set the public HTTPS self-hosted frontend origin}
     volumes:
       - ./docker/keycloak/tunelab-realm.json:/opt/keycloak/data/import/tunelab-realm.json:ro
+      - ./docker/keycloak/themes/tunelab:/opt/keycloak/themes/tunelab:ro
     depends_on:
       postgres:
         condition: service_healthy

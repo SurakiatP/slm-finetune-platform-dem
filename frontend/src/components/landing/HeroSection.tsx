@@ -63,7 +63,7 @@ const HeroSection = () => {
           transition={{ duration: 0.8, delay: 0.5 }}
           className="mt-16 mx-auto max-w-3xl"
         >
-          <div className="rounded-xl border bg-card shadow-xl overflow-hidden">
+          <div className="rounded-xl border bg-card shadow-pop overflow-hidden">
             <div className="flex items-center gap-2 border-b px-4 py-3">
               <div className="h-3 w-3 rounded-full bg-destructive/60" />
               <div className="h-3 w-3 rounded-full bg-warning/60" />

@@ -32,3 +32,6 @@ dist-ssr
 
 # Supabase CLI local state
 supabase/.temp/
+
+# local design tooling
+.superpowers/

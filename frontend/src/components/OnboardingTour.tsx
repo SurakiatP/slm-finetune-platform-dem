@@ -48,7 +48,7 @@ export function OnboardingTour() {
     <div className="fixed inset-0 z-[100]">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={handleSkip} />
       <div className="absolute inset-0 flex items-center justify-center p-4">
-        <Card className="relative w-full max-w-md shadow-2xl border-primary/20 animate-in fade-in zoom-in-95 duration-300">
+        <Card className="relative w-full max-w-md shadow-pop animate-in fade-in zoom-in-95 duration-300">
           <Button variant="ghost" size="icon" className="absolute top-2 right-2 h-7 w-7" onClick={handleClose}>
             <X className="h-4 w-4" />
           </Button>
