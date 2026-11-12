@@ -36,10 +36,13 @@ export default function Templates() {
   // Server-side filtering preserves the Engine's availability and ratings.
   // Waiting for composition to end prevents partial IME queries.
   useEffect(() => {
-    if (isComposing) return;
-    const timer = window.setTimeout(() => setSearch(searchInput.trim()), 300);
+    const next = searchInput.trim();
+    // Skip when the URL already matches, so a new setSearch identity after a
+    // navigation does not schedule a redundant URL update.
+    if (isComposing || next === search) return;
+    const timer = window.setTimeout(() => setSearch(next), 300);
     return () => window.clearTimeout(timer);
-  }, [isComposing, searchInput]);
+  }, [isComposing, searchInput, search, setSearch]);
 
   const query = useMemo(() => ({
     category: category !== "all" && category !== "featured" ? category : undefined,

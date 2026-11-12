@@ -44,5 +44,5 @@ See the [validation report](docs/postgresql-auth-validation.md) for local browse
 
 The application uses React, TypeScript, Vite, Tailwind and shared shadcn/ui
 components. Login and account-security forms are hosted by Keycloak. Old
-`supabase/` migrations remain only as historical migration input; no Supabase
+`supabase/migrations` remain only as historical migration input; no Supabase
 SDK is imported by the active frontend.

@@ -29,3 +29,6 @@ dist-ssr
 !.env.example
 !.env.mock
 !.env.production.example
+
+# Supabase CLI local state
+supabase/.temp/

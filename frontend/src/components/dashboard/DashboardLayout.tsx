@@ -9,6 +9,17 @@ import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { OnboardingTour } from "@/components/OnboardingTour";
 import { useRouteTitle } from "@/hooks/useRouteTitle";
 import { BackendStatus } from "@/components/engine/BackendStatus";
+import { Suspense } from "react";
+import { Loader2 } from "lucide-react";
+
+function PageLoading() {
+  return (
+    <div className="flex min-h-[40vh] items-center justify-center" role="status" aria-live="polite">
+      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-hidden="true" />
+      <span className="sr-only">Loading…</span>
+    </div>
+  );
+}
 
 function AnimatedOutlet() {
   const location = useLocation();
@@ -23,7 +34,8 @@ function AnimatedOutlet() {
         exit={{ opacity: 0, y: -8 }}
         transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
       >
-        {outlet}
+        {/* Dashboard pages are lazy-loaded; keep the shell visible while a page chunk loads. */}
+        <Suspense fallback={<PageLoading />}>{outlet}</Suspense>
       </motion.div>
     </AnimatePresence>
   );

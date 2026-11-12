@@ -1,3 +1,4 @@
+import { lazy } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -16,25 +17,27 @@ import ResetPassword from "./pages/ResetPassword";
 import MfaChallenge from "./pages/MfaChallenge";
 import NotFound from "./pages/NotFound";
 import DashboardLayout from "./components/dashboard/DashboardLayout";
-import Dashboard from "./pages/Dashboard";
-import Projects from "./pages/Projects";
-import ProjectDetail from "./pages/ProjectDetail";
-import Models from "./pages/Models";
-import NewProject from "./pages/NewProject";
-import TrainingMonitor from "./pages/TrainingMonitor";
-import Playground from "./pages/Playground";
-import ModelDetail from "./pages/ModelDetail";
-import ModelComparison from "./pages/ModelComparison";
-import DatasetInsights from "./pages/DatasetInsights";
-import Datasets from "./pages/Datasets";
-import Evaluations from "./pages/Evaluations";
-import Usage from "./pages/Usage";
-import Settings from "./pages/Settings";
-import ApiKeysPage from "./pages/ApiKeys";
-import Analytics from "./pages/Analytics";
-import Deployment from "./pages/Deployment";
-import Leaderboard from "./pages/Leaderboard";
-import Templates from "./pages/Templates";
+
+// Dashboard pages load on demand to keep the initial bundle small.
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Projects = lazy(() => import("./pages/Projects"));
+const ProjectDetail = lazy(() => import("./pages/ProjectDetail"));
+const Models = lazy(() => import("./pages/Models"));
+const NewProject = lazy(() => import("./pages/NewProject"));
+const TrainingMonitor = lazy(() => import("./pages/TrainingMonitor"));
+const Playground = lazy(() => import("./pages/Playground"));
+const ModelDetail = lazy(() => import("./pages/ModelDetail"));
+const ModelComparison = lazy(() => import("./pages/ModelComparison"));
+const DatasetInsights = lazy(() => import("./pages/DatasetInsights"));
+const Datasets = lazy(() => import("./pages/Datasets"));
+const Evaluations = lazy(() => import("./pages/Evaluations"));
+const Usage = lazy(() => import("./pages/Usage"));
+const Settings = lazy(() => import("./pages/Settings"));
+const ApiKeysPage = lazy(() => import("./pages/ApiKeys"));
+const Analytics = lazy(() => import("./pages/Analytics"));
+const Deployment = lazy(() => import("./pages/Deployment"));
+const Leaderboard = lazy(() => import("./pages/Leaderboard"));
+const Templates = lazy(() => import("./pages/Templates"));
 
 const queryClient = new QueryClient();
 
@@ -45,8 +48,8 @@ const App = () => (
         <TooltipProvider>
           <Toaster />
           <Sonner />
-          <BrowserRouter>
-            <AuthProvider>
+          <AuthProvider>
+            <BrowserRouter>
               <Routes>
                 <Route path="/" element={<Index />} />
                 <Route path="/login" element={<Login />} />
@@ -79,8 +82,8 @@ const App = () => (
                 </Route>
                 <Route path="*" element={<NotFound />} />
               </Routes>
-            </AuthProvider>
-          </BrowserRouter>
+            </BrowserRouter>
+          </AuthProvider>
         </TooltipProvider>
       </QueryClientProvider>
     </LanguageProvider>

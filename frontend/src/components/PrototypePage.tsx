@@ -27,9 +27,8 @@ export function PrototypePage({ title, description }: PrototypePageProps) {
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              The Engine does not expose a production API for this feature yet. Controls that
-              previously wrote business data to Supabase have been disabled until a backend
-              contract is available.
+              The Engine does not expose a production API for this feature yet. Its controls
+              stay disabled until a backend contract is available.
             </p>
           </CardContent>
         </Card>
