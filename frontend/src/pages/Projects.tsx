@@ -1,5 +1,4 @@
 import { useUrlState } from "@/hooks/useUrlState";
-import { useState } from "react";
 import { Search } from "lucide-react";
 
 import { NewProjectDialog } from "@/components/dashboard/NewProjectDialog";

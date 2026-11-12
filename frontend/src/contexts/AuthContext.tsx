@@ -44,6 +44,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 }
 
 /** Like useAuth, but returns null outside an AuthProvider (e.g. isolated component tests). */
+// Hooks live beside their provider by design; fast refresh then reloads this module fully.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useOptionalAuth() {
   return useContext(AuthContext) ?? null;
 }
