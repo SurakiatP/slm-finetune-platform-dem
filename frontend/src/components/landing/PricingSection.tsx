@@ -63,7 +63,7 @@ const PricingSection = () => {
               whileHover={plan.highlighted ? { scale: 1.03 } : undefined}
               className={`rounded-xl border p-6 flex flex-col ${
                 plan.highlighted
-                  ? "border-primary shadow-lg ring-1 ring-primary/20 relative"
+                  ? "border-primary shadow-card ring-1 ring-primary/20 relative"
                   : "bg-card"
               }`}
             >

@@ -29,10 +29,10 @@ function AnimatedOutlet() {
     <AnimatePresence mode="wait">
       <motion.div
         key={location.pathname}
-        initial={{ opacity: 0, y: 8 }}
+        initial={{ opacity: 0, y: 4 }}
         animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -8 }}
-        transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.18, ease: [0.25, 0.1, 0.25, 1] }}
       >
         {/* Dashboard pages are lazy-loaded; keep the shell visible while a page chunk loads. */}
         <Suspense fallback={<PageLoading />}>{outlet}</Suspense>
@@ -49,7 +49,7 @@ export default function DashboardLayout() {
       <div className="min-h-screen flex w-full">
         <AppSidebar />
         <div className="flex-1 flex flex-col min-w-0">
-          <header className="h-14 flex items-center border-b border-border px-4 bg-background sticky top-0 z-10">
+          <header className="sticky top-0 z-10 flex h-14 items-center bg-background/90 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/75">
             <SidebarTrigger className="mr-4" />
             <span className="text-sm font-medium text-muted-foreground">SLM Fine-Tuning Platform</span>
             <div className="ml-auto flex items-center gap-1">
@@ -60,8 +60,10 @@ export default function DashboardLayout() {
               <ThemeToggle />
             </div>
           </header>
-          <main className="flex-1 p-6 overflow-auto">
+          <main className="flex-1 overflow-auto px-6 pb-10 pt-2">
+            <div className="mx-auto w-full max-w-7xl">
             <AnimatedOutlet />
+            </div>
           </main>
         </div>
       </div>

@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
-import { navItems } from "./navItems";
+import { navGroups, navItems } from "./navItems";
 
 
 export function AppSidebar() {
@@ -33,43 +33,50 @@ export function AppSidebar() {
 
   return (
     <Sidebar collapsible="icon">
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel className="px-3 py-2">
-            <div className="flex items-center gap-2">
-              <Zap className="h-5 w-5 text-primary" />
-              <span className="font-bold text-sm text-foreground">SLM Studio</span>
-            </div>
-          </SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {navItems.map((item) => (
-                <SidebarMenuItem key={item.titleKey}>
-                  <SidebarMenuButton asChild tooltip={t(item.titleKey)}>
-                    <NavLink
-                      to={item.url}
-                      className="flex items-center gap-3 px-3 py-2 rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
-                      activeClassName="bg-accent text-accent-foreground font-medium"
-                    >
-                      <item.icon className="h-4 w-4 shrink-0" />
-                      <span>{t(item.titleKey)}</span>
-                    </NavLink>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+      <SidebarContent className="gap-0 px-2 pt-3">
+        <div className="flex items-center gap-2.5 px-3 pb-3 pt-1">
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
+            <Zap className="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
+          <span className="text-[15px] font-semibold tracking-tight text-foreground group-data-[collapsible=icon]:hidden">SLM Studio</span>
+        </div>
+        {navGroups.map((group) => (
+          <SidebarGroup key={group.id} className="py-1">
+            {group.labelKey ? (
+              <SidebarGroupLabel className="h-7 px-3 text-xs font-normal text-muted-foreground">{t(group.labelKey)}</SidebarGroupLabel>
+            ) : null}
+            <SidebarGroupContent>
+              <SidebarMenu className="gap-0.5">
+                {navItems
+                  .filter((item) => item.group === group.id)
+                  .map((item) => (
+                    <SidebarMenuItem key={item.titleKey}>
+                      <SidebarMenuButton asChild tooltip={t(item.titleKey)}>
+                        <NavLink
+                          to={item.url}
+                          className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-card/70 hover:text-foreground dark:hover:bg-muted"
+                          activeClassName="bg-card text-foreground font-medium shadow-card dark:bg-accent"
+                        >
+                          <item.icon className="h-4 w-4 shrink-0" />
+                          <span>{t(item.titleKey)}</span>
+                        </NavLink>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ))}
       </SidebarContent>
-      <SidebarFooter className="border-t border-border p-3">
+      <SidebarFooter className="p-3">
         {user ? (
           <div className="flex items-center gap-2">
             <Avatar className="h-7 w-7 shrink-0">
-              <AvatarFallback className="bg-primary/10 text-[10px] font-semibold text-primary">{initials}</AvatarFallback>
+              <AvatarFallback className="bg-primary/10 text-xs font-semibold text-primary">{initials}</AvatarFallback>
             </Avatar>
             <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
-              <p className="truncate text-xs font-medium">{displayName}</p>
-              <p className="truncate text-[10px] text-muted-foreground">{user.email}</p>
+              <p className="truncate text-sm font-medium">{displayName}</p>
+              <p className="truncate text-xs text-muted-foreground">{user.email}</p>
             </div>
             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void handleSignOut()} title={t("auth.signOut")}>
               <LogOut className="h-3.5 w-3.5" />
