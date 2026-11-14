@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { ApiError } from "@/api/client";
@@ -21,7 +21,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useBaseModels, useStartTraining } from "@/hooks/queries";
+import { useBaseModels, useProject, useStartTraining } from "@/hooks/queries";
+import { suggestTrainingName } from "@/components/model/modelNaming";
 import { useLanguage } from "@/i18n/LanguageContext";
 
 interface TrainingCreateDialogProps {
@@ -187,6 +188,12 @@ export default function TrainingCreateDialog({
 
   const [mode, setMode] = useState<"manual" | "hpo">("manual");
   const [trainingName, setTrainingName] = useState("");
+  const { data: project } = useProject(projectId);
+  // Pre-fill a name derived from the project so the model is recognisable
+  // later (UAT DEF-012); the user can still change it.
+  useEffect(() => {
+    if (open && project) setTrainingName((current) => current || suggestTrainingName(project.name));
+  }, [open, project]);
   const [nameError, setNameError] = useState<string | null>(null);
   const [baseModel, setBaseModel] = useState(PLATFORM_DEFAULT);
   const [manual, setManual] = useState<ManualFormState>(manualDefaults);

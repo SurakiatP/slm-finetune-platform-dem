@@ -35,11 +35,11 @@ export function ModelCard({ model, displayName }: { model: ModelArtifact; displa
               <p className="text-lg font-bold text-foreground">
                 {model.size_mb !== null ? `${model.size_mb.toFixed(0)} MB` : "—"}
               </p>
-              <p className="text-[10px] text-muted-foreground">Size</p>
+              <p className="text-[10px] text-muted-foreground">{t("modelCard.size")}</p>
             </div>
             <div>
               <p className="text-sm font-bold text-foreground">{formatDateTime(model.created_at)}</p>
-              <p className="text-[10px] text-muted-foreground">Created</p>
+              <p className="text-[10px] text-muted-foreground">{t("modelCard.created")}</p>
             </div>
           </div>
           <div className="flex flex-wrap gap-1.5">
@@ -51,7 +51,7 @@ export function ModelCard({ model, displayName }: { model: ModelArtifact; displa
               ))
             ) : (
               <Badge variant="outline" className="text-[10px] text-muted-foreground">
-                Not exported
+                {t("modelCard.notExported")}
               </Badge>
             )}
           </div>
@@ -63,7 +63,7 @@ export function ModelCard({ model, displayName }: { model: ModelArtifact; displa
             </Button>
             {model.ollama_model_tag && (
               <Button variant="outline" size="sm" className="h-8 px-2" asChild>
-                <Link to={`/playground?model=${encodeURIComponent(model.ollama_model_tag)}`}>
+                <Link aria-label={t("modelCard.tryInPlayground")} title={t("modelCard.tryInPlayground")} to={`/playground?model=${encodeURIComponent(model.ollama_model_tag)}`}>
                   <MessageSquare className="h-3 w-3" />
                 </Link>
               </Button>

@@ -244,16 +244,16 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
   const removeFile = () => setFile(null);
 
   const pipelineRows = [
-    { role: "Generator", model: pipelineModels?.generator },
-    { role: "Judge", model: pipelineModels?.judge },
-    { role: "Diversity rules", model: pipelineModels?.diversity_rules },
+    { role: t("newProject.data.roleGenerator"), model: pipelineModels?.generator },
+    { role: t("newProject.data.roleJudge"), model: pipelineModels?.judge },
+    { role: t("newProject.data.roleDiversity"), model: pipelineModels?.diversity_rules },
   ];
 
   const pipelineInfoBox = (
     <div className="flex items-start gap-2 rounded-md border border-border bg-secondary/30 p-3">
       <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <div className="text-xs text-muted-foreground">
-        <p className="font-medium text-foreground">Pipeline models (fixed by the platform)</p>
+        <p className="font-medium text-foreground">{t("newProject.data.pipelineModels")}</p>
         <dl className="mt-1 space-y-0.5 font-mono text-[11px]">
           {pipelineRows.map((m) => (
             <div key={m.role} className="flex gap-2">
@@ -273,16 +273,16 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
   return (
     <div className="space-y-4">
       <div>
-        <p className="text-sm font-semibold text-foreground">Upload Training Data</p>
+        <p className="text-sm font-semibold text-foreground">{t("newProject.data.title")}</p>
         <p className="text-xs text-muted-foreground mt-0.5">
           {mode === "with_seed"
-            ? "Upload a seed file, then generate a full synthetic training set from it."
+            ? t("newProject.data.subtitleSeed")
             : t("sdgNoSeed.subtitle")}
         </p>
       </div>
 
       {!projectId && (
-        <p className="text-xs text-muted-foreground">Waiting for the project to be created…</p>
+        <p className="text-xs text-muted-foreground">{t("newProject.data.waitingProject")}</p>
       )}
 
       {!generationStarted && (
@@ -305,9 +305,9 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
                 className="border-2 border-dashed border-border rounded-lg p-10 text-center cursor-pointer hover:border-primary/50 hover:bg-accent/50 transition-colors"
               >
                 <Upload className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
-                <p className="text-sm font-medium text-foreground">Click to upload or drag & drop</p>
+                <p className="text-sm font-medium text-foreground">{t("newProject.data.dropzone")}</p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  {taskType === "qa" ? "JSON/JSONL up to 10MB · QA PDF up to 25MB" : "JSON/JSONL up to 10MB"}
+                  {taskType === "qa" ? t("newProject.data.limitsQa") : t("newProject.data.limits")}
                 </p>
                 <input
                   ref={inputRef}
@@ -326,13 +326,13 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
                       <p className="text-sm font-medium text-foreground truncate">{file.name}</p>
                       <p className="text-[10px] text-muted-foreground">{(file.size / 1024).toFixed(1)} KB</p>
                     </div>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={removeFile}>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label={t("newProject.data.removeFile")} onClick={removeFile}>
                       <X className="h-3.5 w-3.5" />
                     </Button>
                   </div>
 
                   <div>
-                    <Label className="text-xs">Seed dataset name (optional)</Label>
+                    <Label className="text-xs">{t("newProject.data.seedName")}</Label>
                     <Input
                       className="mt-1"
                       placeholder={file.name.replace(/\.(jsonl|json|pdf)$/i, "")}
@@ -348,7 +348,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
                     className="gap-2"
                   >
                     {uploadSeed.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                    Upload seed file
+                    {t("newProject.data.uploadSeed")}
                   </Button>
                 </div>
               )}
@@ -361,12 +361,12 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
             <div className="space-y-4">
               <div className="flex items-center gap-2 text-sm text-foreground">
                 <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                Seed dataset uploaded
+                {t("newProject.data.seedUploaded")}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <Label className="text-xs">Samples</Label>
+                  <Label className="text-xs">{t("newProject.data.samples")}</Label>
                   <Input
                     className="mt-1"
                     type="number"
@@ -377,7 +377,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
                   />
                 </div>
                 <div>
-                  <Label className="text-xs">Holdout rows</Label>
+                  <Label className="text-xs">{t("newProject.data.holdoutRows")}</Label>
                   <Input
                     className="mt-1"
                     type="number"
@@ -388,7 +388,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
                   />
                 </div>
                 <div>
-                  <Label className="text-xs">Temperature</Label>
+                  <Label className="text-xs">{t("newProject.data.temperature")}</Label>
                   <Input
                     className="mt-1"
                     type="number"
@@ -402,13 +402,13 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
               </div>
 
               <div>
-                <Label className="text-xs">Training dataset name (optional)</Label>
+                <Label className="text-xs">{t("newProject.data.trainingName")}</Label>
                 <Input className="mt-1" value={datasetName} onChange={(e) => setDatasetName(e.target.value)} />
               </div>
 
               {holdoutRequired && (
                 <div>
-                  <Label className="text-xs">Holdout dataset name (optional)</Label>
+                  <Label className="text-xs">{t("newProject.data.holdoutName")}</Label>
                   <Input className="mt-1" value={holdoutName} onChange={(e) => setHoldoutName(e.target.value)} />
                 </div>
               )}
@@ -417,7 +417,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
 
               <Button type="button" onClick={handleGenerate} disabled={generateDataset.isPending} className="gap-2">
                 {generateDataset.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                Generate training dataset
+                {t("newProject.data.generate")}
               </Button>
 
               {generateDataset.isError && <ErrorDetail error={toErrorDetail(generateDataset.error)} />}
@@ -484,7 +484,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
-              <Label className="text-xs">Samples</Label>
+              <Label className="text-xs">{t("newProject.data.samples")}</Label>
               <Input
                 className="mt-1"
                 type="number"
@@ -495,7 +495,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
               />
             </div>
             <div>
-              <Label className="text-xs">Holdout rows</Label>
+              <Label className="text-xs">{t("newProject.data.holdoutRows")}</Label>
               <Input
                 className="mt-1"
                 type="number"
@@ -506,7 +506,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
               />
             </div>
             <div>
-              <Label className="text-xs">Temperature</Label>
+              <Label className="text-xs">{t("newProject.data.temperature")}</Label>
               <Input
                 className="mt-1"
                 type="number"
@@ -567,29 +567,29 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
       {formData.trainingDatasetId && (
         <div className="rounded-lg border border-border p-4 space-y-2">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-foreground">Synthetic data generation</p>
+            <p className="text-sm font-semibold text-foreground">{t("newProject.data.sdgTitle")}</p>
             <Badge variant={status === "completed" ? "default" : status === "failed" ? "destructive" : "outline"}>
-              {status ?? "pending"}
+              {t(`status.${status ?? "pending"}`)}
             </Badge>
           </div>
           {!isTerminal(status) && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               {mode === "with_seed"
-                ? "Generating rows from your seed dataset…"
+                ? t("newProject.data.generatingSeed")
                 : t("sdgNoSeed.generatingFromDescription")}
             </div>
           )}
           {status === "completed" && trainingDataset && (
             <p className="text-xs text-muted-foreground">
-              {trainingDataset.num_samples.toLocaleString()} rows ready for training.
+              {t("newProject.data.rowsReady").replace("{n}", trainingDataset.num_samples.toLocaleString())}
             </p>
           )}
           {status === "failed" && (
             <>
-              <ErrorDetail error={{ detail: trainingDataset?.error_message ?? "Dataset generation failed." }} />
+              <ErrorDetail error={{ detail: trainingDataset?.error_message ?? t("newProject.data.generationFailed") }} />
               <Button type="button" variant="outline" size="sm" className="gap-2" onClick={resetGeneration}>
-                <RefreshCw className="h-3.5 w-3.5" /> Try again
+                <RefreshCw className="h-3.5 w-3.5" /> {t("common.tryAgain")}
               </Button>
             </>
           )}
@@ -602,7 +602,7 @@ export function DataUploadStep({ formData, updateForm, projectId }: DataUploadSt
           upload flow (it documents the seed file's expected shape). */}
       {mode === "with_seed" && example && (
         <div className="bg-accent/50 rounded-lg p-4 space-y-2">
-          <p className="text-xs font-semibold text-foreground">Expected Format</p>
+          <p className="text-xs font-semibold text-foreground">{t("newProject.data.expectedFormat")}</p>
           <div className="bg-background rounded-md p-3 font-mono text-[11px] text-muted-foreground overflow-x-auto">
             <pre>{JSON.stringify(example, null, 2)}</pre>
           </div>

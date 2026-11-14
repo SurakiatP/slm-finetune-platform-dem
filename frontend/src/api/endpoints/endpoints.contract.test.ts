@@ -62,6 +62,7 @@ describe('OpenAPI endpoint wrappers', () => {
     projects.listProjects({ external_project_id: 'legacy', limit: 1 })
     projects.getProject('p1')
     projects.createProject({ name: 'P', task_type: 'qa' })
+    projects.createProject({ name: 'T', task_type: 'qa', template_id: 'tpl' }, 'key-1')
     projects.updateProject('p1', { name: 'P2' })
     projects.deleteProject('p1')
     projects.getProjectActivity('p1', { limit: 20 })
@@ -69,7 +70,8 @@ describe('OpenAPI endpoint wrappers', () => {
 
     expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/projects?external_project_id=legacy&limit=1')
     expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/projects/p1')
-    expect(mocks.api.post).toHaveBeenCalledWith('/api/v1/projects', { name: 'P', task_type: 'qa' })
+    expect(mocks.api.post).toHaveBeenCalledWith('/api/v1/projects', { name: 'P', task_type: 'qa' }, { idempotencyKey: undefined })
+    expect(mocks.api.post).toHaveBeenCalledWith('/api/v1/projects', { name: 'T', task_type: 'qa', template_id: 'tpl' }, { idempotencyKey: 'key-1' })
     expect(mocks.api.patch).toHaveBeenCalledWith('/api/v1/projects/p1', { name: 'P2' })
     expect(mocks.api.delete).toHaveBeenCalledWith('/api/v1/projects/p1')
     expect(mocks.api.get).toHaveBeenCalledWith('/api/v1/projects/p1/activity?limit=20')

@@ -9,7 +9,7 @@ interface LanguageContextValue {
 
 const LanguageContext = createContext<LanguageContextValue | undefined>(undefined);
 
-function getInitialLanguage(): Language {
+function readStoredLanguage(): Language {
   try {
     const stored = localStorage.getItem("app-language");
     if (stored === "th" || stored === "en") return stored;
@@ -17,6 +17,18 @@ function getInitialLanguage(): Language {
     // localStorage unavailable — fall through to default
   }
   return "th";
+}
+
+/** Date formatters in lib/format read `<html lang>`; set it before the
+ *  re-render so dates switch language together with the text. */
+function applyDocumentLanguage(lang: Language) {
+  if (typeof document !== "undefined") document.documentElement.lang = lang;
+}
+
+function getInitialLanguage(): Language {
+  const lang = readStoredLanguage();
+  applyDocumentLanguage(lang);
+  return lang;
 }
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
@@ -29,6 +41,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   }, [language]);
 
   const setLanguage = useCallback((lang: Language) => {
+    applyDocumentLanguage(lang);
     setLanguageState(lang);
     try {
       localStorage.setItem("app-language", lang);

@@ -14,7 +14,7 @@ import { QueueBadge } from "@/components/engine/QueueBadge";
 import { AutoPipelineStatus } from "@/components/model/AutoPipelineStatus";
 import { ExportPanel } from "@/components/model/ExportPanel";
 import { DownloadMenu } from "@/components/model/DownloadMenu";
-import { formatDateTime, formatNumber } from "@/lib/format";
+import { formatDateTime, formatNumber, formatDate } from "@/lib/format";
 import { metricMeta, scalarMetrics } from "@/lib/metrics";
 import { StartEvaluationDialog } from "@/components/evaluation/StartEvaluationDialog";
 
@@ -28,7 +28,7 @@ const codeExamples = {
 url = "${API_PUBLIC_ORIGIN}${INFERENCE_URL}"
 headers = {
     "Content-Type": "application/json",
-    "Authorization": "Bearer OIDC_ACCESS_TOKEN"
+    "Authorization": "Bearer YOUR_API_KEY"
 }
 payload = {
     "model": "MODEL_NAME",
@@ -43,7 +43,7 @@ response = requests.post(url, json=payload, headers=headers)
 print(response.json())`,
   curl: `curl -X POST ${API_PUBLIC_ORIGIN}${INFERENCE_URL} \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer OIDC_ACCESS_TOKEN" \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
   -d '{
     "model": "MODEL_NAME",
     "messages": [
@@ -56,7 +56,7 @@ print(response.json())`,
   method: "POST",
   headers: {
     "Content-Type": "application/json",
-    "Authorization": "Bearer OIDC_ACCESS_TOKEN",
+    "Authorization": "Bearer YOUR_API_KEY",
   },
   body: JSON.stringify({
     model: "MODEL_NAME",
@@ -347,7 +347,7 @@ export default function ModelDetail() {
                         {v.status === "current" && <Badge className="text-[9px]">{t("modelDetail.currentVersion")}</Badge>}
                       </div>
                       <p className="text-[10px] text-muted-foreground mt-0.5">
-                        {new Date(v.date).toLocaleDateString()} · {v.note}
+                        {formatDate(v.date)} · {v.note}
                       </p>
                     </div>
                   </div>

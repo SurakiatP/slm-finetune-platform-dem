@@ -20,6 +20,8 @@ interface EvaluationTableProps {
   datasetNames?: Record<string, string>;
   onRowClick?: (evaluation: Evaluation) => void;
   emptyHint?: string;
+  /** Replaces the default "no evaluations yet" title, e.g. for "no search results". */
+  emptyTitle?: string;
   /** When set to a row's id (and renderExpanded is provided), that row grows
    *  an inline detail panel beneath it — used by the standalone Evaluations
    *  page for an accordion-style expand instead of navigating away. */
@@ -36,6 +38,7 @@ export function EvaluationTable({
   datasetNames,
   onRowClick,
   emptyHint,
+  emptyTitle,
   expandedId,
   renderExpanded,
 }: EvaluationTableProps) {
@@ -47,7 +50,7 @@ export function EvaluationTable({
     return (
       <EngineEmptyState
         icon={ClipboardList}
-        title={t("eval.empty")}
+        title={emptyTitle ?? t("eval.empty")}
         hint={emptyHint}
       />
     );

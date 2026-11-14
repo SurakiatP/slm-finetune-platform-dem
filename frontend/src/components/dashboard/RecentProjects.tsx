@@ -6,6 +6,7 @@ import { useProjects, useTrainings } from "@/hooks/queries";
 import { useTaskTypeLabel } from "@/lib/labels";
 import { useLanguage } from "@/i18n/LanguageContext";
 import type { JobStatus } from "@/api/types";
+import { formatDate } from "@/lib/format";
 
 // The Engine has no project-level status column; the closest equivalent is the
 // status of the project's most recent training job. Variants/labels kept in the
@@ -86,7 +87,7 @@ export function RecentProjects() {
                       )}
                     </TableCell>
                     <TableCell className="text-right text-muted-foreground">
-                      {new Date(p.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                      {formatDate(p.created_at, { month: "short", day: "numeric" })}
                     </TableCell>
                   </TableRow>
                 );

@@ -13,8 +13,12 @@ export function getProject(id: string): Promise<Project> {
   return api.get(`${BASE}/${id}`)
 }
 
-export function createProject(body: ProjectCreate): Promise<Project> {
-  return api.post(BASE, body)
+/**
+ * Template-based creation requires an Idempotency-Key (1-200 chars). Reuse the
+ * same key when retrying the same request; a new request body needs a new key.
+ */
+export function createProject(body: ProjectCreate, idempotencyKey?: string): Promise<Project> {
+  return api.post(BASE, body, { idempotencyKey })
 }
 
 export function updateProject(id: string, body: ProjectUpdate): Promise<Project> {

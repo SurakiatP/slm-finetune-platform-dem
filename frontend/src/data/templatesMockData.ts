@@ -34,7 +34,7 @@ export const projectTemplates: ProjectTemplate[] = [
     datasetSize: 2400,
     rating: 4.9,
     forks: 1248,
-    author: "SLM Studio Team",
+    author: "TuneLab Team",
     tags: ["thai", "classification", "support"],
     featured: true,
   },

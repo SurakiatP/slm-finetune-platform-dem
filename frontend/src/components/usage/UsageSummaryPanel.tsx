@@ -7,16 +7,16 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useUsageSummary } from "@/hooks/queries";
 import { useLanguage } from "@/i18n/LanguageContext";
-import { formatNumber, formatUsd } from "@/lib/format";
+import { formatNumber, formatUsd, formatDate } from "@/lib/format";
 
 /** Month + year for a UTC calendar month, from an ISO period boundary. */
 function utcMonthLabel(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
+  return formatDate(iso, { month: "long", year: "numeric", timeZone: "UTC" });
 }
 
 /** Fallback shown before the summary has loaded: today's UTC calendar month. */
 function currentUtcMonthLabel(): string {
-  return new Date().toLocaleString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
+  return formatDate(new Date(), { month: "long", year: "numeric", timeZone: "UTC" });
 }
 
 /** Cross-project usage/cost rollup for the current UTC calendar month — KPI

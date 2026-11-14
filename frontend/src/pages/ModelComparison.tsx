@@ -21,7 +21,7 @@ import { FadeIn, PageTransition } from "@/components/motion";
 import { buildTrainingNameMap, modelDisplayName } from "@/components/model/modelNaming";
 import { useCompareEvaluations, useDatasets, useEvaluations, useModels, useTrainings } from "@/hooks/queries";
 import { metricMeta } from "@/lib/metrics";
-import { shortId } from "@/lib/format";
+import { formatDateTime, shortId } from "@/lib/format";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { GitCompare, Loader2, Scale } from "lucide-react";
 
@@ -65,10 +65,13 @@ export default function ModelComparison() {
     return map;
   }, [datasets]);
 
+  // Model + dataset alone is ambiguous when the same pair was evaluated more
+  // than once, so every label also carries the run's date and short id
+  // (UAT DEF-015).
   const labelFor = (evaluation: Evaluation) =>
     `${modelNames[evaluation.model_artifact_id] ?? shortId(evaluation.model_artifact_id)} · ${
       datasetNames[evaluation.dataset_id] ?? shortId(evaluation.dataset_id)
-    }`;
+    } · ${formatDateTime(evaluation.ended_at ?? evaluation.created_at)} · #${evaluation.id.slice(0, 6)}`;
 
   const handleSelect = (index: number, value: string) => {
     const next = [...selected];
@@ -144,11 +147,11 @@ export default function ModelComparison() {
         {!evaluationsLoading && candidates.length < 2 ? (
           <EngineEmptyState
             icon={Scale}
-            title="Not enough completed evaluations yet"
-            hint="Run at least two evaluations to completion, then come back here to compare them."
+            title={t("comparison.notEnoughTitle")}
+            hint={t("comparison.notEnoughHint")}
             action={
               <Button asChild size="sm">
-                <Link to="/models">Choose a model to evaluate</Link>
+                <Link to="/models">{t("comparison.chooseModel")}</Link>
               </Button>
             }
           />
@@ -211,7 +214,8 @@ export default function ModelComparison() {
                   </Card>
                 </FadeIn>
 
-                {radarData.length > 0 && (
+                {/* A radar with fewer than 3 axes collapses to a line — the table says it better. */}
+                {radarData.length >= 3 && (
                   <FadeIn delay={0.25}>
                     <Card>
                       <CardHeader>

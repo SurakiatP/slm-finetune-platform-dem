@@ -2,28 +2,18 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { motion } from "framer-motion";
+import { useLanguage } from "@/i18n/LanguageContext";
 import { Play, Loader2, CheckCircle2 } from "lucide-react";
 
-const examplePrompts = [
-  "Classify customer reviews as positive, negative, or neutral with confidence scores",
-  "Extract person names, organizations, and dates from news articles",
-  "Answer questions about product specifications from technical manuals",
-];
+const examplePromptKeys = ["demo.example1", "demo.example2", "demo.example3"];
 
 const DemoSection = () => {
+  const { t } = useLanguage();
   const [prompt, setPrompt] = useState("");
   const [stage, setStage] = useState<"idle" | "running" | "done">("idle");
   const [currentStep, setCurrentStep] = useState(0);
 
-  const steps = [
-    "Analyzing task description...",
-    "Task type identified: Classification (3 classes)",
-    "Selecting base model: Qwen2.5-1.5B",
-    "Generating 3,000 synthetic examples via GPT-4o...",
-    "Data curation — filtering low-quality samples...",
-    "Fine-tuning with LoRA (rank=16, epochs=3)...",
-    "Evaluation complete — 92.7% accuracy, 4.1ms latency",
-  ];
+  const steps = [1, 2, 3, 4, 5, 6, 7].map((n) => t(`demo.step${n}`));
 
   const runDemo = () => {
     if (!prompt.trim()) return;
@@ -53,10 +43,10 @@ const DemoSection = () => {
           transition={{ duration: 0.5 }}
           className="text-center mb-12"
         >
-          <p className="text-sm font-medium text-primary mb-2">Interactive Demo</p>
-          <h2 className="text-3xl font-bold tracking-tight">Try it yourself</h2>
+          <p className="text-sm font-medium text-primary mb-2">{t("demo.label")}</p>
+          <h2 className="text-3xl font-bold tracking-tight">{t("demo.title")}</h2>
           <p className="mt-3 text-muted-foreground">
-            Describe a task and see how TuneLab processes it.
+            {t("demo.subtitle")}
           </p>
         </motion.div>
 
@@ -70,27 +60,29 @@ const DemoSection = () => {
           <Textarea
             value={prompt}
             onChange={(e) => { setPrompt(e.target.value); if (stage === "done") reset(); }}
-            placeholder="Describe your fine-tuning task..."
+            placeholder={t("demo.placeholder")}
+            aria-label={t("demo.placeholder")}
             className="min-h-[80px] resize-none font-mono text-sm mb-4"
           />
 
           <div className="flex flex-wrap gap-2 mb-4">
-            {examplePrompts.map((ep) => (
+            {examplePromptKeys.map((key) => t(key)).map((ep) => (
               <button
                 key={ep}
+                type="button"
                 onClick={() => { setPrompt(ep); reset(); }}
                 className="text-xs border rounded-full px-3 py-1 text-muted-foreground hover:text-foreground hover:border-primary/40 transition-colors"
               >
-                {ep.slice(0, 50)}...
+                {ep.length > 50 ? `${ep.slice(0, 50)}…` : ep}
               </button>
             ))}
           </div>
 
           <Button onClick={runDemo} disabled={!prompt.trim() || stage === "running"} className="mb-6">
             {stage === "running" ? (
-              <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Processing...</>
+              <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> {t("demo.processing")}</>
             ) : (
-              <><Play className="mr-2 h-4 w-4" /> Run Demo</>
+              <><Play className="mr-2 h-4 w-4" /> {t("demo.run")}</>
             )}
           </Button>
 

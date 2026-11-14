@@ -4,34 +4,12 @@ import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useLanguage } from "@/i18n/LanguageContext";
 
+// Text lives in translations under `pricing.<id>.*`; features are `pricing.<id>.f1..fN`.
+const featureKeys = (id: string, count: number) => Array.from({ length: count }, (_, n) => `${id}.f${n + 1}`);
 const plans = [
-  {
-    name: "Free",
-    price: "$0",
-    period: "/month",
-    description: "Try fine-tuning with limited resources",
-    features: ["1 project", "2 training jobs/month", "Qwen2.5-0.5B only", "Community support", "Basic evaluation"],
-    cta: "Get Started",
-    highlighted: false,
-  },
-  {
-    name: "Pro",
-    price: "$49",
-    period: "/month",
-    description: "For teams shipping production NLP",
-    features: ["Unlimited projects", "20 training jobs/month", "All base models", "Priority support", "Full evaluation suite", "API access", "ONNX/GGUF export"],
-    cta: "Start Free Trial",
-    highlighted: true,
-  },
-  {
-    name: "Enterprise",
-    price: "Custom",
-    period: "",
-    description: "Dedicated infrastructure & support",
-    features: ["Unlimited everything", "Dedicated GPU cluster", "Custom base models", "SSO & team management", "SLA guarantee", "On-premise deployment", "Dedicated account manager"],
-    cta: "Contact Sales",
-    highlighted: false,
-  },
+  { id: "free", price: "$0", monthly: true, features: featureKeys("free", 5), highlighted: false },
+  { id: "pro", price: "$49", monthly: true, features: featureKeys("pro", 7), highlighted: true },
+  { id: "enterprise", price: null, monthly: false, features: featureKeys("enterprise", 7), highlighted: false },
 ];
 
 const PricingSection = () => {
@@ -55,7 +33,7 @@ const PricingSection = () => {
         <div className="grid gap-6 md:grid-cols-3 max-w-4xl mx-auto">
           {plans.map((plan, i) => (
             <motion.div
-              key={plan.name}
+              key={plan.id}
               initial={{ opacity: 0, y: 30 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
@@ -78,15 +56,15 @@ const PricingSection = () => {
                   {t("pricing.mostPopular")}
                 </motion.div>
               )}
-              <h3 className="font-semibold text-lg">{plan.name}</h3>
+              <h3 className="font-semibold text-lg">{t(`pricing.${plan.id}.name`)}</h3>
               <div className="mt-2 mb-1">
-                <span className="text-3xl font-bold">{plan.price}</span>
-                <span className="text-muted-foreground text-sm">{plan.period}</span>
+                <span className="text-3xl font-bold">{plan.price ?? t("pricing.custom")}</span>
+                {plan.monthly && <span className="text-muted-foreground text-sm">{t("pricing.perMonth")}</span>}
               </div>
-              <p className="text-sm text-muted-foreground mb-6">{plan.description}</p>
+              <p className="text-sm text-muted-foreground mb-6">{t(`pricing.${plan.id}.desc`)}</p>
 
               <ul className="space-y-2.5 mb-8 flex-1">
-                {plan.features.map((f) => (
+                {plan.features.map((key) => t(`pricing.${key}`)).map((f) => (
                   <li key={f} className="flex items-center gap-2 text-sm">
                     <Check className="h-4 w-4 text-success shrink-0" />
                     {f}
@@ -99,7 +77,7 @@ const PricingSection = () => {
                 className="w-full"
                 asChild
               >
-                <Link to="/signup">{plan.cta}</Link>
+                <Link to="/signup">{t(`pricing.${plan.id}.cta`)}</Link>
               </Button>
             </motion.div>
           ))}

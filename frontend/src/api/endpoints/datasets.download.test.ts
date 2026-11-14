@@ -17,7 +17,7 @@ vi.mock('@/api/client', () => ({
   pageQuery: () => '',
 }))
 
-import { downloadDataset } from '@/api/endpoints/datasets'
+import { downloadDataset, EmptyDownloadError } from '@/api/endpoints/datasets'
 
 describe('downloadDataset', () => {
   beforeEach(() => {
@@ -28,10 +28,11 @@ describe('downloadDataset', () => {
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
   })
 
-  it('opens the presigned URL when available', async () => {
+  it('follows the presigned URL when available', async () => {
     mocks.api.get.mockResolvedValue({ url: 'https://storage/x' })
     await downloadDataset('d1')
-    expect(window.open).toHaveBeenCalledWith('https://storage/x', '_blank', 'noopener,noreferrer')
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1)
+    expect(window.open).not.toHaveBeenCalled()
     expect(mocks.api.getBlob).not.toHaveBeenCalled()
   })
 
@@ -41,6 +42,13 @@ describe('downloadDataset', () => {
     await downloadDataset('d1')
     expect(mocks.api.getBlob).toHaveBeenCalledWith('/api/v1/datasets/d1/download')
     expect(window.open).not.toHaveBeenCalled()
+  })
+
+  it('reports an empty fallback download as an error', async () => {
+    mocks.api.get.mockRejectedValue(new mocks.ApiError(503, 'no storage host'))
+    mocks.api.getBlob.mockResolvedValue({ blob: new Blob([]), filename: 'd1.jsonl' })
+    await expect(downloadDataset('d1')).rejects.toBeInstanceOf(EmptyDownloadError)
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled()
   })
 
   it('rethrows other errors', async () => {

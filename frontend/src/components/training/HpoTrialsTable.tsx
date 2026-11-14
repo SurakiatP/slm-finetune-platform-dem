@@ -19,7 +19,7 @@ export function HpoTrialsTable({ trials }: { trials: HpoChildSummary[] }) {
   const bestRunId = sorted.find((trial) => trial.final_eval_loss != null)?.run_id ?? null;
 
   if (trials.length === 0) {
-    return <p className="py-8 text-center text-sm text-muted-foreground">No HPO trials recorded yet.</p>;
+    return <p className="py-8 text-center text-sm text-muted-foreground">{t("trainingMonitor.noTrials")}</p>;
   }
 
   return (
@@ -27,8 +27,8 @@ export function HpoTrialsTable({ trials }: { trials: HpoChildSummary[] }) {
       <TableHeader>
         <TableRow>
           <TableHead>{t("training.trial")}</TableHead>
-          <TableHead>Run ID</TableHead>
-          <TableHead className="text-right">Final eval loss</TableHead>
+          <TableHead>{t("trainingMonitor.runId")}</TableHead>
+          <TableHead className="text-right">{t("trainingMonitor.finalEvalLoss")}</TableHead>
           <TableHead>{t("training.params")}</TableHead>
         </TableRow>
       </TableHeader>

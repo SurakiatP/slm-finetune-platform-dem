@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Navigate, Outlet, useLocation, useParams } from 'react-router-dom'
-import { Loader2 } from 'lucide-react'
+import { Link, Navigate, Outlet, useLocation, useParams } from 'react-router-dom'
+import { ArrowLeft, Loader2 } from 'lucide-react'
+
+import { Button } from '@/components/ui/button'
 
 import { getProject, listProjects } from '@/api/endpoints/projects'
 import { useLanguage } from '@/i18n/LanguageContext'
@@ -80,6 +82,12 @@ export function LegacyProjectRoute() {
         <p className="mt-2 text-sm text-muted-foreground">
           {t("legacyProject.missingHint")}
         </p>
+        <Button asChild variant="outline" size="sm" className="mt-6 gap-1.5">
+          <Link to="/projects">
+            <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
+            {t("projectDetail.backToProjects")}
+          </Link>
+        </Button>
       </div>
     )
   }

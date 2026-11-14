@@ -113,7 +113,8 @@ export default function Evaluations() {
                   datasetName={datasetNames[evaluation.dataset_id]}
                 />
               )}
-              emptyHint={search ? t("evaluationsPage.noResults") : t("evaluationsPage.emptyHint")}
+              emptyTitle={search ? t("evaluationsPage.noResults") : undefined}
+              emptyHint={search ? undefined : t("evaluationsPage.emptyHint")}
             />
           )}
         </FadeIn>
