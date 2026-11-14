@@ -19,9 +19,24 @@ export function formatNumber(n: number | null | undefined, digits = 4): string {
   return n.toFixed(digits)
 }
 
-export function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleString(undefined, {
+/** UI locale, following the `<html lang>` that LanguageProvider maintains.
+ *  Thai uses the Buddhist calendar (พ.ศ.), English the Gregorian one (ค.ศ.). */
+export function uiLocale(): string {
+  const lang = typeof document === 'undefined' ? '' : document.documentElement.lang
+  return lang === 'th' ? 'th-TH-u-ca-buddhist' : 'en-US'
+}
+
+function toDate(value: string | number | Date): Date | null {
+  const d = value instanceof Date ? value : new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/** Date and time, e.g. "13 พ.ย. 2569 14:05" / "Nov 13, 2026, 02:05 PM". */
+export function formatDateTime(iso: string | number | Date | null | undefined): string {
+  if (iso === null || iso === undefined || iso === '') return '—'
+  const d = toDate(iso)
+  if (!d) return '—'
+  return d.toLocaleString(uiLocale(), {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -30,10 +45,23 @@ export function formatDateTime(iso: string | null | undefined): string {
   })
 }
 
-/** UI locale, following the `<html lang>` that LanguageProvider maintains. */
-function uiLocale(): string {
-  const lang = typeof document === 'undefined' ? '' : document.documentElement.lang
-  return lang === 'th' ? 'th-TH' : 'en'
+/** Date only. Pass `options` to narrow it (e.g. `{ month: 'short', day: 'numeric' }`). */
+export function formatDate(
+  iso: string | number | Date | null | undefined,
+  options: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'short', day: 'numeric' },
+): string {
+  if (iso === null || iso === undefined || iso === '') return '—'
+  const d = toDate(iso)
+  if (!d) return '—'
+  return d.toLocaleDateString(uiLocale(), options)
+}
+
+/** 24-hour clock time with seconds, e.g. "14:05:09". */
+export function formatTime(iso: string | number | Date | null | undefined): string {
+  if (iso === null || iso === undefined || iso === '') return '--:--:--'
+  const d = toDate(iso)
+  if (!d) return '--:--:--'
+  return d.toLocaleTimeString(uiLocale(), { hour12: false })
 }
 
 export function formatRelativeTime(iso: string | null | undefined): string {

@@ -28,7 +28,7 @@ export function MetricsTable({ metrics }: { metrics: Record<string, MetricPoint[
     .sort((a, b) => a.key.localeCompare(b.key));
 
   if (rows.length === 0) {
-    return <p className="py-8 text-center text-sm text-muted-foreground">No metrics recorded yet.</p>;
+    return <p className="py-8 text-center text-sm text-muted-foreground">{t("trainingMonitor.noMetrics")}</p>;
   }
 
   return (
@@ -36,9 +36,9 @@ export function MetricsTable({ metrics }: { metrics: Record<string, MetricPoint[
       <TableHeader>
         <TableRow>
           <TableHead>{t("training.metricKey")}</TableHead>
-          <TableHead className="text-right">Points</TableHead>
+          <TableHead className="text-right">{t("trainingMonitor.points")}</TableHead>
           <TableHead className="text-right">{t("training.metricValue")}</TableHead>
-          <TableHead className="text-right">Step</TableHead>
+          <TableHead className="text-right">{t("trainingMonitor.step")}</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>

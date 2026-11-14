@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PageTransition } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
@@ -7,8 +7,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Columns2, MessageSquare } from "lucide-react";
-import { ChatPanel } from "@/components/playground/ChatPanel";
+import { Columns2, MessageSquare, Send, Square } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ChatPanel, type ChatPanelHandle } from "@/components/playground/ChatPanel";
 import { buildTrainingNameMap } from "@/components/model/modelNaming";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useInferenceModels, useModels, useTrainings } from "@/hooks/queries";
@@ -30,6 +32,27 @@ export default function Playground() {
   const [modelB, setModelB] = useState<string>("");
   const [abMode, setAbMode] = useState(false);
   const { t } = useLanguage();
+
+  // A/B mode: one shared input sends the same prompt to both panels.
+  const panelA = useRef<ChatPanelHandle>(null);
+  const panelB = useRef<ChatPanelHandle>(null);
+  const [sharedInput, setSharedInput] = useState("");
+  const [loadingA, setLoadingA] = useState(false);
+  const [loadingB, setLoadingB] = useState(false);
+  const onLoadingA = useCallback((v: boolean) => setLoadingA(v), []);
+  const onLoadingB = useCallback((v: boolean) => setLoadingB(v), []);
+  const sharedBusy = loadingA || loadingB;
+  const sendShared = () => {
+    const text = sharedInput.trim();
+    if (!text || sharedBusy) return;
+    panelA.current?.send(text);
+    panelB.current?.send(text);
+    setSharedInput("");
+  };
+  const stopShared = () => {
+    panelA.current?.stop();
+    panelB.current?.stop();
+  };
 
   const modelsError = modelsErrorObj instanceof Error ? modelsErrorObj.message : null;
 
@@ -125,9 +148,51 @@ export default function Playground() {
       </Card>
 
       <div className={`grid gap-4 ${abMode ? "grid-cols-1 lg:grid-cols-2" : "grid-cols-1"}`}>
-        {modelA && <ChatPanel key={`a-${modelA}`} modelId={modelA} displayName={getModelName(modelA)} className="h-full" />}
-        {abMode && modelB && <ChatPanel key={`b-${modelB}`} modelId={modelB} displayName={getModelName(modelB)} className="h-full" />}
+        {modelA && (
+          <ChatPanel
+            key={`a-${modelA}`}
+            ref={panelA}
+            modelId={modelA}
+            displayName={abMode ? `A · ${getModelName(modelA)}` : getModelName(modelA)}
+            className="h-full"
+            hideInput={abMode}
+            onLoadingChange={onLoadingA}
+          />
+        )}
+        {abMode && modelB && (
+          <ChatPanel
+            key={`b-${modelB}`}
+            ref={panelB}
+            modelId={modelB}
+            displayName={`B · ${getModelName(modelB)}`}
+            className="h-full"
+            hideInput
+            onLoadingChange={onLoadingB}
+          />
+        )}
       </div>
+
+      {abMode && (modelA || modelB) && (
+        <div className="flex gap-2 rounded-lg border border-border bg-background p-3">
+          <Input
+            placeholder={t("playground.sharedPlaceholder")}
+            aria-label={t("playground.sharedPlaceholder")}
+            value={sharedInput}
+            onChange={(e) => setSharedInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && sendShared()}
+            className="border-0 shadow-none focus-visible:ring-0 bg-transparent"
+            disabled={sharedBusy}
+          />
+          <Button aria-label={t("playground.sendBoth")} size="icon" onClick={sendShared} disabled={!sharedInput.trim() || sharedBusy} className="shrink-0">
+            <Send className="h-4 w-4" />
+          </Button>
+          {sharedBusy && (
+            <Button type="button" variant="outline" onClick={stopShared}>
+              <Square className="mr-1 h-4 w-4" />{t("playground.stop")}
+            </Button>
+          )}
+        </div>
+      )}
 
       {abMode && (
         <Card className="bg-accent/50 border-primary/20">

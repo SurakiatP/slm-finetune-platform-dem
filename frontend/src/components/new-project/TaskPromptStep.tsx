@@ -4,23 +4,27 @@ import { Label } from "@/components/ui/label";
 import { Send, Bot, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ProjectFormData } from "@/pages/NewProject";
+import { useLanguage } from "@/i18n/LanguageContext";
 
-const suggestions = [
-  "Classify customer support tickets into billing, technical, general, and feedback categories",
-  "Extract product names, prices, and quantities from invoices",
-  "Answer questions about our product documentation",
-  "Route user requests to the correct API endpoint with parameters",
+const suggestionKeys = [
+  "newProject.prompt.suggestion1",
+  "newProject.prompt.suggestion2",
+  "newProject.prompt.suggestion3",
+  "newProject.prompt.suggestion4",
 ];
 
+/** User messages keep their text; assistant replies keep a translation key so
+ *  they follow the UI language. */
 interface Message {
   role: "user" | "assistant";
   content: string;
 }
 
-const assistantResponses: Record<number, string> = {
-  0: "Great! I understand your task. Let me help you set this up. Could you provide more details about the expected input/output format? Or you can proceed to the next step to select the task type.",
-  1: "Thanks for the additional details. This will help me configure the training parameters optimally. Feel free to continue refining or move to the next step.",
+const assistantResponseKeys: Record<number, string> = {
+  0: "newProject.prompt.reply1",
+  1: "newProject.prompt.reply2",
 };
+const fallbackResponseKey = "newProject.prompt.replyMore";
 
 export function TaskPromptStep({
   formData,
@@ -29,11 +33,12 @@ export function TaskPromptStep({
   formData: ProjectFormData;
   updateForm: (p: Partial<ProjectFormData>) => void;
 }) {
+  const { t } = useLanguage();
   const [messages, setMessages] = useState<Message[]>(
     formData.taskPrompt
       ? [
           { role: "user", content: formData.taskPrompt },
-          { role: "assistant", content: assistantResponses[0] },
+          { role: "assistant", content: assistantResponseKeys[0] },
         ]
       : []
   );
@@ -52,7 +57,7 @@ export function TaskPromptStep({
     const responseIndex = messages.filter((m) => m.role === "user").length;
     const assistantMsg: Message = {
       role: "assistant",
-      content: assistantResponses[responseIndex] || "Got it! Your task description has been updated. You can proceed to the next step or continue refining.",
+      content: assistantResponseKeys[responseIndex] ?? fallbackResponseKey,
     };
 
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -63,9 +68,10 @@ export function TaskPromptStep({
   return (
     <div className="space-y-4">
       <div>
-        <Label className="text-sm font-semibold">Project Name</Label>
+        <Label htmlFor="project-name" className="text-sm font-semibold">{t("newProject.prompt.projectName")}</Label>
         <Input
-          placeholder="e.g. Customer Intent Classifier"
+          id="project-name"
+          placeholder={t("newProject.prompt.projectNamePlaceholder")}
           value={formData.projectName}
           onChange={(e) => updateForm({ projectName: e.target.value })}
           className="mt-1.5"
@@ -73,9 +79,9 @@ export function TaskPromptStep({
       </div>
 
       <div>
-        <Label className="text-sm font-semibold">Describe Your Task</Label>
+        <Label className="text-sm font-semibold">{t("newProject.prompt.describeTitle")}</Label>
         <p className="text-xs text-muted-foreground mt-0.5 mb-3">
-          Tell us what you want your fine-tuned model to do. Be as specific as possible.
+          {t("newProject.prompt.describeHint")}
         </p>
 
         {/* Chat area */}
@@ -85,15 +91,16 @@ export function TaskPromptStep({
               <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
                 <Bot className="h-10 w-10 text-muted-foreground/50" />
                 <div>
-                  <p className="text-sm font-medium text-foreground">Describe your fine-tuning task</p>
+                  <p className="text-sm font-medium text-foreground">{t("newProject.prompt.emptyTitle")}</p>
                   <p className="text-xs text-muted-foreground mt-1">
-                    Try one of these examples or write your own:
+                    {t("newProject.prompt.emptyHint")}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2 justify-center max-w-lg">
-                  {suggestions.map((s) => (
+                  {suggestionKeys.map((key) => t(key)).map((s) => (
                     <button
                       key={s}
+                      type="button"
                       onClick={() => handleSend(s)}
                       className="text-[11px] px-3 py-1.5 rounded-full border border-border bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors text-left"
                     >
@@ -118,7 +125,7 @@ export function TaskPromptStep({
                       : "bg-background border border-border rounded-bl-sm text-foreground"
                   }`}
                 >
-                  {msg.content}
+                  {msg.role === "assistant" ? t(msg.content) : msg.content}
                 </div>
                 {msg.role === "user" && (
                   <div className="w-7 h-7 rounded-full bg-secondary flex items-center justify-center shrink-0">
@@ -132,13 +139,14 @@ export function TaskPromptStep({
           {/* Input bar */}
           <div className="border-t border-border p-3 bg-background flex gap-2">
             <Input
-              placeholder="Describe what your model should do..."
+              placeholder={t("newProject.prompt.inputPlaceholder")}
+              aria-label={t("newProject.prompt.inputPlaceholder")}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSend()}
+              onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && handleSend()}
               className="border-0 shadow-none focus-visible:ring-0 bg-transparent"
             />
-            <Button size="icon" onClick={() => handleSend()} disabled={!input.trim()} className="shrink-0">
+            <Button size="icon" aria-label={t("playground.send")} onClick={() => handleSend()} disabled={!input.trim()} className="shrink-0">
               <Send className="h-4 w-4" />
             </Button>
           </div>

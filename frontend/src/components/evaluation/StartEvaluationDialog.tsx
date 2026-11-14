@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { ApiError } from "@/api/client";
-import type { EvaluationAccepted } from "@/api/types";
+import type { EvaluationAccepted, TaskType } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,7 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { ErrorDetail } from "@/components/engine/ErrorDetail";
-import { useDatasets, useModels, useStartEvaluation } from "@/hooks/queries";
+import { useDatasets, useModels, useStartEvaluation, useTrainings } from "@/hooks/queries";
 import { useLanguage } from "@/i18n/LanguageContext";
 
 interface StartEvaluationDialogProps {
@@ -42,11 +42,32 @@ export function StartEvaluationDialog({
 
   const { data: models, isLoading: modelsLoading } = useModels(undefined, { limit: 200 });
   const { data: datasets, isLoading: datasetsLoading } = useDatasets(undefined, { limit: 200 });
+  const { data: trainings } = useTrainings({ limit: 200 });
   const startEvaluation = useStartEvaluation();
 
   // Only artifacts registered with Ollama (ollama_model_tag set) can serve inference.
   const evaluableModels = (models?.items ?? []).filter((m) => m.ollama_model_tag);
-  const usableDatasets = (datasets?.items ?? []).filter((d) => d.num_samples > 0);
+
+  // A model's task type is its training dataset's task type
+  // (artifact -> training job -> dataset).
+  const selectedTaskType = useMemo<TaskType | null>(() => {
+    const model = (models?.items ?? []).find((m) => m.id === modelId);
+    if (!model) return null;
+    const training = (trainings?.items ?? []).find((tr) => tr.id === model.training_job_id);
+    if (!training) return null;
+    return (datasets?.items ?? []).find((d) => d.id === training.dataset_id)?.task_type ?? null;
+  }, [models, trainings, datasets, modelId]);
+
+  // Only offer datasets with rows whose task type matches the model (UAT DEF-016).
+  const usableDatasets = (datasets?.items ?? []).filter(
+    (d) => d.num_samples > 0 && (!selectedTaskType || d.task_type === selectedTaskType),
+  );
+
+  const handleModelChange = (id: string) => {
+    setModelId(id);
+    // Drop a dataset choice that no longer matches the new model's task type.
+    setDatasetId("");
+  };
 
   const reset = () => {
     setModelId(defaultModelArtifactId ?? "");
@@ -86,22 +107,22 @@ export function StartEvaluationDialog({
         <DialogHeader>
           <DialogTitle>{t("eval.start")}</DialogTitle>
           <DialogDescription>
-            Runs the dataset through the model and scores predictions with task-specific metrics.
+            {t("evalDialog.description")}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <Label>Model artifact</Label>
-            <Select value={modelId} onValueChange={setModelId} disabled={modelsLoading}>
+            <Label>{t("evalDialog.model")}</Label>
+            <Select value={modelId} onValueChange={handleModelChange} disabled={modelsLoading}>
               <SelectTrigger>
                 <SelectValue
                   placeholder={
                     modelsLoading
                       ? t("common.loading")
                       : evaluableModels.length
-                        ? "Select a model…"
-                        : "No exportable model artifacts"
+                        ? t("evalDialog.selectModel")
+                        : t("evalDialog.noModels")
                   }
                 />
               </SelectTrigger>
@@ -114,7 +135,7 @@ export function StartEvaluationDialog({
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              Only models exported to GGUF (registered with Ollama) can be evaluated.
+              {t("evalDialog.modelHint")}
             </p>
           </div>
 
@@ -127,15 +148,17 @@ export function StartEvaluationDialog({
                     datasetsLoading
                       ? t("common.loading")
                       : usableDatasets.length
-                        ? "Select a dataset…"
-                        : "No datasets with rows"
+                        ? t("evalDialog.selectDataset")
+                        : selectedTaskType
+                          ? t("evalDialog.noMatchingDatasets")
+                          : t("evalDialog.noDatasets")
                   }
                 />
               </SelectTrigger>
               <SelectContent>
                 {usableDatasets.map((d) => (
                   <SelectItem key={d.id} value={d.id}>
-                    {d.name} ({d.num_samples.toLocaleString()} rows)
+                    {d.name} ({t("evalDialog.rows").replace("{n}", d.num_samples.toLocaleString())})
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -146,7 +169,7 @@ export function StartEvaluationDialog({
             <div className="space-y-0.5">
               <Label htmlFor="use-judge">{t("eval.llmJudge")}</Label>
               <p className="text-xs text-muted-foreground">
-                Score free-form responses with the platform&apos;s judge model (skipped for classification).
+                {t("evalDialog.judgeHint")}
               </p>
             </div>
             <Switch id="use-judge" checked={useJudge} onCheckedChange={setUseJudge} />

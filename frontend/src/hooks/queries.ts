@@ -118,7 +118,8 @@ export function useProjectUsage(projectId: string, page: { limit?: number; offse
 export function useCreateProject() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (body: ProjectCreate): Promise<Project> => projects.createProject(body),
+    mutationFn: ({ body, idempotencyKey }: { body: ProjectCreate; idempotencyKey?: string }): Promise<Project> =>
+      projects.createProject(body, idempotencyKey),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects })
     },

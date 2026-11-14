@@ -1,3 +1,4 @@
+import { useLanguage } from "@/i18n/LanguageContext";
 import { Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -36,10 +37,11 @@ export function ConfirmDialog({
   onConfirm,
   title,
   description,
-  confirmLabel = "Confirm",
+  confirmLabel,
   destructive = false,
   loading = false,
 }: ConfirmDialogProps) {
+  const { t } = useLanguage();
   return (
     <AlertDialog open={open} onOpenChange={loading ? undefined : onOpenChange}>
       <AlertDialogContent>
@@ -48,7 +50,7 @@ export function ConfirmDialog({
           {description && <AlertDialogDescription>{description}</AlertDialogDescription>}
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={loading}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={loading}>{t("common.cancel")}</AlertDialogCancel>
           <AlertDialogAction
             disabled={loading}
             onClick={(event) => {
@@ -58,7 +60,7 @@ export function ConfirmDialog({
             className={cn(destructive && buttonVariants({ variant: "destructive" }))}
           >
             {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />}
-            {confirmLabel}
+            {confirmLabel ?? t("common.confirm")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

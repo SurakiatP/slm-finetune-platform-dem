@@ -96,7 +96,7 @@ export default function Projects() {
         {!isLoading && !isError && filtered.length === 0 && (
           <FadeIn>
             <div className="text-center py-12 text-muted-foreground">
-              <p className="text-sm">{t("projects.noResults")}</p>
+              <p className="text-sm">{search || filterTask !== "all" ? t("projects.noResults") : t("projects.empty")}</p>
             </div>
           </FadeIn>
         )}

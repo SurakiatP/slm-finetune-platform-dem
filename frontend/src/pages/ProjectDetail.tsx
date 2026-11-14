@@ -25,7 +25,8 @@ import {
 } from "@/hooks/queries";
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/i18n/LanguageContext";
-import { useTaskTypeLabel } from "@/lib/labels";
+import { useBaseModelLabel, useTaskTypeLabel } from "@/lib/labels";
+import { isTerminalStatus } from "@/api/types";
 import { deleteProjectCascade } from "@/lib/projectDelete";
 
 // ProjectActivityTable / ProjectUsageTable are owned by another W3 lane and
@@ -34,6 +35,7 @@ import { deleteProjectCascade } from "@/lib/projectDelete";
 // this file. Contract: single prop `projectId: string`.
 import { ProjectActivityTable } from "@/components/usage/ProjectActivityTable";
 import { ProjectUsageTable } from "@/components/usage/ProjectUsageTable";
+import { formatDateTime } from "@/lib/format";
 
 export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
@@ -46,6 +48,21 @@ export default function ProjectDetail() {
   const [deleting, setDeleting] = useState(false);
 
   const { data: project, isLoading, isError, error } = useProject(id ?? "");
+  const baseModelLabel = useBaseModelLabel();
+  // The project row has no base model or GPU state of its own while a run is
+  // active — derive both from its trainings (UAT DEF-006, DEF-007).
+  const { data: projectTrainings } = useTrainings(
+    { project_id: id, limit: 50 },
+    {
+      refetchInterval: (query) =>
+        (query.state.data?.items ?? []).some((tr) => !isTerminalStatus(tr.status)) ? 6000 : false,
+    },
+  );
+  const trainingsNewestFirst = [...(projectTrainings?.items ?? [])].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+  const latestTraining = trainingsNewestFirst[0] ?? null;
+  const activeTraining = trainingsNewestFirst.find((tr) => !isTerminalStatus(tr.status)) ?? null;
 
   const handleDelete = async () => {
     if (!id) return;
@@ -90,7 +107,7 @@ export default function ProjectDetail() {
       <div className="space-y-6 max-w-5xl">
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="icon" asChild>
-            <Link to="/projects"><ArrowLeft className="h-4 w-4" /></Link>
+            <Link to="/projects" aria-label={t("projectDetail.backToProjects")}><ArrowLeft className="h-4 w-4" /></Link>
           </Button>
           <div className="flex-1">
             <div className="flex items-center gap-3">
@@ -101,7 +118,7 @@ export default function ProjectDetail() {
             <p className="text-sm text-muted-foreground mt-0.5">{project.description}</p>
             {project.external_project_id && (
               <p className="text-[11px] font-mono text-muted-foreground mt-0.5">
-                external id: {project.external_project_id}
+                {t("projectDetail.externalId")}: {project.external_project_id}
               </p>
             )}
           </div>
@@ -134,8 +151,9 @@ export default function ProjectDetail() {
                 <CardContent className="space-y-2 text-sm">
                   {[
                     [t("projectDetail.taskType"), taskTypeLabel(project.task_type)],
-                    [t("projectDetail.created"), new Date(project.created_at).toLocaleString()],
-                    [t("projectDetail.lastUpdated"), new Date(project.updated_at).toLocaleString()],
+                    [t("projectDetail.baseModel"), latestTraining ? baseModelLabel(latestTraining.base_model) : t("projectDetail.baseModelNone")],
+                    [t("projectDetail.created"), formatDateTime(project.created_at)],
+                    [t("projectDetail.lastUpdated"), formatDateTime(project.updated_at)],
                   ].map(([label, value]) => (
                     <div key={String(label)} className="flex justify-between">
                       <span className="text-muted-foreground">{label}</span>
@@ -152,9 +170,17 @@ export default function ProjectDetail() {
                       <QueueBadge queueState={project.queue_state} queuePosition={project.queue_position} />
                       {project.owner_queue_position != null && (
                         <span className="text-xs text-muted-foreground">
-                          (#{project.owner_queue_position} among your projects)
+                          {t("projectDetail.ownerQueuePosition").replace("{n}", String(project.owner_queue_position))}
                         </span>
                       )}
+                    </div>
+                  ) : activeTraining ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <StatusBadge status={activeTraining.status} />
+                      <QueueBadge queueState={activeTraining.queue_state} queuePosition={activeTraining.queue_position} />
+                      <Link to={`/projects/${project.id}/training`} className="text-xs text-primary hover:underline">
+                        {activeTraining.mode === "hpo" ? t("projectDetail.activeHpo") : t("projectDetail.activeTraining")}
+                      </Link>
                     </div>
                   ) : (
                     <p className="text-muted-foreground">{t("projectPage.noGpuJob")}</p>
@@ -172,7 +198,7 @@ export default function ProjectDetail() {
                   </div>
                   <Button variant="outline" size="sm" asChild>
                     <Link to={`/projects/${project.id}/insights`}>
-                      <Database className="h-3.5 w-3.5 mr-1.5" /> View
+                      <Database className="h-3.5 w-3.5 mr-1.5" /> {t("common.view")}
                     </Link>
                   </Button>
                 </CardContent>
@@ -185,7 +211,7 @@ export default function ProjectDetail() {
                   </div>
                   <Button variant="outline" size="sm" asChild>
                     <Link to={`/projects/${project.id}/training`}>
-                      <PlayCircle className="h-3.5 w-3.5 mr-1.5" /> View
+                      <PlayCircle className="h-3.5 w-3.5 mr-1.5" /> {t("common.view")}
                     </Link>
                   </Button>
                 </CardContent>
@@ -206,7 +232,7 @@ export default function ProjectDetail() {
           </TabsContent>
 
           <TabsContent value="activity" className="mt-4">
-            <ProjectActivityTable projectId={project.id} />
+            <ProjectActivityTable projectId={project.id} projectName={project.name} ownerId={project.owner_id} />
           </TabsContent>
 
           <TabsContent value="usage" className="mt-4">

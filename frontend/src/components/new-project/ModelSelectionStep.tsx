@@ -1,3 +1,4 @@
+import { useLanguage } from "@/i18n/LanguageContext";
 import { Loader2, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,29 +25,30 @@ const detailTitleColors = {
 
 export function ModelSelectionStep({ formData, updateForm }: ModelSelectionStepProps) {
   const { data: models, isLoading, isError, error, refetch } = useBaseModels();
+  const { t } = useLanguage();
 
   return (
     <div className="space-y-4">
       <div>
-        <p className="text-sm font-semibold text-foreground">Choose Base Model</p>
+        <p className="text-sm font-semibold text-foreground">{t("newProject.model.title")}</p>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Select the pre-trained model to fine-tune. Larger models are more capable but slower to train.
+          {t("newProject.model.hint")}
         </p>
       </div>
 
       {isLoading ? (
         <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading available base models…
+          <Loader2 className="h-4 w-4 animate-spin" /> {t("newProject.model.loading")}
         </div>
       ) : isError ? (
         <div className="space-y-3">
           <ErrorDetail error={toErrorDetail(error)} />
           <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => void refetch()}>
-            <RefreshCw className="h-3.5 w-3.5" /> Try again
+            <RefreshCw className="h-3.5 w-3.5" /> {t("common.tryAgain")}
           </Button>
         </div>
       ) : !models || models.length === 0 ? (
-        <p className="py-8 text-sm text-muted-foreground">No base models are currently available from the Engine.</p>
+        <p className="py-8 text-sm text-muted-foreground">{t("newProject.model.empty")}</p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {models.map((model) => {
@@ -68,20 +70,20 @@ export function ModelSelectionStep({ formData, updateForm }: ModelSelectionStepP
                     <span className={`font-semibold text-sm ${modelTitleColor}`}>{model.display_name}</span>
                     <span className="ml-1.5 text-xs text-muted-foreground">{model.params_billions}B</span>
                   </div>
-                  {selected && <Badge className="text-[10px] shrink-0">Selected</Badge>}
+                  {selected && <Badge className="text-[10px] shrink-0">{t("newProject.task.selected")}</Badge>}
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 text-[11px] mb-2.5">
                   <div>
-                    <p className="text-muted-foreground">Family</p>
+                    <p className="text-muted-foreground">{t("newProject.model.family")}</p>
                     <p className="font-medium text-foreground capitalize">{model.family}</p>
                   </div>
                   <div>
-                    <p className={detailTitleColors.context}>Context</p>
+                    <p className={detailTitleColors.context}>{t("newProject.model.context")}</p>
                     <p className="font-medium text-foreground">{model.context_length.toLocaleString()}</p>
                   </div>
                   <div>
-                    <p className={detailTitleColors.quantization}>Quantization</p>
+                    <p className={detailTitleColors.quantization}>{t("newProject.model.quantization")}</p>
                     <p className="font-medium text-foreground">{model.quantization}</p>
                   </div>
                 </div>
@@ -100,9 +102,9 @@ export function ModelSelectionStep({ formData, updateForm }: ModelSelectionStepP
 
       {formData.baseModel && formData.maxSeqLength && (
         <p className="text-xs text-muted-foreground">
-          Training will use a max sequence length of{" "}
-          <span className="font-mono text-foreground">{formData.maxSeqLength}</span>, pre-filled from the selected
-          model's recommendation.
+          {t("newProject.model.seqLenBefore")}{" "}
+          <span className="font-mono text-foreground">{formData.maxSeqLength}</span>{" "}
+          {t("newProject.model.seqLenAfter")}
         </p>
       )}
     </div>

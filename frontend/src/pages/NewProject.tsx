@@ -12,6 +12,7 @@ import { ApiError } from "@/api/client";
 import { useCreateProject, useStartTraining } from "@/hooks/queries";
 import type { JobStatus, Project, TaskType } from "@/api/types";
 import { useLanguage } from "@/i18n/LanguageContext";
+import { suggestTrainingName } from "@/components/model/modelNaming";
 import { useToast } from "@/hooks/use-toast";
 
 export interface ProjectFormData {
@@ -66,6 +67,9 @@ export default function NewProject() {
   const [projectError, setProjectError] = useState<{ detail: string; code?: string | null } | null>(null);
   const [launchError, setLaunchError] = useState<{ detail: string; code?: string | null } | null>(null);
   const [launching, setLaunching] = useState(false);
+  // One Idempotency-Key per project-creation request: a retry of the same
+  // request reuses it, a changed task type (= a new project) gets a new one.
+  const [createKey, setCreateKey] = useState(() => crypto.randomUUID());
   const { t } = useLanguage();
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -88,6 +92,9 @@ export default function NewProject() {
       }
       return next;
     });
+    if (partial.taskType !== undefined && partial.taskType !== formData.taskType) {
+      setCreateKey(crypto.randomUUID());
+    }
     if (partial.taskType !== undefined) {
       setEngineProject(null);
       setProjectError(null);
@@ -133,7 +140,7 @@ export default function NewProject() {
     if (currentStep === 1 && !engineProject) {
       setProjectError(null);
       try {
-        const created = await createProjectMutation.mutateAsync({
+        const created = await createProjectMutation.mutateAsync({ idempotencyKey: createKey, body: {
           name: formData.projectName.trim() || formData.taskPrompt.slice(0, 60) || "Untitled Project",
           description: formData.taskPrompt,
           task_type: formData.taskType!,
@@ -145,7 +152,7 @@ export default function NewProject() {
             epochs: templateState.epochs,
             learning_rate: templateState.learningRate,
           } : undefined,
-        });
+        } });
         setEngineProject(created);
       } catch (e) {
         setProjectError(toErrorDetail(e));
@@ -165,6 +172,7 @@ export default function NewProject() {
         project_id: engineProject.id,
         dataset_id: formData.trainingDatasetId,
         base_model: formData.baseModel,
+        training_name: suggestTrainingName(engineProject.name),
         mode: "manual",
         manual_config: formData.maxSeqLength ? { max_seq_length: formData.maxSeqLength } : undefined,
       });

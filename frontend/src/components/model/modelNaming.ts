@@ -31,3 +31,23 @@ export function modelDisplayName(
 ): string {
   return trainingNames[model.training_job_id] ?? model.name;
 }
+
+/**
+ * Default `training_name` for a run launched without one, derived from the
+ * project name so the resulting model is recognisable — instead of the
+ * worker's `manual-<id>` fallback (UAT DEF-012). Must satisfy the Ollama-tag
+ * rule `^[a-z0-9][a-z0-9._-]{0,62}$`; non-Latin names (e.g. Thai) fall back
+ * to "model". A timestamp suffix keeps it unique per owner.
+ */
+export function suggestTrainingName(projectName: string | null | undefined, now: Date = new Date()): string {
+  const slug = (projectName ?? "")
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/, "");
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+  return `${slug || "model"}-${stamp}`;
+}

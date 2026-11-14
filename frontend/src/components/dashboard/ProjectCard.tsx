@@ -14,6 +14,7 @@ import { useLanguage } from "@/i18n/LanguageContext";
 import { useTaskTypeLabel } from "@/lib/labels";
 import { deleteProjectCascade } from "@/lib/projectDelete";
 import type { Project } from "@/api/types";
+import { formatDate } from "@/lib/format";
 
 export function ProjectCard({ project }: { project: Project }) {
   const { t } = useLanguage();
@@ -74,7 +75,7 @@ export function ProjectCard({ project }: { project: Project }) {
               <Badge variant="outline" className="text-[10px]">{taskTypeLabel(project.task_type)}</Badge>
             </div>
             <p className="text-[10px] text-muted-foreground">
-              {new Date(project.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+              {formatDate(project.created_at)}
             </p>
           </CardContent>
         </Card>

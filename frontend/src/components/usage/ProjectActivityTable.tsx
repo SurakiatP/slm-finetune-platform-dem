@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { History } from "lucide-react";
 
 import { EngineEmptyState } from "@/components/engine/EngineEmptyState";
@@ -7,7 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useProjectActivity } from "@/hooks/queries";
+import { useDatasets, useModels, useProjectActivity, useTrainings } from "@/hooks/queries";
+import { buildTrainingNameMap, modelDisplayName } from "@/components/model/modelNaming";
+import type { AuditEvent } from "@/api/types";
 import { useOptionalAuth } from "@/contexts/AuthContext";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { formatDateTime, shortId } from "@/lib/format";
@@ -40,9 +42,38 @@ const VERB_KEYS: Record<string, string> = {
 
 /** Audit trail for one project — actor, action, target — newest first,
  *  paginated via the `limit`/`offset` the `useProjectActivity` hook supports. */
-export function ProjectActivityTable({ projectId }: { projectId: string }) {
+export function ProjectActivityTable({
+  projectId,
+  projectName,
+  ownerId,
+}: {
+  projectId: string;
+  projectName?: string;
+  /** Engine actor id of the project owner — the same id space as `actor_id`. */
+  ownerId?: string | null;
+}) {
   const { t } = useLanguage();
   const auth = useOptionalAuth();
+
+  // Resolve target ids to the names the user knows them by (UAT DEF-008).
+  const { data: datasetsPage } = useDatasets(projectId, { limit: 200 });
+  const { data: trainingsPage } = useTrainings({ project_id: projectId, limit: 200 });
+  const { data: modelsPage } = useModels(projectId, { limit: 200 });
+  const resourceNames = useMemo(() => {
+    const names: Record<string, string> = {};
+    for (const d of datasetsPage?.items ?? []) names[d.id] = d.name;
+    const trainingNames = buildTrainingNameMap(trainingsPage?.items);
+    for (const tr of trainingsPage?.items ?? []) if (trainingNames[tr.id]) names[tr.id] = trainingNames[tr.id];
+    for (const m of modelsPage?.items ?? []) names[m.id] = modelDisplayName(m, trainingNames);
+    if (projectName) names[projectId] = projectName;
+    return names;
+  }, [datasetsPage, trainingsPage, modelsPage, projectId, projectName]);
+
+  const describeTarget = (event: AuditEvent) => {
+    const fromMetadata = typeof event.metadata?.name === "string" ? event.metadata.name : null;
+    const name = (event.resource_id && resourceNames[event.resource_id]) ?? fromMetadata;
+    return name ?? shortId(event.resource_id);
+  };
   const [offset, setOffset] = useState(0);
   // Audit codes look like `export.failed`; render them as words, keeping the
   // raw code available as a tooltip for support.
@@ -55,7 +86,9 @@ export function ProjectActivityTable({ projectId }: { projectId: string }) {
   };
   const describeActor = (actorId: string | null) => {
     if (!actorId) return t("activity.anonymous");
-    return auth?.user?.id === actorId ? t("activity.you") : shortId(actorId);
+    // actor_id is the Engine's user id: it matches the project's owner_id,
+    // not necessarily the Keycloak subject the frontend holds.
+    return actorId === ownerId || auth?.user?.id === actorId ? t("activity.you") : shortId(actorId);
   };
   const { data, isLoading, isError } = useProjectActivity(projectId, { limit: PAGE_SIZE, offset });
 
@@ -100,12 +133,12 @@ export function ProjectActivityTable({ projectId }: { projectId: string }) {
             <TableBody>
               {items.map((event) => (
                 <TableRow key={event.id}>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
+                  <TableCell className="text-xs text-muted-foreground" title={event.actor_id ?? undefined}>
                     {describeActor(event.actor_id)}
                   </TableCell>
                   <TableCell className="text-xs text-foreground" title={event.action}>{describeAction(event.action)}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {RESOURCE_KEYS[event.resource_type] ? t(RESOURCE_KEYS[event.resource_type]) : event.resource_type} <span className="font-mono">{shortId(event.resource_id)}</span>
+                    {RESOURCE_KEYS[event.resource_type] ? t(RESOURCE_KEYS[event.resource_type]) : event.resource_type} <span className="text-foreground" title={event.resource_id ?? undefined}>{describeTarget(event)}</span>
                   </TableCell>
                   <TableCell>
                     <Badge variant={event.outcome === "success" ? "default" : "destructive"}>{event.outcome === "success" ? t("activity.success") : event.outcome === "failure" ? t("activity.failure") : event.outcome}</Badge>

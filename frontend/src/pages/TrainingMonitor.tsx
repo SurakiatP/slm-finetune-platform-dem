@@ -15,6 +15,7 @@ import { DiagnosticPanel } from "@/components/training/DiagnosticPanel";
 import { EvaluationViewer } from "@/components/training/EvaluationViewer";
 import { MetricsTable } from "@/components/training/MetricsTable";
 import { HpoTrialsTable } from "@/components/training/HpoTrialsTable";
+import { HpoTuningHistory, HpoTuningReport } from "@/components/training/HpoTuningReport";
 import { TrainingLog } from "@/components/training/TrainingLog";
 import type { PipelineStep, TrainingLogEntry } from "@/data/trainingMockData";
 import { getBaseModelLabel } from "@/data/mockData";
@@ -35,12 +36,11 @@ import {
 } from "@/hooks/queries";
 import { useJobProgress } from "@/hooks/useJobProgress";
 import { isTerminalStatus, type Training, type MetricPoint } from "@/api/types";
-import { formatDuration, formatNumber, shortId } from "@/lib/format";
+import { formatDuration, formatNumber, shortId, formatTime, formatDateTime } from "@/lib/format";
 import { useTaskTypeLabel } from "@/lib/labels";
 import { cn } from "@/lib/utils";
 
-const clockTime = (iso: string | null | undefined) =>
-  iso ? new Date(iso).toLocaleTimeString([], { hour12: false }) : "--:--:--";
+const clockTime = (iso: string | null | undefined) => formatTime(iso);
 
 /** Builds the terminal-style log feed the original rendered with `TrainingLog`,
  *  from real Engine state (run lifecycle + live WS steps) instead of the mock
@@ -49,21 +49,22 @@ function buildTrainingLog(
   run: Training,
   live: { step: number; steps_total: number; epoch: number; epochs_total: number; train_loss: number | null } | null,
   errorMessage: string | null,
+  t: (key: string) => string,
 ): TrainingLogEntry[] {
   const entries: TrainingLogEntry[] = [
     {
       timestamp: clockTime(run.created_at),
       level: "info",
-      message: `Queued ${run.mode === "hpo" ? "HPO search" : "fine-tuning"} run ${shortId(run.id)}`,
+      message: t(run.mode === "hpo" ? "trainingMonitor.log.queuedHpo" : "trainingMonitor.log.queuedManual").replace("{id}", shortId(run.id)),
     },
     {
       timestamp: clockTime(run.created_at),
       level: "info",
-      message: `Base model: ${run.base_model} | dataset: ${shortId(run.dataset_id)}`,
+      message: t("trainingMonitor.log.baseModel").replace("{model}", run.base_model).replace("{dataset}", shortId(run.dataset_id)),
     },
   ];
   if (run.started_at) {
-    entries.push({ timestamp: clockTime(run.started_at), level: "info", message: "Training started on the GPU worker" });
+    entries.push({ timestamp: clockTime(run.started_at), level: "info", message: t("trainingMonitor.log.started") });
   }
   if (run.mlflow_run_id) {
     entries.push({ timestamp: clockTime(run.started_at), level: "info", message: `MLflow run: ${run.mlflow_run_id}` });
@@ -81,15 +82,15 @@ function buildTrainingLog(
     entries.push({
       timestamp: clockTime(run.ended_at ?? run.updated_at),
       level: "info",
-      message: `Best metric: ${formatNumber(run.best_metric_value)}`,
+      message: t("trainingMonitor.log.bestMetric").replace("{value}", formatNumber(run.best_metric_value)),
     });
   }
   if (run.status === "completed") {
-    entries.push({ timestamp: clockTime(run.ended_at), level: "success", message: "Training completed" });
+    entries.push({ timestamp: clockTime(run.ended_at), level: "success", message: t("trainingMonitor.log.completed") });
   } else if (run.status === "failed") {
-    entries.push({ timestamp: clockTime(run.ended_at), level: "error", message: errorMessage ?? "Training failed" });
+    entries.push({ timestamp: clockTime(run.ended_at), level: "error", message: errorMessage ?? t("trainingMonitor.log.failed") });
   } else if (run.status === "cancelled") {
-    entries.push({ timestamp: clockTime(run.ended_at), level: "warning", message: "Training cancelled" });
+    entries.push({ timestamp: clockTime(run.ended_at), level: "warning", message: t("trainingMonitor.log.cancelled") });
   }
   return entries;
 }
@@ -141,6 +142,7 @@ export default function TrainingMonitor() {
   }, [trainingList, selectedId]);
 
   const selected: Training | null = trainingList.find((tr) => tr.id === selectedId) ?? null;
+  const hpoRuns = useMemo(() => trainingList.filter((tr) => tr.mode === "hpo"), [trainingList]);
   const selectedTerminal = selected ? isTerminalStatus(selected.status) : true;
 
   // REST list is authoritative for status; WS enriches with per-step detail
@@ -210,17 +212,17 @@ export default function TrainingMonitor() {
     ? [
         {
           id: "dataset",
-          label: "Dataset prepared",
-          description: `Dataset ${shortId(selected.dataset_id)} attached to this run`,
+          label: t("trainingMonitor.step.dataset"),
+          description: t("trainingMonitor.step.datasetDesc").replace("{id}", shortId(selected.dataset_id)),
           status: "completed",
         },
         {
           id: "training",
-          label: selected.mode === "hpo" ? "Hyperparameter search" : "Fine-tuning",
+          label: selected.mode === "hpo" ? t("trainingMonitor.step.hpo") : t("trainingMonitor.step.finetune"),
           description:
             selected.mode === "hpo"
-              ? "LoRA fine-tuning across HPO trials"
-              : "LoRA fine-tuning on the selected base model",
+              ? t("trainingMonitor.step.hpoDesc")
+              : t("trainingMonitor.step.finetuneDesc"),
           status:
             selected.status === "completed"
               ? "completed"
@@ -233,9 +235,11 @@ export default function TrainingMonitor() {
         },
         {
           id: "export",
-          label: "Export & registration",
-          description: "GGUF export and Ollama registration",
-          status: progress.completed?.model_artifact_id ? "completed" : "pending",
+          label: t("trainingMonitor.step.export"),
+          description: t("trainingMonitor.step.exportDesc"),
+          // A registered model artifact for this run means export finished,
+          // even after the live progress frame is gone (page reload).
+          status: progress.completed?.model_artifact_id || selectedArtifact ? "completed" : "pending",
         },
       ]
     : [];
@@ -245,7 +249,7 @@ export default function TrainingMonitor() {
     <div className="space-y-6 max-w-6xl">
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon" asChild>
-          <Link to={`/projects/${projectId}`}><ArrowLeft className="h-4 w-4" /></Link>
+          <Link to={`/projects/${projectId}`} aria-label={t("common.back")}><ArrowLeft className="h-4 w-4" /></Link>
         </Button>
         <div className="flex-1">
           <div className="flex items-center gap-3">
@@ -258,24 +262,24 @@ export default function TrainingMonitor() {
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Training runs</CardTitle>
+          <CardTitle className="text-sm">{t("trainingMonitor.runs")}</CardTitle>
         </CardHeader>
         <CardContent>
           {trainingList.length === 0 ? (
             <EngineEmptyState
               icon={Layers}
-              title="No training runs yet"
-              hint="Start a training job from the project overview to see its progress here."
+              title={t("trainingMonitor.noRuns")}
+              hint={t("trainingMonitor.noRunsHint")}
             />
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Mode</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Base model</TableHead>
-                  <TableHead>Started</TableHead>
-                  <TableHead>Run</TableHead>
+                  <TableHead>{t("trainingMonitor.col.mode")}</TableHead>
+                  <TableHead>{t("trainingMonitor.col.status")}</TableHead>
+                  <TableHead>{t("trainingMonitor.col.baseModel")}</TableHead>
+                  <TableHead>{t("trainingMonitor.col.started")}</TableHead>
+                  <TableHead>{t("trainingMonitor.col.run")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -288,13 +292,13 @@ export default function TrainingMonitor() {
                   >
                     <TableCell>
                       <Badge variant={tr.mode === "hpo" ? "secondary" : "outline"} className="text-[10px] capitalize">
-                        {tr.mode}
+                        {t(`trainingMonitor.mode.${tr.mode}`)}
                       </Badge>
                     </TableCell>
                     <TableCell><StatusBadge status={tr.status} /></TableCell>
                     <TableCell className="font-mono text-xs">{getBaseModelLabel(tr.base_model)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {tr.started_at ? new Date(tr.started_at).toLocaleString() : "—"}
+                      {formatDateTime(tr.started_at)}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {tr.training_name ?? shortId(tr.id)}
@@ -312,7 +316,7 @@ export default function TrainingMonitor() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2 flex-wrap">
               <Badge variant={selected.mode === "hpo" ? "secondary" : "outline"} className="capitalize">
-                {selected.mode}
+                {t(`trainingMonitor.mode.${selected.mode}`)}
               </Badge>
               <StatusBadge status={selected.status} />
               <QueueBadge queueState={selected.queue_state} queuePosition={selected.queue_position} />
@@ -356,7 +360,7 @@ export default function TrainingMonitor() {
               <CardContent className="p-4 space-y-3">
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Steps</span>
+                    <span className="text-muted-foreground">{t("trainingMonitor.steps")}</span>
                     <span className="font-semibold text-foreground">
                       {liveTraining.step} / {liveTraining.steps_total}
                     </span>
@@ -381,7 +385,7 @@ export default function TrainingMonitor() {
                 {progress.hpo && (
                   <div className="space-y-1.5">
                     <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">Trials</span>
+                      <span className="text-muted-foreground">{t("trainingMonitor.trials")}</span>
                       <span className="font-semibold text-foreground">
                         {progress.hpo.trial_number + 1} / {progress.hpo.trials_total}
                       </span>
@@ -428,8 +432,8 @@ export default function TrainingMonitor() {
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm">{t("training.lossCurve")}</CardTitle>
                     <div className="flex gap-3 text-[10px] text-muted-foreground">
-                      <span>Current train loss: <span className="font-bold text-foreground">{formatNumber(currentTrainLoss)}</span></span>
-                      <span>Current val loss: <span className="font-bold text-foreground">{formatNumber(currentValLoss)}</span></span>
+                      <span>{t("trainingMonitor.currentTrainLoss")}: <span className="font-bold text-foreground">{formatNumber(currentTrainLoss)}</span></span>
+                      <span>{t("trainingMonitor.currentValLoss")}: <span className="font-bold text-foreground">{formatNumber(currentValLoss)}</span></span>
                     </div>
                   </div>
                 </CardHeader>
@@ -438,7 +442,7 @@ export default function TrainingMonitor() {
                     <LossCurveChart data={lossData} />
                   ) : (
                     <p className="py-16 text-center text-sm text-muted-foreground">
-                      No loss metrics have been recorded by the Engine yet.
+                      {t("trainingMonitor.noLoss")}
                     </p>
                   )}
                 </CardContent>
@@ -460,6 +464,14 @@ export default function TrainingMonitor() {
               </Card>
 
               {selected.mode === "hpo" && trainingMetrics?.hpo_children && (
+                <HpoTuningReport run={selected} trials={trainingMetrics.hpo_children} />
+              )}
+
+              {hpoRuns.length > 1 && (
+                <HpoTuningHistory runs={hpoRuns} selectedId={selectedId} onSelect={setSelectedId} />
+              )}
+
+              {selected.mode === "hpo" && trainingMetrics?.hpo_children && (
                 <Card>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm">{t("training.hpoTrials")}</CardTitle>
@@ -476,7 +488,7 @@ export default function TrainingMonitor() {
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm">{t("training.trainingLog")}</CardTitle>
-                    <Badge variant="outline" className="text-[10px]">Engine data only</Badge>
+                    <Badge variant="outline" className="text-[10px]">{t("trainingMonitor.engineDataOnly")}</Badge>
                   </div>
                 </CardHeader>
                 <CardContent>
@@ -486,6 +498,7 @@ export default function TrainingMonitor() {
                       selected,
                       liveTraining,
                       progress.failed?.error ?? selected.error_message,
+                      t,
                     )}
                   />
                 </CardContent>
@@ -498,7 +511,7 @@ export default function TrainingMonitor() {
               ) : (
                 <Card>
                   <CardContent className="py-16 text-center text-sm text-muted-foreground">
-                    Export this training run to a model artifact first — evaluations run against an exported model.
+                    {t("trainingMonitor.exportFirst")}
                   </CardContent>
                 </Card>
               )}

@@ -45,14 +45,34 @@ export function datasetDownloadUrl(id: string): string {
  */
 export async function downloadDatasetViaApi(id: string): Promise<void> {
   const { blob, filename } = await api.getBlob(`${BASE}/${id}/download`)
+  // A 200 with an empty body (storage read failed after the headers went
+  // out) must not look like a successful download.
+  if (blob.size === 0) throw new EmptyDownloadError()
   const objectUrl = URL.createObjectURL(blob)
+  clickDownloadLink(objectUrl, filename ?? `dataset-${id}.jsonl`)
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000)
+}
+
+/** Thrown when the server answered but the downloaded file has no content. */
+export class EmptyDownloadError extends Error {
+  constructor() {
+    super('The downloaded file is empty')
+    this.name = 'EmptyDownloadError'
+  }
+}
+
+/**
+ * Trigger a file save through a temporary <a>. Unlike window.open after an
+ * await, this is not swallowed by popup blockers.
+ */
+function clickDownloadLink(href: string, filename?: string): void {
   const link = document.createElement('a')
-  link.href = objectUrl
-  link.download = filename ?? `dataset-${id}.jsonl`
+  link.href = href
+  if (filename) link.download = filename
+  link.rel = 'noopener noreferrer'
   document.body.appendChild(link)
   link.click()
   link.remove()
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000)
 }
 
 /**
@@ -114,7 +134,7 @@ export function getDatasetInsights(id: string): Promise<DatasetInsights> {
 export async function downloadDataset(id: string): Promise<void> {
   try {
     const { url } = await getDatasetDownloadUrl(id)
-    window.open(url, '_blank', 'noopener,noreferrer')
+    clickDownloadLink(url)
   } catch (err) {
     if (err instanceof ApiError && err.status === 503) {
       await downloadDatasetViaApi(id)

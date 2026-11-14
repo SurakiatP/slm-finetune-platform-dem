@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useDatasetUsage } from "@/hooks/useDatasetUsage";
 import { Ban, Download, Eye, Loader2, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -11,6 +13,7 @@ import {
 import { useLanguage } from "@/i18n/LanguageContext";
 import { useToast } from "@/hooks/use-toast";
 import type { Dataset } from "@/api/types";
+import { EmptyDownloadError } from "@/api/endpoints/datasets";
 
 interface DatasetActionsProps {
   dataset: Dataset;
@@ -35,12 +38,22 @@ export function DatasetActions({ dataset, previewOpen, onTogglePreview, onDelete
   const deleteMutation = useDeleteDataset();
   const cancelMutation = useCancelDatasetGeneration();
 
+  const usage = useDatasetUsage().get(dataset.id);
+  const [blockedReason, setBlockedReason] = useState<string | null>(null);
+  const deleteBlockedText = usage
+    ? t(usage === "training" ? "datasetsPage.inUseHint" : "datasetsPage.inUseEvalHint")
+    : blockedReason;
+
   const canCancel = dataset.source === "sdg" && (dataset.status === "pending" || dataset.status === "running");
 
   const handleDownload = () => {
     downloadMutation.mutate(dataset.id, {
+      onSuccess: () => toast({ description: t("dataset.downloadStarted") }),
       onError: (err: unknown) => {
-        toast({ variant: "destructive", description: err instanceof Error ? err.message : String(err) });
+        const description = err instanceof EmptyDownloadError
+          ? t("dataset.downloadEmpty")
+          : err instanceof Error ? err.message : String(err);
+        toast({ variant: "destructive", description });
       },
     });
   };
@@ -52,7 +65,10 @@ export function DatasetActions({ dataset, previewOpen, onTogglePreview, onDelete
         onDeleted?.();
       },
       onError: (err: unknown) => {
-        toast({ variant: "destructive", description: err instanceof Error ? err.message : String(err) });
+        const message = err instanceof Error ? err.message : String(err);
+        // Keep the button disabled after a 409 instead of letting the user retry into it.
+        setBlockedReason(message);
+        toast({ title: t("datasetsPage.inUseTitle"), variant: "destructive", description: message });
         setDeleteOpen(false);
       },
     });
@@ -105,15 +121,28 @@ export function DatasetActions({ dataset, previewOpen, onTogglePreview, onDelete
           <Ban className="h-3.5 w-3.5" aria-hidden />
         </Button>
       )}
-      <Button
-        size="icon"
-        variant="ghost"
-        className="h-7 w-7 text-muted-foreground hover:text-destructive"
-        aria-label={t("dataset.delete")}
-        onClick={() => setDeleteOpen(true)}
-      >
-        <Trash2 className="h-3.5 w-3.5" aria-hidden />
-      </Button>
+      {deleteBlockedText ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-block" tabIndex={0}>
+              <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" disabled aria-label={t("dataset.delete")}>
+                <Trash2 className="h-3.5 w-3.5" aria-hidden />
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{deleteBlockedText}</TooltipContent>
+        </Tooltip>
+      ) : (
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+          aria-label={t("dataset.delete")}
+          onClick={() => setDeleteOpen(true)}
+        >
+          <Trash2 className="h-3.5 w-3.5" aria-hidden />
+        </Button>
+      )}
 
       <ConfirmDialog
         open={deleteOpen}

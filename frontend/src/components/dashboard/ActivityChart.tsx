@@ -1,11 +1,12 @@
 import { useMemo } from "react";
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useModels, useTrainings } from "@/hooks/queries";
 import { useLanguage } from "@/i18n/LanguageContext";
+import { formatDate } from "@/lib/format";
 
 export function ActivityChart() {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const { data: trainingsPage } = useTrainings({ limit: 100 });
   const { data: modelsPage } = useModels(undefined, { limit: 100 });
 
@@ -21,13 +22,15 @@ export function ActivityChart() {
       d.setDate(d.getDate() - i);
       const key = d.toISOString().slice(0, 10);
       days.push({
-        date: d.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+        date: formatDate(d, { month: "short", day: "numeric" }),
         trainings: trainings.filter((tr) => tr.created_at.slice(0, 10) === key).length,
         models: models.filter((m) => m.created_at.slice(0, 10) === key).length,
       });
     }
     return days;
-  }, [trainingsPage, modelsPage]);
+    // `language` re-runs the date labels when the UI language changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trainingsPage, modelsPage, language]);
 
   return (
     <Card>
@@ -55,8 +58,12 @@ export function ActivityChart() {
                   fontSize: 12,
                 }}
               />
-              <Area type="monotone" dataKey="trainings" name={t("dashboardPage.seriesTrainings")} stroke="hsl(var(--primary))" fill="url(#colorTrainings)" strokeWidth={2} />
-              <Area type="monotone" dataKey="models" name={t("dashboardPage.seriesModels")} stroke="hsl(142,71%,45%)" fill="transparent" strokeWidth={2} strokeDasharray="4 4" />
+              {/* Both series are usually small integers and often equal, so
+                  each gets its own colour, point markers and a legend —
+                  otherwise one line hides the other (UAT DEF-004). */}
+              <Legend verticalAlign="top" align="right" height={28} iconType="plainline" wrapperStyle={{ fontSize: 12 }} />
+              <Area type="monotone" dataKey="trainings" name={t("dashboardPage.seriesTrainings")} stroke="hsl(var(--primary))" fill="url(#colorTrainings)" strokeWidth={2} dot={{ r: 3, fill: "hsl(var(--primary))" }} activeDot={{ r: 5 }} />
+              <Area type="monotone" dataKey="models" name={t("dashboardPage.seriesModels")} stroke="hsl(32,95%,48%)" fill="transparent" strokeWidth={2} strokeDasharray="5 4" dot={{ r: 4, fill: "hsl(var(--card))", stroke: "hsl(32,95%,48%)", strokeWidth: 2 }} activeDot={{ r: 6 }} />
             </AreaChart>
           </ResponsiveContainer>
         </div>

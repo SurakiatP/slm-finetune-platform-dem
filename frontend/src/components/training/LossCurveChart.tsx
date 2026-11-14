@@ -1,3 +1,4 @@
+import { useLanguage } from "@/i18n/LanguageContext";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 /** One point on the loss chart. Real Engine data can have gaps (e.g. eval
@@ -10,6 +11,7 @@ export interface LossChartPoint {
 }
 
 export function LossCurveChart({ data }: { data: LossChartPoint[] }) {
+  const { t } = useLanguage();
   return (
     <div className="h-[280px]">
       <ResponsiveContainer width="100%" height="100%">
@@ -28,11 +30,11 @@ export function LossCurveChart({ data }: { data: LossChartPoint[] }) {
           <XAxis
             dataKey="step"
             tick={{ fill: "hsl(220,9%,46%)", fontSize: 11 }}
-            label={{ value: "Training Steps", position: "insideBottom", offset: -5, fill: "hsl(220,9%,46%)", fontSize: 11 }}
+            label={{ value: t("trainingMonitor.chart.steps"), position: "insideBottom", offset: -5, fill: "hsl(220,9%,46%)", fontSize: 11 }}
           />
           <YAxis
             tick={{ fill: "hsl(220,9%,46%)", fontSize: 11 }}
-            label={{ value: "Loss", angle: -90, position: "insideLeft", fill: "hsl(220,9%,46%)", fontSize: 11 }}
+            label={{ value: t("trainingMonitor.chart.loss"), angle: -90, position: "insideLeft", fill: "hsl(220,9%,46%)", fontSize: 11 }}
           />
           <Tooltip
             contentStyle={{
@@ -47,7 +49,7 @@ export function LossCurveChart({ data }: { data: LossChartPoint[] }) {
           <Area
             type="monotone"
             dataKey="trainLoss"
-            name="Train Loss"
+            name={t("trainingMonitor.chart.trainLoss")}
             stroke="hsl(243,75%,59%)"
             fill="url(#trainGrad)"
             strokeWidth={2}
@@ -57,7 +59,7 @@ export function LossCurveChart({ data }: { data: LossChartPoint[] }) {
           <Area
             type="monotone"
             dataKey="valLoss"
-            name="Val Loss"
+            name={t("trainingMonitor.chart.valLoss")}
             stroke="hsl(38,92%,50%)"
             fill="url(#valGrad)"
             strokeWidth={2}

@@ -38,7 +38,7 @@ export function AppSidebar() {
           <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
             <Zap className="h-3.5 w-3.5" aria-hidden="true" />
           </span>
-          <span className="text-[15px] font-semibold tracking-tight text-foreground group-data-[collapsible=icon]:hidden">SLM Studio</span>
+          <span className="text-[15px] font-semibold tracking-tight text-foreground group-data-[collapsible=icon]:hidden">TuneLab</span>
         </div>
         {navGroups.map((group) => (
           <SidebarGroup key={group.id} className="py-1">

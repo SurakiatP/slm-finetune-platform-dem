@@ -1,24 +1,37 @@
-import { useState, useRef, useEffect } from "react";
+import { forwardRef, useState, useRef, useEffect, useImperativeHandle } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Send, Bot, User, Loader2, Square } from "lucide-react";
 import { chatCompletions, streamChatCompletions } from "@/api/endpoints/inference";
 import type { ChatMessage } from "@/api/types";
+import { useLanguage } from "@/i18n/LanguageContext";
+import { Markdown } from "./Markdown";
 
 interface DisplayMessage extends ChatMessage {
   latencyMs?: number;
   tokens?: number;
 }
 
-export function ChatPanel({
-  modelId,
-  displayName,
-  className = "",
-}: {
+/** Imperative handle so a shared A/B input can drive several panels at once. */
+export interface ChatPanelHandle {
+  send: (text: string) => void;
+  stop: () => void;
+}
+
+interface ChatPanelProps {
   modelId: string;
   displayName: string;
   className?: string;
-}) {
+  /** Hide the panel's own input row (A/B mode uses one shared input). */
+  hideInput?: boolean;
+  onLoadingChange?: (loading: boolean) => void;
+}
+
+export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function ChatPanel(
+  { modelId, displayName, className = "", hideInput = false, onLoadingChange },
+  ref,
+) {
+  const { t } = useLanguage();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -32,8 +45,12 @@ export function ChatPanel({
     scrollRef.current?.scrollTo?.({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
-  const handleSend = async () => {
-    const text = input.trim();
+  useEffect(() => {
+    onLoadingChange?.(isLoading);
+  }, [isLoading, onLoadingChange]);
+
+  const sendText = async (raw: string) => {
+    const text = raw.trim();
     if (!text || isLoading) return;
 
     const userMsg: DisplayMessage = { role: "user", content: text };
@@ -67,13 +84,20 @@ export function ChatPanel({
         updateAssistant(content, usage?.completion_tokens);
       }
     } catch (reason) {
-      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Inference request failed");
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("playground.requestFailed"));
       setMessages((prev) => prev.filter((message, index) => index !== assistantIndex || Boolean(message.content)));
     } finally {
       controllerRef.current = null;
       setIsLoading(false);
     }
   };
+
+  const handleSend = () => sendText(input);
+
+  useImperativeHandle(ref, () => ({
+    send: (text: string) => void sendText(text),
+    stop: () => controllerRef.current?.abort(),
+  }));
 
   return (
     <div className={`flex flex-col border border-border rounded-lg overflow-hidden bg-background ${className}`}>
@@ -89,7 +113,7 @@ export function ChatPanel({
           className="text-xs h-7 text-muted-foreground"
           onClick={() => { controllerRef.current?.abort(); setMessages([]); setError(null); }}
         >
-          Clear
+          {t("playground.clear")}
         </Button>
       </div>
 
@@ -98,7 +122,7 @@ export function ChatPanel({
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-center py-12">
             <Bot className="h-10 w-10 text-muted-foreground/30 mb-3" />
-            <p className="text-sm text-muted-foreground">Send a message to test the model</p>
+            <p className="text-sm text-muted-foreground">{t("playground.emptyChat")}</p>
           </div>
         )}
         {messages.map((msg, i) => isLoading && msg.role === 'assistant' && !msg.content ? null : (
@@ -110,18 +134,18 @@ export function ChatPanel({
             )}
             <div className="max-w-[85%] space-y-1">
               <div
-                className={`px-3.5 py-2.5 rounded-xl text-sm whitespace-pre-wrap ${
+                className={`px-3.5 py-2.5 rounded-xl text-sm break-words ${msg.role === "user" ? "whitespace-pre-wrap " : ""}${
                   msg.role === "user"
                     ? "bg-primary text-primary-foreground rounded-br-sm"
                     : "bg-secondary/50 border border-border rounded-bl-sm text-foreground"
                 }`}
               >
-                {msg.content}
+                {msg.role === "assistant" ? <Markdown text={msg.content} /> : msg.content}
               </div>
               {msg.role === "assistant" && msg.latencyMs && (
                 <div className="flex gap-3 text-[10px] text-muted-foreground px-1">
                   <span>{msg.latencyMs}ms</span>
-                  <span>{msg.tokens} tokens</span>
+                  {msg.tokens != null && <span>{msg.tokens} {t("playground.tokens")}</span>}
                 </div>
               )}
             </div>
@@ -154,20 +178,23 @@ export function ChatPanel({
       </div>
 
       {/* Input */}
+      {!hideInput && (
       <div className="border-t border-border p-3 flex gap-2">
         <Input
-          placeholder="Type a message..."
+          placeholder={t("playground.inputPlaceholder")}
+          aria-label={t("playground.inputPlaceholder")}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && void handleSend()}
           className="border-0 shadow-none focus-visible:ring-0 bg-transparent"
           disabled={isLoading}
         />
-        <Button aria-label="Send message" size="icon" onClick={() => void handleSend()} disabled={!input.trim() || isLoading} className="shrink-0">
+        <Button aria-label={t("playground.send")} size="icon" onClick={() => void handleSend()} disabled={!input.trim() || isLoading} className="shrink-0">
           <Send className="h-4 w-4" />
         </Button>
-        {isLoading && <Button type="button" variant="outline" onClick={() => controllerRef.current?.abort()}><Square className="mr-1 h-4 w-4" />Stop</Button>}
+        {isLoading && <Button type="button" variant="outline" onClick={() => controllerRef.current?.abort()}><Square className="mr-1 h-4 w-4" />{t("playground.stop")}</Button>}
       </div>
+      )}
     </div>
   );
-}
+});

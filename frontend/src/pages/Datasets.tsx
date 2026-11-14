@@ -13,7 +13,9 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DatasetPreviewTable } from "@/components/dataset/DatasetPreviewTable";
-import { useDatasetDownload, useDatasets, useDeleteDataset, useProjects, useTrainings } from "@/hooks/queries";
+import { EmptyDownloadError } from "@/api/endpoints/datasets";
+import { useDatasetDownload, useDatasets, useDeleteDataset, useProjects } from "@/hooks/queries";
+import { useDatasetUsage } from "@/hooks/useDatasetUsage";
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/i18n/LanguageContext";
 import { formatBytes, formatDateTime } from "@/lib/format";
@@ -49,7 +51,6 @@ export default function Datasets() {
 
   const { data: datasetsPage, isLoading, error } = useDatasets(undefined, { limit: 200 });
   const { data: projectsPage } = useProjects({ limit: 200 });
-  const { data: trainingsPage } = useTrainings({ limit: 200 });
   const deleteMutation = useDeleteDataset();
   const downloadMutation = useDatasetDownload();
 
@@ -57,8 +58,10 @@ export default function Datasets() {
 
   const handleDownload = (id: string) => {
     downloadMutation.mutate(id, {
+      onSuccess: () => toast({ description: t("dataset.downloadStarted") }),
       onError: (err: unknown) => {
-        toast({ variant: "destructive", description: errorMessage(err) });
+        const description = err instanceof EmptyDownloadError ? t("dataset.downloadEmpty") : errorMessage(err);
+        toast({ variant: "destructive", description });
       },
     });
   };
@@ -69,15 +72,10 @@ export default function Datasets() {
     return map;
   }, [projectsPage]);
 
-  // Any training that references a dataset blocks its deletion server-side
-  // (DELETE /datasets/{id} -> 409 "in use"), regardless of that training's
-  // status — pre-compute so a blocked row reads as blocked before the user
-  // even tries, rather than only after eating a failed request.
-  const inUseDatasetIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const tr of trainingsPage?.items ?? []) ids.add(tr.dataset_id);
-    return ids;
-  }, [trainingsPage]);
+  // Any training or evaluation that references a dataset blocks its deletion
+  // server-side (DELETE /datasets/{id} -> 409 "in use") — pre-compute so a
+  // blocked row reads as blocked before the user even tries.
+  const datasetUsage = useDatasetUsage();
 
   const datasets = datasetsPage?.items ?? [];
   const filtered = datasets
@@ -143,8 +141,8 @@ export default function Datasets() {
           ) : filtered.length === 0 ? (
             <EngineEmptyState
               icon={Database}
-              title={t("dataset.empty")}
-              hint={search ? t("datasetsPage.noResults") : t("datasetsPage.emptyHint")}
+              title={search ? t("datasetsPage.noResults") : t("dataset.empty")}
+              hint={search ? undefined : t("datasetsPage.emptyHint")}
             />
           ) : (
             <div className="rounded-lg border border-border">
@@ -164,9 +162,11 @@ export default function Datasets() {
                   {filtered.map((dataset) => {
                     const role = datasetRoleTag(dataset);
                     const blockedReason = blockedReasons[dataset.id];
-                    const preKnownBlocked = inUseDatasetIds.has(dataset.id);
-                    const blocked = Boolean(blockedReason) || preKnownBlocked;
-                    const tooltipText = blockedReason ?? (preKnownBlocked ? t("datasetsPage.inUseHint") : undefined);
+                    const usage = datasetUsage.get(dataset.id);
+                    const blocked = Boolean(blockedReason) || Boolean(usage);
+                    const tooltipText = usage
+                      ? t(usage === "training" ? "datasetsPage.inUseHint" : "datasetsPage.inUseEvalHint")
+                      : blockedReason;
 
                     const expanded = expandedId === dataset.id;
                     const downloading = downloadMutation.isPending && downloadMutation.variables === dataset.id;

@@ -3,6 +3,7 @@ import { Ban, CheckCircle2, Clock, Loader2, XCircle, type LucideIcon } from "luc
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { JobStatus } from "@/api/types";
+import { useLanguage } from "@/i18n/LanguageContext";
 
 interface StatusConfig {
   icon: LucideIcon;
@@ -38,12 +39,13 @@ const statusConfig: Record<JobStatus, StatusConfig> = {
  *  reference (frontend/src/components/data/StatusBadge.tsx), ported onto the
  *  shadcn Badge (outline variant + manual tone classes, since Badge has no
  *  built-in tone prop). */
-export function StatusBadge({ status }: { status: JobStatus }) {
-  const { icon: Icon, spin, className } = statusConfig[status];
+export function StatusBadge({ status, label }: { status: JobStatus; /** Overrides the translated status text. */ label?: string }) {
+  const { t } = useLanguage();
+  const { icon: Icon, spin, className } = statusConfig[status] ?? statusConfig.pending;
   return (
     <Badge variant="outline" className={cn("gap-1 capitalize", className)}>
       <Icon className={cn("h-3 w-3", spin && "animate-spin")} aria-hidden />
-      {status}
+      {label ?? t(`status.${status}`)}
     </Badge>
   );
 }

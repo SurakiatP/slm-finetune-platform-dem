@@ -1,5 +1,6 @@
 import { useRef, useEffect } from "react";
 import type { TrainingLogEntry } from "@/data/trainingMockData";
+import { useLanguage } from "@/i18n/LanguageContext";
 
 const levelStyle: Record<string, string> = {
   info: "text-muted-foreground",
@@ -18,6 +19,7 @@ const levelPrefix: Record<string, string> = {
 /** `active` is false once the run is terminal — the trailing "waiting" indicator
  *  is then dropped, since no further events will arrive for this job. */
 export function TrainingLog({ logs, active = true }: { logs: TrainingLogEntry[]; active?: boolean }) {
+  const { t } = useLanguage();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -39,7 +41,7 @@ export function TrainingLog({ logs, active = true }: { logs: TrainingLogEntry[];
       {active && (
         <div className="flex items-center gap-1 pt-1">
           <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-          <span className="text-muted-foreground">Waiting for next event...</span>
+          <span className="text-muted-foreground">{t("trainingMonitor.waitingEvent")}</span>
         </div>
       )}
     </div>
