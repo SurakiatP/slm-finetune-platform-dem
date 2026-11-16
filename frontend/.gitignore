@@ -35,3 +35,6 @@ supabase/.temp/
 
 # local design tooling
 .superpowers/
+
+# local Claude Code settings
+.claude/
