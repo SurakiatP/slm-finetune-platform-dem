@@ -1,0 +1,157 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Soft theme: grey canvas, white cards, one calm blue accent.
+   * Colour outside the accent is reserved for status. */
+  :root {
+    --background: 210 20% 96%;
+    --foreground: 210 31% 13%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 210 31% 13%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 210 31% 13%;
+
+    --primary: 212 64% 40%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 18% 93%;
+    --secondary-foreground: 210 31% 13%;
+
+    --muted: 210 18% 94%;
+    --muted-foreground: 211 12% 41%;
+
+    --accent: 212 62% 95%;
+    --accent-foreground: 212 64% 36%;
+
+    --destructive: 0 68% 48%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 210 20% 91%;
+    --input: 210 18% 88%;
+    --ring: 212 64% 40%;
+
+    --radius: 0.75rem;
+
+    --success: 149 71% 29%;
+    --success-foreground: 0 0% 100%;
+    --warning: 32 90% 40%;
+    --warning-foreground: 0 0% 100%;
+
+    --shadow-card: 0 1px 2px hsl(210 31% 13% / 0.04), 0 4px 16px hsl(210 31% 13% / 0.05);
+    --shadow-pop: 0 2px 6px hsl(210 31% 13% / 0.06), 0 12px 32px hsl(210 31% 13% / 0.10);
+
+    --sidebar-background: 210 20% 96%;
+    --sidebar-foreground: 210 31% 13%;
+    --sidebar-primary: 212 64% 40%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 100%;
+    --sidebar-accent-foreground: 210 31% 13%;
+    --sidebar-border: 210 20% 91%;
+    --sidebar-ring: 212 64% 40%;
+  }
+
+  .dark {
+    --background: 213 27% 8%;
+    --foreground: 210 24% 92%;
+
+    --card: 212 25% 12%;
+    --card-foreground: 210 24% 92%;
+
+    --popover: 212 25% 13%;
+    --popover-foreground: 210 24% 92%;
+
+    --primary: 211 68% 62%;
+    --primary-foreground: 210 39% 7%;
+
+    --secondary: 212 22% 17%;
+    --secondary-foreground: 210 24% 92%;
+
+    --muted: 212 22% 16%;
+    --muted-foreground: 210 13% 63%;
+
+    --accent: 212 37% 18%;
+    --accent-foreground: 211 70% 74%;
+
+    --destructive: 0 70% 62%;
+    --destructive-foreground: 210 39% 7%;
+
+    --border: 212 21% 18%;
+    --input: 212 21% 22%;
+    --ring: 211 68% 62%;
+
+    --success: 151 50% 53%;
+    --success-foreground: 210 39% 7%;
+    --warning: 38 85% 58%;
+    --warning-foreground: 210 39% 7%;
+
+    --shadow-card: none;
+    --shadow-pop: 0 12px 32px hsl(0 0% 0% / 0.45);
+
+    --sidebar-background: 213 27% 8%;
+    --sidebar-foreground: 210 24% 92%;
+    --sidebar-primary: 211 68% 62%;
+    --sidebar-primary-foreground: 210 39% 7%;
+    --sidebar-accent: 212 37% 18%;
+    --sidebar-accent-foreground: 210 24% 92%;
+    --sidebar-border: 212 21% 18%;
+    --sidebar-ring: 211 68% 62%;
+  }
+}
+
+@layer base {
+  html {
+    scrollbar-color: hsl(var(--muted-foreground) / 0.5) hsl(var(--muted));
+    scrollbar-width: thin;
+  }
+
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+  /* Thai script needs taller lines than Latin to keep vowel marks clear. */
+  :lang(th) body {
+    line-height: 1.65;
+  }
+}
+
+/* One application-wide scrollbar baseline. Component classes may only alter
+ * geometry; colours and operability are inherited by every owned scroller. */
+@media (forced-colors: none) {
+  *::-webkit-scrollbar {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: hsl(var(--muted));
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.5);
+    border: 0.2rem solid hsl(var(--muted));
+    border-radius: 999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover,
+  *::-webkit-scrollbar-thumb:active {
+    background: hsl(var(--primary) / 0.75);
+  }
+}
+
+@layer utilities {
+  /* Kept for existing call sites; the soft theme uses plain accent text. */
+  .text-gradient {
+    @apply text-primary;
+  }
+  .glass {
+    @apply bg-background/80 backdrop-blur-xl border border-border/50;
+  }
+}

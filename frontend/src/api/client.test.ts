@@ -1,0 +1,127 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const mocks = vi.hoisted(() => ({
+  getAccessToken: vi.fn(),
+  fetch: vi.fn(),
+}))
+
+vi.mock('@/auth/keycloak', () => ({
+  getAccessToken: mocks.getAccessToken,
+}))
+
+import { api, ApiError } from '@/api/client'
+
+describe('Engine API client', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.getAccessToken.mockResolvedValue('jwt-token')
+    vi.stubGlobal('fetch', mocks.fetch)
+  })
+
+  it('attaches the OIDC access token and parses JSON', async () => {
+    mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ status: 'ok' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(api.get<{ status: string }>('/api/v1/projects')).resolves.toEqual({ status: 'ok' })
+    const [, init] = mocks.fetch.mock.calls[0] as [string, RequestInit]
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer jwt-token')
+  })
+
+  it('calls public probes without requiring a session', async () => {
+    mocks.getAccessToken.mockResolvedValue(null)
+    mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ status: 'ok' }), { status: 200 }))
+
+    await expect(api.get<{ status: string }>('/health')).resolves.toEqual({ status: 'ok' })
+    const [, init] = mocks.fetch.mock.calls[0] as [string, RequestInit]
+    expect(mocks.getAccessToken).not.toHaveBeenCalled()
+    expect(new Headers(init.headers).get('Authorization')).toBeNull()
+  })
+
+  it('does not set a multipart content type and handles 204', async () => {
+    mocks.fetch.mockResolvedValue(new Response(null, { status: 204 }))
+    const form = new FormData()
+    form.set('file', new File(['row'], 'seed.jsonl'))
+
+    await expect(api.postForm('/api/v1/datasets/upload-seed', form)).resolves.toBeUndefined()
+    const [, init] = mocks.fetch.mock.calls[0] as [string, RequestInit]
+    expect(new Headers(init.headers).get('Content-Type')).toBeNull()
+  })
+
+  it('normalizes FastAPI validation arrays and preserves request ids', async () => {
+    mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ detail: [{ loc: ['body'], msg: 'invalid' }] }), {
+      status: 422,
+      headers: { 'Content-Type': 'application/json', 'X-Request-ID': 'req-1' },
+    }))
+
+    const error = await api.post('/api/v1/trainings', {}).catch((value: unknown) => value)
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({ status: 422, code: 'validation_error', requestId: 'req-1' })
+  })
+
+  it('fails locally when no authenticated session exists', async () => {
+    mocks.getAccessToken.mockResolvedValue(null)
+    const error = await api.get('/api/v1/projects').catch((value: unknown) => value)
+    expect(error).toMatchObject({ status: 401, code: 'missing_session' })
+    expect(mocks.fetch).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [401, 'token_expired'],
+    [409, 'resource_in_use'],
+  ])('preserves structured Engine errors for status %i', async (status, code) => {
+    mocks.fetch.mockResolvedValue(new Response(JSON.stringify({
+      detail: 'Engine rejected the request',
+      code,
+      extra: { resource_id: 'resource-1' },
+    }), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const error = await api.delete('/api/v1/datasets/resource-1').catch((value: unknown) => value)
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({
+      status,
+      code,
+      message: 'Engine rejected the request',
+      extra: { resource_id: 'resource-1' },
+    })
+  })
+
+  it('keeps a quota cooldown from Retry-After for actionable errors', async () => {
+    mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ detail: 'Too many active jobs' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '30' },
+    }))
+
+    const error = await api.post('/api/v1/trainings', {}).catch((value: unknown) => value)
+    expect(error).toMatchObject({ status: 429, retryAfter: 30 })
+  })
+
+  it('sends an explicit idempotency key on submit requests', async () => {
+    mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    await api.post('/api/v1/evaluations', {}, { idempotencyKey: 'idem-1' })
+    const [, init] = mocks.fetch.mock.calls[0] as [string, RequestInit]
+    expect(new Headers(init.headers).get('Idempotency-Key')).toBe('idem-1')
+  })
+  it('authenticates streaming requests with the refreshed OIDC token', async () => {
+    mocks.fetch.mockResolvedValue(new Response('stream', { status: 200 }))
+    const signal = new AbortController().signal
+    await api.postStream('/api/v1/inference/chat', { prompt: 'hello' }, signal)
+    const [, init] = mocks.fetch.mock.calls[0] as [string, RequestInit]
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer jwt-token')
+    expect(init.signal).toBe(signal)
+  })
+
+  it('does not send streaming requests after session expiry', async () => {
+    mocks.getAccessToken.mockResolvedValue(null)
+    await expect(api.postStream('/api/v1/inference/chat', {}, new AbortController().signal)).rejects.toMatchObject({ status: 401 })
+    expect(mocks.fetch).not.toHaveBeenCalled()
+  })
+
+})

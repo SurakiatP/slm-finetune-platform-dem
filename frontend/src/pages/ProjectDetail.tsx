@@ -1,0 +1,422 @@
+import { useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, ClipboardList, Database, Loader2, PlayCircle, Trash2 } from "lucide-react";
+
+import { PageTransition } from "@/components/motion";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ConfirmDialog } from "@/components/engine/ConfirmDialog";
+import { EngineEmptyState } from "@/components/engine/EngineEmptyState";
+import { ErrorDetail } from "@/components/engine/ErrorDetail";
+import { QueueBadge } from "@/components/engine/QueueBadge";
+import { StatusBadge } from "@/components/engine/StatusBadge";
+import { EvaluationTable } from "@/components/evaluation/EvaluationTable";
+import { PipelineHub } from "@/components/project-pipeline/PipelineHub";
+import {
+  queryKeys,
+  useDatasets,
+  useEvaluations,
+  useModels,
+  useProject,
+  useTrainings,
+} from "@/hooks/queries";
+import { useToast } from "@/hooks/use-toast";
+import { useLanguage } from "@/i18n/LanguageContext";
+import { useBaseModelLabel, useTaskTypeLabel } from "@/lib/labels";
+import { isTerminalStatus } from "@/api/types";
+import { deleteProjectCascade } from "@/lib/projectDelete";
+
+// ProjectActivityTable / ProjectUsageTable are owned by another W3 lane and
+// land under src/components/usage/*. Per the task brief this import may show
+// as unresolved under `tsc` until that lane merges — expected, not a bug in
+// this file. Contract: single prop `projectId: string`.
+import { ProjectActivityTable } from "@/components/usage/ProjectActivityTable";
+import { ProjectUsageTable } from "@/components/usage/ProjectUsageTable";
+import { formatDateTime } from "@/lib/format";
+
+export default function ProjectDetail() {
+  const { id } = useParams<{ id: string }>();
+  const { t } = useLanguage();
+  const { toast } = useToast();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const taskTypeLabel = useTaskTypeLabel();
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const { data: project, isLoading, isError, error } = useProject(id ?? "");
+  const baseModelLabel = useBaseModelLabel();
+  // The project row has no base model or GPU state of its own while a run is
+  // active — derive both from its trainings (UAT DEF-006, DEF-007).
+  const { data: projectTrainings } = useTrainings(
+    { project_id: id, limit: 50 },
+    {
+      refetchInterval: (query) =>
+        (query.state.data?.items ?? []).some((tr) => !isTerminalStatus(tr.status)) ? 6000 : false,
+    },
+  );
+  const trainingsNewestFirst = [...(projectTrainings?.items ?? [])].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+  const latestTraining = trainingsNewestFirst[0] ?? null;
+  const activeTraining = trainingsNewestFirst.find((tr) => !isTerminalStatus(tr.status)) ?? null;
+
+  const handleDelete = async () => {
+    if (!id) return;
+    setDeleting(true);
+    try {
+      await deleteProjectCascade(id);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
+      toast({ title: t("project.delete"), description: project?.name });
+      navigate("/projects");
+    } catch (err) {
+      toast({
+        title: t("common.error"),
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+      setDeleting(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (isError || !project) {
+    return (
+      <div className="text-center py-20 space-y-3">
+        <p className="text-muted-foreground">{t("projectDetail.notFound")}</p>
+        {error && (
+          <p className="text-xs text-destructive">{error instanceof Error ? error.message : String(error)}</p>
+        )}
+        <Button variant="link" asChild><Link to="/projects">{t("projectDetail.backToProjects")}</Link></Button>
+      </div>
+    );
+  }
+
+  return (
+    <PageTransition>
+      <div className="space-y-6 max-w-5xl">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="icon" asChild>
+            <Link to="/projects" aria-label={t("projectDetail.backToProjects")}><ArrowLeft className="h-4 w-4" /></Link>
+          </Button>
+          <div className="flex-1">
+            <div className="flex items-center gap-3">
+              <h1 className="text-xl font-bold text-foreground">{project.name}</h1>
+              <Badge variant="outline" className="text-[10px]">{taskTypeLabel(project.task_type)}</Badge>
+              <QueueBadge queueState={project.queue_state} queuePosition={project.queue_position} />
+            </div>
+            <p className="text-sm text-muted-foreground mt-0.5">{project.description}</p>
+            {project.external_project_id && (
+              <p className="text-[11px] font-mono text-muted-foreground mt-0.5">
+                {t("projectDetail.externalId")}: {project.external_project_id}
+              </p>
+            )}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2 text-destructive hover:text-destructive shrink-0"
+            onClick={() => setDeleteOpen(true)}
+          >
+            <Trash2 className="h-3.5 w-3.5" /> {t("project.delete")}
+          </Button>
+        </div>
+
+        <Tabs defaultValue="overview">
+          <TabsList>
+            <TabsTrigger value="overview">{t("projectDetail.overview")}</TabsTrigger>
+            <TabsTrigger value="datasets">{t("project.datasetsTab")}</TabsTrigger>
+            <TabsTrigger value="training">{t("projectDetail.training")}</TabsTrigger>
+            <TabsTrigger value="evaluation">{t("projectDetail.evaluation")}</TabsTrigger>
+            <TabsTrigger value="activity">{t("project.activityTab")}</TabsTrigger>
+            <TabsTrigger value="usage">{t("project.usageTab")}</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="overview" className="space-y-4 mt-4">
+            <PipelineHub projectId={project.id} />
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm">{t("projectDetail.configuration")}</CardTitle></CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  {[
+                    [t("projectDetail.taskType"), taskTypeLabel(project.task_type)],
+                    [t("projectDetail.baseModel"), latestTraining ? baseModelLabel(latestTraining.base_model) : t("projectDetail.baseModelNone")],
+                    [t("projectDetail.created"), formatDateTime(project.created_at)],
+                    [t("projectDetail.lastUpdated"), formatDateTime(project.updated_at)],
+                  ].map(([label, value]) => (
+                    <div key={String(label)} className="flex justify-between">
+                      <span className="text-muted-foreground">{label}</span>
+                      <span className="font-medium text-foreground">{String(value)}</span>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm">{t("project.queue")}</CardTitle></CardHeader>
+                <CardContent className="text-sm">
+                  {project.queue_state ? (
+                    <div className="flex items-center gap-2">
+                      <QueueBadge queueState={project.queue_state} queuePosition={project.queue_position} />
+                      {project.owner_queue_position != null && (
+                        <span className="text-xs text-muted-foreground">
+                          {t("projectDetail.ownerQueuePosition").replace("{n}", String(project.owner_queue_position))}
+                        </span>
+                      )}
+                    </div>
+                  ) : activeTraining ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <StatusBadge status={activeTraining.status} />
+                      <QueueBadge queueState={activeTraining.queue_state} queuePosition={activeTraining.queue_position} />
+                      <Link to={`/projects/${project.id}/training`} className="text-xs text-primary hover:underline">
+                        {activeTraining.mode === "hpo" ? t("projectDetail.activeHpo") : t("projectDetail.activeTraining")}
+                      </Link>
+                    </div>
+                  ) : (
+                    <p className="text-muted-foreground">{t("projectPage.noGpuJob")}</p>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Card>
+                <CardContent className="p-4 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">{t("project.datasetsTab")}</p>
+                    <p className="text-xs text-muted-foreground">{t("projectPage.datasetsDesc")}</p>
+                  </div>
+                  <Button variant="outline" size="sm" asChild>
+                    <Link to={`/projects/${project.id}/insights`}>
+                      <Database className="h-3.5 w-3.5 mr-1.5" /> {t("common.view")}
+                    </Link>
+                  </Button>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-4 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">{t("projectDetail.training")}</p>
+                    <p className="text-xs text-muted-foreground">{t("projectPage.trainingsDesc")}</p>
+                  </div>
+                  <Button variant="outline" size="sm" asChild>
+                    <Link to={`/projects/${project.id}/training`}>
+                      <PlayCircle className="h-3.5 w-3.5 mr-1.5" /> {t("common.view")}
+                    </Link>
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="datasets" className="mt-4">
+            <DatasetsPreview projectId={project.id} />
+          </TabsContent>
+
+          <TabsContent value="training" className="mt-4">
+            <TrainingsPreview projectId={project.id} />
+          </TabsContent>
+
+          <TabsContent value="evaluation" className="mt-4">
+            <ProjectEvaluations projectId={project.id} />
+          </TabsContent>
+
+          <TabsContent value="activity" className="mt-4">
+            <ProjectActivityTable projectId={project.id} projectName={project.name} ownerId={project.owner_id} />
+          </TabsContent>
+
+          <TabsContent value="usage" className="mt-4">
+            <ProjectUsageTable projectId={project.id} />
+          </TabsContent>
+        </Tabs>
+      </div>
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        onConfirm={handleDelete}
+        title={t("project.delete")}
+        description={
+          <>
+            {t("project.deleteConfirm")} {t("project.deleteCancelsJobs")} {t("pipelineHub.deleteDatasetsNote")}
+          </>
+        }
+        confirmLabel={t("project.delete")}
+        destructive
+        loading={deleting}
+      />
+    </PageTransition>
+  );
+}
+
+function DatasetsPreview({ projectId }: { projectId: string }) {
+  const { t } = useLanguage();
+  const { data, isLoading, isError, error } = useDatasets(projectId, { limit: 5 });
+  const items = data?.items ?? [];
+
+  if (isLoading) {
+    return (
+      <div className="flex justify-center py-10">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return <ErrorDetail error={{ detail: error instanceof Error ? error.message : String(error) }} />;
+  }
+
+  if (items.length === 0) {
+    return (
+      <EngineEmptyState
+        icon={Database}
+        title={t("projectPage.noDatasets")}
+        hint={t("projectPage.noDatasetsHint")}
+        action={
+          <Button variant="outline" size="sm" asChild>
+            <Link to={`/projects/${projectId}/insights`}>{t("projectPage.openDatasets")}</Link>
+          </Button>
+        }
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {items.map((d) => (
+          <Card key={d.id}>
+            <CardContent className="p-3 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium text-foreground truncate">{d.name}</p>
+                <StatusBadge status={d.status} />
+              </div>
+              <p className="text-xs text-muted-foreground">{d.source} · {d.num_samples} samples</p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+      <div className="text-right">
+        <Button variant="link" size="sm" asChild>
+          <Link to={`/projects/${projectId}/insights`}>{t("projectPage.viewAllDatasets")} →</Link>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Restores the original's `evaluation` tab, now backed by the real evaluation
+ *  stage: evaluations are keyed by model artifact, so scope them to this
+ *  project by way of its model artifacts. */
+function ProjectEvaluations({ projectId }: { projectId: string }) {
+  const { t } = useLanguage();
+  const navigate = useNavigate();
+  const { data: modelsPage, isLoading: modelsLoading } = useModels(projectId, { limit: 100 });
+  const { data: evalsPage, isLoading: evalsLoading } = useEvaluations({ limit: 100 });
+
+  if (modelsLoading || evalsLoading) {
+    return (
+      <div className="flex justify-center py-10">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  const models = modelsPage?.items ?? [];
+  const modelIds = new Set(models.map((m) => m.id));
+  const modelNames = Object.fromEntries(models.map((m) => [m.id, m.name]));
+  const rows = (evalsPage?.items ?? []).filter((e) => modelIds.has(e.model_artifact_id));
+
+  if (rows.length === 0) {
+    return (
+      <EngineEmptyState
+        icon={ClipboardList}
+        title={t("projectPage.noEvaluations")}
+        hint={t("projectPage.noEvaluationsHint")}
+        action={
+          <Button variant="outline" size="sm" asChild>
+            <Link to="/models">{t("projectPage.openModels")}</Link>
+          </Button>
+        }
+      />
+    );
+  }
+
+  return (
+    <EvaluationTable
+      evaluations={rows}
+      modelNames={modelNames}
+      onRowClick={(evaluation) => navigate(`/models/${evaluation.model_artifact_id}`)}
+    />
+  );
+}
+
+function TrainingsPreview({ projectId }: { projectId: string }) {
+  const { t } = useLanguage();
+  const { data, isLoading, isError, error } = useTrainings({ project_id: projectId, limit: 5 });
+  const items = data?.items ?? [];
+
+  if (isLoading) {
+    return (
+      <div className="flex justify-center py-10">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return <ErrorDetail error={{ detail: error instanceof Error ? error.message : String(error) }} />;
+  }
+
+  if (items.length === 0) {
+    return (
+      <EngineEmptyState
+        icon={PlayCircle}
+        title={t("projectPage.noTrainings")}
+        hint={t("projectPage.noTrainingsHint")}
+        action={
+          <Button variant="outline" size="sm" asChild>
+            <Link to={`/projects/${projectId}/training`}>{t("projectPage.openTrainings")}</Link>
+          </Button>
+        }
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {items.map((tr) => (
+          <Card key={tr.id}>
+            <CardContent className="p-3 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium text-foreground truncate">
+                  {tr.training_name || tr.base_model}
+                </p>
+                <StatusBadge status={tr.status} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {tr.mode === "hpo" ? "HPO" : t("projectPage.manual")} · {tr.base_model}
+              </p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+      <div className="text-right">
+        <Button variant="link" size="sm" asChild>
+          <Link to={`/projects/${projectId}/training`}>{t("projectPage.viewTrainingMonitor")} →</Link>
+        </Button>
+      </div>
+    </div>
+  );
+}

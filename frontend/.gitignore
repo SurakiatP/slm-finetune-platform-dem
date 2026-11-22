@@ -1,0 +1,40 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local configuration and database credentials
+.env
+.env.*
+!.env.example
+!.env.mock
+!.env.production.example
+
+# Supabase CLI local state
+supabase/.temp/
+
+# local design tooling
+.superpowers/
+
+# local Claude Code settings
+.claude/

@@ -1,0 +1,167 @@
+import type { ErrorBody } from '@/api/types'
+import { getAccessToken } from '@/auth/keycloak'
+
+/** Base URL for the API; empty in same-origin deployments so the proxy handles /api. */
+const API_BASE: string = (
+  import.meta.env.VITE_API_BASE
+  ?? import.meta.env.VITE_ENGINE_HOST
+  ?? ''
+).replace(/\/$/, '')
+
+/** `VITE_MOCK=1` (see `npm run dev:mock`) routes every request through the
+ *  in-memory mock store instead of a real backend — see src/mocks/mockEngine.ts.
+ *  Lazily imported so the mock module (and its seed data) never ships in a
+ *  normal build. */
+const isMockMode = import.meta.env.VITE_MOCK === '1'
+let mockFetchPromise: Promise<typeof import('@/mocks/mockEngine').mockFetch> | null = null
+
+function doFetch(path: string, init?: RequestInit): Promise<Response> {
+  if (!isMockMode) return fetch(`${API_BASE}${path}`, init)
+  mockFetchPromise ??= import('@/mocks/mockEngine').then((m) => m.mockFetch)
+  return mockFetchPromise.then((mockFetch) => mockFetch(path, init))
+}
+
+export class ApiError extends Error {
+  readonly status: number
+  readonly code: string | null
+  readonly extra: Record<string, unknown> | null
+  readonly requestId: string | null
+  /** Server-provided cooldown, in seconds. Present on quota responses only. */
+  readonly retryAfter: number | null
+
+  constructor(
+    status: number,
+    body: ErrorBody,
+    requestId: string | null = null,
+    retryAfter: number | null = null,
+  ) {
+    super(body.detail)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = body.code ?? null
+    this.extra = body.extra ?? null
+    this.requestId = requestId
+    this.retryAfter = retryAfter
+  }
+}
+
+async function parseError(res: Response): Promise<ApiError> {
+  let body: ErrorBody = { detail: `${res.status} ${res.statusText}` }
+  try {
+    const json = (await res.json()) as Partial<ErrorBody>
+    if (typeof json.detail === 'string') {
+      body = { detail: json.detail, code: json.code, extra: json.extra }
+    } else if (json.detail !== undefined) {
+      // FastAPI validation errors put an array in `detail`.
+      body = { detail: JSON.stringify(json.detail), code: 'validation_error' }
+    }
+  } catch {
+    // Non-JSON error body; keep the status line.
+  }
+  const retryAfterHeader = res.headers.get('Retry-After')
+  const retryAfter = retryAfterHeader && /^\d+$/.test(retryAfterHeader)
+    ? Number(retryAfterHeader)
+    : null
+  return new ApiError(res.status, body, res.headers.get('X-Request-ID'), retryAfter)
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  const isPublicProbe = path === '/health' || path === '/ready'
+  if (!isMockMode && !isPublicProbe) {
+    const token = await getAccessToken()
+    if (!token) {
+      throw new ApiError(401, {
+        detail: 'Please sign in before using the fine-tuning engine.',
+        code: 'missing_session',
+      })
+    }
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
+  const res = await doFetch(path, { ...init, headers })
+  if (!res.ok) throw await parseError(res)
+  if (res.status === 204) return undefined as T
+  return (await res.json()) as T
+}
+
+export const api = {
+  get<T>(path: string): Promise<T> {
+    return request<T>(path)
+  },
+
+  post<T>(path: string, body?: unknown, options?: { idempotencyKey?: string }): Promise<T> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (options?.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey
+    return request<T>(path, {
+      method: 'POST',
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  },
+
+  async postStream(path: string, body: unknown, signal: AbortSignal): Promise<Response> {
+    const headers = new Headers({ 'Content-Type': 'application/json' })
+    if (!isMockMode) {
+      const token = await getAccessToken()
+      if (!token) throw new ApiError(401, { detail: 'Please sign in before using the fine-tuning engine.', code: 'missing_session' })
+      headers.set('Authorization', `Bearer ${token}`)
+    }
+    const response = await doFetch(path, { method: 'POST', headers, body: JSON.stringify(body), signal })
+    if (!response.ok) throw await parseError(response)
+    return response
+  },
+
+  patch<T>(path: string, body: unknown): Promise<T> {
+    return request<T>(path, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  },
+
+  put<T>(path: string, body: unknown): Promise<T> {
+    return request<T>(path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  },
+
+  delete<T = void>(path: string): Promise<T> {
+    return request<T>(path, { method: 'DELETE' })
+  },
+
+  postForm<T>(path: string, form: FormData): Promise<T> {
+    return request<T>(path, { method: 'POST', body: form })
+  },
+
+  /** Authenticated binary GET — for streamed downloads that cannot use a plain
+   *  `<a href>` because the Bearer token has to ride in the Authorization header. */
+  async getBlob(path: string): Promise<{ blob: Blob; filename: string | null }> {
+    const headers = new Headers()
+    if (!isMockMode) {
+      const token = await getAccessToken()
+      if (!token) {
+        throw new ApiError(401, {
+          detail: 'Please sign in before using the fine-tuning engine.',
+          code: 'missing_session',
+        })
+      }
+      headers.set('Authorization', `Bearer ${token}`)
+    }
+    const res = await doFetch(path, { headers })
+    if (!res.ok) throw await parseError(res)
+    const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(res.headers.get('Content-Disposition') ?? '')
+    return { blob: await res.blob(), filename: match ? decodeURIComponent(match[1]) : null }
+  },
+}
+
+export function pageQuery(params: Record<string, string | number | boolean | undefined | null>): string {
+  const qs = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== '') qs.set(key, String(value))
+  }
+  const s = qs.toString()
+  return s ? `?${s}` : ''
+}

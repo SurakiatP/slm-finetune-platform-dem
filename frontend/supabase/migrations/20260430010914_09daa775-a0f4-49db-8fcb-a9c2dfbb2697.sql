@@ -1,0 +1,1 @@
+REVOKE EXECUTE ON FUNCTION public.seed_user_demo_data(uuid) FROM PUBLIC, anon, authenticated;

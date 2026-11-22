@@ -1,0 +1,487 @@
+/*
+ * TuneLab "Soft" login theme.
+ * Same palette as the web app (src/index.css): grey canvas, white card,
+ * one calm blue accent. Values are copied as hex/hsl so this file has no
+ * build step. Keep the two in sync when the app palette changes.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Sans+Thai:wght@400;500;600&display=swap");
+
+:root {
+  --tl-bg: hsl(210 20% 96%);
+  --tl-card: #ffffff;
+  --tl-fg: hsl(210 31% 13%);
+  --tl-muted: hsl(211 12% 41%);
+  --tl-line: hsl(210 20% 91%);
+  --tl-input: hsl(210 18% 88%);
+  --tl-field: #ffffff;
+  --tl-accent: hsl(212 64% 40%);
+  --tl-accent-hover: hsl(212 64% 35%);
+  --tl-on-accent: #ffffff;
+  --tl-accent-soft: hsl(212 62% 95%);
+  --tl-danger: hsl(0 68% 48%);
+  --tl-danger-soft: hsl(0 80% 97%);
+  --tl-success: hsl(149 71% 29%);
+  --tl-success-soft: hsl(149 50% 95%);
+  --tl-warning: hsl(32 90% 40%);
+  --tl-warning-soft: hsl(38 90% 95%);
+  --tl-shadow: 0 1px 2px hsl(210 31% 13% / 0.04), 0 4px 16px hsl(210 31% 13% / 0.05);
+  --tl-font: "Inter", "IBM Plex Sans Thai", system-ui, sans-serif;
+}
+
+:root.pf-v5-theme-dark {
+  --tl-bg: hsl(213 27% 8%);
+  --tl-card: hsl(212 25% 12%);
+  --tl-fg: hsl(210 24% 92%);
+  --tl-muted: hsl(210 13% 63%);
+  --tl-line: hsl(212 21% 18%);
+  --tl-input: hsl(212 21% 24%);
+  --tl-field: hsl(213 27% 9%);
+  --tl-accent: hsl(211 68% 62%);
+  --tl-accent-hover: hsl(211 68% 68%);
+  --tl-on-accent: hsl(210 39% 7%);
+  --tl-accent-soft: hsl(212 37% 18%);
+  --tl-danger: hsl(0 70% 66%);
+  --tl-danger-soft: hsl(0 40% 14%);
+  --tl-success: hsl(151 50% 53%);
+  --tl-success-soft: hsl(151 30% 12%);
+  --tl-warning: hsl(38 85% 58%);
+  --tl-warning-soft: hsl(38 40% 12%);
+  --tl-shadow: none;
+  color-scheme: dark;
+}
+
+/* Feed the palette into PatternFly so every component picks it up. */
+:root,
+:root.pf-v5-theme-dark {
+  --pf-v5-global--FontFamily--text: var(--tl-font);
+  --pf-v5-global--FontFamily--heading: var(--tl-font);
+  --pf-v5-global--primary-color--100: var(--tl-accent);
+  --pf-v5-global--primary-color--200: var(--tl-accent-hover);
+  --pf-v5-global--link--Color: var(--tl-accent);
+  --pf-v5-global--link--Color--hover: var(--tl-accent-hover);
+  --pf-v5-global--Color--100: var(--tl-fg);
+  --pf-v5-global--Color--200: var(--tl-muted);
+  --pf-v5-global--BorderColor--100: var(--tl-input);
+  --pf-v5-global--BackgroundColor--100: var(--tl-card);
+  --pf-v5-global--BorderRadius--sm: 8px;
+  --pf-v5-global--active-color--100: var(--tl-accent);
+  --pf-v5-global--danger-color--100: var(--tl-danger);
+  --pf-v5-global--success-color--100: var(--tl-success);
+}
+
+/* ---------- Page ---------- */
+html.login-pf,
+.login-pf body {
+  background: var(--tl-bg) !important;
+  color: var(--tl-fg);
+  font-family: var(--tl-font);
+  -webkit-font-smoothing: antialiased;
+}
+
+html[lang="th"] body {
+  line-height: 1.65;
+}
+
+.pf-v5-c-login {
+  min-height: 100vh;
+  padding: 48px 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.pf-v5-c-login__container {
+  grid-template-columns: minmax(0, 400px);
+  grid-template-rows: auto auto;
+  align-content: center;
+  max-width: 400px;
+  width: 100%;
+  padding: 0;
+  gap: 0;
+  row-gap: 0;
+}
+
+/* Brand row above the card */
+.pf-v5-c-login__header {
+  padding: 0 4px 20px;
+  margin: 0;
+  color: var(--tl-fg);
+}
+
+.pf-v5-c-login__header .pf-v5-c-brand {
+  margin: 0;
+}
+
+#kc-header-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  /* keycloak.v2 forces this to white with !important */
+  color: var(--tl-fg) !important;
+  text-transform: none;
+  padding: 0;
+}
+
+#kc-header-wrapper::before {
+  content: "";
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 2 3 14h9l-1 8 10-12h-9l1-8z'/%3E%3C/svg%3E")
+      center / 14px no-repeat,
+    var(--tl-accent);
+  flex: none;
+}
+
+:root.pf-v5-theme-dark #kc-header-wrapper::before {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230b1219' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 2 3 14h9l-1 8 10-12h-9l1-8z'/%3E%3C/svg%3E")
+      center / 14px no-repeat,
+    var(--tl-accent);
+}
+
+/* ---------- Card ---------- */
+.pf-v5-c-login__main {
+  background: var(--tl-card);
+  border-radius: 16px;
+  box-shadow: var(--tl-shadow);
+  border: 1px solid transparent;
+  overflow: hidden;
+  margin: 0;
+}
+
+:root.pf-v5-theme-dark .pf-v5-c-login__main {
+  border-color: var(--tl-line);
+}
+
+.pf-v5-c-login__main-header {
+  border-top: 0;
+  padding: 32px 32px 4px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pf-v5-c-login__main-header .pf-v5-c-title,
+#kc-page-title {
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--tl-fg);
+}
+
+.pf-v5-c-login__main-body {
+  padding: 20px 32px 8px;
+}
+
+.pf-v5-c-login__main-footer {
+  padding: 0 32px 28px;
+}
+
+.pf-v5-c-login__main > .pf-v5-c-login__main-footer:last-child:empty,
+.pf-v5-c-login__main > .pf-v5-c-login__main-footer:last-child:not(:has(*)) {
+  display: none;
+}
+
+.pf-v5-c-login__main-footer-band {
+  border-top: 1px solid var(--tl-line);
+  padding: 20px 0 0 !important;
+  margin: 24px 0 0 !important;
+  text-align: center;
+  color: var(--tl-muted);
+  font-size: 14px;
+}
+
+/* ---------- Language switcher ---------- */
+.pf-v5-c-login__main-header-utilities {
+  flex: none;
+}
+
+.pf-v5-c-login__main-header-utilities .pf-v5-c-form-control {
+  min-width: 0;
+  min-height: 32px;
+  border-radius: 8px;
+  font-size: 13px;
+  background: transparent;
+}
+
+.pf-v5-c-login__main-header-utilities select {
+  font-size: 13px;
+  color: var(--tl-muted);
+  padding-block: 4px;
+}
+
+/* ---------- Form ---------- */
+.pf-v5-c-form {
+  gap: 16px;
+}
+
+.pf-v5-c-form__label,
+.pf-v5-c-form__label-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--tl-fg);
+}
+
+.pf-v5-c-form__label-required {
+  color: var(--tl-danger);
+}
+
+.pf-v5-c-form-control {
+  --pf-v5-c-form-control--BorderRadius: 8px;
+  --pf-v5-c-form-control--before--BorderColor: var(--tl-input);
+  --pf-v5-c-form-control--before--BorderStyle: solid;
+  --pf-v5-c-form-control--before--BorderWidth: 1px;
+  --pf-v5-c-form-control--after--BorderBottomWidth: 0;
+  --pf-v5-c-form-control--hover--after--BorderBottomWidth: 0;
+  --pf-v5-c-form-control--BackgroundColor: var(--tl-field);
+  border-radius: 8px;
+  background: var(--tl-field);
+  min-height: 42px;
+  transition: box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.pf-v5-c-form-control::before {
+  border: 1px solid var(--tl-input) !important;
+  border-radius: 8px;
+}
+
+.pf-v5-c-form-control::after {
+  border: 0 !important;
+}
+
+.pf-v5-c-form-control:focus-within::before {
+  border-color: var(--tl-accent) !important;
+}
+
+.pf-v5-c-form-control:focus-within {
+  box-shadow: 0 0 0 3px hsl(212 64% 40% / 0.15);
+}
+
+:root.pf-v5-theme-dark .pf-v5-c-form-control:focus-within {
+  box-shadow: 0 0 0 3px hsl(211 68% 62% / 0.2);
+}
+
+.pf-v5-c-form-control > input,
+.pf-v5-c-form-control > select,
+.pf-v5-c-form-control > textarea {
+  font-size: 15px;
+  color: var(--tl-fg);
+  padding: 9px 12px;
+  background: transparent;
+  outline: none;
+}
+
+.pf-v5-c-form-control > input::placeholder {
+  color: var(--tl-muted);
+}
+
+.pf-v5-c-form-control.pf-m-error::before {
+  border-color: var(--tl-danger) !important;
+}
+
+.pf-v5-c-form-control.pf-m-readonly {
+  background: var(--tl-bg);
+}
+
+.pf-v5-c-helper-text__item-text.pf-m-error,
+.kc-feedback-text.pf-m-error {
+  color: var(--tl-danger);
+  font-size: 13px;
+}
+
+/* Show/hide password button inside the field group */
+.pf-v5-c-input-group .pf-v5-c-button.pf-m-control {
+  border-radius: 0 8px 8px 0;
+  color: var(--tl-muted);
+  background: var(--tl-field);
+}
+
+.pf-v5-c-input-group .pf-v5-c-button.pf-m-control::after {
+  border: 1px solid var(--tl-input);
+  border-radius: 0 8px 8px 0;
+}
+
+.pf-v5-c-input-group__item:has(+ .pf-v5-c-input-group__item) .pf-v5-c-form-control,
+.pf-v5-c-input-group__item:has(+ .pf-v5-c-input-group__item) .pf-v5-c-form-control::before {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+/* Remember me / options row */
+#kc-form-options,
+.pf-v5-c-check__label {
+  font-size: 14px;
+  color: var(--tl-muted);
+}
+
+.pf-v5-c-check__input {
+  accent-color: var(--tl-accent);
+  width: 16px;
+  height: 16px;
+}
+
+/* ---------- Buttons ---------- */
+.pf-v5-c-button {
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 500;
+  font-family: var(--tl-font);
+}
+
+.pf-v5-c-button.pf-m-primary {
+  --pf-v5-c-button--m-primary--BackgroundColor: var(--tl-accent);
+  --pf-v5-c-button--m-primary--hover--BackgroundColor: var(--tl-accent-hover);
+  --pf-v5-c-button--m-primary--focus--BackgroundColor: var(--tl-accent-hover);
+  --pf-v5-c-button--m-primary--active--BackgroundColor: var(--tl-accent-hover);
+  --pf-v5-c-button--m-primary--Color: var(--tl-on-accent);
+  --pf-v5-c-button--m-primary--hover--Color: var(--tl-on-accent);
+  background: var(--tl-accent);
+  color: var(--tl-on-accent);
+  min-height: 42px;
+  padding: 10px 16px;
+}
+
+.pf-v5-c-button.pf-m-primary:hover,
+.pf-v5-c-button.pf-m-primary:focus-visible {
+  background: var(--tl-accent-hover);
+}
+
+.pf-v5-c-button:focus-visible {
+  outline: 2px solid var(--tl-accent);
+  outline-offset: 2px;
+}
+
+.pf-v5-c-button.pf-m-secondary {
+  --pf-v5-c-button--m-secondary--Color: var(--tl-fg);
+  --pf-v5-c-button--m-secondary--hover--Color: var(--tl-fg);
+  --pf-v5-c-button--m-secondary--BackgroundColor: var(--tl-card);
+  --pf-v5-c-button--m-secondary--hover--BackgroundColor: var(--tl-bg);
+  --pf-v5-c-button--m-secondary--after--BorderColor: var(--tl-input);
+  --pf-v5-c-button--m-secondary--hover--after--BorderColor: var(--tl-input);
+  color: var(--tl-fg);
+  min-height: 42px;
+}
+
+.pf-v5-c-button.pf-m-secondary::after {
+  border-color: var(--tl-input);
+  border-radius: 8px;
+}
+
+.pf-v5-c-button.pf-m-link,
+.login-pf a {
+  color: var(--tl-accent);
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.login-pf a:hover {
+  color: var(--tl-accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.pf-v5-c-form__actions {
+  margin-top: 4px;
+}
+
+/* ---------- Alerts ---------- */
+.pf-v5-c-alert {
+  border-radius: 10px;
+  box-shadow: none;
+  border: 0;
+  padding: 12px 14px;
+  font-size: 14px;
+  --pf-v5-c-alert--BorderTopWidth: 0;
+}
+
+.pf-v5-c-alert::before {
+  display: none;
+}
+
+.pf-v5-c-alert.pf-m-danger {
+  background: var(--tl-danger-soft);
+  color: var(--tl-danger);
+}
+
+.pf-v5-c-alert.pf-m-success {
+  background: var(--tl-success-soft);
+  color: var(--tl-success);
+}
+
+.pf-v5-c-alert.pf-m-warning {
+  background: var(--tl-warning-soft);
+  color: var(--tl-warning);
+}
+
+.pf-v5-c-alert.pf-m-info {
+  background: var(--tl-accent-soft);
+  color: var(--tl-accent);
+}
+
+.pf-v5-c-alert__title {
+  font-weight: 500;
+  color: inherit;
+}
+
+/* ---------- One-time code / authenticator choices ---------- */
+.pf-v5-c-tile,
+.select-auth-container .pf-v5-c-data-list__item {
+  border-radius: 10px;
+  border: 1px solid var(--tl-line);
+  background: var(--tl-card);
+}
+
+.pf-v5-c-tile.pf-m-selected {
+  border-color: var(--tl-accent);
+  box-shadow: 0 0 0 1px var(--tl-accent);
+}
+
+.pf-v5-c-tile::before {
+  display: none;
+}
+
+.select-auth-box-headline {
+  font-weight: 500;
+  color: var(--tl-fg);
+}
+
+.select-auth-box-desc {
+  color: var(--tl-muted);
+}
+
+/* Restart-login tooltip */
+.kc-login-tooltip .kc-tooltip-text {
+  background: var(--tl-fg);
+  color: var(--tl-card);
+  border-radius: 6px;
+  font-size: 12px;
+  box-shadow: none;
+}
+
+/* ---------- Phone width ---------- */
+@media (max-width: 480px) {
+  .pf-v5-c-login {
+    padding: 24px 16px;
+    align-items: flex-start;
+  }
+
+  .pf-v5-c-login__main-header {
+    padding: 24px 20px 4px;
+  }
+
+  .pf-v5-c-login__main-body {
+    padding: 16px 20px 8px;
+  }
+
+  .pf-v5-c-login__main-footer {
+    padding: 0 20px 24px;
+  }
+}
