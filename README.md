@@ -5,7 +5,9 @@ platform. Users describe a task → the platform synthesizes training data with 
 fine-tunes a ≤3B-parameter model with **Unsloth + QLoRA**, tracks every run in **MLflow**,
 and serves the result via **Ollama** (OpenAI-compatible API).
 
-A web UI (React + Vite + Tailwind) now ships in [`frontend/`](./frontend); the backend still
+A web UI (React + Vite + Tailwind) now ships in [`frontend/`](./frontend): the TuneLab
+frontend, moved here with its history from `SigmaF001/smart-model-tune`. See
+[`frontend/README.md`](./frontend/README.md) for how to run it. The backend still
 exposes a clean OpenAPI contract as its public interface, so the API can be driven on its own.
 
 > **Source of truth for scope:** [`require.md`](./require.md)
@@ -392,7 +394,8 @@ slm-platform/
 ├── workers/         # Celery worker app + task definitions
 ├── ai_engine/       # Pure domain logic — data_gen, training, hpo, evaluation
 │                    # (no FastAPI / Celery imports — keep hexagonal)
-├── frontend/        # Web UI (React + Vite + Tailwind) — proxies /api + /ws
+├── frontend/        # TuneLab web UI (React + Vite + Tailwind) — proxies /api + /ws;
+│                    # built and deployed separately (own Dockerfile + compose)
 ├── tests/           # unit + integration
 ├── examples/        # Standalone client scripts (Phase 8)
 ├── docs/            # Architecture, ADRs, standards, prompt templates

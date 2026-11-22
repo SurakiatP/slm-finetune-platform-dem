@@ -1,0 +1,12 @@
+# Built separately from its own context (frontend/Dockerfile + frontend/.dockerignore)
+frontend/
+
+.git
+**/node_modules
+**/__pycache__
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.env
+.env.*
+!.env.example
