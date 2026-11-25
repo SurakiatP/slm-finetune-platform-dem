@@ -1,0 +1,201 @@
+import type { Project, TrainedModel, TrainingJob, UsageStats, ActivityDataPoint, EvaluationMetrics } from "@/types";
+
+export const mockProjects: Project[] = [
+  {
+    id: "proj-001",
+    name: "Customer Intent Classifier",
+    description: "Classify customer support tickets into categories: billing, technical, general, and feedback.",
+    taskType: "classification",
+    baseModel: "qwen2.5-1.5b",
+    status: "completed",
+    progress: 100,
+    createdAt: "2026-02-15T09:30:00Z",
+    updatedAt: "2026-02-15T14:22:00Z",
+    epochs: 5,
+    learningRate: 2e-4,
+    datasetSize: 2400,
+    creditsCost: 120,
+    pinned: true,
+    tags: ["production", "client-A"],
+  },
+  {
+    id: "proj-002",
+    name: "Thai News Topic Classifier",
+    description: "Label Thai news articles by topic: politics, business, sport, and entertainment.",
+    taskType: "classification",
+    baseModel: "gemma-2-2b",
+    status: "training",
+    progress: 68,
+    createdAt: "2026-02-18T11:00:00Z",
+    updatedAt: "2026-02-21T08:15:00Z",
+    epochs: 8,
+    learningRate: 1e-4,
+    datasetSize: 5200,
+    creditsCost: 280,
+    tags: ["experiment"],
+  },
+  {
+    id: "proj-003",
+    name: "Product QA Bot",
+    description: "Answer product-related questions using company documentation and FAQ data.",
+    taskType: "qa",
+    baseModel: "phi-3-mini",
+    status: "completed",
+    progress: 100,
+    createdAt: "2026-02-10T14:00:00Z",
+    updatedAt: "2026-02-11T03:45:00Z",
+    epochs: 3,
+    learningRate: 3e-4,
+    datasetSize: 1800,
+    creditsCost: 95,
+    pinned: true,
+    tags: ["production"],
+  },
+  {
+    id: "proj-004",
+    name: "API Function Router",
+    description: "Route natural language requests to appropriate API function calls with parameter extraction.",
+    taskType: "tool_calling",
+    baseModel: "qwen2.5-3b",
+    status: "queued",
+    progress: 0,
+    createdAt: "2026-02-20T16:30:00Z",
+    updatedAt: "2026-02-20T16:30:00Z",
+    epochs: 6,
+    learningRate: 2e-4,
+    datasetSize: 3100,
+    creditsCost: 200,
+  },
+  {
+    id: "proj-005",
+    name: "Invoice Q&A Assistant",
+    description: "Answer questions about invoice contents: vendor, amount, due date, and line items.",
+    taskType: "qa",
+    baseModel: "smollm2-1.7b",
+    status: "failed",
+    progress: 42,
+    createdAt: "2026-02-17T08:00:00Z",
+    updatedAt: "2026-02-17T12:30:00Z",
+    epochs: 5,
+    learningRate: 5e-4,
+    datasetSize: 900,
+    creditsCost: 45,
+  },
+  {
+    id: "proj-006",
+    name: "Search Relevance Classifier",
+    description: "Label search results as relevant or irrelevant to the user query for an e-commerce platform.",
+    taskType: "classification",
+    baseModel: "llama-3.2-1b",
+    status: "completed",
+    progress: 100,
+    createdAt: "2026-02-12T10:00:00Z",
+    updatedAt: "2026-02-13T02:15:00Z",
+    epochs: 4,
+    learningRate: 1e-4,
+    datasetSize: 4500,
+    creditsCost: 180,
+  },
+];
+
+export const mockModels: TrainedModel[] = [
+  {
+    id: "model-001",
+    name: "intent-classifier-v1",
+    projectId: "proj-001",
+    baseModel: "qwen2.5-1.5b",
+    taskType: "classification",
+    accuracy: 94.2,
+    f1Score: 93.8,
+    fileSize: "1.2 GB",
+    format: "SafeTensors",
+    status: "deployed",
+    createdAt: "2026-02-15T14:22:00Z",
+  },
+  {
+    id: "model-002",
+    name: "product-qa-v1",
+    projectId: "proj-003",
+    baseModel: "phi-3-mini",
+    taskType: "qa",
+    accuracy: 89.5,
+    f1Score: 88.1,
+    fileSize: "2.8 GB",
+    format: "GGUF",
+    status: "ready",
+    createdAt: "2026-02-11T03:45:00Z",
+  },
+  {
+    id: "model-003",
+    name: "search-relevance-v1",
+    projectId: "proj-006",
+    baseModel: "llama-3.2-1b",
+    taskType: "classification",
+    accuracy: 91.7,
+    f1Score: 90.3,
+    fileSize: "0.9 GB",
+    format: "ONNX",
+    status: "ready",
+    createdAt: "2026-02-13T02:15:00Z",
+  },
+];
+
+export const mockTrainingJobs: TrainingJob[] = [
+  {
+    id: "job-001",
+    projectId: "proj-002",
+    status: "training",
+    currentEpoch: 5,
+    totalEpochs: 8,
+    loss: 0.342,
+    startedAt: "2026-02-20T22:00:00Z",
+    estimatedCompletion: "2026-02-21T14:00:00Z",
+  },
+];
+
+export const mockUsageStats: UsageStats = {
+  totalProjects: 6,
+  modelsTrainedCount: 3,
+  trainingHoursUsed: 18.5,
+  creditsRemaining: 850,
+  creditsTotal: 2000,
+  planTier: "Pro",
+};
+
+export const mockActivityData: ActivityDataPoint[] = [
+  { date: "Feb 15", jobs: 2, credits: 215 },
+  { date: "Feb 16", jobs: 0, credits: 0 },
+  { date: "Feb 17", jobs: 1, credits: 45 },
+  { date: "Feb 18", jobs: 1, credits: 80 },
+  { date: "Feb 19", jobs: 0, credits: 0 },
+  { date: "Feb 20", jobs: 2, credits: 180 },
+  { date: "Feb 21", jobs: 1, credits: 120 },
+];
+
+export const mockEvalMetrics: Record<string, EvaluationMetrics> = {
+  "proj-001": { accuracy: 94.2, f1Score: 93.8, precision: 95.1, recall: 92.5, rouge1: 0, latencyMs: 45 },
+  "proj-003": { accuracy: 89.5, f1Score: 88.1, precision: 90.2, recall: 86.0, rouge1: 82.3, latencyMs: 120 },
+  "proj-006": { accuracy: 91.7, f1Score: 90.3, precision: 92.0, recall: 88.7, rouge1: 0, latencyMs: 38 },
+};
+
+/** Static labels for the three task types the backend supports (ADR-005).
+ *  Prefer `useTaskTypeLabel()` from src/lib/labels.ts, which reads
+ *  `GET /api/v1/tasks` and only falls back to a table like this one. */
+export const taskTypeLabels: Record<string, string> = {
+  classification: "Classification",
+  tool_calling: "Function Calling",
+  qa: "Question Answering",
+};
+
+export const baseModelLabels: Record<string, string> = {
+  "qwen2.5-1.5b": "Qwen 2.5 1.5B",
+  "qwen2.5-3b": "Qwen 2.5 3B",
+  "gemma-2-2b": "Gemma 2 2B",
+  "phi-3-mini": "Phi-3 Mini",
+  "llama-3.2-1b": "Llama 3.2 1B",
+  "smollm2-1.7b": "SmolLM2 1.7B",
+};
+
+export function getBaseModelLabel(baseModel: string): string {
+  return baseModelLabels[baseModel] ?? baseModel;
+}
