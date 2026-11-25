@@ -1,0 +1,8 @@
+# gx10: serve as the live slm-frontend that ngrok targets (slm-frontend:8080).
+services:
+  frontend:
+    container_name: slm-frontend
+    networks:
+      auth: {}
+      engine:
+        aliases: [slm-frontend]
